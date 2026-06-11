@@ -192,67 +192,72 @@ class RTSPReader:
             f"appsink drop=1"
         )
 
+    def _build_sw_pipeline(self) -> str:
+
+        # Software-decode fallback, used when the NVIDIA hardware decoder
+        # elements (nvv4l2decoder / nvvidconv) aren't available inside the
+        # container. Relies on gstreamer1.0-libav (avdec_*), installed in
+        # the image.
+        if self._camera.codec == CameraCodec.H265:
+            depay = "rtph265depay ! h265parse ! avdec_h265"
+        else:
+            depay = "rtph264depay ! h264parse ! avdec_h264"
+
+        return (
+            f"rtspsrc location={self._camera.rtsp_url} latency=100 ! "
+            f"{depay} ! videoconvert ! "
+            f"video/x-raw,format=BGR ! appsink drop=1"
+        )
+
     def _connect(self) -> bool:
 
         self._health_state = (
             CameraHealthState.CONNECTING
         )
 
-        try:
+        # Try, in order: hardware GStreamer (nvv4l2decoder), software
+        # GStreamer (avdec via libav), then plain FFmpeg. The first that
+        # opens wins — so ingestion keeps working even if the NVIDIA
+        # GStreamer plugins aren't mounted inside the container.
+        attempts = (
+            [
+                ("hw-gstreamer", self._build_gstreamer_pipeline),
+                ("sw-gstreamer", self._build_sw_pipeline),
+                ("ffmpeg", None),
+            ]
+            if settings.is_production
+            else [("ffmpeg", None)]
+        )
 
-            if settings.is_production:
+        for name, builder in attempts:
 
-                pipeline = (
-                    self._build_gstreamer_pipeline()
-                )
-
-                self._capture = cv2.VideoCapture(
-                    pipeline,
-                    cv2.CAP_GSTREAMER,
-                )
-
-            else:
-
-                self._capture = cv2.VideoCapture(
-                    self._camera.rtsp_url
-                )
-
-            if (
-                self._capture is None
-                or not self._capture.isOpened()
-            ):
-
+            try:
+                if builder is None:
+                    cap = cv2.VideoCapture(self._camera.rtsp_url)
+                else:
+                    cap = cv2.VideoCapture(builder(), cv2.CAP_GSTREAMER)
+            except (RuntimeError, ValueError, OSError, cv2.error):
                 logger.warning(
-                    "Failed opening stream camera=%s",
-                    self.camera_id,
+                    "Open via %s raised camera=%s", name, self.camera_id
                 )
+                continue
 
-                return False
+            if cap is not None and cap.isOpened():
+                self._capture = cap
+                self._health_state = CameraHealthState.RUNNING
+                logger.info(
+                    "Connected camera=%s via %s", self.camera_id, name
+                )
+                return True
 
-            logger.info(
-                "Connected camera=%s",
-                self.camera_id,
+            if cap is not None:
+                cap.release()
+
+            logger.warning(
+                "Open via %s failed camera=%s", name, self.camera_id
             )
 
-            self._health_state = (
-                CameraHealthState.RUNNING
-            )
-
-            return True
-
-        except (
-            RuntimeError,
-            ValueError,
-            OSError,
-            cv2.error,
-        ):
-
-            logger.exception(
-                "Connection error camera=%s",
-                self.camera_id,
-            )
-
-            return False
+        return False
 
     # =====================================================
     # Main Loop
