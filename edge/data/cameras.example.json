@@ -1,0 +1,10 @@
+[
+    {
+        "camera_id": "cam_1",
+        "camera_name": "Kitchen Camera",
+        "room_name": "Kitchen",
+        "rtsp_url": "rtsp://<username>:<password>@<camera-ip>:<port>/<stream-path>",
+        "codec": "h264",
+        "is_enabled": true
+    }
+]

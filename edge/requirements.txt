@@ -1,0 +1,11 @@
+# DEV (laptop, x86_64) — no AI, no GStreamer.
+# On the Jetson, this file is NOT used; see Dockerfile.jetson which
+# installs requirements.base.txt + requirements.ai.txt and relies on
+# the JetPack-provided opencv, numpy, tensorrt, pycuda.
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+pydantic==2.10.4
+pydantic-settings==2.7.1
+websockets==13.1

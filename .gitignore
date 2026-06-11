@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual envs
+venv/
+.venv/
+.env/
+
+# Models — engines are device-specific, never commit
+models/**/*.engine
+models/**/*.onnx
+models/**/*.pt
+models/**/*.trt
+
+# Runtime data
+edge/data/ceravis.db*
+edge/data/recipients/*/photos/*
+edge/data/recipients/*/videos/*
+
+# Live camera config — contains real RTSP credentials, never commit
+edge/data/cameras.json
+
+# Docker / logs
+*.log
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

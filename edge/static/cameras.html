@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CERAVIS — Cameras</title>
+<style>
+  :root {
+    --bg:#0b0f14; --panel:#131a23; --line:#1f2a37;
+    --text:#dce5f3; --muted:#7a8aa3; --accent:#7ad0ff;
+    --ok:#39d98a; --warn:#f5a623; --bad:#ff6b6b;
+  }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"SF Pro",Inter,Segoe UI,sans-serif;
+         background:var(--bg); color:var(--text); margin:0; padding:24px; }
+  h1 { margin:0 0 4px; font-weight:600; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
+  nav a { color:var(--accent); margin-right:14px; text-decoration:none; font-size:13px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:12px; padding:16px; }
+  .card h2 { margin:0 0 12px; font-size:14px; color:var(--muted);
+             text-transform:uppercase; letter-spacing:1px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+  input, select { width:100%; padding:8px 10px; border-radius:6px;
+                  background:#0a0e13; border:1px solid var(--line);
+                  color:var(--text); font-size:14px; }
+  button { background:#1c5d8a; border:0; color:#fff; padding:8px 14px;
+           border-radius:6px; cursor:pointer; font-size:13px; }
+  button:hover { background:#1f6fa4; }
+  button.ghost { background:transparent; border:1px solid var(--line);
+                 color:var(--text); }
+  button.danger { background:#7a2424; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .pill { padding:2px 8px; border-radius:8px; font-size:11px;
+          background:#1c2330; color:var(--accent); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line);
+           vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:11px;
+       text-transform:uppercase; letter-spacing:1px; }
+  .preview { background:#000; border-radius:8px; aspect-ratio:16/9;
+             width:100%; object-fit:contain; display:block; }
+  .err  { color:var(--bad); font-size:12px; margin-top:6px; }
+  .note { color:var(--muted); font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+  <h1>Cameras</h1>
+  <div class="sub">
+    Add RTSP feeds, label them by room, preview live, then label zones.
+  </div>
+  <nav>
+    <a href="dashboard.html">← Dashboard</a>
+    <a href="cameras.html">Cameras</a>
+    <a href="zones.html">Zones</a>
+  </nav>
+
+  <div class="grid" style="margin-top:16px">
+
+    <!-- ===== Add camera form ===== -->
+    <div class="card">
+      <h2>Add camera</h2>
+
+      <label>RTSP URL</label>
+      <input id="rtsp_url" placeholder="rtsp://user:pass@192.168.0.10:554/stream1" />
+
+      <label>Camera ID</label>
+      <input id="camera_id" placeholder="cam_2" />
+
+      <label>Display name</label>
+      <input id="camera_name" placeholder="Bedroom Camera" />
+
+      <label>Room</label>
+      <input id="room_name" placeholder="Bedroom" />
+
+      <label>Codec</label>
+      <select id="codec">
+        <option value="h264" selected>H.264</option>
+        <option value="h265">H.265</option>
+      </select>
+
+      <div class="row" style="margin-top:14px">
+        <button id="btn-probe">Test connection</button>
+        <button id="btn-save">Save camera</button>
+        <button class="ghost" id="btn-clear">Clear</button>
+      </div>
+      <div id="probe-result" class="note"></div>
+      <div id="err" class="err"></div>
+    </div>
+
+    <!-- ===== Live preview ===== -->
+    <div class="card">
+      <h2>Live preview</h2>
+      <label>Camera</label>
+      <select id="preview-select">
+        <option value="">— select a camera —</option>
+      </select>
+      <img id="preview" class="preview" alt="select a camera to preview" />
+      <div id="preview-meta" class="note"></div>
+    </div>
+  </div>
+
+  <!-- ===== Camera list ===== -->
+  <div class="card" style="margin-top:16px">
+    <h2>Registered cameras</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th><th>Name</th><th>Room</th><th>Codec</th>
+          <th>Status</th><th>FPS</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="cam-table-body"></tbody>
+    </table>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = (path, opts={}) => fetch(path, {
+  headers:{'Content-Type':'application/json'}, ...opts,
+}).then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(j)));
+
+let previewSocket = null;
+
+async function loadCameras() {
+  const [cams, statuses] = await Promise.all([
+    api('/api/v1/cameras'),
+    api('/api/v1/cameras/status').catch(() => ({})),
+  ]);
+
+  const tbody = $('cam-table-body');
+  tbody.innerHTML = cams.length === 0
+    ? '<tr><td colspan="7" class="note">no cameras yet</td></tr>'
+    : cams.map(c => {
+        const s = statuses[c.camera_id] || {};
+        const state = s.health_state || 'offline';
+        const cls = state === 'running' ? 'ok' : state === 'connecting' ? 'warn' : 'bad';
+        return `<tr>
+          <td><code>${c.camera_id}</code></td>
+          <td>${c.camera_name}</td>
+          <td>${c.room_name}</td>
+          <td>${c.codec}</td>
+          <td><span class="${cls}">${state}</span></td>
+          <td>${(s.current_fps || 0).toFixed(1)}</td>
+          <td class="row">
+            <button class="ghost" data-action="start" data-id="${c.camera_id}">Start</button>
+            <button class="ghost" data-action="stop"  data-id="${c.camera_id}">Stop</button>
+            <button class="ghost" data-action="restart" data-id="${c.camera_id}">Restart</button>
+            <button class="danger" data-action="delete" data-id="${c.camera_id}">Delete</button>
+          </td></tr>`;
+      }).join('');
+
+  const sel = $('preview-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— select a camera —</option>' +
+    cams.map(c => `<option value="${c.camera_id}">${c.camera_id} · ${c.camera_name}</option>`).join('');
+  if (cams.some(c => c.camera_id === current)) sel.value = current;
+
+  tbody.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id, action = btn.dataset.action;
+      try {
+        if (action === 'delete') {
+          if (!confirm(`Delete camera ${id}?`)) return;
+          await api('/api/v1/cameras/' + id, { method:'DELETE' });
+        } else {
+          await api(`/api/v1/cameras/${id}/${action}`, { method:'POST' });
+        }
+        loadCameras();
+      } catch (e) { alert(JSON.stringify(e)); }
+    };
+  });
+}
+
+$('btn-probe').onclick = async () => {
+  $('probe-result').textContent = '… probing';
+  try {
+    const r = await api('/api/v1/cameras/probe', {
+      method:'POST',
+      body: JSON.stringify({ rtsp_url: $('rtsp_url').value.trim() }),
+    });
+    $('probe-result').innerHTML = r.ok
+      ? `<span class="ok">OK — ${r.width}x${r.height}</span>`
+      : `<span class="bad">FAIL — ${r.reason}</span>`;
+  } catch (e) { $('probe-result').innerHTML = '<span class="bad">probe error</span>'; }
+};
+
+$('btn-save').onclick = async () => {
+  $('err').textContent = '';
+  const camera = {
+    camera_id: $('camera_id').value.trim(),
+    camera_name: $('camera_name').value.trim(),
+    room_name: $('room_name').value.trim(),
+    rtsp_url: $('rtsp_url').value.trim(),
+    codec: $('codec').value,
+    is_enabled: true,
+  };
+  if (!camera.camera_id || !camera.rtsp_url) {
+    $('err').textContent = 'camera_id and rtsp_url are required';
+    return;
+  }
+  try {
+    await api('/api/v1/cameras', { method:'POST', body: JSON.stringify(camera) });
+    await api(`/api/v1/cameras/${camera.camera_id}/start`, { method:'POST' })
+      .catch(() => {});
+    ['camera_id','camera_name','room_name','rtsp_url'].forEach(id => $(id).value='');
+    loadCameras();
+  } catch (e) { $('err').textContent = JSON.stringify(e); }
+};
+
+$('btn-clear').onclick = () => {
+  ['camera_id','camera_name','room_name','rtsp_url'].forEach(id => $(id).value='');
+  $('err').textContent = ''; $('probe-result').textContent = '';
+};
+
+// Live preview via the existing /stream/{camera_id} websocket
+$('preview-select').onchange = (e) => connectPreview(e.target.value);
+
+function connectPreview(camera_id) {
+  if (previewSocket) { try { previewSocket.close(); } catch(_){} previewSocket = null; }
+  const img = $('preview');
+  if (!camera_id) { img.removeAttribute('src'); return; }
+  const ws = new WebSocket(
+    (location.protocol === 'https:' ? 'wss://' : 'ws://')
+    + location.host + '/stream/' + camera_id);
+  ws.binaryType = 'blob';
+  let lastUrl = null;
+  ws.onmessage = (ev) => {
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = URL.createObjectURL(ev.data);
+    img.src = lastUrl;
+  };
+  ws.onclose = () => $('preview-meta').textContent = 'stream closed';
+  ws.onopen  = () => $('preview-meta').textContent = 'streaming ' + camera_id;
+  previewSocket = ws;
+}
+
+loadCameras();
+setInterval(loadCameras, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# ============================================================
+# JETPACK 6 ALREADY PROVIDES (do NOT pip install on Jetson):
+#   numpy            (system python3-numpy)
+#   opencv           (system python3-opencv, with GStreamer + CUDA)
+#   tensorrt         (JetPack)
+#   pycuda           (apt: python3-pycuda)
+#   torch            (NVIDIA wheel, if you install l4t-pytorch)
+# ============================================================
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+websockets==13.1

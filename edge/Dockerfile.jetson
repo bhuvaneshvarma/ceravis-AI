@@ -1,0 +1,57 @@
+# =============================================================
+# JETSON DOCKERFILE — NVIDIA Jetson Orin Nano Super, JetPack 6.x
+# =============================================================
+#
+# Uses the JetPack-provided versions of CUDA, TensorRT, PyCUDA, OpenCV.
+# Models (TensorRT .engine files) are auto-built at first container
+# start by scripts/export_models.py and persisted to the /models volume.
+#
+# Build on the device:
+#   docker build -f Dockerfile.jetson -t ceravis-edge:jetson .
+# Run via docker-compose.jetson.yml.
+
+FROM nvcr.io/nvidia/l4t-jetpack:r36.3.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# ---- System deps (JetPack provides CUDA + TensorRT) ------------
+# python3-opencv ships with GStreamer + CUDA support.
+# python3-pycuda is the apt-packaged version that links to JetPack's CUDA.
+# gstreamer plugins enable rtspsrc + nvv4l2decoder hardware path.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip \
+        python3-dev \
+        python3-numpy \
+        python3-opencv \
+        python3-pycuda \
+        gstreamer1.0-tools \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-ugly \
+        gstreamer1.0-libav \
+        libgstrtspserver-1.0-0 \
+        libsm6 libxext6 libglib2.0-0 \
+        wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ---- Python deps (do NOT reinstall numpy/opencv/tensorrt/pycuda) ----
+COPY requirements.base.txt requirements.ai.txt ./
+RUN pip3 install --no-cache-dir --break-system-packages \
+        -r requirements.base.txt \
+        -r requirements.ai.txt
+
+# ---- App ------------------------------------------------------
+COPY . .
+RUN chmod +x /app/entrypoint.sh
+
+EXPOSE 8000
+
+# Models live in a host-mounted volume so engines persist across rebuilds.
+VOLUME ["/models", "/app/data"]
+
+ENTRYPOINT ["/app/entrypoint.sh"]

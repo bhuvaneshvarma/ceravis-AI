@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+from threading import RLock
+
+from reid.identity_schema import Identity
+
+
+class IdentityBuffer:
+    """Per-camera latest identity-resolution result (one per track)."""
+
+    __slots__ = ("_lock", "_identities")
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        # camera_id -> { track_id -> Identity }
+        self._identities: dict[str, dict[int, Identity]] = {}
+
+    def update(self, identity: Identity) -> None:
+        with self._lock:
+            self._identities.setdefault(identity.camera_id, {})[
+                identity.track_id
+            ] = identity
+
+    def get(self, camera_id: str, track_id: int) -> Identity | None:
+        with self._lock:
+            return self._identities.get(camera_id, {}).get(track_id)
+
+    def get_all(self) -> dict[str, dict[int, Identity]]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._identities.items()}
