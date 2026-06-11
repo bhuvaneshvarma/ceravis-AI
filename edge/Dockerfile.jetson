@@ -41,10 +41,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# ---- Python deps (do NOT reinstall numpy/opencv/tensorrt/pycuda) ----
+# ---- Python deps -----------------------------------------------
 # Upgrade pip first — the base image ships pip 22.x which lacks
-# --break-system-packages and often fails on newer wheel metadata.
+# newer wheel metadata support.
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install NVIDIA's Jetson PyTorch BEFORE ultralytics so pip doesn't
+# pull the generic PyPI torch (wrong CUDA version, no Jetson GPU support).
+RUN pip3 install --no-cache-dir \
+        torch \
+        torchvision \
+        --index-url https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/
+
 COPY requirements.base.txt requirements.ai.txt ./
 RUN pip3 install --no-cache-dir \
         -r requirements.base.txt \
