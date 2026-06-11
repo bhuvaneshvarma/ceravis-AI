@@ -66,10 +66,8 @@ RUN pip3 install --no-cache-dir \
 # to confirm we got a CUDA wheel and not the CPU/PyPI one.
 RUN python3 -c "import torch; v=torch.version.cuda; print('torch', torch.__version__, 'built for CUDA', v); assert v is not None, 'CPU-only torch wheel — wrong index'"
 
-COPY requirements.base.txt requirements.ai.txt ./
-RUN pip3 install --no-cache-dir \
-        -r requirements.base.txt \
-        -r requirements.ai.txt
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # ---- App ------------------------------------------------------
 COPY . .

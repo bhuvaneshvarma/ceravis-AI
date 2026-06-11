@@ -9,8 +9,8 @@ from pydantic_settings import SettingsConfigDict
 
 class Settings(BaseSettings):
     """
-    Global settings — loaded from infra/env/jetson.env (prod)
-    or infra/env/edge.env (dev). Everything tunable is here.
+    Global settings — loaded from infra/env/jetson.env.
+    Everything tunable is here; env vars override these defaults.
     """
 
     # ---- Application -------------------------------------------------
@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     fastreid_onnx_path: str = "/models/reid/fastreid_bot_r50.onnx"
 
     model_config = SettingsConfigDict(
-        env_file=("infra/env/jetson.env", "infra/env/edge.env"),
+        env_file="infra/env/jetson.env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
