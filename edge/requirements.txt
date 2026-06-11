@@ -1,17 +1,22 @@
 # ============================================================
-# CERAVIS edge — Python dependencies for the Jetson (aarch64, JetPack 6).
+# CERAVIS edge — runtime deps for NATIVE Jetson deploy (system Python 3.10).
 #
-# JetPack ALREADY provides these — do NOT pip install them:
+# JetPack ALREADY provides — never pip install these (pip wheels would
+# shadow the JetPack builds and break GStreamer/CUDA):
 #   numpy      (apt: python3-numpy)
-#   opencv     (apt: python3-opencv, built with GStreamer + CUDA)
-#   tensorrt   (JetPack)
+#   opencv     (apt: python3-opencv — GStreamer-enabled)
+#   tensorrt   (JetPack SDK component + python3-libnvinfer)
+#   CUDA       (JetPack)
 #
-# torch / torchvision are installed separately in Dockerfile.jetson from the
-# jetson-ai-lab CUDA index (the PyPI build has no Jetson GPU support), so keep
-# them OUT of this file.
+# Installed separately by scripts/install_native.sh:
+#   pycuda       (pip, compiles against /usr/local/cuda)
+#   supervision  (pip --no-deps, so it can't drag in opencv-python)
 #
-# Versions are intentionally unpinned for the first build. After a successful
-# build, freeze with:  docker exec ceravis-edge pip3 freeze > requirements.lock
+# NOT runtime deps at all:
+#   torch / torchvision / ultralytics — used once for ONNX export inside a
+#   disposable venv (scripts/export_engines.sh). Inference is pure TensorRT.
+#
+# Freeze after a working install:  pip3 freeze --user > requirements.lock
 # ============================================================
 
 # ---- Web / API ----
@@ -21,9 +26,13 @@ pydantic
 pydantic-settings
 websockets
 
-# ---- AI / inference ----
-ultralytics
-supervision
-faiss-cpu
+# ---- Events / alerts / similarity ----
 paho-mqtt
-pycuda
+faiss-cpu
+
+# ---- needed by supervision (installed --no-deps) ----
+pyyaml
+defusedxml
+pillow
+scipy
+matplotlib
