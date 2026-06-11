@@ -46,12 +46,25 @@ WORKDIR /app
 # newer wheel metadata support.
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install NVIDIA's Jetson PyTorch BEFORE ultralytics so pip doesn't
-# pull the generic PyPI torch (wrong CUDA version, no Jetson GPU support).
+# PyTorch on Jetson MUST be the CUDA-enabled aarch64 wheel built by NVIDIA.
+# The generic PyPI torch is CPU/CUDA-13 only and reports cuda.is_available()=False.
+# Strategy:
+#   1. Install torch's pure-python deps from PyPI (so the Jetson index only
+#      needs to serve torch + torchvision themselves).
+#   2. Install torch/torchvision from the jetson-ai-lab index for JetPack 6 /
+#      CUDA 12.6 (cu126 = the driver version reported by `nvcc`/tegrastats).
+#      --index-url (not --extra-index-url) forces the Jetson wheels and avoids
+#      pip "upgrading" to a newer-but-broken PyPI build.
 RUN pip3 install --no-cache-dir \
-        torch \
-        torchvision \
-        --index-url https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/
+        filelock typing-extensions sympy networkx jinja2 fsspec mpmath pillow
+RUN pip3 install --no-cache-dir \
+        --index-url https://pypi.jetson-ai-lab.dev/jp6/cu126 \
+        torch torchvision
+
+# Sanity-check the wheel at build time. We check the CUDA *build* version
+# (not cuda.is_available(), since the GPU isn't attached during `docker build`)
+# to confirm we got a CUDA wheel and not the CPU/PyPI one.
+RUN python3 -c "import torch; v=torch.version.cuda; print('torch', torch.__version__, 'built for CUDA', v); assert v is not None, 'CPU-only torch wheel — wrong index'"
 
 COPY requirements.base.txt requirements.ai.txt ./
 RUN pip3 install --no-cache-dir \
