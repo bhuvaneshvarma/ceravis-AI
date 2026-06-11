@@ -14,6 +14,8 @@ models/**/*.engine
 models/**/*.onnx
 models/**/*.pt
 models/**/*.trt
+edge/models/
+edge/*.pt
 
 # Runtime data
 edge/data/ceravis.db*

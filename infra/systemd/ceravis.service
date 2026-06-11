@@ -1,0 +1,23 @@
+# CERAVIS edge — native systemd unit (no Docker).
+# Installed by edge/scripts/install_service.sh, which substitutes the
+# real repo path and user automatically. Don't edit /etc copy by hand;
+# re-run the installer instead.
+[Unit]
+Description=CERAVIS Edge AI (native, JetPack stack)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ceravis
+WorkingDirectory=/home/ceravis/ceravis2/edge
+EnvironmentFile=/home/ceravis/ceravis2/infra/env/jetson.env
+# Rebuild engines if missing (skips instantly when already built).
+# "-" prefix: a failure here must not block the API from starting.
+ExecStartPre=-/usr/bin/python3 scripts/export_models.py
+ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
