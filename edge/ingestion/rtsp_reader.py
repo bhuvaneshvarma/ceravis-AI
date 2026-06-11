@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 
 import cv2
 
@@ -357,7 +357,7 @@ class RTSPReader:
                 self._frames_captured += 1
 
                 self._last_frame_time = (
-                    datetime.now(UTC)
+                    datetime.now(timezone.utc)
                 )
 
                 self._update_fps()
