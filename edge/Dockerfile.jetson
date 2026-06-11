@@ -18,13 +18,16 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 # ---- System deps (JetPack provides CUDA + TensorRT) ------------
 # python3-opencv ships with GStreamer + CUDA support.
-# python3-pycuda is the apt-packaged version that links to JetPack's CUDA.
+# build-essential + cmake + swig: needed if pycuda/faiss build from source on ARM64.
 # gstreamer plugins enable rtspsrc + nvv4l2decoder hardware path.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip \
         python3-dev \
         python3-numpy \
         python3-opencv \
+        build-essential \
+        cmake \
+        swig \
         gstreamer1.0-tools \
         gstreamer1.0-plugins-base \
         gstreamer1.0-plugins-good \
@@ -39,8 +42,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # ---- Python deps (do NOT reinstall numpy/opencv/tensorrt/pycuda) ----
+# Upgrade pip first — the base image ships pip 22.x which lacks
+# --break-system-packages and often fails on newer wheel metadata.
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 COPY requirements.base.txt requirements.ai.txt ./
-RUN pip3 install --no-cache-dir --break-system-packages \
+RUN pip3 install --no-cache-dir \
         -r requirements.base.txt \
         -r requirements.ai.txt
 
