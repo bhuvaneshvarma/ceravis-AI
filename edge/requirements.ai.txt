@@ -1,9 +1,0 @@
-# AI stack — installed on the Jetson alongside requirements.base.txt.
-# These pip cleanly on ARM64 against JetPack's existing torch / numpy / opencv.
-# ultralytics is only used at first-run for engine export; it stays installed
-# so re-exports stay simple.
-ultralytics
-supervision
-faiss-cpu
-paho-mqtt
-pycuda
