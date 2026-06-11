@@ -2,9 +2,12 @@
 # JETSON DOCKERFILE — NVIDIA Jetson Orin Nano Super, JetPack 6.x
 # =============================================================
 #
-# Uses the JetPack-provided versions of CUDA, TensorRT, PyCUDA, OpenCV.
-# Models (TensorRT .engine files) are auto-built at first container
-# start by scripts/export_models.py and persisted to the /models volume.
+# Base: l4t-jetpack:r36.3.0 (JetPack 6.0) — provides CUDA 12.2, cuDNN 8,
+#   TensorRT 8.6, and (via apt) an OpenCV built with GStreamer + CUDA.
+# torch 2.3.0 comes from NVIDIA's official Jetson wheel; torchvision 0.18
+#   is compiled from source to match. Both run on a CUDA 12.6 driver.
+# Models (TensorRT .engine files) are auto-built at first container start
+#   by scripts/export_models.py and persisted to the /models volume.
 #
 # Build on the device:
 #   docker build -f Dockerfile.jetson -t ceravis-edge:jetson .
@@ -19,6 +22,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # ---- System deps (JetPack provides CUDA + TensorRT) ------------
 # python3-opencv ships with GStreamer + CUDA support.
 # build-essential + cmake + swig: needed if pycuda/faiss build from source on ARM64.
+# libjpeg/zlib/png/openblas + git: needed to build torchvision from source.
 # gstreamer plugins enable rtspsrc + nvv4l2decoder hardware path.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip \
@@ -28,6 +32,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
         swig \
+        git \
+        libjpeg-dev \
+        zlib1g-dev \
+        libpng-dev \
+        libopenblas-dev \
         gstreamer1.0-tools \
         gstreamer1.0-plugins-base \
         gstreamer1.0-plugins-good \
@@ -46,25 +55,31 @@ WORKDIR /app
 # newer wheel metadata support.
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
-# PyTorch on Jetson MUST be the CUDA-enabled aarch64 wheel built by NVIDIA.
-# The generic PyPI torch is CPU/CUDA-13 only and reports cuda.is_available()=False.
-# Strategy:
-#   1. Install torch's pure-python deps from PyPI (so the Jetson index only
-#      needs to serve torch + torchvision themselves).
-#   2. Install torch/torchvision from the jetson-ai-lab index for JetPack 6 /
-#      CUDA 12.6 (cu126 = the driver version reported by `nvcc`/tegrastats).
-#      --index-url (not --extra-index-url) forces the Jetson wheels and avoids
-#      pip "upgrading" to a newer-but-broken PyPI build.
+# ---- PyTorch (CUDA-enabled, from NVIDIA's official Jetson wheel) ----
+# The base image is JetPack 6.0 (L4T r36.3 = CUDA 12.2, cuDNN 8). We install
+# the matching NVIDIA torch 2.3.0 wheel. It runs fine on a CUDA 12.6 driver
+# (CUDA drivers are backward-compatible) and predates the cuSPARSELt
+# requirement (torch >= 24.06), so no extra prerequisites are needed.
+# The generic PyPI torch is the WRONG build (CPU / CUDA-13) and reports
+# cuda.is_available()=False — never let pip pull that one.
 RUN pip3 install --no-cache-dir \
-        filelock typing-extensions sympy networkx jinja2 fsspec mpmath pillow
-RUN pip3 install --no-cache-dir \
-        --index-url https://pypi.jetson-ai-lab.dev/jp6/cu126 \
-        torch torchvision
+        https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.3.0-cp310-cp310-linux_aarch64.whl
 
 # Sanity-check the wheel at build time. We check the CUDA *build* version
 # (not cuda.is_available(), since the GPU isn't attached during `docker build`)
-# to confirm we got a CUDA wheel and not the CPU/PyPI one.
-RUN python3 -c "import torch; v=torch.version.cuda; print('torch', torch.__version__, 'built for CUDA', v); assert v is not None, 'CPU-only torch wheel — wrong index'"
+# to confirm we got the CUDA wheel and not a CPU/PyPI one.
+RUN python3 -c "import torch; v=torch.version.cuda; print('torch', torch.__version__, 'built for CUDA', v); assert v is not None, 'CPU-only torch wheel — wrong source'"
+
+# ---- torchvision 0.18.0 (built from source to match torch 2.3.0) ----
+# NVIDIA does not ship a torchvision wheel; build it against the torch above.
+# MAX_JOBS is capped so the compile doesn't exhaust RAM on the 8 GB Orin Nano.
+ENV FORCE_CUDA=1
+ENV MAX_JOBS=2
+RUN git clone --branch release/0.18 --depth 1 https://github.com/pytorch/vision /tmp/torchvision \
+    && cd /tmp/torchvision \
+    && BUILD_VERSION=0.18.0 python3 setup.py install \
+    && cd / && rm -rf /tmp/torchvision
+RUN python3 -c "import torchvision; print('torchvision', torchvision.__version__)"
 
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
