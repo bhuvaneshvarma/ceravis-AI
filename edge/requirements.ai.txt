@@ -2,8 +2,8 @@
 # These pip cleanly on ARM64 against JetPack's existing torch / numpy / opencv.
 # ultralytics is only used at first-run for engine export; it stays installed
 # so re-exports stay simple.
-ultralytics>=8.3
-supervision>=0.25
-faiss-cpu>=1.7.0
-paho-mqtt>=2.1
-pycuda>=2022.1
+ultralytics
+supervision
+faiss-cpu
+paho-mqtt
+pycuda

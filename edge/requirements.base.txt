@@ -6,8 +6,8 @@
 #   pycuda           (apt: python3-pycuda)
 #   torch            (NVIDIA wheel, if you install l4t-pytorch)
 # ============================================================
-fastapi>=0.115
-uvicorn[standard]>=0.32
-pydantic>=2.10
-pydantic-settings>=2.7
-websockets>=13.1
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+websockets
