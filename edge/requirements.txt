@@ -31,8 +31,14 @@ paho-mqtt
 faiss-cpu
 
 # ---- needed by supervision (installed --no-deps) ----
+# Verified against supervision's pyproject: these are its hard deps minus
+# numpy/opencv (JetPack provides those). scipy = ByteTrack's linear
+# assignment; matplotlib = color palettes. The rest are small.
 pyyaml
 defusedxml
 pillow
 scipy
 matplotlib
+requests
+tqdm
+pydeprecate
