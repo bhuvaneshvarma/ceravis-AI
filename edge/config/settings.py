@@ -29,14 +29,14 @@ class Settings(BaseSettings):
     frame_stale_secs: float = 5.0
 
     # ---- Detection (YOLO26m) ----------------------------------------
-    detection_weights: str = "yolov8m.pt"     # source weights, override to yolo26m.pt
+    detection_weights: str = "yolo26m.pt"     # ultralytics auto-downloads
     detection_model_path: str = "models/detection/yolo26m.engine"
     detection_confidence_threshold: float = 0.35
     detection_input_size: int = 640
     detection_fps: float = 5.0
 
     # ---- Pose (YOLO26m-Pose) ---------------------------------------
-    pose_weights: str = "yolov8m-pose.pt"     # source weights, override to yolo26m-pose.pt
+    pose_weights: str = "yolo26m-pose.pt"     # ultralytics auto-downloads
     pose_model_path: str = "models/pose/yolo26m-pose.engine"
     pose_input_size: int = 640
     pose_confidence_threshold: float = 0.35

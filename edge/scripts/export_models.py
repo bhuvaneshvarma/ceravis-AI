@@ -57,7 +57,10 @@ def export_onnx(weights: str, onnx_path: Path, imgsz: int) -> bool:
         return False
 
     print(f"[onnx] {weights} -> {onnx_path}  (imgsz={imgsz}, cpu)")
-    out = YOLO(weights).export(format="onnx", imgsz=imgsz, opset=12, device="cpu")
+    # YOLO26 exports its end-to-end (NMS-free) head by default — output is
+    # final detections [x1,y1,x2,y2,conf,cls], which is exactly what
+    # yolo_detector.py / yolo_pose.py parse. Let ultralytics pick the opset.
+    out = YOLO(weights).export(format="onnx", imgsz=imgsz, device="cpu")
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     Path(out).replace(onnx_path)
     return True
@@ -129,8 +132,8 @@ def export_fastreid(engine_path: Path) -> None:
 
 # ---------------------------------------------------------------- main
 def main() -> int:
-    det_w = _env("DETECTION_WEIGHTS", "yolov8m.pt")
-    pose_w = _env("POSE_WEIGHTS", "yolov8m-pose.pt")
+    det_w = _env("DETECTION_WEIGHTS", "yolo26m.pt")
+    pose_w = _env("POSE_WEIGHTS", "yolo26m-pose.pt")
     det_engine = Path(_env("DETECTION_MODEL_PATH", "models/detection/yolo26m.engine"))
     pose_engine = Path(_env("POSE_MODEL_PATH", "models/pose/yolo26m-pose.engine"))
     reid_engine = Path(_env("REID_MODEL_PATH", "models/reid/fastreid_bot_r50.engine"))

@@ -21,7 +21,11 @@ logger = logging.getLogger("detection")
 
 class YOLODetector:
     """
-    YOLOv8n / YOLO26n TensorRT detector (person-only filter).
+    YOLO26 TensorRT detector (person-only filter).
+
+    Expects the end-to-end (NMS-free) export layout: each prediction row is
+    [x1, y1, x2, y2, conf, cls] — YOLO26's default ONNX output. Raw YOLOv8
+    (84, 8400) outputs are NOT supported; re-export with YOLO26 weights.
 
     Preprocess uses cv2.dnn.blobFromImage — optimized C++ path,
     ~3x faster than manual resize+transpose on Jetson.
@@ -90,6 +94,16 @@ class YOLODetector:
         preds = outputs[0]
         if preds.ndim == 3:
             preds = preds[0]
+
+        # Guard: raw anchor-grid layouts (e.g. v8's 84x8400) mean the engine
+        # was built from the wrong export — fail loudly, not silently.
+        if preds.ndim != 2 or preds.shape[-1] < 6 or preds.shape[0] > 1000:
+            logger.error(
+                "Unexpected detector output shape %s — engine must be a "
+                "YOLO26 end-to-end export ([N,6] rows). Re-run "
+                "scripts/export_engines.sh", preds.shape,
+            )
+            return []
 
         sx = original_width / self._input_size
         sy = original_height / self._input_size
