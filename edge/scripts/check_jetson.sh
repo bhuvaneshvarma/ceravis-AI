@@ -130,8 +130,8 @@ echo "-- system"
 command -v tegrastats >/dev/null 2>&1 && ok "tegrastats (dashboard metrics)" \
     || warn "tegrastats missing" "system metrics card will be empty"
 SWAP_MB=$(free -m | awk '/^Swap:/{print $2}')
-if [ "${SWAP_MB:-0}" -ge 4000 ]; then ok "swap ${SWAP_MB} MB"
-else warn "swap is ${SWAP_MB:-0} MB" "8 GB recommended: sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile"; fi
+if [ "${SWAP_MB:-0}" -ge 3000 ]; then ok "swap ${SWAP_MB} MB (zram default is fine)"
+else warn "swap is ${SWAP_MB:-0} MB" "only matters if a build gets OOM-killed; then add a swapfile"; fi
 DISK=$(df -h / | awk 'NR==2{print $4}')
 ok "free disk on /: $DISK"
 if command -v nvpmodel >/dev/null 2>&1; then
