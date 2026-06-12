@@ -67,20 +67,43 @@ class TensorRTEngine:
 
         self._input_indices: list[int] = []
         self._output_indices: list[int] = []
+        self._names: list[str] = []
         self._host_buffers: list[np.ndarray] = []
         self._device_buffers: list = []
         self._shapes: list[tuple[int, ...]] = []
         self._dtypes: list[type] = []
         self._bindings: list[int] = []
 
+        # TensorRT 10 (JetPack 6.1+) removed execute_async_v2; TRT 8.5+
+        # already supports the v3 named-tensor API, so prefer it.
+        self._use_v3 = hasattr(self._context, "execute_async_v3")
+
         self._allocate_buffers()
-        logger.info("TRT engine ready: %s", self._engine_path.name)
+        logger.info(
+            "TRT engine ready: %s (api=%s)",
+            self._engine_path.name, "v3" if self._use_v3 else "v2",
+        )
 
     # ---- alloc -------------------------------------------------------
     def _allocate_buffers(self) -> None:
+        # Pass 1 — resolve dynamic input dims (-1) to batch 1: we always
+        # infer one sample at a time (e.g. dynamic-batch ReID engines).
         for idx in range(self._engine.num_io_tensors):
             name = self._engine.get_tensor_name(idx)
+            if self._engine.get_tensor_mode(name) != trt.TensorIOMode.INPUT:
+                continue
             shape = tuple(self._engine.get_tensor_shape(name))
+            if any(d < 0 for d in shape):
+                self._context.set_input_shape(
+                    name, tuple(1 if d < 0 else d for d in shape))
+
+        # Pass 2 — allocate pinned host + device buffers.
+        for idx in range(self._engine.num_io_tensors):
+            name = self._engine.get_tensor_name(idx)
+            # Context shapes are resolved after set_input_shape above.
+            shape = tuple(self._context.get_tensor_shape(name))
+            if any(d < 0 for d in shape):
+                shape = tuple(1 if d < 0 else d for d in shape)
             dtype = trt.nptype(self._engine.get_tensor_dtype(name))
             size = int(np.prod(shape))
 
@@ -88,6 +111,7 @@ class TensorRTEngine:
             host = cuda.pagelocked_empty(size, dtype)
             dev = cuda.mem_alloc(host.nbytes)
 
+            self._names.append(name)
             self._host_buffers.append(host)
             self._device_buffers.append(dev)
             self._bindings.append(int(dev))
@@ -98,6 +122,9 @@ class TensorRTEngine:
                 self._input_indices.append(idx)
             else:
                 self._output_indices.append(idx)
+
+            if self._use_v3:
+                self._context.set_tensor_address(name, int(dev))
 
     # ---- inference ---------------------------------------------------
     def infer(self, input_tensor: np.ndarray) -> list[np.ndarray]:
@@ -117,10 +144,15 @@ class TensorRTEngine:
             self._stream,
         )
 
-        self._context.execute_async_v2(
-            self._bindings,
-            stream_handle=self._stream.handle,
-        )
+        if self._use_v3:
+            # TRT 10 path — tensor addresses were registered at init.
+            self._context.execute_async_v3(stream_handle=self._stream.handle)
+        else:
+            # Legacy TRT 8 path.
+            self._context.execute_async_v2(
+                self._bindings,
+                stream_handle=self._stream.handle,
+            )
 
         outputs: list[np.ndarray] = []
         for out_idx in self._output_indices:
