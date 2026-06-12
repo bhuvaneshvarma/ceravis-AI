@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CERAVIS — Live Wall</title>
+<link rel="stylesheet" href="ceravis.css" />
+<style>
+  .wall { display: grid; gap: 12px;
+          grid-template-columns: repeat(2, 1fr); }
+  .wall.single { grid-template-columns: 1fr; }
+  .wall.many { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 980px) { .wall, .wall.many { grid-template-columns: 1fr; } }
+  .cam-tile.maximized {
+    position: fixed; inset: 0; z-index: 90; border-radius: 0; aspect-ratio: auto;
+  }
+  .statbar { display: flex; gap: 22px; align-items: center; margin-bottom: 16px;
+             font-size: 12.5px; color: var(--muted);
+             font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .statbar b { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <h1>Live wall</h1>
+    <div class="sub">All registered cameras, streaming live from the edge device.
+      Click any tile to maximize · <span class="kbd">Esc</span> to exit.</div>
+  </div>
+
+  <div class="statbar" id="stats">
+    <span>GPU <b id="s-gpu">—</b></span>
+    <span>CPU <b id="s-cpu">—</b></span>
+    <span>RAM <b id="s-ram">—</b></span>
+    <span>Cameras <b id="s-cams">—</b></span>
+    <span id="s-note" class="faint"></span>
+  </div>
+
+  <div class="wall" id="wall"></div>
+  <div class="card mt" id="empty" hidden>
+    No cameras registered yet — <a class="teal" href="setup.html">run the setup wizard</a>.
+  </div>
+</div>
+
+<script src="ceravis.js"></script>
+<script>
+renderNav("live.html");
+
+const streams = {};   // camera_id -> handle
+const tiles = {};     // camera_id -> element
+
+async function sync() {
+  const [cams, status] = await Promise.all([
+    api("/api/v1/cameras").catch(() => []),
+    api("/api/v1/cameras/status").catch(() => ({})),
+  ]);
+  document.getElementById("empty").hidden = cams.length > 0;
+  document.getElementById("s-cams").textContent =
+    `${Object.values(status).filter(s => s.health_state === "running").length}/${cams.length} live`;
+
+  const wall = document.getElementById("wall");
+  wall.className = "wall" + (cams.length <= 1 ? " single" : cams.length > 4 ? " many" : "");
+
+  const want = new Set(cams.map(c => c.camera_id));
+  Object.keys(tiles).forEach(id => {
+    if (!want.has(id)) { streams[id]?.stop(); delete streams[id];
+      tiles[id].remove(); delete tiles[id]; }
+  });
+
+  cams.forEach(c => {
+    const s = status[c.camera_id] || {};
+    if (tiles[c.camera_id]) {   // refresh footer info only
+      const foot = tiles[c.camera_id].querySelector(".foot span");
+      foot.innerHTML = `${(s.current_fps || 0).toFixed(1)} fps · ` +
+        `${s.frames_captured || 0} frames · ${s.reconnect_count || 0} reconnects`;
+      return;
+    }
+    const tile = el("div", "cam-tile");
+    tile.innerHTML = `
+      <div class="nosignal">NO SIGNAL</div>
+      <img alt="${c.camera_id}" style="display:none" />
+      <div class="overlay"><span class="name">${c.camera_name}</span>
+        <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
+      <div class="foot"><span></span></div>`;
+    tile.onclick = () => {
+      const wasMax = tile.classList.contains("maximized");
+      document.querySelectorAll(".cam-tile").forEach(t => t.classList.remove("maximized"));
+      if (!wasMax) tile.classList.add("maximized");
+    };
+    document.getElementById("wall").appendChild(tile);
+    tiles[c.camera_id] = tile;
+    const img = tile.querySelector("img");
+    streams[c.camera_id] = liveStream(img, c.camera_id, {
+      onState: st => {
+        tile.querySelector(".nosignal").style.display = st === "live" ? "none" : "flex";
+        img.style.display = st === "live" ? "block" : "none";
+        tile.querySelector(".nosignal").textContent =
+          st === "stalled" ? "SIGNAL STALLED" : st === "connecting" ? "CONNECTING…" : "NO SIGNAL";
+      },
+    });
+  });
+}
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape")
+    document.querySelectorAll(".cam-tile").forEach(t => t.classList.remove("maximized"));
+});
+
+async function sysStats() {
+  try {
+    const m = await api("/api/v1/metrics/system");
+    document.getElementById("s-gpu").textContent = (m.gpu_pct ?? "—") + "%";
+    document.getElementById("s-cpu").textContent = (m.cpu_pct_avg ?? "—") + "%";
+    document.getElementById("s-ram").textContent = (m.ram_pct ?? "—") + "%";
+  } catch { document.getElementById("s-note").textContent = ""; }
+}
+
+sync(); sysStats();
+setInterval(sync, 5000);
+setInterval(sysStats, 3000);
+</script>
+</body>
+</html>
