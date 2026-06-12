@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CERAVIS — Setup</title>
+<link rel="stylesheet" href="ceravis.css" />
+<style>
+  .wizard-actions { display: flex; justify-content: space-between; margin-top: 22px; }
+  .split { display: grid; grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
+  .probe-result { font-size: 12.5px; margin-top: 8px; min-height: 18px; }
+  .zone-stage { position: relative; background: #000; border-radius: 12px;
+                overflow: hidden; border: 1px solid var(--line); }
+  .zone-stage canvas { display: block; width: 100%; cursor: crosshair; }
+  .zone-list-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+                    border: 1px solid var(--line-soft); border-radius: 9px;
+                    margin-bottom: 7px; cursor: pointer; }
+  .zone-list-item.sel { border-color: var(--teal-dim);
+                        background: rgba(45,212,191,.07); }
+  .zone-chip { width: 13px; height: 13px; border-radius: 4px; flex: 0 0 auto; }
+  .contact-row { display: grid; grid-template-columns: 1fr 130px 1fr 36px;
+                 gap: 8px; margin-bottom: 8px; }
+  .review-block { padding: 13px 15px; border: 1px solid var(--line-soft);
+                  border-radius: 10px; margin-bottom: 10px; }
+  .checklist div { display: flex; gap: 9px; align-items: center; padding: 5px 0;
+                   font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <h1>Home setup</h1>
+    <div class="sub">Step-by-step onboarding: cameras &rarr; room zones &rarr; care recipient &rarr; review.
+      Everything saves to the device as you go — you can leave and come back.</div>
+  </div>
+
+  <!-- stepper -->
+  <div class="stepper" id="stepper"></div>
+
+  <!-- ============ STEP 1 — CAMERAS ============ -->
+  <section id="step-1" hidden>
+    <div class="split">
+      <div class="card">
+        <h2>Add a camera</h2>
+        <label class="f">RTSP stream URL</label>
+        <input type="text" id="c-url" placeholder="rtsp://user:pass@192.168.x.x:554/stream1" />
+        <div class="row mt">
+          <button class="btn btn-ghost" id="c-probe">Test connection</button>
+          <span class="probe-result" id="c-probe-out"></span>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label class="f">Camera ID</label>
+            <input type="text" id="c-id" placeholder="cam_kitchen" />
+          </div>
+          <div>
+            <label class="f">Codec</label>
+            <select id="c-codec">
+              <option value="h264">H.264</option>
+              <option value="h265">H.265</option>
+            </select>
+          </div>
+        </div>
+        <label class="f">Display name</label>
+        <input type="text" id="c-name" placeholder="Kitchen Camera" />
+        <label class="f">Room</label>
+        <input type="text" id="c-room" placeholder="Kitchen" list="room-suggestions" />
+        <datalist id="room-suggestions">
+          <option>Kitchen</option><option>Bedroom</option><option>Living Room</option>
+          <option>Bathroom</option><option>Hallway</option><option>Entrance</option>
+        </datalist>
+        <div class="row mt">
+          <button class="btn btn-primary" id="c-save">Save &amp; start camera</button>
+        </div>
+        <hr class="sep" />
+        <h2>Registered cameras</h2>
+        <table class="tbl"><tbody id="c-table"></tbody></table>
+      </div>
+
+      <div class="card">
+        <h2>Live verification wall</h2>
+        <div class="hint mb">Streams appear here as soon as a camera is saved —
+          verify aim and coverage before continuing.</div>
+        <div class="cam-grid" id="c-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 2 — ZONES ============ -->
+  <section id="step-2" hidden>
+    <div class="split">
+      <div class="card">
+        <h2>Zone the rooms</h2>
+        <div class="hint mb">Pick a camera, then click on the image to outline an
+          area (bed, fridge, door…). Double-click — or “Close polygon” — to finish
+          the shape. Drag any point to adjust. Zones give alerts spatial meaning:
+          <i>“fall near the bed”</i>.</div>
+        <label class="f">Camera</label>
+        <select id="z-cam"></select>
+        <label class="f">New zone name</label>
+        <input type="text" id="z-name" placeholder="bed / fridge / door" />
+        <div class="row mt">
+          <button class="btn btn-primary btn-sm" id="z-close">Close polygon</button>
+          <button class="btn btn-ghost btn-sm" id="z-undo">Undo point</button>
+          <button class="btn btn-ghost btn-sm" id="z-clear">Discard drawing</button>
+          <button class="btn btn-ghost btn-sm" id="z-refresh">Refresh frame</button>
+        </div>
+        <hr class="sep" />
+        <h2>Zones on this camera</h2>
+        <div id="z-list"></div>
+        <button class="btn btn-primary mt" id="z-save">Save all zones</button>
+      </div>
+      <div class="card">
+        <h2>Camera view</h2>
+        <div class="zone-stage"><canvas id="z-canvas" width="960" height="540"></canvas></div>
+        <div class="hint mt" id="z-status">Select a camera to begin.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 3 — RECIPIENT ============ -->
+  <section id="step-3" hidden>
+    <div class="split">
+      <div class="card">
+        <h2>Care recipient</h2>
+        <div class="grid-2">
+          <div>
+            <label class="f">Recipient ID</label>
+            <input type="text" id="r-id" placeholder="recipient-001" />
+          </div>
+          <div>
+            <label class="f">Edge device ID</label>
+            <input type="text" id="r-device" placeholder="edge-0001" />
+          </div>
+        </div>
+        <label class="f">Full name</label>
+        <input type="text" id="r-name" placeholder="Full name" />
+        <div class="grid-2">
+          <div>
+            <label class="f">Date of birth</label>
+            <input type="date" id="r-dob" />
+          </div>
+          <div>
+            <label class="f">Primary recipient</label>
+            <select id="r-primary"><option value="true">Yes</option><option value="false">No</option></select>
+          </div>
+        </div>
+        <label class="f">Home address</label>
+        <input type="text" id="r-address" placeholder="Street, city" />
+        <label class="f">Medical notes (mobility, conditions, medication)</label>
+        <textarea id="r-medical" placeholder="e.g. limited mobility on left side; fall history"></textarea>
+
+        <h2 class="mt">Emergency contacts</h2>
+        <div id="r-contacts"></div>
+        <button class="btn btn-ghost btn-sm" id="r-add-contact">+ Add contact</button>
+
+        <div class="row mt">
+          <button class="btn btn-primary" id="r-save">Save recipient</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Registered recipients</h2>
+        <table class="tbl"><tbody id="r-table"></tbody></table>
+        <hr class="sep" />
+        <div class="hint">
+          Identity recognition (knowing <i>which</i> person is the recipient vs a
+          visitor) additionally needs the ReID model enabled
+          (<code>FASTREID_ONNX_URL</code> in <code>jetson.env</code>) and enrollment
+          photos in <code>data/recipients/&lt;id&gt;/</code>. Fall and posture
+          detection work without it.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 4 — REVIEW ============ -->
+  <section id="step-4" hidden>
+    <div class="split">
+      <div class="card">
+        <h2>Configuration summary</h2>
+        <div id="rev-summary"></div>
+      </div>
+      <div class="card">
+        <h2>System readiness</h2>
+        <div class="checklist" id="rev-checks"></div>
+        <hr class="sep" />
+        <a class="btn btn-primary" href="live.html">Finish — open the Live Wall</a>
+      </div>
+    </div>
+  </section>
+
+  <div class="wizard-actions">
+    <button class="btn btn-ghost" id="w-back">&larr; Back</button>
+    <button class="btn btn-primary" id="w-next">Continue &rarr;</button>
+  </div>
+</div>
+
+<script src="ceravis.js"></script>
+<script>
+renderNav("setup.html");
+
+/* ================= wizard frame ================= */
+const STEPS = ["Cameras", "Room zones", "Recipient", "Review"];
+let step = 1;
+const streams = {};            // camera_id -> liveStream handle (step 1 wall)
+
+function renderStepper() {
+  document.getElementById("stepper").innerHTML = STEPS.map((s, i) => {
+    const n = i + 1;
+    const cls = n === step ? "active" : n < step ? "done" : "";
+    const line = i < STEPS.length - 1
+      ? `<div class="step-line ${n < step ? "done" : ""}"></div>` : "";
+    return `<div class="step ${cls}"><div class="dot">${n < step ? "✓" : n}</div>
+            <div class="lbl">${s}</div></div>${line}`;
+  }).join("");
+}
+function show(n) {
+  step = Math.min(Math.max(n, 1), 4);
+  for (let i = 1; i <= 4; i++)
+    document.getElementById(`step-${i}`).hidden = i !== step;
+  document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
+  document.getElementById("w-next").style.visibility = step === 4 ? "hidden" : "visible";
+  renderStepper();
+  if (step === 1) refreshCameras();
+  if (step === 2) initZones();
+  if (step === 3) initRecipient();
+  if (step === 4) initReview();
+}
+document.getElementById("w-back").onclick = () => show(step - 1);
+document.getElementById("w-next").onclick = () => show(step + 1);
+
+/* ================= STEP 1 — cameras ================= */
+async function refreshCameras() {
+  const [cams, status] = await Promise.all([
+    api("/api/v1/cameras"), api("/api/v1/cameras/status").catch(() => ({})),
+  ]);
+  // table
+  document.getElementById("c-table").innerHTML = cams.length === 0
+    ? `<tr><td class="faint">No cameras yet — add your first above.</td></tr>`
+    : cams.map(c => {
+        const s = status[c.camera_id] || {};
+        return `<tr>
+          <td><b>${c.camera_name}</b><br><span class="faint">${c.camera_id} · ${c.room_name}</span></td>
+          <td>${healthPill(s.health_state)}</td>
+          <td><button class="btn btn-danger btn-sm" data-del="${c.camera_id}">Remove</button></td>
+        </tr>`;
+      }).join("");
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Remove camera ${b.dataset.del}?`)) return;
+    await api(`/api/v1/cameras/${b.dataset.del}/stop`, { method: "POST" }).catch(() => {});
+    await api(`/api/v1/cameras/${b.dataset.del}`, { method: "DELETE" });
+    toast("Camera removed"); refreshCameras();
+  });
+  // live wall
+  const grid = document.getElementById("c-grid");
+  const want = new Set(cams.map(c => c.camera_id));
+  Object.keys(streams).forEach(id => {            // drop removed
+    if (!want.has(id)) { streams[id].stop(); delete streams[id];
+      document.getElementById(`tile-${id}`)?.remove(); }
+  });
+  cams.forEach(c => {
+    if (streams[c.camera_id]) return;             // already streaming
+    const tile = el("div", "cam-tile");
+    tile.id = `tile-${c.camera_id}`;
+    tile.innerHTML = `
+      <div class="nosignal">NO SIGNAL</div>
+      <img alt="${c.camera_id}" style="display:none" />
+      <div class="overlay"><span class="name">${c.camera_name}</span>
+        <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
+      <div class="foot"><span id="st-${c.camera_id}">connecting…</span></div>`;
+    grid.appendChild(tile);
+    const img = tile.querySelector("img");
+    streams[c.camera_id] = liveStream(img, c.camera_id, {
+      onState: s => {
+        tile.querySelector(".nosignal").style.display = s === "live" ? "none" : "flex";
+        img.style.display = s === "live" ? "block" : "none";
+        const st = document.getElementById(`st-${c.camera_id}`);
+        if (st) st.textContent = s.toUpperCase();
+      },
+    });
+  });
+}
+
+document.getElementById("c-probe").onclick = async () => {
+  const out = document.getElementById("c-probe-out");
+  const url = document.getElementById("c-url").value.trim();
+  if (!url) { out.innerHTML = `<span class="warn">Enter an RTSP URL first.</span>`; return; }
+  out.innerHTML = `<span class="muted">Probing stream…</span>`;
+  try {
+    const r = await api("/api/v1/cameras/probe", {
+      method: "POST", body: JSON.stringify({ rtsp_url: url }) });
+    out.innerHTML = r.ok
+      ? `<span class="ok">✓ Connected — ${r.width}×${r.height}</span>`
+      : `<span class="bad">✗ ${r.reason}</span>`;
+  } catch (e) { out.innerHTML = `<span class="bad">✗ probe failed</span>`; }
+};
+
+document.getElementById("c-save").onclick = async () => {
+  const cam = {
+    camera_id: document.getElementById("c-id").value.trim(),
+    camera_name: document.getElementById("c-name").value.trim(),
+    room_name: document.getElementById("c-room").value.trim(),
+    rtsp_url: document.getElementById("c-url").value.trim(),
+    codec: document.getElementById("c-codec").value,
+    is_enabled: true,
+  };
+  if (!cam.camera_id || !cam.rtsp_url || !cam.room_name)
+    return toast("Camera ID, room and RTSP URL are required", "err");
+  try {
+    await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
+    await api(`/api/v1/cameras/${cam.camera_id}/start`, { method: "POST" });
+    toast(`Camera ${cam.camera_id} saved & started`);
+    ["c-url","c-id","c-name","c-room"].forEach(i => document.getElementById(i).value = "");
+    document.getElementById("c-probe-out").textContent = "";
+    refreshCameras();
+  } catch (e) { toast(e.detail || "Save failed", "err"); }
+};
+setInterval(() => { if (step === 1) refreshCameras(); }, 5000);
+
+/* ================= STEP 2 — zones ================= */
+const Z = { cam: null, img: null, zones: [], drawing: [], sel: -1, drag: null };
+const zCanvas = document.getElementById("z-canvas");
+const zCtx = zCanvas.getContext("2d");
+const COLORS = ["#2dd4bf","#60a5fa","#fbbf24","#f87171","#c084fc","#34d399","#fb923c"];
+
+async function initZones() {
+  const cams = await api("/api/v1/cameras");
+  const sel = document.getElementById("z-cam");
+  sel.innerHTML = `<option value="">— select camera —</option>` +
+    cams.map(c => `<option value="${c.camera_id}">${c.camera_name} (${c.room_name})</option>`).join("");
+  sel.onchange = () => loadZoneCam(sel.value);
+}
+async function loadZoneCam(camId) {
+  Z.cam = camId; Z.drawing = []; Z.sel = -1;
+  if (!camId) { Z.img = null; zDraw(); return; }
+  document.getElementById("z-status").textContent = "Loading frame…";
+  try {
+    const blob = await fetch(`/api/v1/cameras/${camId}/snapshot?quality=75&t=${Date.now()}`)
+      .then(r => { if (!r.ok) throw 0; return r.blob(); });
+    const img = new Image();
+    img.onload = () => {
+      Z.img = img; zCanvas.width = img.naturalWidth; zCanvas.height = img.naturalHeight;
+      zDraw();
+      document.getElementById("z-status").textContent =
+        "Click to add points · double-click to close · drag a point to adjust.";
+    };
+    img.src = URL.createObjectURL(blob);
+  } catch {
+    Z.img = null; zDraw();
+    document.getElementById("z-status").innerHTML =
+      `<span class="warn">No frame available — is the camera running?</span>`;
+  }
+  Z.zones = (await api(`/api/v1/zones?camera_id=${encodeURIComponent(camId)}`)) || [];
+  zList(); zDraw();
+}
+function zDraw() {
+  zCtx.fillStyle = "#000"; zCtx.fillRect(0, 0, zCanvas.width, zCanvas.height);
+  if (Z.img) zCtx.drawImage(Z.img, 0, 0, zCanvas.width, zCanvas.height);
+  Z.zones.forEach((z, i) => zPoly(z.polygon, COLORS[i % COLORS.length],
+    z.zone_name, false, i === Z.sel));
+  if (Z.drawing.length) zPoly(Z.drawing, "#ffffff", "…", true, false);
+}
+function zPoly(pts, color, label, open, selected) {
+  if (!pts.length) return;
+  zCtx.lineWidth = selected ? 4 : 2.5; zCtx.strokeStyle = color;
+  zCtx.fillStyle = color + "2e";
+  zCtx.beginPath(); zCtx.moveTo(pts[0][0], pts[0][1]);
+  pts.slice(1).forEach(p => zCtx.lineTo(p[0], p[1]));
+  if (!open) { zCtx.closePath(); zCtx.fill(); }
+  zCtx.stroke();
+  pts.forEach(p => { zCtx.beginPath(); zCtx.arc(p[0], p[1], selected ? 7 : 5, 0, 7);
+    zCtx.fillStyle = color; zCtx.fill(); });
+  if (label) {
+    zCtx.font = "600 15px sans-serif";
+    const w = zCtx.measureText(label).width;
+    zCtx.fillStyle = "rgba(0,0,0,.75)";
+    zCtx.fillRect(pts[0][0] + 8, pts[0][1] - 26, w + 14, 22);
+    zCtx.fillStyle = color; zCtx.fillText(label, pts[0][0] + 15, pts[0][1] - 10);
+  }
+}
+function zPos(e) {
+  const r = zCanvas.getBoundingClientRect();
+  return [Math.round((e.clientX - r.left) * zCanvas.width / r.width),
+          Math.round((e.clientY - r.top) * zCanvas.height / r.height)];
+}
+zCanvas.addEventListener("mousedown", e => {
+  const [x, y] = zPos(e);
+  // grab an existing vertex (of any zone) to drag
+  for (let zi = 0; zi < Z.zones.length; zi++)
+    for (let pi = 0; pi < Z.zones[zi].polygon.length; pi++) {
+      const [px, py] = Z.zones[zi].polygon[pi];
+      if ((px-x)**2 + (py-y)**2 < 144) { Z.drag = [zi, pi]; Z.sel = zi; zList(); return; }
+    }
+});
+zCanvas.addEventListener("mousemove", e => {
+  if (!Z.drag) return;
+  const [x, y] = zPos(e);
+  Z.zones[Z.drag[0]].polygon[Z.drag[1]] = [x, y]; zDraw();
+});
+window.addEventListener("mouseup", () => { Z.drag = null; });
+zCanvas.addEventListener("click", e => {
+  if (Z.drag) return;
+  const [x, y] = zPos(e);
+  // clicking near a vertex selects, otherwise adds a drawing point
+  for (let zi = 0; zi < Z.zones.length; zi++)
+    for (const [px, py] of Z.zones[zi].polygon)
+      if ((px-x)**2 + (py-y)**2 < 144) { Z.sel = zi; zList(); zDraw(); return; }
+  Z.drawing.push([x, y]); zDraw();
+});
+zCanvas.addEventListener("dblclick", () => closeDrawing());
+function closeDrawing() {
+  if (Z.drawing.length < 3) return toast("A zone needs at least 3 points", "err");
+  const name = document.getElementById("z-name").value.trim();
+  if (!name) return toast("Name the zone first", "err");
+  Z.zones.push({ zone_id: "zone_" + Math.random().toString(36).slice(2, 8),
+                 camera_id: Z.cam, zone_name: name, polygon: Z.drawing.slice() });
+  Z.drawing = []; document.getElementById("z-name").value = "";
+  zList(); zDraw();
+}
+document.getElementById("z-close").onclick = closeDrawing;
+document.getElementById("z-undo").onclick = () => { Z.drawing.pop(); zDraw(); };
+document.getElementById("z-clear").onclick = () => { Z.drawing = []; zDraw(); };
+document.getElementById("z-refresh").onclick = () => Z.cam && loadZoneCam(Z.cam);
+function zList() {
+  document.getElementById("z-list").innerHTML = Z.zones.length === 0
+    ? `<div class="faint">No zones yet for this camera.</div>`
+    : Z.zones.map((z, i) => `
+      <div class="zone-list-item ${i === Z.sel ? "sel" : ""}" data-zi="${i}">
+        <span class="zone-chip" style="background:${COLORS[i % COLORS.length]}"></span>
+        <input type="text" value="${z.zone_name}" data-rn="${i}"
+               style="flex:1;padding:4px 8px;font-size:13px" />
+        <span class="faint">${z.polygon.length} pts</span>
+        <button class="btn btn-danger btn-sm" data-zdel="${i}">✕</button>
+      </div>`).join("");
+  document.querySelectorAll("[data-zi]").forEach(d =>
+    d.onclick = e => { if (e.target.tagName === "DIV" || e.target.tagName === "SPAN")
+      { Z.sel = +d.dataset.zi; zList(); zDraw(); } });
+  document.querySelectorAll("[data-rn]").forEach(inp =>
+    inp.onchange = () => { Z.zones[+inp.dataset.rn].zone_name = inp.value.trim(); zDraw(); });
+  document.querySelectorAll("[data-zdel]").forEach(b =>
+    b.onclick = () => { Z.zones.splice(+b.dataset.zdel, 1); Z.sel = -1; zList(); zDraw(); });
+}
+document.getElementById("z-save").onclick = async () => {
+  if (!Z.cam) return toast("Select a camera first", "err");
+  try {
+    await api(`/api/v1/zones/camera/${Z.cam}`,
+      { method: "PUT", body: JSON.stringify(Z.zones) });
+    toast(`Saved ${Z.zones.length} zones for ${Z.cam}`);
+  } catch (e) { toast("Save failed", "err"); }
+};
+
+/* ================= STEP 3 — recipient ================= */
+function contactRow(c = {}) {
+  const row = el("div", "contact-row");
+  row.innerHTML = `
+    <input type="text" placeholder="Contact name" value="${c.name || ""}" data-cf="name" />
+    <input type="text" placeholder="Relation" value="${c.relation || ""}" data-cf="relation" />
+    <input type="tel" placeholder="Phone (+91…)" value="${c.phone || ""}" data-cf="phone" />
+    <button class="btn btn-danger btn-sm" title="remove">✕</button>`;
+  row.querySelector("button").onclick = () => row.remove();
+  return row;
+}
+async function initRecipient() {
+  const box = document.getElementById("r-contacts");
+  if (!box.children.length) box.appendChild(contactRow());
+  try {  // prefill device id from the edge itself
+    const h = await api("/health");
+    const f = document.getElementById("r-device");
+    if (!f.value) f.value = h.device_id || "";
+  } catch {}
+  refreshRecipients();
+}
+document.getElementById("r-add-contact").onclick = () =>
+  document.getElementById("r-contacts").appendChild(contactRow());
+
+async function refreshRecipients() {
+  const list = await api("/api/v1/recipients").catch(() => []);
+  document.getElementById("r-table").innerHTML = list.length === 0
+    ? `<tr><td class="faint">No recipients registered yet.</td></tr>`
+    : list.map(r => `<tr>
+        <td><b>${r.full_name}</b><br><span class="faint">${r.recipient_id}</span></td>
+        <td>${(r.emergency_contacts || []).length} contact(s)</td>
+        <td>${r.is_primary_recipient ? `<span class="pill pill-info">PRIMARY</span>` : ""}</td>
+      </tr>`).join("");
+}
+document.getElementById("r-save").onclick = async () => {
+  const contacts = [...document.querySelectorAll("#r-contacts .contact-row")]
+    .map(row => {
+      const v = f => row.querySelector(`[data-cf=${f}]`).value.trim();
+      return { name: v("name"), relation: v("relation") || null, phone: v("phone") };
+    }).filter(c => c.name && c.phone);
+  const rec = {
+    recipient_id: document.getElementById("r-id").value.trim(),
+    full_name: document.getElementById("r-name").value.trim(),
+    is_primary_recipient: document.getElementById("r-primary").value === "true",
+    date_of_birth: document.getElementById("r-dob").value || null,
+    device_id: document.getElementById("r-device").value.trim() || null,
+    address: document.getElementById("r-address").value.trim() || null,
+    emergency_contacts: contacts,
+    medical_notes: document.getElementById("r-medical").value.trim() || null,
+  };
+  if (!rec.recipient_id || !rec.full_name)
+    return toast("Recipient ID and full name are required", "err");
+  if (!contacts.length)
+    return toast("Add at least one emergency contact", "err");
+  try {
+    await api("/api/v1/recipients", { method: "POST", body: JSON.stringify(rec) });
+    toast(`Recipient ${rec.full_name} registered`);
+    refreshRecipients();
+  } catch (e) { toast(e.detail || "Save failed", "err"); }
+};
+
+/* ================= STEP 4 — review ================= */
+async function initReview() {
+  const [cams, status, zones, recips, metrics] = await Promise.all([
+    api("/api/v1/cameras").catch(() => []),
+    api("/api/v1/cameras/status").catch(() => ({})),
+    api("/api/v1/zones").catch(() => []),
+    api("/api/v1/recipients").catch(() => []),
+    api("/api/v1/metrics").catch(() => null),
+  ]);
+  const zByCam = {};
+  zones.forEach(z => (zByCam[z.camera_id] = zByCam[z.camera_id] || []).push(z));
+  document.getElementById("rev-summary").innerHTML = `
+    <div class="review-block"><b>${cams.length}</b> camera(s)
+      ${cams.map(c => `<div class="mt" style="margin-top:6px">
+        ${healthPill((status[c.camera_id]||{}).health_state)}
+        <b>${c.camera_name}</b> <span class="faint">· ${c.room_name} ·
+        ${(zByCam[c.camera_id]||[]).map(z=>z.zone_name).join(", ") || "no zones"}</span>
+      </div>`).join("")}</div>
+    <div class="review-block"><b>${recips.length}</b> recipient(s)
+      ${recips.map(r => `<div style="margin-top:6px"><b>${r.full_name}</b>
+        <span class="faint">· ${r.recipient_id} ·
+        ${(r.emergency_contacts||[]).length} emergency contact(s)</span></div>`).join("")}
+    </div>`;
+  const checks = [];
+  const okIcon = b => b ? `<span class="ok">●</span>` : `<span class="bad">●</span>`;
+  const running = Object.values(status).filter(s => (s.health_state||"") === "running").length;
+  checks.push([running > 0, `${running}/${cams.length} cameras streaming`]);
+  checks.push([!!(metrics && metrics.detection && metrics.detection.running),
+               "AI detection pipeline running"]);
+  checks.push([!!(metrics && metrics.postures && true), "Posture analysis reachable"]);
+  checks.push([zones.length > 0, `${zones.length} zone(s) drawn`]);
+  checks.push([recips.length > 0, "Care recipient registered"]);
+  document.getElementById("rev-checks").innerHTML =
+    checks.map(([ok, label]) => `<div>${okIcon(ok)} ${label}</div>`).join("");
+}
+
+/* ================= boot ================= */
+show(1);
+</script>
+</body>
+</html>

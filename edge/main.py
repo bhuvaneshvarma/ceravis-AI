@@ -13,6 +13,8 @@ from api.camera_routes import router as camera_router
 from api.recipient_routes import router as recipient_router
 from api.zone_routes import router as zone_router
 from api.metrics_routes import router as metrics_router
+from api.event_routes import router as event_router
+from api.ai_routes import router as ai_router
 
 from ingestion.camera_manager import CameraManager
 from detection.detection_buffer import DetectionBuffer
@@ -191,6 +193,8 @@ app.include_router(camera_router)
 app.include_router(zone_router)
 app.include_router(recipient_router)
 app.include_router(metrics_router)
+app.include_router(event_router)
+app.include_router(ai_router)
 
 # Static UI (dashboard, cameras, zones) served same-origin
 app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
@@ -198,12 +202,16 @@ app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
 
 @app.get("/")
 def root():
-    return RedirectResponse("/ui/dashboard.html")
+    return RedirectResponse("/ui/live.html")
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": settings.app_version}
+    return {
+        "status": "ok",
+        "version": settings.app_version,
+        "device_id": settings.device_id,
+    }
 
 
 @app.websocket("/stream/{camera_id}")

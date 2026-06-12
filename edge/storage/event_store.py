@@ -45,6 +45,22 @@ class EventStore:
             ),
         )
 
+    def recent(self, limit: int = 50,
+               camera_id: str | None = None) -> list[dict]:
+        """Most recent events, newest first — consumed by the monitor UI."""
+        sql = ("SELECT event_id, event_type, camera_id, room_name, zone_name,"
+               " recipient_id, timestamp, synced FROM events")
+        params: tuple = ()
+        if camera_id:
+            sql += " WHERE camera_id=?"
+            params = (camera_id,)
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        params += (int(limit),)
+        cols = ("event_id", "event_type", "camera_id", "room_name",
+                "zone_name", "recipient_id", "timestamp", "synced")
+        return [dict(zip(cols, row))
+                for row in self._store.fetchall(sql, params)]
+
     def unsynced(self, limit: int = 100) -> list[tuple]:
         return self._store.fetchall(
             "SELECT * FROM events WHERE synced=0 ORDER BY timestamp LIMIT ?",

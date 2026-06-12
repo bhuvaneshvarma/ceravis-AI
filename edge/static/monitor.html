@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CERAVIS — AI Monitor</title>
+<link rel="stylesheet" href="ceravis.css" />
+<style>
+  .mon { display: grid; grid-template-columns: 1fr 360px; gap: 16px; align-items: start; }
+  @media (max-width: 1100px) { .mon { grid-template-columns: 1fr; } }
+  .mon-stage { position: relative; background: #000; border-radius: 12px;
+               overflow: hidden; border: 1px solid var(--line); }
+  .mon-stage canvas { width: 100%; display: block; }
+  .track-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .track-chip { display: flex; align-items: center; gap: 8px;
+                padding: 7px 12px; border-radius: 10px; font-size: 12.5px;
+                background: var(--panel-2); border: 1px solid var(--line); }
+  .track-chip .sq { width: 10px; height: 10px; border-radius: 3px; }
+  .track-chip b { text-transform: uppercase; letter-spacing: .5px; }
+  .track-chip.fallen { border-color: rgba(248,113,113,.5);
+                       background: rgba(248,113,113,.1); animation: blink 1.2s infinite; }
+  .sidecol .card { margin-bottom: 14px; }
+  #live-log { max-height: 420px; }
+  #event-log { max-height: 300px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <h1>AI monitor</h1>
+    <div class="sub">Live detection, tracking and posture recognition — boxes are drawn
+      from the edge pipeline in real time; every recognized movement is logged on the right.</div>
+  </div>
+
+  <div class="row mb">
+    <label class="f" style="margin:0">Camera</label>
+    <select id="m-cam" style="max-width:320px"></select>
+    <span id="m-state" class="faint"></span>
+  </div>
+
+  <div class="mon">
+    <div>
+      <div class="mon-stage"><canvas id="m-canvas" width="1280" height="720"></canvas></div>
+      <div class="track-chips" id="m-chips"></div>
+    </div>
+
+    <div class="sidecol">
+      <div class="card">
+        <h2>Live activity log</h2>
+        <div class="log" id="live-log">
+          <div class="faint" id="log-empty">Waiting for movement…</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Event history <span class="faint">(rule engine)</span></h2>
+        <div class="log" id="event-log"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="ceravis.js"></script>
+<script>
+renderNav("monitor.html");
+
+const POSTURE_COLOR = {
+  standing: "#34d399", sitting: "#60a5fa", walking: "#2dd4bf",
+  fallen: "#f87171", unknown: "#8fa3bf",
+};
+
+const M = {
+  cam: null, stream: null, lastImg: null,
+  state: {},                 // latest ai/state for selected camera
+  lastPosture: {},           // track_id -> posture (for transition log)
+};
+const canvas = document.getElementById("m-canvas");
+const ctx = canvas.getContext("2d");
+
+/* ---- camera selection ------------------------------------------- */
+async function initCams() {
+  const cams = await api("/api/v1/cameras").catch(() => []);
+  const sel = document.getElementById("m-cam");
+  sel.innerHTML = cams.length
+    ? cams.map(c => `<option value="${c.camera_id}">${c.camera_name} (${c.room_name})</option>`).join("")
+    : `<option value="">— no cameras —</option>`;
+  sel.onchange = () => attach(sel.value);
+  if (cams.length) attach(cams[0].camera_id);
+}
+function attach(camId) {
+  if (M.stream) { M.stream.stop(); M.stream = null; }
+  M.cam = camId; M.lastPosture = {};
+  if (!camId) return;
+  const img = new Image();
+  M.stream = liveStream(img, camId, {
+    onFrame: () => { M.lastImg = img; draw(); },
+    onState: s => document.getElementById("m-state").textContent =
+      s === "live" ? "" : `stream: ${s}`,
+  });
+}
+
+/* ---- render loop -------------------------------------------------- */
+function draw() {
+  const img = M.lastImg;
+  if (!img) return;
+  if (canvas.width !== img.naturalWidth) {
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+  }
+  ctx.drawImage(img, 0, 0);
+  const tracks = (M.state[M.cam] && M.state[M.cam].tracks) || [];
+  const lw = Math.max(2, canvas.width / 480);
+  ctx.font = `600 ${Math.max(14, canvas.width / 70)}px sans-serif`;
+  tracks.forEach(t => {
+    const [x1, y1, x2, y2] = t.bbox;
+    const color = POSTURE_COLOR[t.posture || "unknown"] || POSTURE_COLOR.unknown;
+    ctx.lineWidth = lw; ctx.strokeStyle = color;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    const who = t.is_target && t.recipient_id ? t.recipient_id
+              : t.recipient_id ? t.recipient_id : `person #${t.track_id}`;
+    const label = `${who}${t.posture ? " · " + t.posture.toUpperCase() : ""}`;
+    const tw = ctx.measureText(label).width;
+    const lh = Math.max(20, canvas.width / 50);
+    ctx.fillStyle = "rgba(0,0,0,.78)";
+    ctx.fillRect(x1, Math.max(0, y1 - lh), tw + 14, lh);
+    ctx.fillStyle = color;
+    ctx.fillText(label, x1 + 7, Math.max(lh - 6, y1 - 6));
+    if (t.posture === "fallen") {           // red emphasis frame
+      ctx.save(); ctx.strokeStyle = "rgba(248,113,113,.55)";
+      ctx.lineWidth = lw * 3; ctx.strokeRect(x1 - 6, y1 - 6, x2 - x1 + 12, y2 - y1 + 12);
+      ctx.restore();
+    }
+  });
+}
+
+/* ---- AI state polling + movement log ------------------------------ */
+function logEntry(html, cls = "") {
+  const empty = document.getElementById("log-empty");
+  if (empty) empty.remove();
+  const box = document.getElementById("live-log");
+  const e = el("div", `log-entry ${cls}`,
+    `<span class="t">${fmtTime()}</span><span class="what">${html}</span>`);
+  box.prepend(e);
+  while (box.children.length > 80) box.lastChild.remove();
+}
+async function pollState() {
+  if (!M.cam) return;
+  try {
+    M.state = await api(`/api/v1/ai/state?camera_id=${encodeURIComponent(M.cam)}`);
+  } catch { return; }
+  const tracks = (M.state[M.cam] && M.state[M.cam].tracks) || [];
+
+  // chips
+  document.getElementById("m-chips").innerHTML = tracks.length === 0
+    ? `<span class="faint" style="font-size:12.5px">No person currently detected.</span>`
+    : tracks.map(t => {
+        const c = POSTURE_COLOR[t.posture || "unknown"];
+        const who = t.recipient_id || `Person #${t.track_id}`;
+        return `<span class="track-chip ${t.posture === "fallen" ? "fallen" : ""}">
+          <span class="sq" style="background:${c}"></span>
+          ${who} — <b style="color:${c}">${t.posture || "detecting…"}</b>
+          ${t.posture_confidence ? `<span class="faint">${Math.round(t.posture_confidence*100)}%</span>` : ""}
+        </span>`;
+      }).join("");
+
+  // transition log
+  const seen = new Set();
+  tracks.forEach(t => {
+    seen.add(t.track_id);
+    const prev = M.lastPosture[t.track_id];
+    if (t.posture && t.posture !== prev) {
+      const who = t.recipient_id || `Person #${t.track_id}`;
+      if (t.posture === "fallen")
+        logEntry(`⚠ ${who} — <b>FALL DETECTED</b>`, "fall");
+      else
+        logEntry(`${who}: ${prev ? prev + " → " : ""}<b>${t.posture}</b>`);
+      M.lastPosture[t.track_id] = t.posture;
+    }
+  });
+  Object.keys(M.lastPosture).forEach(id => {
+    if (!seen.has(Number(id))) {
+      logEntry(`Person #${id} left the frame`, "");
+      delete M.lastPosture[id];
+    }
+  });
+  draw();
+}
+
+/* ---- persisted events (rule engine) -------------------------------- */
+async function pollEvents() {
+  try {
+    const evts = await api(`/api/v1/events?limit=25${M.cam ? "&camera_id=" + M.cam : ""}`);
+    document.getElementById("event-log").innerHTML = evts.length === 0
+      ? `<div class="faint" style="font-size:12.5px">No events recorded yet.</div>`
+      : evts.map(e => `
+        <div class="log-entry ${e.event_type === "fall" ? "fall" : ""}">
+          <span class="t">${new Date(e.timestamp).toLocaleTimeString([], {hour12:false})}</span>
+          <span class="what"><b>${e.event_type}</b>
+            <span class="faint">· ${e.room_name || e.camera_id}${e.recipient_id ? " · " + e.recipient_id : ""}</span>
+          </span>
+        </div>`).join("");
+  } catch {}
+}
+
+initCams();
+setInterval(pollState, 400);
+setInterval(pollEvents, 5000);
+pollEvents();
+</script>
+</body>
+</html>
