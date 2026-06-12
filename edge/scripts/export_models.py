@@ -132,18 +132,29 @@ def export_fastreid(engine_path: Path) -> None:
 
 # ---------------------------------------------------------------- main
 def main() -> int:
+    # --onnx-only: run just stage 1 (needs torch/ultralytics). The engine
+    # builds then happen in a separate, torch-free process — keeping ~2 GB
+    # of RAM free for trtexec, which otherwise can fail CUDA init on the
+    # shared-memory Orin Nano ("no CUDA-capable device is detected").
+    onnx_only = "--onnx-only" in sys.argv
+
     det_w = _env("DETECTION_WEIGHTS", "yolo26m.pt")
     pose_w = _env("POSE_WEIGHTS", "yolo26m-pose.pt")
     det_engine = Path(_env("DETECTION_MODEL_PATH", "models/detection/yolo26m.engine"))
     pose_engine = Path(_env("POSE_MODEL_PATH", "models/pose/yolo26m-pose.engine"))
     reid_engine = Path(_env("REID_MODEL_PATH", "models/reid/fastreid_bot_r50.engine"))
 
-    if export_onnx(det_w, det_engine.with_suffix(".onnx"),
-                   imgsz=int(_env("DETECTION_INPUT_SIZE", "640"))):
-        build_engine(det_engine.with_suffix(".onnx"), det_engine)
+    det_ready = export_onnx(det_w, det_engine.with_suffix(".onnx"),
+                            imgsz=int(_env("DETECTION_INPUT_SIZE", "640")))
+    pose_ready = export_onnx(pose_w, pose_engine.with_suffix(".onnx"),
+                             imgsz=int(_env("POSE_INPUT_SIZE", "640")))
+    if onnx_only:
+        print("[done] ONNX pass complete — engines build in the next pass")
+        return 0
 
-    if export_onnx(pose_w, pose_engine.with_suffix(".onnx"),
-                   imgsz=int(_env("POSE_INPUT_SIZE", "640"))):
+    if det_ready:
+        build_engine(det_engine.with_suffix(".onnx"), det_engine)
+    if pose_ready:
         build_engine(pose_engine.with_suffix(".onnx"), pose_engine)
 
     export_fastreid(reid_engine)

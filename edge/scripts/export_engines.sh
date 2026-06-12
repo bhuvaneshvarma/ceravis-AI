@@ -28,14 +28,19 @@ if [ ! -x "$VENV/bin/python" ]; then
     "$VENV/bin/pip" install ultralytics onnx onnxslim
 fi
 
-echo "== exporting ONNX + building TensorRT engines =="
 # Load model paths/weights config so the script and the app agree.
 set -a
 # shellcheck disable=SC1091
 . "$REPO_DIR/infra/env/jetson.env"
 set +a
 
-"$VENV/bin/python" scripts/export_models.py
+echo "== pass 1/2: ONNX export (venv, CPU torch) =="
+"$VENV/bin/python" scripts/export_models.py --onnx-only
+
+echo "== pass 2/2: TensorRT engine build (fresh torch-free process) =="
+# Separate process so torch's ~2 GB is released before trtexec runs —
+# on the shared-memory Orin Nano that headroom is what lets CUDA init.
+python3 scripts/export_models.py
 
 echo
 echo "Engines in $EDGE_DIR/models/. Optional cleanup: rm -rf $VENV"

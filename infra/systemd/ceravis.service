@@ -16,6 +16,9 @@ EnvironmentFile=/home/ceravis/ceravis2/infra/env/jetson.env
 # "-" prefix: a failure here must not block the API from starting.
 ExecStartPre=-/usr/bin/python3 scripts/export_models.py
 ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+# An engine rebuild in ExecStartPre can take several minutes — don't let
+# systemd's default 90 s start timeout kill the service mid-build.
+TimeoutStartSec=900
 Restart=on-failure
 RestartSec=5
 
