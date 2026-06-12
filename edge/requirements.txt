@@ -19,6 +19,11 @@
 # Freeze after a working install:  pip3 freeze --user > requirements.lock
 # ============================================================
 
+# numpy MUST stay 1.x: JetPack's apt python3-opencv is built against the
+# numpy 1 ABI, and a stray pip numpy 2.x in ~/.local shadows it and breaks
+# "import cv2". Pinning here stops scipy/matplotlib from dragging in 2.x.
+numpy<2
+
 # ---- Web / API ----
 fastapi
 uvicorn[standard]

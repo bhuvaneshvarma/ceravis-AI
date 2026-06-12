@@ -76,7 +76,10 @@ if [ -n "$CV" ]; then
                      "hardware decode path unavailable; FFmpeg fallback will be used" ;;
     esac
 else
-    bad "python3 cannot import cv2" "sudo apt install -y python3-opencv"
+    # Most common cause: a pip numpy 2.x in ~/.local shadowing JetPack's
+    # numpy 1.x — apt-opencv is built against the 1.x ABI.
+    bad "python3 cannot import cv2" \
+        "pip3 install --user 'numpy<2' && sudo apt install -y python3-opencv"
 fi
 NP="$(python3 -c 'import numpy; print(numpy.__version__)' 2>/dev/null)"
 [ -n "$NP" ] && ok "numpy $NP" || bad "numpy missing" "sudo apt install -y python3-numpy"
