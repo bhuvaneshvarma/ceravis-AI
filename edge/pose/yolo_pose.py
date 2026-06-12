@@ -16,10 +16,13 @@ logger = logging.getLogger("pose")
 
 class YOLOPose:
     """
-    YOLOv8-Pose TensorRT (17-keypoint COCO).
+    YOLO26-Pose / YOLOv8-Pose TensorRT (17-keypoint COCO).
 
-    Output layout (Ultralytics):
-        (1, 56, N) -> [x,y,w,h,conf, 17*(x,y,c)]
+    Handles both Ultralytics output layouts:
+      - YOLO26 end-to-end:  (1, N, 57) -> [x1,y1,x2,y2,conf,cls, 17*(x,y,c)]
+      - YOLOv8 raw:         (1, 56, N) -> [x,y,w,h,conf,      17*(x,y,c)]
+    The keypoint block is always the trailing 51 values; confidence is
+    always column 4 — so we locate keypoints from the column count.
     """
 
     NUM_KP = 17
@@ -56,9 +59,16 @@ class YOLOPose:
         if preds.ndim == 3:
             preds = preds[0]
 
-        # preds shape can be (N, 56) or (56, N); normalize
-        if preds.shape[0] == 56 and preds.shape[1] != 56:
+        # Normalize to rows = predictions. Channel-first layouts (56/57, N)
+        # get transposed.
+        if preds.shape[0] in (56, 57) and preds.shape[1] > preds.shape[0]:
             preds = preds.T
+        if preds.shape[-1] < 51 + 5:
+            return PoseResult(
+                camera_id=camera_id, frame_id=frame_id,
+                timestamp=timestamp, poses=[],
+            )
+        kp_off = preds.shape[-1] - 3 * self.NUM_KP   # 5 (v8) or 6 (26 e2e)
 
         sx = w0 / self._input_size
         sy = h0 / self._input_size
@@ -67,7 +77,7 @@ class YOLOPose:
             conf = float(p[4])
             if conf < self._conf_thr:
                 continue
-            kps_flat = p[5:]
+            kps_flat = p[kp_off:]
             kps: list[Keypoint] = []
             for i in range(self.NUM_KP):
                 kx, ky, kc = kps_flat[3 * i: 3 * i + 3]
