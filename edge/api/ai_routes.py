@@ -20,15 +20,22 @@ def ai_state(request: Request, camera_id: str | None = None):
     tracks_by_cam = state.track_buffer.get_all()
     postures = state.posture_buffer.get_all()
     identities = state.identity_buffer.get_all()
+    detections = state.detection_buffer.get_all()
 
+    # Union of cameras seen by detection and tracking, so the monitor can
+    # tell "detector sees N people but tracker has 0" (a tracking problem)
+    # apart from "detector sees 0" (a detection problem).
+    cams = set(tracks_by_cam) | set(detections)
     out: dict = {}
-    for cam, result in tracks_by_cam.items():
+    for cam in cams:
         if camera_id and cam != camera_id:
             continue
+        result = tracks_by_cam.get(cam)
+        det = detections.get(cam)
         cam_postures = postures.get(cam, {})
         cam_identities = identities.get(cam, {})
         entries = []
-        for t in result.tracks:
+        for t in (result.tracks if result else []):
             posture = cam_postures.get(t.track_id)
             identity = cam_identities.get(t.track_id)
             entries.append({
@@ -42,8 +49,11 @@ def ai_state(request: Request, camera_id: str | None = None):
                 "is_target": identity.is_target if identity else False,
             })
         out[cam] = {
-            "frame_id": result.frame_id,
-            "timestamp": result.timestamp.isoformat(),
+            "frame_id": (result.frame_id if result
+                         else (det.frame_id if det else 0)),
+            "timestamp": (result.timestamp.isoformat() if result
+                          else (det.timestamp.isoformat() if det else "")),
+            "detections": len(det.detections) if det else 0,
             "tracks": entries,
         }
     return out

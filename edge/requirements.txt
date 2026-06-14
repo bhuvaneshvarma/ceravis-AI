@@ -30,6 +30,7 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 websockets
+python-multipart       # required for photo/video upload endpoints
 
 # ---- Events / alerts / similarity ----
 paho-mqtt

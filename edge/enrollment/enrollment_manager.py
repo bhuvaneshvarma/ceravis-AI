@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import json
+import logging
+import time
 from pathlib import Path
+
+import numpy as np
 
 from config.settings import settings
 
 
+logger = logging.getLogger("enrollment")
+
+
 class EnrollmentManager:
     """
-    Manages on-disk per-recipient enrollment folders.
+    On-disk store for per-recipient enrollment media + embeddings.
 
     Layout:
         data/recipients/<recipient_id>/
-            photos/      raw upload photos
-            videos/      enrollment videos
-            face/        face crops + embeddings
-            body/        body crops + ReID embeddings
+            photos/        uploaded / live-captured images
+            videos/        enrollment videos
+            body/          embeddings.npy  (K, dim) ReID embeddings
+            status.json    enrollment job state
     """
 
     SUBDIRS = ("photos", "videos", "face", "body")
@@ -23,6 +31,7 @@ class EnrollmentManager:
         self.base_path = settings.data_path / "recipients"
         self.base_path.mkdir(parents=True, exist_ok=True)
 
+    # ---- folders -----------------------------------------------------
     def create_recipient_folder(self, recipient_id: str) -> Path:
         root = self.base_path / recipient_id
         root.mkdir(exist_ok=True)
@@ -33,3 +42,82 @@ class EnrollmentManager:
     def get_recipient_folder(self, recipient_id: str) -> Path | None:
         path = self.base_path / recipient_id
         return path if path.exists() else None
+
+    # ---- media ingest ------------------------------------------------
+    def save_photo(self, recipient_id: str, data: bytes, ext: str = "jpg") -> Path:
+        root = self.create_recipient_folder(recipient_id)
+        name = f"{int(time.time() * 1000)}.{ext.lstrip('.').lower()}"
+        path = root / "photos" / name
+        path.write_bytes(data)
+        return path
+
+    def save_video(self, recipient_id: str, data: bytes, ext: str = "mp4") -> Path:
+        root = self.create_recipient_folder(recipient_id)
+        name = f"{int(time.time() * 1000)}.{ext.lstrip('.').lower()}"
+        path = root / "videos" / name
+        path.write_bytes(data)
+        return path
+
+    def list_photos(self, recipient_id: str) -> list[Path]:
+        root = self.get_recipient_folder(recipient_id)
+        if root is None:
+            return []
+        return sorted((root / "photos").glob("*"))
+
+    def list_videos(self, recipient_id: str) -> list[Path]:
+        root = self.get_recipient_folder(recipient_id)
+        if root is None:
+            return []
+        return sorted((root / "videos").glob("*"))
+
+    # ---- embeddings --------------------------------------------------
+    def save_embeddings(self, recipient_id: str, embeddings: np.ndarray) -> None:
+        """Persist this recipient's embeddings (overwrites — worker passes the
+        full set it computed for the recipient)."""
+        root = self.create_recipient_folder(recipient_id)
+        np.save(root / "body" / "embeddings.npy",
+                embeddings.astype(np.float32))
+
+    def load_embeddings(self, recipient_id: str) -> np.ndarray:
+        root = self.get_recipient_folder(recipient_id)
+        f = root / "body" / "embeddings.npy" if root else None
+        if f and f.exists():
+            return np.load(f).astype(np.float32)
+        return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32)
+
+    def load_gallery(self) -> tuple[np.ndarray, list[str]]:
+        """Concatenate every recipient's embeddings for a FAISS rebuild."""
+        all_emb: list[np.ndarray] = []
+        ids: list[str] = []
+        for root in sorted(self.base_path.glob("*")):
+            if not root.is_dir():
+                continue
+            f = root / "body" / "embeddings.npy"
+            if not f.exists():
+                continue
+            emb = np.load(f).astype(np.float32)
+            if emb.ndim == 2 and emb.shape[0] > 0:
+                all_emb.append(emb)
+                ids.extend([root.name] * emb.shape[0])
+        if not all_emb:
+            return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32), []
+        return np.concatenate(all_emb, axis=0), ids
+
+    # ---- status ------------------------------------------------------
+    def set_status(self, recipient_id: str, **fields) -> None:
+        root = self.create_recipient_folder(recipient_id)
+        path = root / "status.json"
+        cur = self.get_status(recipient_id)
+        cur.update(fields)
+        cur["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        path.write_text(json.dumps(cur, indent=2))
+
+    def get_status(self, recipient_id: str) -> dict:
+        root = self.get_recipient_folder(recipient_id)
+        path = root / "status.json" if root else None
+        if path and path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                pass
+        return {"state": "none", "photos": 0, "embeddings": 0, "message": ""}

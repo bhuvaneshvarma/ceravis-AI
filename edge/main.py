@@ -95,21 +95,37 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("PoseRunner disabled")
 
-    # ---- reid (FastReid) --------------------------------------
-    reid_runner = None
+    # ---- reid gallery (shared by ReID runner + enrollment worker) ----
     gallery: FaissGallery | None = None
     try:
         gallery = FaissGallery()
-        from reid.reid_runner import ReIDRunner
-        reid_runner = ReIDRunner(
-            frame_buffer=camera_manager.frame_buffer,
-            track_buffer=track_buffer,
-            identity_buffer=identity_buffer,
-            gallery=gallery,
-        )
-        reid_runner.start()
     except Exception:
-        logger.exception("ReIDRunner disabled")
+        logger.exception("FAISS gallery unavailable (ReID + enrollment off)")
+
+    # ---- reid (FastReid) --------------------------------------
+    reid_runner = None
+    if gallery is not None:
+        try:
+            from reid.reid_runner import ReIDRunner
+            reid_runner = ReIDRunner(
+                frame_buffer=camera_manager.frame_buffer,
+                track_buffer=track_buffer,
+                identity_buffer=identity_buffer,
+                gallery=gallery,
+            )
+            reid_runner.start()
+        except Exception:
+            logger.exception("ReIDRunner disabled")
+
+    # ---- enrollment worker (stores media -> embeddings -> FAISS) ----
+    enroll_worker = None
+    try:
+        from enrollment.enrollment_manager import EnrollmentManager
+        from enrollment.enrollment_worker import EnrollmentWorker
+        enroll_worker = EnrollmentWorker(EnrollmentManager(), gallery=gallery)
+        enroll_worker.start()
+    except Exception:
+        logger.exception("EnrollmentWorker disabled")
 
     # ---- events + storage --------------------------------------
     event_bus = EventBus()
@@ -156,6 +172,7 @@ async def lifespan(app: FastAPI):
     app.state.posture_buffer = posture_buffer
     app.state.identity_buffer = identity_buffer
     app.state.gallery = gallery
+    app.state.enroll_worker = enroll_worker
     app.state.event_bus = event_bus
     app.state.event_store = event_store
     app.state.metrics_registry = metrics_registry
@@ -166,8 +183,8 @@ async def lifespan(app: FastAPI):
 
     # ---- shutdown ----------------------------------------------
     for runner in (
-        mqtt_publisher, rule_engine, event_writer, reid_runner,
-        pose_runner, tracking_runner, detection_runner,
+        mqtt_publisher, rule_engine, event_writer, enroll_worker,
+        reid_runner, pose_runner, tracking_runner, detection_runner,
     ):
         if runner is None:
             continue
