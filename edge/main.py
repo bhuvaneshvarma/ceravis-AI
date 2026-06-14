@@ -1,13 +1,33 @@
 from __future__ import annotations
 
 import logging
+import socket
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from config.settings import settings
+
+
+def _lan_urls(port: int = 8000) -> list[str]:
+    """Best-effort LAN addresses the API is reachable on, for logging."""
+    urls = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))          # no traffic sent; just resolves the route
+        urls.append(f"http://{s.getsockname()[0]}:{port}")
+        s.close()
+    except Exception:
+        pass
+    try:
+        host = socket.gethostname()
+        urls.append(f"http://{host}.local:{port}")
+    except Exception:
+        pass
+    return urls
 
 from api.camera_routes import router as camera_router
 from api.recipient_routes import router as recipient_router
@@ -53,6 +73,10 @@ async def lifespan(app: FastAPI):
     posture_buffer = PostureBuffer()
     identity_buffer = IdentityBuffer()
 
+    # ReID-driven "who is the target" lock, shared by pose + reid runners.
+    from reid.target_registry import TargetRegistry
+    target_registry = TargetRegistry()
+
     # ---- monitoring --------------------------------------------
     metrics_registry = MetricsRegistry()
     system_monitor = SystemMonitor()
@@ -89,6 +113,7 @@ async def lifespan(app: FastAPI):
             track_buffer=track_buffer,
             posture_buffer=posture_buffer,
             metrics_registry=metrics_registry,
+            target_registry=target_registry,
         )
         pose_runner.start()
         posture_tracker = pose_runner.posture_tracker
@@ -112,6 +137,7 @@ async def lifespan(app: FastAPI):
                 track_buffer=track_buffer,
                 identity_buffer=identity_buffer,
                 gallery=gallery,
+                target_registry=target_registry,
             )
             reid_runner.start()
         except Exception:
@@ -172,12 +198,15 @@ async def lifespan(app: FastAPI):
     app.state.posture_buffer = posture_buffer
     app.state.identity_buffer = identity_buffer
     app.state.gallery = gallery
+    app.state.target_registry = target_registry
     app.state.enroll_worker = enroll_worker
     app.state.event_bus = event_bus
     app.state.event_store = event_store
     app.state.metrics_registry = metrics_registry
     app.state.system_monitor = system_monitor
 
+    for url in _lan_urls():
+        logger.info("CERAVIS reachable at %s", url)
     logger.info("CERAVIS edge ready")
     yield
 
@@ -204,6 +233,18 @@ app = FastAPI(
     title="CERAVIS Edge API",
     version=settings.app_version,
     lifespan=lifespan,
+)
+
+# Allow external frontends (a separate web/mobile app on another origin) to
+# call this edge API over the LAN. The device serves only on the private
+# network; allow-all keeps cross-origin clients (and the built-in UI from any
+# host) working without per-origin config.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(camera_router)

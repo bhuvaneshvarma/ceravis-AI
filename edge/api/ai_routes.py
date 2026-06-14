@@ -21,6 +21,7 @@ def ai_state(request: Request, camera_id: str | None = None):
     postures = state.posture_buffer.get_all()
     identities = state.identity_buffer.get_all()
     detections = state.detection_buffer.get_all()
+    target_reg = getattr(state, "target_registry", None)
 
     # Union of cameras seen by detection and tracking, so the monitor can
     # tell "detector sees N people but tracker has 0" (a tracking problem)
@@ -54,6 +55,7 @@ def ai_state(request: Request, camera_id: str | None = None):
             "timestamp": (result.timestamp.isoformat() if result
                           else (det.timestamp.isoformat() if det else "")),
             "detections": len(det.detections) if det else 0,
+            "target_track_id": target_reg.get(cam) if target_reg else None,
             "tracks": entries,
         }
     return out

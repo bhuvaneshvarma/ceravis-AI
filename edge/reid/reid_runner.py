@@ -6,12 +6,14 @@ import time
 
 from datetime import datetime, timezone
 
+from common.crops import crop_person
 from config.settings import settings
 from ingestion.frame_buffer import FrameBuffer
 from reid.faiss_index import FaissGallery
 from reid.identity_buffer import IdentityBuffer
 from reid.identity_schema import Identity
 from reid.fastreid_extractor import FastReidExtractor
+from reid.target_registry import TargetRegistry
 from tracking.track_buffer import TrackBuffer
 
 
@@ -35,11 +37,13 @@ class ReIDRunner:
         track_buffer: TrackBuffer,
         identity_buffer: IdentityBuffer,
         gallery: FaissGallery,
+        target_registry: TargetRegistry | None = None,
     ) -> None:
         self._frames = frame_buffer
         self._tracks = track_buffer
         self._identities = identity_buffer
         self._gallery = gallery
+        self._targets = target_registry or TargetRegistry()
         self._extractor: FastReidExtractor | None = None
 
         self._running = False
@@ -88,37 +92,51 @@ class ReIDRunner:
             return
         threshold = settings.reid_match_threshold
 
+        pad = settings.crop_padding_frac
         for camera_id, track_result in self._tracks.get_all().items():
             frame_data = self._frames.get(camera_id)
             if frame_data is None or not track_result.tracks:
                 continue
 
+            target_tid = self._targets.get(camera_id)
+
             for track in track_result.tracks:
                 key = (camera_id, track.track_id)
+
+                # Focus: while the target lock is fresh, only re-verify the
+                # target itself — skip embedding the other people (the GPU
+                # saving you asked for). Non-target tracks are still counted
+                # by detection/tracking, just not re-identified every tick.
+                if target_tid is not None and track.track_id != target_tid:
+                    continue
+
                 last = self._last_query_frame.get(key, -1)
                 if frame_data.frame_id - last < self.REQUERY_EVERY_N_FRAMES \
                    and self._identities.get(camera_id, track.track_id) is not None:
                     continue
 
-                x1 = max(0, int(track.bbox.x1))
-                y1 = max(0, int(track.bbox.y1))
-                x2 = min(frame_data.width, int(track.bbox.x2))
-                y2 = min(frame_data.height, int(track.bbox.y2))
-                crop = frame_data.frame[y1:y2, x1:x2]
+                crop, _, _ = crop_person(
+                    frame_data.frame, track.bbox.x1, track.bbox.y1,
+                    track.bbox.x2, track.bbox.y2, pad,
+                )
                 if crop.size == 0:
                     continue
 
                 emb = self._extractor.embed(crop)
                 rid, score = self._gallery.search(emb)
+                is_target = score >= threshold
                 self._identities.update(
                     Identity(
                         track_id=track.track_id,
                         camera_id=camera_id,
                         frame_id=frame_data.frame_id,
                         timestamp=frame_data.timestamp,
-                        recipient_id=rid if score >= threshold else None,
-                        is_target=score >= threshold,
+                        recipient_id=rid if is_target else None,
+                        is_target=is_target,
                         confidence=float(score),
                     )
                 )
+                if is_target and rid is not None:
+                    # Lock (or refresh) the target on this track id.
+                    self._targets.lock(camera_id, track.track_id, rid)
                 self._last_query_frame[key] = frame_data.frame_id

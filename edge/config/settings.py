@@ -21,34 +21,49 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ---- Ingestion (RTSP) -------------------------------------------
-    target_camera_fps: float = 5.0
-    stream_fps: float = 10.0
+    # Capture rate decoupled from inference. The frame buffer keeps only the
+    # latest frame, so each consumer (detection/pose/stream) samples the
+    # newest frame at ITS own rate — raising capture just removes the
+    # 5 fps ceiling without queueing or extra GPU work (decode is on NVDEC,
+    # dedicated hardware, not the GPU compute cores).
+    target_camera_fps: float = 15.0
+    stream_fps: float = 15.0           # WebSocket live view smoothness (CPU JPEG)
     read_timeout_secs: float = 3.0
     reconnect_delay_secs: float = 5.0
     max_reconnect_delay_secs: float = 30.0
     frame_stale_secs: float = 5.0
 
     # ---- Detection (YOLO26m) ----------------------------------------
+    # Detection must scan the full frame, so it's the heaviest stage. 10 fps
+    # is ample to catch new people; ByteTrack carries IDs between detections.
+    # For 3-4 cameras dial this to 6-8 to keep GPU headroom.
     detection_weights: str = "yolo26m.pt"     # ultralytics auto-downloads
     detection_model_path: str = "models/detection/yolo26m.engine"
     detection_confidence_threshold: float = 0.35
     detection_input_size: int = 640
-    detection_fps: float = 5.0
+    detection_fps: float = 10.0
 
     # ---- Pose (YOLO26m-Pose) ---------------------------------------
+    # Pose only runs when a person is present (idle-gated), and once a target
+    # is locked it runs on the target's CROP only (smaller, sharper, focused).
     pose_weights: str = "yolo26m-pose.pt"     # ultralytics auto-downloads
     pose_model_path: str = "models/pose/yolo26m-pose.engine"
     pose_input_size: int = 640
     pose_confidence_threshold: float = 0.35
-    pose_fps: float = 2.0
+    pose_fps: float = 12.0
 
     # ---- ReID (FastReid BoT_R50) ------------------------------------
     reid_model_path: str = "models/reid/fastreid_bot_r50.engine"
     reid_input_height: int = 256
     reid_input_width: int = 128
     reid_embedding_dim: int = 2048           # BoT_R50 = 2048; ibn-R50 = 2048; mobilenet = 256
-    reid_fps: float = 2.0
+    reid_fps: float = 3.0
     reid_match_threshold: float = 0.55       # cosine on FastReid; tune per gallery
+
+    # ---- Pipeline focus / efficiency --------------------------------
+    crop_padding_frac: float = 0.08          # margin around a person box for crops
+    target_only_pose: bool = True            # once ReID locks the target, pose that crop only
+    target_lock_ttl_secs: float = 5.0        # keep target lock this long after last sighting
 
     # ---- Tracking (ByteTrack) ---------------------------------------
     tracker_high_thresh: float = 0.5
