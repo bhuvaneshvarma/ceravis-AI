@@ -25,6 +25,16 @@
                   border-radius: 10px; margin-bottom: 10px; }
   .checklist div { display: flex; gap: 9px; align-items: center; padding: 5px 0;
                    font-size: 13px; }
+  .enroll-tabs { display: flex; gap: 6px; margin: 14px 0 12px; }
+  .etab { flex: 1; padding: 8px; border-radius: 8px; cursor: pointer;
+          background: var(--panel-2); border: 1px solid var(--line);
+          color: var(--muted); font-size: 12.5px; font-weight: 600; }
+  .etab.active { background: rgba(45,212,191,.1); border-color: var(--teal-dim);
+                 color: var(--teal); }
+  .enroll-status { font-size: 12.5px; }
+  .enroll-status .bar { height: 6px; border-radius: 4px; background: var(--line);
+                        overflow: hidden; margin-top: 6px; }
+  .enroll-status .bar > i { display: block; height: 100%; background: var(--teal); }
 </style>
 </head>
 <body>
@@ -160,15 +170,53 @@
         </div>
       </div>
       <div class="card">
+        <h2>Face / body enrollment</h2>
+        <div id="enroll-none" class="hint">
+          Save a recipient first — then add enrollment media here so the
+          system can recognize them (Resident → Store media → Embeddings → FAISS).
+        </div>
+        <div id="enroll-panel" hidden>
+          <div class="row" style="justify-content:space-between">
+            <div>Enrolling: <b id="enroll-who">—</b></div>
+            <span class="pill pill-mute" id="enroll-state">—</span>
+          </div>
+          <div class="enroll-tabs">
+            <button class="etab active" data-tab="photos">A · Photos</button>
+            <button class="etab" data-tab="video">B · Video</button>
+            <button class="etab" data-tab="live">C · Live camera</button>
+          </div>
+
+          <div class="etab-body" data-body="photos">
+            <div class="hint mb">Upload 3–10 clear photos — different angles,
+              standing/sitting if possible.</div>
+            <input type="file" id="en-photos" accept="image/*" multiple />
+            <button class="btn btn-primary btn-sm mt" id="en-photos-go">Upload &amp; enroll</button>
+          </div>
+          <div class="etab-body" data-body="video" hidden>
+            <div class="hint mb">Upload a short clip (10–20 s) walking around
+              the room. Frames are sampled automatically.</div>
+            <input type="file" id="en-video" accept="video/*" />
+            <button class="btn btn-primary btn-sm mt" id="en-video-go">Upload &amp; enroll</button>
+          </div>
+          <div class="etab-body" data-body="live" hidden>
+            <div class="hint mb">Stand in front of a camera; we'll grab a few
+              frames live.</div>
+            <select id="en-cam"></select>
+            <button class="btn btn-primary btn-sm mt" id="en-live-go">Capture 4 s &amp; enroll</button>
+          </div>
+
+          <div class="enroll-status mt" id="en-status"></div>
+        </div>
+
+        <hr class="sep" />
         <h2>Registered recipients</h2>
         <table class="tbl"><tbody id="r-table"></tbody></table>
-        <hr class="sep" />
-        <div class="hint">
-          Identity recognition (knowing <i>which</i> person is the recipient vs a
-          visitor) additionally needs the ReID model enabled
-          (<code>FASTREID_ONNX_URL</code> in <code>jetson.env</code>) and enrollment
-          photos in <code>data/recipients/&lt;id&gt;/</code>. Fall and posture
-          detection work without it.
+        <div class="hint mt">
+          Falls + posture work without enrollment. Enrollment adds <i>identity</i>
+          (recipient vs visitor) and needs the ReID engine
+          (<code>FASTREID_ONNX_URL</code>); until then media is stored and shows
+          <span class="pill pill-warn">pending_reid</span> — embeddings build
+          automatically once ReID is enabled.
         </div>
       </div>
     </div>
@@ -474,15 +522,24 @@ async function initRecipient() {
 document.getElementById("r-add-contact").onclick = () =>
   document.getElementById("r-contacts").appendChild(contactRow());
 
+const ENROLL_PILL = {
+  ready: "pill-ok", processing: "pill-info", queued: "pill-info",
+  pending_reid: "pill-warn", error: "pill-bad", none: "pill-mute",
+};
 async function refreshRecipients() {
   const list = await api("/api/v1/recipients").catch(() => []);
   document.getElementById("r-table").innerHTML = list.length === 0
     ? `<tr><td class="faint">No recipients registered yet.</td></tr>`
-    : list.map(r => `<tr>
-        <td><b>${r.full_name}</b><br><span class="faint">${r.recipient_id}</span></td>
-        <td>${(r.emergency_contacts || []).length} contact(s)</td>
-        <td>${r.is_primary_recipient ? `<span class="pill pill-info">PRIMARY</span>` : ""}</td>
-      </tr>`).join("");
+    : list.map(r => {
+        const st = (r.enrollment || {}).state || "none";
+        return `<tr data-rid="${r.recipient_id}" style="cursor:pointer">
+          <td><b>${r.full_name}</b><br><span class="faint">${r.recipient_id}</span></td>
+          <td><span class="pill ${ENROLL_PILL[st] || "pill-mute"}">${st}</span></td>
+          <td><button class="btn btn-ghost btn-sm" data-enroll="${r.recipient_id}">Enroll</button></td>
+        </tr>`;
+      }).join("");
+  document.querySelectorAll("[data-enroll]").forEach(b =>
+    b.onclick = () => selectEnroll(b.dataset.enroll));
 }
 document.getElementById("r-save").onclick = async () => {
   const contacts = [...document.querySelectorAll("#r-contacts .contact-row")]
@@ -508,7 +565,79 @@ document.getElementById("r-save").onclick = async () => {
     await api("/api/v1/recipients", { method: "POST", body: JSON.stringify(rec) });
     toast(`Recipient ${rec.full_name} registered`);
     refreshRecipients();
+    selectEnroll(rec.recipient_id, rec.full_name);   // reveal enrollment panel
   } catch (e) { toast(e.detail || "Save failed", "err"); }
+};
+
+/* ---- enrollment (photos / video / live) ---- */
+let enrollRid = null, enrollPoll = null;
+
+async function selectEnroll(rid, name) {
+  enrollRid = rid;
+  document.getElementById("enroll-none").hidden = true;
+  document.getElementById("enroll-panel").hidden = false;
+  document.getElementById("enroll-who").textContent = name || rid;
+  // populate live-camera dropdown
+  const cams = await api("/api/v1/cameras").catch(() => []);
+  document.getElementById("en-cam").innerHTML = cams.length
+    ? cams.map(c => `<option value="${c.camera_id}">${c.camera_name}</option>`).join("")
+    : `<option value="">— no cameras —</option>`;
+  pollEnroll();
+  if (enrollPoll) clearInterval(enrollPoll);
+  enrollPoll = setInterval(pollEnroll, 2500);
+}
+
+document.querySelectorAll(".etab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".etab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  document.querySelectorAll(".etab-body").forEach(b =>
+    b.hidden = b.dataset.body !== t.dataset.tab);
+});
+
+async function pollEnroll() {
+  if (!enrollRid) return;
+  try {
+    const s = await api(`/api/v1/recipients/${enrollRid}/enroll/status`);
+    document.getElementById("enroll-state").className =
+      "pill " + (ENROLL_PILL[s.state] || "pill-mute");
+    document.getElementById("enroll-state").textContent = s.state;
+    document.getElementById("en-status").innerHTML =
+      `<div>${s.message || ""}</div>
+       <div class="faint">photos: ${s.photos || 0} · embeddings: ${s.embeddings || 0}</div>`;
+  } catch {}
+}
+
+document.getElementById("en-photos-go").onclick = async () => {
+  const files = document.getElementById("en-photos").files;
+  if (!files.length) return toast("Choose photos first", "err");
+  const fd = new FormData();
+  [...files].forEach(f => fd.append("files", f));
+  await fetch(`/api/v1/recipients/${enrollRid}/enroll/photos`,
+    { method: "POST", body: fd })
+    .then(r => r.json()).then(j => toast(`Uploaded ${j.saved} photo(s)`))
+    .catch(() => toast("Upload failed", "err"));
+  pollEnroll();
+};
+document.getElementById("en-video-go").onclick = async () => {
+  const f = document.getElementById("en-video").files[0];
+  if (!f) return toast("Choose a video first", "err");
+  const fd = new FormData(); fd.append("file", f);
+  await fetch(`/api/v1/recipients/${enrollRid}/enroll/video`,
+    { method: "POST", body: fd })
+    .then(r => r.json()).then(() => toast("Video uploaded — sampling frames"))
+    .catch(() => toast("Upload failed", "err"));
+  pollEnroll();
+};
+document.getElementById("en-live-go").onclick = async () => {
+  const cam = document.getElementById("en-cam").value;
+  if (!cam) return toast("No camera selected", "err");
+  toast("Capturing… stand in view");
+  try {
+    const j = await api(`/api/v1/recipients/${enrollRid}/enroll/live`,
+      { method: "POST", body: JSON.stringify({ camera_id: cam, seconds: 4 }) });
+    toast(`Captured ${j.captured} frame(s)`);
+  } catch (e) { toast(e.detail || "Capture failed", "err"); }
+  pollEnroll();
 };
 
 /* ================= STEP 4 — review ================= */

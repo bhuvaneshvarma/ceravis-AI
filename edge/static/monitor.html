@@ -146,11 +146,15 @@ async function pollState() {
   try {
     M.state = await api(`/api/v1/ai/state?camera_id=${encodeURIComponent(M.cam)}`);
   } catch { return; }
-  const tracks = (M.state[M.cam] && M.state[M.cam].tracks) || [];
+  const camState = M.state[M.cam] || {};
+  const tracks = camState.tracks || [];
+  const detN = camState.detections ?? "—";
+  const stateEl = document.getElementById("m-state");
+  if (stateEl) stateEl.textContent = `detections: ${detN} · tracks: ${tracks.length}`;
 
   // chips
   document.getElementById("m-chips").innerHTML = tracks.length === 0
-    ? `<span class="faint" style="font-size:12.5px">No person currently detected.</span>`
+    ? `<span class="faint" style="font-size:12.5px">No tracked person${detN ? " (raw detections: " + detN + ")" : ""}.</span>`
     : tracks.map(t => {
         const c = POSTURE_COLOR[t.posture || "unknown"];
         const who = t.recipient_id || `Person #${t.track_id}`;
