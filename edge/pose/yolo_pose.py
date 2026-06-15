@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-import cv2
 import numpy as np
 
+from common.letterbox import letterbox, to_blob
 from config.settings import settings
 from detection.trt_engine import TensorRTEngine
 from pose.pose_schema import Keypoint, PoseEstimation, PoseResult
@@ -40,15 +40,8 @@ class YOLOPose:
         frame_id: int,
         timestamp: datetime,
     ) -> PoseResult:
-        h0, w0 = frame.shape[:2]
-        blob = cv2.dnn.blobFromImage(
-            frame,
-            scalefactor=1.0 / 255.0,
-            size=(self._input_size, self._input_size),
-            swapRB=True,
-            crop=False,
-        )
-        out = self._engine.infer(np.ascontiguousarray(blob, dtype=np.float32))
+        canvas, ratio, dw, dh = letterbox(frame, self._input_size)
+        out = self._engine.infer(to_blob(canvas))
         if not out:
             return PoseResult(
                 camera_id=camera_id, frame_id=frame_id,
@@ -70,8 +63,6 @@ class YOLOPose:
             )
         kp_off = preds.shape[-1] - 3 * self.NUM_KP   # 5 (v8) or 6 (26 e2e)
 
-        sx = w0 / self._input_size
-        sy = h0 / self._input_size
         poses: list[PoseEstimation] = []
         for p in preds:
             conf = float(p[4])
@@ -81,10 +72,11 @@ class YOLOPose:
             kps: list[Keypoint] = []
             for i in range(self.NUM_KP):
                 kx, ky, kc = kps_flat[3 * i: 3 * i + 3]
+                # un-letterbox keypoints back to original-frame coords
                 kps.append(
                     Keypoint(
-                        x=float(kx * sx),
-                        y=float(ky * sy),
+                        x=float((kx - dw) / ratio),
+                        y=float((ky - dh) / ratio),
                         confidence=float(kc),
                     )
                 )
