@@ -16,9 +16,12 @@ echo "== [1/5] apt packages (most are already present on JetPack) =="
 sudo apt-get update
 # plugins-base/good: rtspsrc + depayloaders; plugins-bad: h264parse/h265parse;
 # libav: avdec_* software-decode fallback. (plugins-ugly is encoders — not needed.)
+# python3-scipy + python3-matplotlib come from apt (prebuilt for aarch64,
+# built against the system numpy 1.x) — avoids the pip "No module named
+# scipy" failure and any numpy-2 ABI clash. supervision needs both.
 sudo apt-get install -y --no-install-recommends \
     python3-pip python3-venv python3-dev build-essential \
-    python3-numpy python3-opencv \
+    python3-numpy python3-opencv python3-scipy python3-matplotlib \
     gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad gstreamer1.0-libav
 

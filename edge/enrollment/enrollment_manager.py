@@ -64,6 +64,41 @@ class EnrollmentManager:
             return []
         return sorted((root / "photos").glob("*"))
 
+    def media_names(self, recipient_id: str) -> list[str]:
+        """Filenames of stored enrollment photos (for UI preview)."""
+        return [p.name for p in self.list_photos(recipient_id)]
+
+    def media_path(self, recipient_id: str, name: str) -> Path | None:
+        """Resolve a stored photo/crop by basename — path-traversal safe."""
+        root = self.get_recipient_folder(recipient_id)
+        if root is None:
+            return None
+        safe = Path(name).name                       # strip any directory parts
+        for sub in ("photos", "body/crops"):
+            p = root / sub / safe
+            if p.exists():
+                return p
+        return None
+
+    def save_reference_crops(self, recipient_id: str,
+                             crops: list[np.ndarray], limit: int = 6) -> int:
+        """Persist a few person crops as small JPEGs for future reference."""
+        import cv2
+        root = self.create_recipient_folder(recipient_id)
+        out = root / "body" / "crops"
+        out.mkdir(parents=True, exist_ok=True)
+        for f in out.glob("*.jpg"):
+            f.unlink()
+        saved = 0
+        step = max(1, len(crops) // limit)
+        for i, crop in enumerate(crops[::step][:limit]):
+            if crop is None or crop.size == 0:
+                continue
+            cv2.imwrite(str(out / f"ref_{saved:02d}.jpg"), crop,
+                        [cv2.IMWRITE_JPEG_QUALITY, 80])
+            saved += 1
+        return saved
+
     def list_videos(self, recipient_id: str) -> list[Path]:
         root = self.get_recipient_folder(recipient_id)
         if root is None:
