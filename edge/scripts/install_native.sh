@@ -43,11 +43,21 @@ export PATH="/usr/local/cuda/bin:$PATH"
 export CUDA_ROOT="/usr/local/cuda"
 python3 -c "import pycuda" 2>/dev/null || pip3 install --user pycuda
 
+# scipy + matplotlib are supervision's hard deps. apt usually provides them
+# (prebuilt aarch64), but if that package didn't land, fall back to pip wheels
+# (scipy<1.14 stays numpy-1.x compatible). Guarantees "import scipy" works.
+python3 -c "import scipy, matplotlib" 2>/dev/null \
+    || pip3 install --user "scipy<1.14" matplotlib
+
 # supervision is installed WITHOUT deps so pip cannot pull opencv-python /
 # numpy wheels that would shadow JetPack's GStreamer-enabled builds.
-# (Its actual deps are already in requirements.txt.)
+# (Its actual deps are already covered above.)
 python3 -c "import supervision" 2>/dev/null \
     || pip3 install --user --no-deps supervision
+
+# Final dep gate: supervision must import (pulls in scipy) before we continue.
+python3 -c "import supervision" || {
+    echo "ERROR: supervision/scipy still not importable — see messages above"; exit 1; }
 
 echo "== [4/5] data files =="
 if [ ! -f "$EDGE_DIR/data/cameras.json" ]; then
