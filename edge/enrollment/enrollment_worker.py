@@ -82,11 +82,11 @@ class EnrollmentWorker:
         except Exception:
             logger.exception("enroll: detection engine unavailable")
         try:
-            from reid.fastreid_extractor import FastReidExtractor
-            self._extractor = FastReidExtractor()
+            from reid.reid_extractor import ReIDExtractor
+            self._extractor = ReIDExtractor()
         except Exception:
-            logger.warning("enroll: FastReid engine unavailable — "
-                           "embeddings deferred (set FASTREID_ONNX_URL)")
+            logger.warning("enroll: ReID engine unavailable — embeddings "
+                           "deferred (run scripts/export_reid.sh)")
         return self._detector is not None and self._extractor is not None
 
     # ---- main loop ---------------------------------------------------
@@ -108,8 +108,8 @@ class EnrollmentWorker:
 
         crops = self._collect_crops(recipient_id)
         if not self._ensure_engines():
-            reason = ("media stored; build the FastReid engine to generate "
-                      "embeddings (FASTREID_ONNX_URL)")
+            reason = ("media stored; run scripts/export_reid.sh to build the "
+                      "ReID engine, then re-enroll to generate embeddings")
             self._mgr.set_status(recipient_id, state="pending_reid",
                                  photos=len(crops), embeddings=0, message=reason)
             logger.info("enroll: %s deferred — %s", recipient_id, reason)

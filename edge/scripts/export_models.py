@@ -98,35 +98,33 @@ def build_engine(onnx_path: Path, engine_path: Path,
         print(f"[error] trtexec failed (rc={rc}) for {engine_path.name}")
 
 
-# --------------------------------------------------------------- FastReid
-def export_fastreid(engine_path: Path) -> None:
+# --------------------------------------------------------------- ReID
+def export_reid(engine_path: Path) -> None:
     """
-    FastReid: download a pre-exported ONNX (FASTREID_ONNX_URL) then build.
-    Produce the ONNX once on a workstation with:
-
-        python tools/deploy/onnx_export.py \
-            --config-file configs/Market1501/bagtricks_R50.yml \
-            --output bot_r50.onnx --opset 13
+    Build the ReID engine from a local ONNX (produced by scripts/export_reid.sh)
+    or, if REID_ONNX_URL is set, a downloaded one. Engine-only step — no torch.
     """
     if _have(engine_path):
         print(f"[skip] {engine_path.name} already built")
         return
 
-    onnx_path = engine_path.with_suffix(".onnx")
+    onnx_path = Path(_env("REID_ONNX_PATH", str(engine_path.with_suffix(".onnx"))))
     if not _have(onnx_path):
-        onnx_url = _env("FASTREID_ONNX_URL", "")
-        if not onnx_url:
-            print("[skip] FASTREID_ONNX_URL not set — ReID disabled "
-                  "(set it in jetson.env to enable)")
+        url = _env("REID_ONNX_URL", "")
+        if not url:
+            print("[skip] no ReID ONNX — run scripts/export_reid.sh to create "
+                  f"{onnx_path} (ReID stays disabled until then)")
             return
-        print(f"[download] {onnx_url}")
+        print(f"[download] {url}")
         onnx_path.parent.mkdir(parents=True, exist_ok=True)
-        urlretrieve(onnx_url, onnx_path)
+        urlretrieve(url, onnx_path)
 
+    h = _env("REID_INPUT_HEIGHT", "256")
+    w = _env("REID_INPUT_WIDTH", "128")
     build_engine(onnx_path, engine_path, extra_args=[
-        "--minShapes=input:1x3x256x128",
-        "--optShapes=input:1x3x256x128",
-        "--maxShapes=input:8x3x256x128",
+        f"--minShapes=input:1x3x{h}x{w}",
+        f"--optShapes=input:1x3x{h}x{w}",
+        f"--maxShapes=input:8x3x{h}x{w}",
     ])
 
 
@@ -142,7 +140,7 @@ def main() -> int:
     pose_w = _env("POSE_WEIGHTS", "yolo26m-pose.pt")
     det_engine = Path(_env("DETECTION_MODEL_PATH", "models/detection/yolo26m.engine"))
     pose_engine = Path(_env("POSE_MODEL_PATH", "models/pose/yolo26m-pose.engine"))
-    reid_engine = Path(_env("REID_MODEL_PATH", "models/reid/fastreid_bot_r50.engine"))
+    reid_engine = Path(_env("REID_MODEL_PATH", "models/reid/reid.engine"))
 
     det_ready = export_onnx(det_w, det_engine.with_suffix(".onnx"),
                             imgsz=int(_env("DETECTION_INPUT_SIZE", "640")))
@@ -157,7 +155,7 @@ def main() -> int:
     if pose_ready:
         build_engine(pose_engine.with_suffix(".onnx"), pose_engine)
 
-    export_fastreid(reid_engine)
+    export_reid(reid_engine)
     return 0
 
 

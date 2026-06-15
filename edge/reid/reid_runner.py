@@ -12,7 +12,7 @@ from ingestion.frame_buffer import FrameBuffer
 from reid.faiss_index import FaissGallery
 from reid.identity_buffer import IdentityBuffer
 from reid.identity_schema import Identity
-from reid.fastreid_extractor import FastReidExtractor
+from reid.reid_extractor import ReIDExtractor
 from reid.target_registry import TargetRegistry
 from tracking.track_buffer import TrackBuffer
 
@@ -44,7 +44,7 @@ class ReIDRunner:
         self._identities = identity_buffer
         self._gallery = gallery
         self._targets = target_registry or TargetRegistry()
-        self._extractor: FastReidExtractor | None = None
+        self._extractor: ReIDExtractor | None = None
 
         self._running = False
         self._thread: threading.Thread | None = None
@@ -58,7 +58,7 @@ class ReIDRunner:
         if self._running:
             return
         try:
-            self._extractor = FastReidExtractor()
+            self._extractor = ReIDExtractor()
         except Exception:
             logger.exception("ReIDRunner disabled (engine missing)")
             return

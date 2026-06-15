@@ -52,13 +52,19 @@ class Settings(BaseSettings):
     pose_confidence_threshold: float = 0.35
     pose_fps: float = 12.0
 
-    # ---- ReID (FastReid BoT_R50) ------------------------------------
-    reid_model_path: str = "models/reid/fastreid_bot_r50.engine"
+    # ---- ReID (OSNet by default; FastReid supported) ----------------
+    # OSNet x1_0 is light + accurate — ideal for the Orin Nano. Build its
+    # engine with scripts/export_reid.sh. FastReid BoT_R50 works too: drop its
+    # ONNX at reid_onnx_path and set reid_embedding_dim=2048.
+    reid_model_name: str = "osnet_x1_0"      # torchreid model for export_reid.sh
+    reid_model_path: str = "models/reid/reid.engine"
+    reid_onnx_path: str = "models/reid/reid.onnx"
+    reid_onnx_url: str = ""                   # optional: download a prebuilt ONNX
     reid_input_height: int = 256
     reid_input_width: int = 128
-    reid_embedding_dim: int = 2048           # BoT_R50 = 2048; ibn-R50 = 2048; mobilenet = 256
+    reid_embedding_dim: int = 512            # osnet_x1_0 = 512; BoT_R50 = 2048
     reid_fps: float = 3.0
-    reid_match_threshold: float = 0.55       # cosine on FastReid; tune per gallery
+    reid_match_threshold: float = 0.55       # cosine; tune per gallery
 
     # ---- Pipeline focus / efficiency --------------------------------
     crop_padding_frac: float = 0.08          # margin around a person box for crops
@@ -90,10 +96,6 @@ class Settings(BaseSettings):
     mqtt_port: int = 8883
     mqtt_topic_prefix: str = "ceravis/edge"
     device_id: str = "edge-0001"
-
-    # ---- Model download URLs (used by export_models.py) -------------
-    fastreid_onnx_url: str = ""               # override to point at your FastReid ONNX
-    fastreid_onnx_path: str = "models/reid/fastreid_bot_r50.onnx"
 
     model_config = SettingsConfigDict(
         # Resolve relative to the repo, not the process cwd, so the env file
