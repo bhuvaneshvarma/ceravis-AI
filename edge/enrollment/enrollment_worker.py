@@ -115,11 +115,12 @@ class EnrollmentWorker:
             logger.info("enroll: %s deferred — %s", recipient_id, reason)
             return
 
-        embeddings = []
+        embeddings, good_crops = [], []
         for crop in crops:
             emb = self._extractor.embed(crop)
             if np.linalg.norm(emb) > 0:
                 embeddings.append(emb)
+                good_crops.append(crop)
 
         if not embeddings:
             self._mgr.set_status(recipient_id, state="error", photos=len(crops),
@@ -128,10 +129,13 @@ class EnrollmentWorker:
 
         arr = np.stack(embeddings, axis=0).astype(np.float32)
         self._mgr.save_embeddings(recipient_id, arr)
+        # Keep a few small JPEG crops of the person for future reference.
+        refs = self._mgr.save_reference_crops(recipient_id, good_crops)
         self._rebuild_gallery()
         self._mgr.set_status(recipient_id, state="ready", photos=len(crops),
-                             embeddings=len(embeddings),
-                             message=f"enrolled with {len(embeddings)} embeddings")
+                             embeddings=len(embeddings), references=refs,
+                             message=f"enrolled — {len(embeddings)} embeddings, "
+                                     f"{refs} reference image(s)")
         logger.info("enroll: %s ready (%d embeddings)", recipient_id, len(embeddings))
 
     # ---- crop extraction --------------------------------------------

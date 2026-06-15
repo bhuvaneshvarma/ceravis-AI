@@ -4,6 +4,7 @@ import time
 
 import cv2
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 
 from configuration.recipient_config import RecipientConfig
 from enrollment.enrollment_manager import EnrollmentManager
@@ -18,6 +19,18 @@ enrollment_manager = EnrollmentManager()
 
 def _worker(request: Request):
     return getattr(request.app.state, "enroll_worker", None)
+
+
+def _media_payload(recipient_id: str) -> dict:
+    names = enrollment_manager.media_names(recipient_id)
+    return {
+        "count": len(names),
+        "frames": [
+            {"name": n,
+             "url": f"/api/v1/recipients/{recipient_id}/media/{n}"}
+            for n in names
+        ],
+    }
 
 
 # ---- CRUD ------------------------------------------------------------
@@ -45,10 +58,22 @@ def enroll_status(recipient_id: str):
     return enrollment_manager.get_status(recipient_id)
 
 
-# ---- enrollment: Option A — photos ----------------------------------
+@router.get("/{recipient_id}/media")
+def list_media(recipient_id: str):
+    return _media_payload(recipient_id)
+
+
+@router.get("/{recipient_id}/media/{name}")
+def get_media(recipient_id: str, name: str):
+    path = enrollment_manager.media_path(recipient_id, name)
+    if path is None:
+        raise HTTPException(404, "not found")
+    return FileResponse(str(path), media_type="image/jpeg")
+
+
+# ---- capture / upload media (stored only — NOT enrolled yet) ---------
 @router.post("/{recipient_id}/enroll/photos")
-async def enroll_photos(recipient_id: str, request: Request,
-                        files: list[UploadFile] = File(...)):
+async def enroll_photos(recipient_id: str, files: list[UploadFile] = File(...)):
     saved = 0
     for f in files:
         data = await f.read()
@@ -59,24 +84,23 @@ async def enroll_photos(recipient_id: str, request: Request,
         saved += 1
     if saved == 0:
         raise HTTPException(400, "no images received")
-    _queue(request, recipient_id, f"{saved} photo(s) uploaded")
-    return {"status": "queued", "saved": saved}
+    enrollment_manager.set_status(recipient_id, state="review",
+                                  message=f"{saved} photo(s) added — review then Enroll")
+    return _media_payload(recipient_id)
 
 
-# ---- enrollment: Option B — video -----------------------------------
 @router.post("/{recipient_id}/enroll/video")
-async def enroll_video(recipient_id: str, request: Request,
-                       file: UploadFile = File(...)):
+async def enroll_video(recipient_id: str, file: UploadFile = File(...)):
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty video")
     ext = (file.filename or "v.mp4").rsplit(".", 1)[-1]
     enrollment_manager.save_video(recipient_id, data, ext)
-    _queue(request, recipient_id, "video uploaded")
-    return {"status": "queued"}
+    enrollment_manager.set_status(recipient_id, state="review",
+                                  message="video added — review then Enroll")
+    return {"status": "stored", "video": True}
 
 
-# ---- enrollment: Option C — live camera capture ---------------------
 @router.post("/{recipient_id}/enroll/live")
 def enroll_live(recipient_id: str, request: Request, body: dict):
     camera_id = (body or {}).get("camera_id", "").strip()
@@ -97,15 +121,20 @@ def enroll_live(recipient_id: str, request: Request, body: dict):
         time.sleep(1.0 / per_sec)
     if captured == 0:
         raise HTTPException(404, "no frames captured — is the camera live?")
-    _queue(request, recipient_id, f"{captured} live frame(s) captured")
-    return {"status": "queued", "captured": captured}
+    enrollment_manager.set_status(recipient_id, state="review",
+                                  message=f"{captured} live frame(s) — review then Enroll")
+    return _media_payload(recipient_id)
 
 
-# ---- helper ----------------------------------------------------------
-def _queue(request: Request, recipient_id: str, msg: str) -> None:
+# ---- commit: generate embeddings from the reviewed media -------------
+@router.post("/{recipient_id}/enroll/commit")
+def enroll_commit(recipient_id: str, request: Request):
+    if not enrollment_manager.media_names(recipient_id):
+        raise HTTPException(400, "no media to enroll — capture/upload first")
     w = _worker(request)
     if w is None:
         enrollment_manager.set_status(recipient_id, state="pending_reid",
-                                      message=msg + " (worker offline)")
-        return
+                                      message="worker offline")
+        raise HTTPException(503, "enrollment worker offline")
     w.enqueue(recipient_id)
+    return {"status": "queued"}
