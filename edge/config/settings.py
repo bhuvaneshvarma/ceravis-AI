@@ -66,6 +66,17 @@ class Settings(BaseSettings):
     reid_fps: float = 3.0
     reid_match_threshold: float = 0.55       # cosine; tune per gallery
 
+    # ---- Adaptive ReID (online learning) ----------------------------
+    # While the target is matched with HIGH confidence, novel body embeddings
+    # are captured live (vectors only — no frames) into a per-recipient adaptive
+    # store that also participates in matching. This absorbs appearance drift
+    # (clothing/shawl changes). Enrolled embeddings are never overwritten.
+    reid_adaptive_enabled: bool = True
+    reid_adaptive_max: int = 50              # capped FIFO per recipient (newest kept)
+    reid_adaptive_min_score: float = 0.70    # only capture above this match score
+    reid_adaptive_dedup_cos: float = 0.92    # skip near-duplicates of existing vectors
+    reid_adaptive_rebuild_secs: float = 5.0  # min seconds between gallery rebuilds
+
     # ---- Pipeline focus / efficiency --------------------------------
     crop_padding_frac: float = 0.08          # margin around a person box for crops
     target_only_pose: bool = True            # once ReID locks the target, pose that crop only

@@ -129,7 +129,7 @@ class EnrollmentWorker:
 
         # Load engines first so the detector (if available) tightens crops.
         reid_ready = self._ensure_engines()
-        crops = self._collect_crops(recipient_id)
+        crops, labels = self._collect_crops(recipient_id)
         if not reid_ready:
             reason = self._reid_error or (
                 "media stored; run scripts/export_reid.sh to build the ReID "
@@ -139,12 +139,13 @@ class EnrollmentWorker:
             logger.info("enroll: %s deferred — %s", recipient_id, reason)
             return
 
-        embeddings, good_crops = [], []
-        for crop in crops:
+        embeddings, good_crops, good_labels = [], [], []
+        for crop, label in zip(crops, labels):
             emb = self._extractor.embed(crop)
             if np.linalg.norm(emb) > 0:
                 embeddings.append(emb)
                 good_crops.append(crop)
+                good_labels.append(label)
 
         if not embeddings:
             self._mgr.set_status(recipient_id, state="error", photos=len(crops),
@@ -153,6 +154,7 @@ class EnrollmentWorker:
 
         arr = np.stack(embeddings, axis=0).astype(np.float32)
         self._mgr.save_embeddings(recipient_id, arr)
+        self._mgr.save_embedding_labels(recipient_id, good_labels)
         # Keep a few small JPEG crops of the person for future reference.
         refs = self._mgr.save_reference_crops(recipient_id, good_crops)
         self._rebuild_gallery()
@@ -163,25 +165,32 @@ class EnrollmentWorker:
         logger.info("enroll: %s ready (%d embeddings)", recipient_id, len(embeddings))
 
     # ---- crop extraction --------------------------------------------
-    def _collect_crops(self, recipient_id: str) -> list[np.ndarray]:
-        """Largest-person crop from every photo + sampled video frame."""
+    def _collect_crops(self, recipient_id: str):
+        """Largest-person crop + its label from every photo / sampled video
+        frame. Returns (crops, labels) aligned 1:1; photo labels come from the
+        capture sidecar, sampled video frames are unlabeled."""
+        labels_map = self._mgr.get_labels(recipient_id)
         images: list[np.ndarray] = []
+        labels: list[str] = []
         for p in self._mgr.list_photos(recipient_id):
             img = cv2.imread(str(p))
             if img is not None:
                 images.append(img)
+                labels.append(labels_map.get(p.name, ""))
         for v in self._mgr.list_videos(recipient_id):
-            images.extend(self._sample_video(str(v)))
+            for frame in self._sample_video(str(v)):
+                images.append(frame)
+                labels.append("")
 
         if self._detector is None:
-            # No detector: use whole images as crops (FastReid still resizes).
-            return images
+            # No detector: use whole images as crops (the extractor resizes).
+            return images, labels
 
         crops: list[np.ndarray] = []
         for img in images:
             crop = self._largest_person(img)
             crops.append(crop if crop is not None else img)
-        return crops
+        return crops, labels
 
     def _sample_video(self, path: str) -> list[np.ndarray]:
         frames: list[np.ndarray] = []

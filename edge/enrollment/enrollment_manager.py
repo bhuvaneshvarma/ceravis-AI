@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -149,20 +150,102 @@ class EnrollmentManager:
             return np.load(f).astype(np.float32)
         return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32)
 
+    def save_embedding_labels(self, recipient_id: str, labels: list[str]) -> None:
+        """Per-embedding labels aligned to embeddings.npy rows — metadata for
+        future pose/action analytics; not used for matching. Best-effort."""
+        root = self.create_recipient_folder(recipient_id)
+        (root / "body" / "labels_emb.json").write_text(json.dumps(list(labels)))
+
+    # ---- adaptive (online-learning) embeddings ----------------------
+    # Vectors captured live while the target is matched with high confidence.
+    # Stored SEPARATELY from the enrolled set (which is never overwritten),
+    # capped FIFO (newest kept), and included in the gallery so they help match
+    # the recipient through appearance/clothing changes.
+    def _adaptive_file(self, recipient_id: str) -> Path:
+        return self.create_recipient_folder(recipient_id) / "body" / "adaptive.npy"
+
+    def load_adaptive(self, recipient_id: str) -> np.ndarray:
+        root = self.get_recipient_folder(recipient_id)
+        f = root / "body" / "adaptive.npy" if root else None
+        if f and f.exists():
+            try:
+                return np.load(f).astype(np.float32)
+            except Exception:
+                pass
+        return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32)
+
+    def _load_adaptive_labels(self, recipient_id: str) -> list[str]:
+        root = self.get_recipient_folder(recipient_id)
+        f = root / "body" / "adaptive_labels.json" if root else None
+        if f and f.exists():
+            try:
+                return list(json.loads(f.read_text()))
+            except Exception:
+                return []
+        return []
+
+    def append_adaptive(self, recipient_id: str, embedding: np.ndarray,
+                        label: str = "", *, cap: int, dedup_cos: float) -> bool:
+        """
+        Add a live embedding to the recipient's adaptive store if it is novel
+        (max cosine vs existing enrolled+adaptive < dedup_cos). FIFO-evicts the
+        oldest beyond `cap`. Returns True if it was added (so the caller can
+        rebuild the gallery). Writes are atomic; enrolled vectors are untouched.
+        """
+        emb = np.asarray(embedding, dtype=np.float32).ravel()
+        norm = float(np.linalg.norm(emb))
+        if emb.shape[0] != settings.reid_embedding_dim or norm == 0.0:
+            return False
+        emb = emb / norm
+
+        enrolled = self.load_embeddings(recipient_id)
+        adaptive = self.load_adaptive(recipient_id)
+        existing = [a for a in (enrolled, adaptive) if a.ndim == 2 and a.shape[0]]
+        if existing:
+            stack = np.concatenate(existing, axis=0)
+            if float(np.max(stack @ emb)) >= dedup_cos:
+                return False                      # too similar — no new info
+
+        adaptive = (np.concatenate([adaptive, emb[None, :]], axis=0)
+                    if adaptive.shape[0] else emb[None, :])
+        labels = self._load_adaptive_labels(recipient_id)
+        labels.append(label)
+        if adaptive.shape[0] > cap:               # FIFO — drop oldest
+            adaptive = adaptive[-cap:]
+            labels = labels[-cap:]
+
+        body = self.create_recipient_folder(recipient_id) / "body"
+        body.mkdir(parents=True, exist_ok=True)
+        tmp = body / "adaptive.npy.tmp"
+        with open(tmp, "wb") as fh:               # atomic save (temp + replace)
+            np.save(fh, adaptive.astype(np.float32))
+        os.replace(tmp, body / "adaptive.npy")
+        (body / "adaptive_labels.json").write_text(json.dumps(labels))
+        return True
+
     def load_gallery(self) -> tuple[np.ndarray, list[str]]:
-        """Concatenate every recipient's embeddings for a FAISS rebuild."""
+        """Concatenate every recipient's enrolled + adaptive embeddings."""
         all_emb: list[np.ndarray] = []
         ids: list[str] = []
         for root in sorted(self.base_path.glob("*")):
             if not root.is_dir():
                 continue
-            f = root / "body" / "embeddings.npy"
-            if not f.exists():
+            parts: list[np.ndarray] = []
+            for fname in ("embeddings.npy", "adaptive.npy"):
+                f = root / "body" / fname
+                if not f.exists():
+                    continue
+                try:
+                    arr = np.load(f).astype(np.float32)
+                except Exception:
+                    continue
+                if arr.ndim == 2 and arr.shape[0] > 0:
+                    parts.append(arr)
+            if not parts:
                 continue
-            emb = np.load(f).astype(np.float32)
-            if emb.ndim == 2 and emb.shape[0] > 0:
-                all_emb.append(emb)
-                ids.extend([root.name] * emb.shape[0])
+            emb = np.concatenate(parts, axis=0)
+            all_emb.append(emb)
+            ids.extend([root.name] * emb.shape[0])
         if not all_emb:
             return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32), []
         return np.concatenate(all_emb, axis=0), ids

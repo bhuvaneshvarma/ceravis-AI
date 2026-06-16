@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from common.crops import crop_person
 from config.settings import settings
+from enrollment.enrollment_manager import EnrollmentManager
 from ingestion.frame_buffer import FrameBuffer
 from reid.faiss_index import FaissGallery
 from reid.identity_buffer import IdentityBuffer
@@ -38,17 +39,22 @@ class ReIDRunner:
         identity_buffer: IdentityBuffer,
         gallery: FaissGallery,
         target_registry: TargetRegistry | None = None,
+        posture_buffer=None,
+        enroll_manager: EnrollmentManager | None = None,
     ) -> None:
         self._frames = frame_buffer
         self._tracks = track_buffer
         self._identities = identity_buffer
         self._gallery = gallery
         self._targets = target_registry or TargetRegistry()
+        self._postures = posture_buffer            # optional — labels adaptive captures
+        self._enroll_mgr = enroll_manager or EnrollmentManager()
         self._extractor: ReIDExtractor | None = None
 
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_query_frame: dict[tuple[str, int], int] = {}
+        self._last_adapt_rebuild = 0.0             # throttle adaptive gallery rebuilds
 
     @property
     def is_running(self) -> bool:
@@ -143,4 +149,37 @@ class ReIDRunner:
                 if is_target and rid is not None:
                     # Lock (or refresh) the target on this track id.
                     self._targets.lock(camera_id, track.track_id, rid)
+                    # Online learning: capture this appearance if confident.
+                    if (settings.reid_adaptive_enabled
+                            and score >= settings.reid_adaptive_min_score):
+                        self._maybe_adapt(camera_id, track.track_id, rid, emb)
                 self._last_query_frame[key] = frame_data.frame_id
+
+    def _maybe_adapt(self, camera_id: str, track_id: int, rid: str, emb) -> None:
+        """
+        Persist a high-confidence target embedding into the recipient's adaptive
+        store (vectors only) and, when enough time has passed, rebuild the shared
+        gallery so the new appearance starts helping matches. Best-effort: any
+        failure here must never disturb live identification.
+        """
+        try:
+            label = ""
+            if self._postures is not None:
+                rec = self._postures.get(camera_id, track_id)
+                label = rec.posture.value if rec is not None else ""
+            added = self._enroll_mgr.append_adaptive(
+                rid, emb, label,
+                cap=settings.reid_adaptive_max,
+                dedup_cos=settings.reid_adaptive_dedup_cos,
+            )
+            if not added:
+                return
+            now = time.monotonic()
+            if now - self._last_adapt_rebuild >= settings.reid_adaptive_rebuild_secs:
+                emb_all, ids = self._enroll_mgr.load_gallery()
+                self._gallery.rebuild(emb_all, ids)
+                self._last_adapt_rebuild = now
+                logger.info("reid: adaptive store updated for %s "
+                            "(gallery now %d vectors)", rid, len(ids))
+        except Exception:
+            logger.exception("reid: adaptive capture failed")

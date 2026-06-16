@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI):
                 identity_buffer=identity_buffer,
                 gallery=gallery,
                 target_registry=target_registry,
+                posture_buffer=posture_buffer,
             )
             reid_runner.start()
         except Exception:
