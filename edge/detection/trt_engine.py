@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
 
 # TensorRT and PyCUDA are provided by JetPack — not pip installable.
 # We import lazily so dev (laptop) can still load other modules.
+#
+# NB: we deliberately do NOT `import pycuda.autoinit`. autoinit creates a CUDA
+# context bound to the importing (main) thread; that context is not current on
+# any other thread, so using an engine from a background worker thread raises
+# "invalid device context - no currently active context". Detection, pose,
+# ReID and the enrollment worker each run in their own thread, so instead we
+# retain the device's PRIMARY context (shareable across threads) and push/pop
+# it around every CUDA call — see `_cuda_context()` and the push/pop guards.
 try:
     import tensorrt as trt  # type: ignore
     import pycuda.driver as cuda  # type: ignore
-    import pycuda.autoinit  # noqa: F401  # type: ignore
     _TRT_AVAILABLE = True
 except ImportError:  # pragma: no cover
     trt = None  # type: ignore
@@ -27,6 +35,24 @@ logger = logging.getLogger("detection")
 # under systemd (cwd=edge), a shell launched from the repo root, an IDE, or a
 # standalone test script.
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
+
+# Process-wide CUDA primary context, created once and shared by every engine
+# on every thread. Unlike a context made with Device.make_context(), the
+# primary context can be current on multiple threads at once, so detection,
+# pose and ReID can run concurrently on their own streams.
+_CUDA_CTX = None
+_CUDA_CTX_LOCK = threading.Lock()
+
+
+def _cuda_context():
+    """Lazily init CUDA and retain the device-0 primary context (thread-safe)."""
+    global _CUDA_CTX
+    if _CUDA_CTX is None:
+        with _CUDA_CTX_LOCK:
+            if _CUDA_CTX is None:
+                cuda.init()
+                _CUDA_CTX = cuda.Device(0).retain_primary_context()
+    return _CUDA_CTX
 
 
 class TensorRTEngine:
@@ -66,15 +92,6 @@ class TensorRTEngine:
 
         logger.info("Loading TRT engine: %s", self._engine_path)
 
-        self._runtime = trt.Runtime(TensorRTEngine._TRT_LOGGER)
-        with open(self._engine_path, "rb") as f:
-            self._engine = self._runtime.deserialize_cuda_engine(f.read())
-        if self._engine is None:
-            raise RuntimeError("Failed to deserialize TRT engine")
-
-        self._context = self._engine.create_execution_context()
-        self._stream = cuda.Stream()
-
         self._input_indices: list[int] = []
         self._output_indices: list[int] = []
         self._names: list[str] = []
@@ -84,11 +101,30 @@ class TensorRTEngine:
         self._dtypes: list[type] = []
         self._bindings: list[int] = []
 
-        # TensorRT 10 (JetPack 6.1+) removed execute_async_v2; TRT 8.5+
-        # already supports the v3 named-tensor API, so prefer it.
-        self._use_v3 = hasattr(self._context, "execute_async_v3")
+        # Deserialize, create the execution context, the stream and all device
+        # buffers under an active CUDA context. push/pop keeps construction
+        # valid regardless of which thread builds the engine (the enrollment
+        # worker and ReID runner build theirs off the main thread).
+        self._cuda_ctx = _cuda_context()
+        self._cuda_ctx.push()
+        try:
+            self._runtime = trt.Runtime(TensorRTEngine._TRT_LOGGER)
+            with open(self._engine_path, "rb") as f:
+                self._engine = self._runtime.deserialize_cuda_engine(f.read())
+            if self._engine is None:
+                raise RuntimeError("Failed to deserialize TRT engine")
 
-        self._allocate_buffers()
+            self._context = self._engine.create_execution_context()
+            self._stream = cuda.Stream()
+
+            # TensorRT 10 (JetPack 6.1+) removed execute_async_v2; TRT 8.5+
+            # already supports the v3 named-tensor API, so prefer it.
+            self._use_v3 = hasattr(self._context, "execute_async_v3")
+
+            self._allocate_buffers()
+        finally:
+            self._cuda_ctx.pop()
+
         logger.info(
             "TRT engine ready: %s (api=%s)",
             self._engine_path.name, "v3" if self._use_v3 else "v2",
@@ -145,42 +181,48 @@ class TensorRTEngine:
         if not self._input_indices:
             raise RuntimeError("No input bindings")
 
-        in_idx = self._input_indices[0]
-        np.copyto(self._host_buffers[in_idx], input_tensor.ravel())
+        # Make the shared primary context current on THIS thread for the whole
+        # transfer/execute/sync cycle, then restore the previous stack on exit.
+        self._cuda_ctx.push()
+        try:
+            in_idx = self._input_indices[0]
+            np.copyto(self._host_buffers[in_idx], input_tensor.ravel())
 
-        cuda.memcpy_htod_async(
-            self._device_buffers[in_idx],
-            self._host_buffers[in_idx],
-            self._stream,
-        )
-
-        if self._use_v3:
-            # TRT 10 path — tensor addresses were registered at init.
-            self._context.execute_async_v3(stream_handle=self._stream.handle)
-        else:
-            # Legacy TRT 8 path.
-            self._context.execute_async_v2(
-                self._bindings,
-                stream_handle=self._stream.handle,
-            )
-
-        outputs: list[np.ndarray] = []
-        for out_idx in self._output_indices:
-            cuda.memcpy_dtoh_async(
-                self._host_buffers[out_idx],
-                self._device_buffers[out_idx],
+            cuda.memcpy_htod_async(
+                self._device_buffers[in_idx],
+                self._host_buffers[in_idx],
                 self._stream,
             )
 
-        self._stream.synchronize()
+            if self._use_v3:
+                # TRT 10 path — tensor addresses were registered at init.
+                self._context.execute_async_v3(stream_handle=self._stream.handle)
+            else:
+                # Legacy TRT 8 path.
+                self._context.execute_async_v2(
+                    self._bindings,
+                    stream_handle=self._stream.handle,
+                )
 
-        for out_idx in self._output_indices:
-            outputs.append(
-                self._host_buffers[out_idx]
-                .reshape(self._shapes[out_idx])
-                .copy()
-            )
-        return outputs
+            for out_idx in self._output_indices:
+                cuda.memcpy_dtoh_async(
+                    self._host_buffers[out_idx],
+                    self._device_buffers[out_idx],
+                    self._stream,
+                )
+
+            self._stream.synchronize()
+
+            outputs: list[np.ndarray] = []
+            for out_idx in self._output_indices:
+                outputs.append(
+                    self._host_buffers[out_idx]
+                    .reshape(self._shapes[out_idx])
+                    .copy()
+                )
+            return outputs
+        finally:
+            self._cuda_ctx.pop()
 
     # ---- introspection ----------------------------------------------
     @property
