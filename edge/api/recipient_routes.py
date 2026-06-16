@@ -23,10 +23,11 @@ def _worker(request: Request):
 
 def _media_payload(recipient_id: str) -> dict:
     names = enrollment_manager.media_names(recipient_id)
+    labels = enrollment_manager.get_labels(recipient_id)
     return {
         "count": len(names),
         "frames": [
-            {"name": n,
+            {"name": n, "label": labels.get(n, ""),
              "url": f"/api/v1/recipients/{recipient_id}/media/{n}"}
             for n in names
         ],
@@ -99,6 +100,32 @@ async def enroll_video(recipient_id: str, file: UploadFile = File(...)):
     enrollment_manager.set_status(recipient_id, state="review",
                                   message="video added — review then Enroll")
     return {"status": "stored", "video": True}
+
+
+@router.post("/{recipient_id}/enroll/capture")
+def enroll_capture(recipient_id: str, request: Request, body: dict):
+    """
+    Save ONE live frame as an enrollment photo, with an optional label
+    (e.g. 'front/standing'). Drives the new live-capture UI: the user lines up
+    a pose/viewpoint, picks the label, and clicks the red capture button.
+    """
+    camera_id = (body or {}).get("camera_id", "").strip()
+    label = (body or {}).get("label", "").strip()
+    if not camera_id:
+        raise HTTPException(400, "camera_id required")
+    fd = request.app.state.camera_manager.get_frame(camera_id)
+    if fd is None:
+        raise HTTPException(404, "no frame available — is the camera live?")
+    ok, buf = cv2.imencode(".jpg", fd.frame)
+    if not ok:
+        raise HTTPException(500, "encode failed")
+    path = enrollment_manager.save_photo(recipient_id, buf.tobytes(), "jpg")
+    enrollment_manager.record_label(recipient_id, path.name, label)
+    count = len(enrollment_manager.media_names(recipient_id))
+    enrollment_manager.set_status(
+        recipient_id, state="review",
+        message=f"{count} frame(s) captured — review then Enroll")
+    return _media_payload(recipient_id)
 
 
 @router.post("/{recipient_id}/enroll/live")

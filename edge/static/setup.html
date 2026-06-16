@@ -39,6 +39,17 @@
                 gap: 6px; margin-top: 8px; }
   .frame-grid img { width: 100%; aspect-ratio: 3/4; object-fit: cover;
                     border-radius: 6px; border: 1px solid var(--line); }
+  .frame-cell { position: relative; }
+  .frame-cell .flabel { position: absolute; left: 3px; bottom: 3px; font-size: 9.5px;
+                        background: rgba(0,0,0,.72); color: #fff; padding: 1px 5px;
+                        border-radius: 5px; }
+  .en-live-stage { position: relative; background: #000; border-radius: 10px;
+                   overflow: hidden; margin-top: 8px; border: 1px solid var(--line); }
+  .en-live-stage img { width: 100%; display: block; min-height: 120px; }
+  .en-live-nosig { position: absolute; inset: 0; display: flex; align-items: center;
+                   justify-content: center; font-size: 12.5px; color: var(--muted); }
+  .btn-capture { background: #e11d48; border-color: #e11d48; color: #fff; }
+  .btn-capture:hover { background: #be123c; border-color: #be123c; }
 </style>
 </head>
 <body>
@@ -202,7 +213,26 @@
           </div>
           <div class="etab-body" data-body="live" hidden>
             <select id="en-cam"></select>
-            <button class="btn btn-ghost btn-sm mt" id="en-live-go">Capture 4 s</button>
+            <div class="en-live-stage">
+              <img id="en-live-img" alt="live preview" />
+              <div class="en-live-nosig" id="en-live-nosig">Connecting…</div>
+            </div>
+            <div class="row mt" style="gap:8px; align-items:center; flex-wrap:wrap">
+              <label class="f" style="margin:0">View</label>
+              <select id="en-view" style="width:auto">
+                <option value="front">front</option><option value="back">back</option>
+                <option value="left">left</option><option value="right">right</option>
+              </select>
+              <label class="f" style="margin:0">Posture</label>
+              <select id="en-posture" style="width:auto">
+                <option value="standing">standing</option><option value="sitting">sitting</option>
+                <option value="walking">walking</option><option value="turning">turning</option>
+                <option value="bending">bending</option>
+              </select>
+              <button class="btn btn-sm btn-capture" id="en-capture">● Capture frame</button>
+              <span class="faint" id="en-capcount">0 captured</span>
+            </div>
+            <button class="btn btn-ghost btn-sm mt" id="en-live-go">or auto-capture 4 s</button>
           </div>
 
           <div class="mt">
@@ -281,6 +311,7 @@ function show(n) {
   document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
   document.getElementById("w-next").style.visibility = step === 4 ? "hidden" : "visible";
   renderStepper();
+  if (step !== 3) stopEnrollPreview();          // don't keep the WS alive off-step
   if (step === 1) refreshCameras();
   if (step === 2) initZones();
   if (step === 3) initRecipient();
@@ -582,7 +613,8 @@ document.getElementById("r-save").onclick = async () => {
 };
 
 /* ---- enrollment (photos / video / live) ---- */
-let enrollRid = null, enrollPoll = null;
+let enrollRid = null, enrollPoll = null, enrollPreview = null;
+const EN_MIN_FRAMES = 10;   // live capture: enable Enroll once this many frames
 
 const ENROLL_CTX = {
   photos: "Option A — upload 3–10 clear photos (different angles; standing & "
@@ -590,12 +622,14 @@ const ENROLL_CTX = {
         + "below before enrolling.",
   video: "Option B — upload a 10–20 s clip walking around the room. Frames are "
        + "sampled automatically; review them below, then enroll.",
-  live: "Option C — pick a camera and stand in view. We grab ~4 s of live "
-      + "frames; review them below, then click Enroll to build the embeddings.",
+  live: "Option C — line the person up in the live view, pick a viewpoint + "
+      + "posture label, and click the red Capture button. Grab 10–15 frames "
+      + "from different sides/postures, then Enroll.",
 };
 
 async function selectEnroll(rid, name) {
   enrollRid = rid;
+  stopEnrollPreview();
   document.getElementById("enroll-none").hidden = true;
   document.getElementById("enroll-panel").hidden = false;
   document.getElementById("enroll-who").textContent = name || rid;
@@ -604,6 +638,9 @@ async function selectEnroll(rid, name) {
   document.getElementById("en-cam").innerHTML = cams.length
     ? cams.map(c => `<option value="${c.camera_id}">${c.camera_name}</option>`).join("")
     : `<option value="">— no cameras —</option>`;
+  document.getElementById("en-cam").onchange = () => {
+    if (document.querySelector(".etab.active")?.dataset.tab === "live") startEnrollPreview();
+  };
   loadFrames();
   pollEnroll();
   if (enrollPoll) clearInterval(enrollPoll);
@@ -618,18 +655,45 @@ document.querySelectorAll(".etab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".etab-body").forEach(b =>
     b.hidden = b.dataset.body !== t.dataset.tab);
   setCtx(t.dataset.tab);
+  if (t.dataset.tab === "live") startEnrollPreview(); else stopEnrollPreview();
+  loadFrames();                  // recompute the Enroll gate for this tab
 });
 
+function renderFrames(m) {
+  const grid = document.getElementById("en-frames");
+  grid.innerHTML = m.count === 0
+    ? `<span class="faint" style="font-size:12.5px">No frames yet.</span>`
+    : m.frames.map(f => `<div class="frame-cell"><img src="${f.url}" alt="${f.name}" />`
+        + `${f.label ? `<span class="flabel">${f.label}</span>` : ""}</div>`).join("");
+  const cnt = document.getElementById("en-capcount");
+  if (cnt) cnt.textContent = `${m.count} captured`;
+  // Live tab asks for >= EN_MIN_FRAMES; photos/video keep the existing >= 1 gate.
+  const liveActive = document.querySelector(".etab.active")?.dataset.tab === "live";
+  const min = liveActive ? EN_MIN_FRAMES : 1;
+  document.getElementById("en-commit").disabled = m.count < min;
+}
 async function loadFrames() {
   if (!enrollRid) return;
-  const grid = document.getElementById("en-frames");
-  try {
-    const m = await api(`/api/v1/recipients/${enrollRid}/media`);
-    grid.innerHTML = m.count === 0
-      ? `<span class="faint" style="font-size:12.5px">No frames yet.</span>`
-      : m.frames.map(f => `<img src="${f.url}" alt="${f.name}" />`).join("");
-    document.getElementById("en-commit").disabled = m.count === 0;
-  } catch {}
+  try { renderFrames(await api(`/api/v1/recipients/${enrollRid}/media`)); }
+  catch {}
+}
+
+/* live preview for the capture flow (reuses the shared WebSocket stream) */
+function startEnrollPreview() {
+  stopEnrollPreview();
+  const cam = document.getElementById("en-cam").value;
+  const img = document.getElementById("en-live-img");
+  const nosig = document.getElementById("en-live-nosig");
+  if (!cam || !img) return;
+  enrollPreview = liveStream(img, cam, {
+    onState: s => { if (nosig) {
+      nosig.style.display = s === "live" ? "none" : "flex";
+      nosig.textContent = s === "offline" ? "Camera offline" : "Connecting…";
+    }},
+  });
+}
+function stopEnrollPreview() {
+  if (enrollPreview) { enrollPreview.stop(); enrollPreview = null; }
 }
 
 async function pollEnroll() {
@@ -663,6 +727,18 @@ document.getElementById("en-video-go").onclick = async () => {
     .then(() => toast("Video added — will sample on enroll"))
     .catch(() => toast("Upload failed", "err"));
   loadFrames();
+};
+document.getElementById("en-capture").onclick = async () => {
+  const cam = document.getElementById("en-cam").value;
+  if (!cam) return toast("No camera selected", "err");
+  const label = document.getElementById("en-view").value + "/" +
+                document.getElementById("en-posture").value;
+  try {
+    const m = await api(`/api/v1/recipients/${enrollRid}/enroll/capture`,
+      { method: "POST", body: JSON.stringify({ camera_id: cam, label }) });
+    toast(`Captured · ${label}`);
+    renderFrames(m);
+  } catch (e) { toast(e.detail || "Capture failed", "err"); }
 };
 document.getElementById("en-live-go").onclick = async () => {
   const cam = document.getElementById("en-cam").value;

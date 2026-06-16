@@ -76,6 +76,27 @@ class EnrollmentManager:
         """Filenames of stored enrollment photos (for UI preview)."""
         return [p.name for p in self.list_photos(recipient_id)]
 
+    # ---- frame labels (viewpoint/posture tags) ----------------------
+    def get_labels(self, recipient_id: str) -> dict[str, str]:
+        """filename -> label (e.g. 'front/standing') for captured frames."""
+        root = self.get_recipient_folder(recipient_id)
+        path = root / "labels.json" if root else None
+        if path and path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                return {}
+        return {}
+
+    def record_label(self, recipient_id: str, filename: str, label: str) -> None:
+        """Tag a captured frame; additive, never touches the image itself."""
+        if not label:
+            return
+        root = self.create_recipient_folder(recipient_id)
+        labels = self.get_labels(recipient_id)
+        labels[filename] = label
+        (root / "labels.json").write_text(json.dumps(labels, indent=2))
+
     def media_path(self, recipient_id: str, name: str) -> Path | None:
         """Resolve a stored photo/crop by basename — path-traversal safe."""
         root = self.get_recipient_folder(recipient_id)
