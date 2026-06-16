@@ -32,9 +32,9 @@
       from the edge pipeline in real time; every recognized movement is logged on the right.</div>
   </div>
 
-  <div class="row mb">
-    <label class="f" style="margin:0">Camera</label>
-    <select id="m-cam" style="max-width:320px"></select>
+  <div class="row mb" style="align-items:center; gap:10px">
+    <span class="pill pill-mute" id="m-mode">SEARCHING</span>
+    <span id="m-active" class="faint"></span>
     <span id="m-state" class="faint"></span>
   </div>
 
@@ -70,25 +70,50 @@ const POSTURE_COLOR = {
 
 const M = {
   cam: null, stream: null, lastImg: null,
-  state: {},                 // latest ai/state for selected camera
+  state: {},                 // latest ai/state for ALL cameras
   lastPosture: {},           // track_id -> posture (for transition log)
+  searching: true,           // true when no enrolled target is in view
 };
 const canvas = document.getElementById("m-canvas");
 const ctx = canvas.getContext("2d");
+let CAM_NAMES = {};          // camera_id -> "Name (Room)"
 
-/* ---- camera selection ------------------------------------------- */
-async function initCams() {
+async function initCamNames() {
   const cams = await api("/api/v1/cameras").catch(() => []);
-  const sel = document.getElementById("m-cam");
-  sel.innerHTML = cams.length
-    ? cams.map(c => `<option value="${c.camera_id}">${c.camera_name} (${c.room_name})</option>`).join("")
-    : `<option value="">— no cameras —</option>`;
-  sel.onchange = () => attach(sel.value);
-  if (cams.length) attach(cams[0].camera_id);
+  CAM_NAMES = Object.fromEntries(
+    cams.map(c => [c.camera_id, `${c.camera_name} (${c.room_name})`]));
 }
-function attach(camId) {
+
+/* ---- target-driven camera selection -----------------------------
+   The monitor follows the enrolled recipient: it shows whichever camera the
+   ReID-matched target is on, and only that person's box. With no target in
+   view it falls back to the busiest camera in a "searching" state. Camera
+   choice is sticky to avoid flapping when several cameras see people. */
+function camsWithTarget(state) {
+  return Object.keys(state).filter(
+    cam => (state[cam].tracks || []).some(t => t.is_target));
+}
+function pickCamera(state) {
+  const cams = Object.keys(state);
+  if (!cams.length) return { cam: null, searching: true };
+  const withTarget = camsWithTarget(state);
+  if (M.cam && withTarget.includes(M.cam))      // target still here -> stay
+    return { cam: M.cam, searching: false };
+  if (withTarget.length)                        // target moved -> follow it
+    return { cam: withTarget[0], searching: false };
+  // No target anywhere: keep the current camera if it still exists, else the
+  // most-active one (max raw detections). Either way we are "searching".
+  if (M.cam && state[M.cam]) return { cam: M.cam, searching: true };
+  let best = cams[0], bestN = -1;
+  cams.forEach(c => { const n = state[c].detections || 0;
+    if (n > bestN) { bestN = n; best = c; } });
+  return { cam: best, searching: true };
+}
+function setCamera(camId, searching) {
+  M.searching = searching;
+  if (camId === M.cam) return;                   // no change — keep the stream
   if (M.stream) { M.stream.stop(); M.stream = null; }
-  M.cam = camId; M.lastPosture = {};
+  M.cam = camId; M.lastPosture = {}; M.lastImg = null;
   if (!camId) return;
   const img = new Image();
   M.stream = liveStream(img, camId, {
@@ -106,7 +131,10 @@ function draw() {
     canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
   }
   ctx.drawImage(img, 0, 0);
-  const tracks = (M.state[M.cam] && M.state[M.cam].tracks) || [];
+  if (M.searching) { drawSearching(); return; }
+  // Only the ReID-matched target is drawn — other detected people are ignored.
+  const tracks = ((M.state[M.cam] && M.state[M.cam].tracks) || [])
+    .filter(t => t.is_target);
   const lw = Math.max(2, canvas.width / 480);
   ctx.font = `600 ${Math.max(14, canvas.width / 70)}px sans-serif`;
   tracks.forEach(t => {
@@ -130,6 +158,21 @@ function draw() {
     }
   });
 }
+function drawSearching() {
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,.32)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fbbf24";
+  ctx.font = `600 ${Math.max(20, canvas.width / 42)}px sans-serif`;
+  ctx.fillText("🔍 Searching for target…", canvas.width / 2, canvas.height / 2);
+  ctx.fillStyle = "rgba(255,255,255,.72)";
+  ctx.font = `500 ${Math.max(13, canvas.width / 80)}px sans-serif`;
+  ctx.fillText("No enrolled recipient in view",
+    canvas.width / 2, canvas.height / 2 + Math.max(26, canvas.width / 28));
+  ctx.textAlign = "start";
+  ctx.restore();
+}
 
 /* ---- AI state polling + movement log ------------------------------ */
 function logEntry(html, cls = "") {
@@ -142,22 +185,24 @@ function logEntry(html, cls = "") {
   while (box.children.length > 80) box.lastChild.remove();
 }
 async function pollState() {
-  if (!M.cam) return;
-  try {
-    M.state = await api(`/api/v1/ai/state?camera_id=${encodeURIComponent(M.cam)}`);
-  } catch { return; }
-  const camState = M.state[M.cam] || {};
-  const tracks = camState.tracks || [];
-  const detN = camState.detections ?? "—";
-  const stateEl = document.getElementById("m-state");
-  if (stateEl) stateEl.textContent = `detections: ${detN} · tracks: ${tracks.length}`;
+  let state;
+  try { state = await api(`/api/v1/ai/state`); } catch { return; }   // ALL cameras
+  M.state = state;
+  const pick = pickCamera(state);
+  setCamera(pick.cam, pick.searching);
+  updateHeader();
+
+  // Target-only tracks (everyone else the YOLO sees is intentionally ignored).
+  const tracks = M.searching ? []
+    : ((M.state[M.cam] || {}).tracks || []).filter(t => t.is_target);
 
   // chips
   document.getElementById("m-chips").innerHTML = tracks.length === 0
-    ? `<span class="faint" style="font-size:12.5px">No tracked person${detN ? " (raw detections: " + detN + ")" : ""}.</span>`
+    ? `<span class="faint" style="font-size:12.5px">${M.searching
+        ? "Searching for the enrolled recipient…" : "Target not in view."}</span>`
     : tracks.map(t => {
         const c = POSTURE_COLOR[t.posture || "unknown"];
-        const who = t.recipient_id || `Person #${t.track_id}`;
+        const who = t.recipient_id || "target";
         return `<span class="track-chip ${t.posture === "fallen" ? "fallen" : ""}">
           <span class="sq" style="background:${c}"></span>
           ${who} — <b style="color:${c}">${t.posture || "detecting…"}</b>
@@ -165,13 +210,13 @@ async function pollState() {
         </span>`;
       }).join("");
 
-  // transition log
+  // transition log (target only)
   const seen = new Set();
   tracks.forEach(t => {
     seen.add(t.track_id);
     const prev = M.lastPosture[t.track_id];
     if (t.posture && t.posture !== prev) {
-      const who = t.recipient_id || `Person #${t.track_id}`;
+      const who = t.recipient_id || "target";
       if (t.posture === "fallen")
         logEntry(`⚠ ${who} — <b>FALL DETECTED</b>`, "fall");
       else
@@ -180,12 +225,26 @@ async function pollState() {
     }
   });
   Object.keys(M.lastPosture).forEach(id => {
-    if (!seen.has(Number(id))) {
-      logEntry(`Person #${id} left the frame`, "");
-      delete M.lastPosture[id];
-    }
+    if (!seen.has(Number(id))) delete M.lastPosture[id];
   });
   draw();
+}
+
+function updateHeader() {
+  const modeEl = document.getElementById("m-mode");
+  const activeEl = document.getElementById("m-active");
+  const camName = CAM_NAMES[M.cam] || M.cam || "—";
+  if (M.searching) {
+    modeEl.className = "pill pill-warn"; modeEl.textContent = "SEARCHING";
+    activeEl.textContent = M.cam
+      ? `Scanning ${camName} — no enrolled target in view`
+      : "No cameras available";
+  } else {
+    const t = ((M.state[M.cam] || {}).tracks || []).find(x => x.is_target);
+    const who = (t && t.recipient_id) || "target";
+    modeEl.className = "pill pill-ok"; modeEl.textContent = "TARGET LOCKED";
+    activeEl.textContent = `${who} · ${camName}`;
+  }
 }
 
 /* ---- persisted events (rule engine) -------------------------------- */
@@ -204,7 +263,7 @@ async function pollEvents() {
   } catch {}
 }
 
-initCams();
+initCamNames();
 setInterval(pollState, 400);
 setInterval(pollEvents, 5000);
 pollEvents();
