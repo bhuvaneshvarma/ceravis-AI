@@ -24,11 +24,25 @@ MODEL="${REID_MODEL_NAME:-osnet_x1_0}"
 H="${REID_INPUT_HEIGHT:-256}"; W="${REID_INPUT_WIDTH:-128}"
 
 if [ ! -x "$VENV/bin/python" ]; then
-    python3 -m venv "$VENV"
+    python3 -m venv --system-site-packages "$VENV"
     "$VENV/bin/pip" install --upgrade pip
 fi
-echo "== installing CPU torch + torchreid (one-time) =="
-"$VENV/bin/pip" install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+echo "== installing export dependencies =="
+
+"$VENV/bin/pip" install \
+    "numpy<2" \
+    "scipy>=1.10,<1.14" \
+    matplotlib \
+    opencv-python-headless \
+    gdown \
+    tensorboard \
+    onnxscript
+
+"$VENV/bin/pip" install \
+    torch \
+    torchvision \
+    --index-url https://download.pytorch.org/whl/cpu
+
 "$VENV/bin/pip" install torchreid
 
 echo "== exporting $MODEL -> $ONNX =="

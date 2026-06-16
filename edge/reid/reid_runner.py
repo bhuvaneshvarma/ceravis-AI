@@ -59,8 +59,12 @@ class ReIDRunner:
             return
         try:
             self._extractor = ReIDExtractor()
+        except FileNotFoundError as exc:
+            logger.warning("ReIDRunner disabled — ReID engine not built "
+                           "(run scripts/export_reid.sh): %s", exc)
+            return
         except Exception:
-            logger.exception("ReIDRunner disabled (engine missing)")
+            logger.exception("ReIDRunner disabled — ReID engine failed to load")
             return
         self._running = True
         self._thread = threading.Thread(
