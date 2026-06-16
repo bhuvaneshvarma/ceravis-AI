@@ -65,6 +65,11 @@ class PostureResult:
     torso_angle_deg: float           # 0 = perfectly vertical
     avg_knee_angle_deg: float        # 180 = straight legs
     centroid_xy: tuple[float, float]
+    # Per-frame body scale in pixels (shoulder->hip torso length, or the
+    # keypoint vertical extent as a fallback). Used to make walking motion
+    # scale-invariant — a chair-roll near the camera and a stride across a
+    # far room then compare on the same footing.
+    body_ref_px: float = 1.0
 
 
 # =====================================================================
@@ -119,7 +124,7 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
     ankle = _avg_point([kps[LEFT_ANKLE], kps[RIGHT_ANKLE]])
 
     if shoulder is None or hip is None:
-        return PostureResult(Posture.UNKNOWN, 0.0, 0.0, 0.0, (0.0, 0.0))
+        return PostureResult(Posture.UNKNOWN, 0.0, 0.0, 0.0, (0.0, 0.0), 1.0)
 
     sx, sy, _ = shoulder
     hx, hy, _ = hip
@@ -129,6 +134,13 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
     xs = [k.x for k in pose.keypoints if k.confidence >= _MIN_KP_CONF]
     ys = [k.y for k in pose.keypoints if k.confidence >= _MIN_KP_CONF]
     centroid = (sum(xs) / len(xs), sum(ys) / len(ys)) if xs else (0.0, 0.0)
+
+    # Body scale: torso length, falling back to the keypoint vertical extent
+    # if shoulders/hips are nearly coincident (heavy foreshortening).
+    body_ref = math.hypot(sx - hx, sy - hy)
+    if body_ref < 1.0:
+        body_ref = (max(ys) - min(ys)) if ys else 1.0
+    body_ref = max(body_ref, 1.0)
 
     # Knee angle — used to distinguish sitting from standing
     knee_ang = 180.0
@@ -154,17 +166,17 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
 
     # Strong fall: torso is closer to horizontal than to vertical.
     if torso_ang >= fall_thr:
-        return PostureResult(Posture.FALLEN, 0.85, torso_ang, knee_ang, centroid)
+        return PostureResult(Posture.FALLEN, 0.85, torso_ang, knee_ang, centroid, body_ref)
 
     # Upright torso + bent knees => sitting.
     # Also if hips are at ~knee height (small vertical drop), sitting wins.
     if knee_ang < 140.0:
         if knee is not None and abs(knee[1] - hy) < (abs(hy - sy) * 0.6):
-            return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang, centroid)
+            return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang, centroid, body_ref)
 
     # Otherwise we treat as standing — walking is decided by the
     # stateful PostureTracker below, which folds in motion.
-    return PostureResult(Posture.STANDING, 0.75, torso_ang, knee_ang, centroid)
+    return PostureResult(Posture.STANDING, 0.75, torso_ang, knee_ang, centroid, body_ref)
 
 
 # =====================================================================
@@ -174,8 +186,9 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
 @dataclass(slots=True)
 class _TrackState:
     last_postures: deque
-    last_centroids: deque        # (ts, x, y)
+    last_centroids: deque        # (ts, x, y, body_ref_px)
     fall_streak: int = 0
+    walk_streak: int = 0
 
 
 class PostureTracker:
@@ -210,20 +223,39 @@ class PostureTracker:
         raw = classify_frame(pose)
 
         st.last_postures.append(raw.posture)
-        st.last_centroids.append((pose.timestamp, *raw.centroid_xy))
+        st.last_centroids.append((pose.timestamp, *raw.centroid_xy, raw.body_ref_px))
 
-        # ---- walking detection (needs motion) ----------------------
+        # ---- walking detection (scale-normalized + confirmed) ------
+        # Walking must be (a) fast relative to the person's own body size
+        # (so a chair-roll near the camera no longer beats a fixed pixel
+        # threshold), (b) above an absolute pixel floor (kills sub-pixel
+        # jitter), and (c) sustained for N consecutive frames (so a single
+        # turn/lean can't trip it). Otherwise the person stays STANDING.
+        moving = False
         if raw.posture == Posture.STANDING and len(st.last_centroids) >= 2:
-            t_old, x_old, y_old = st.last_centroids[0]
-            t_new, x_new, y_new = st.last_centroids[-1]
+            t_old, x_old, y_old, _ = st.last_centroids[0]
+            t_new, x_new, y_new, _ = st.last_centroids[-1]
             dt = max((t_new - t_old).total_seconds(), 1e-3)
             if dt <= settings.walking_motion_window_secs:
-                disp = math.hypot(x_new - x_old, y_new - y_old) / dt
-                if disp >= settings.walking_motion_threshold_pixels:
-                    return PostureResult(
-                        Posture.WALKING, raw.confidence,
-                        raw.torso_angle_deg, raw.avg_knee_angle_deg, raw.centroid_xy,
-                    )
+                disp = math.hypot(x_new - x_old, y_new - y_old)
+                speed_px = disp / dt
+                body_ref = max(raw.body_ref_px, 1.0)
+                speed_frac = speed_px / body_ref          # body-lengths / sec
+                moving = (
+                    speed_frac >= settings.walking_motion_body_fraction
+                    and disp >= settings.walking_min_pixels
+                )
+
+        if raw.posture == Posture.STANDING:
+            st.walk_streak = st.walk_streak + 1 if moving else 0
+            if st.walk_streak >= settings.walking_confirm_frames:
+                return PostureResult(
+                    Posture.WALKING, raw.confidence,
+                    raw.torso_angle_deg, raw.avg_knee_angle_deg,
+                    raw.centroid_xy, raw.body_ref_px,
+                )
+        else:
+            st.walk_streak = 0
 
         # ---- N-frame fall confirmation -----------------------------
         if raw.posture == Posture.FALLEN:

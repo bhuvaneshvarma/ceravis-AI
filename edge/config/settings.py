@@ -79,8 +79,15 @@ class Settings(BaseSettings):
     tracker_match_thresh: float = 0.8
 
     # ---- Posture (sitting / standing / walking / fallen) ------------
-    walking_motion_threshold_pixels: float = 25.0   # centroid disp / sec
+    # Walking is scale-normalized (motion relative to the person's own body
+    # size) and temporally confirmed, so a chair-swivel near the camera is no
+    # longer mistaken for walking. The legacy pixel threshold is retained for
+    # back-compat but no longer drives the decision.
+    walking_motion_threshold_pixels: float = 25.0   # legacy (superseded)
     walking_motion_window_secs: float = 1.5
+    walking_motion_body_fraction: float = 0.6       # body-lengths / sec to qualify
+    walking_confirm_frames: int = 3                 # consecutive frames before WALKING
+    walking_min_pixels: float = 12.0                # absolute displacement floor
     sitting_min_secs: float = 5.0
     standing_min_secs: float = 2.0
     fall_torso_angle_deg: float = 60.0              # > = horizontal
