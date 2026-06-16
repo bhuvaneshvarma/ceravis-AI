@@ -43,7 +43,7 @@ class EnrollmentWorker:
         self._q: "queue.Queue[str]" = queue.Queue()
         self._detector = None
         self._extractor = None
-        self._engines_tried = False
+        self._reid_error: str | None = None
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -56,8 +56,12 @@ class EnrollmentWorker:
             target=self._run, daemon=True, name="enroll-worker",
         )
         self._thread.start()
-        # Load any embeddings produced in a previous run into the gallery.
+        # Load any embeddings produced in a previous run into the gallery,
+        # then re-queue recipients that were committed but never embedded
+        # (e.g. enrolled before the ReID engine was built) so a build +
+        # restart finishes them automatically — no manual re-enroll needed.
         self._rebuild_gallery()
+        self._resume_pending()
 
     def stop(self) -> None:
         self._running = False
@@ -73,21 +77,38 @@ class EnrollmentWorker:
 
     # ---- engines (lazy) ---------------------------------------------
     def _ensure_engines(self) -> bool:
-        if self._engines_tried:
-            return self._detector is not None and self._extractor is not None
-        self._engines_tried = True
-        try:
-            from detection.yolo_detector import YOLODetector
-            self._detector = YOLODetector()
-        except Exception:
-            logger.exception("enroll: detection engine unavailable")
-        try:
-            from reid.reid_extractor import ReIDExtractor
-            self._extractor = ReIDExtractor()
-        except Exception:
-            logger.warning("enroll: ReID engine unavailable — embeddings "
-                           "deferred (run scripts/export_reid.sh)")
-        return self._detector is not None and self._extractor is not None
+        """
+        Load engines lazily, retrying each one on every job until it succeeds
+        — so building an engine and re-queuing (even without restarting) is
+        enough to recover. Once loaded an engine is cached and never rebuilt.
+
+        The ReID extractor is the hard requirement (it produces the
+        embeddings); the detector is best-effort and only tightens crops.
+        Returns True when ReID is ready.
+        """
+        if self._detector is None:
+            try:
+                from detection.yolo_detector import YOLODetector
+                self._detector = YOLODetector()
+            except Exception:
+                logger.warning("enroll: detector unavailable — enrolling on "
+                               "whole images (crops not tightened)")
+        if self._extractor is None:
+            try:
+                from reid.reid_extractor import ReIDExtractor
+                self._extractor = ReIDExtractor()
+                self._reid_error = None
+            except FileNotFoundError:
+                self._reid_error = ("ReID engine not built — run "
+                                    "scripts/export_reid.sh, then re-enroll")
+                logger.warning("enroll: %s", self._reid_error)
+            except Exception as exc:
+                # Engine file exists but failed to load (corrupt, TRT version
+                # mismatch, dim mismatch, …). Surface the REAL reason with a
+                # full traceback instead of misdirecting to export_reid.sh.
+                self._reid_error = f"ReID engine failed to load: {exc}"
+                logger.exception("enroll: ReID engine load failed")
+        return self._extractor is not None
 
     # ---- main loop ---------------------------------------------------
     def _run(self) -> None:
@@ -106,10 +127,13 @@ class EnrollmentWorker:
     def _process(self, recipient_id: str) -> None:
         self._mgr.set_status(recipient_id, state="processing")
 
+        # Load engines first so the detector (if available) tightens crops.
+        reid_ready = self._ensure_engines()
         crops = self._collect_crops(recipient_id)
-        if not self._ensure_engines():
-            reason = ("media stored; run scripts/export_reid.sh to build the "
-                      "ReID engine, then re-enroll to generate embeddings")
+        if not reid_ready:
+            reason = self._reid_error or (
+                "media stored; run scripts/export_reid.sh to build the ReID "
+                "engine, then re-enroll to generate embeddings")
             self._mgr.set_status(recipient_id, state="pending_reid",
                                  photos=len(crops), embeddings=0, message=reason)
             logger.info("enroll: %s deferred — %s", recipient_id, reason)
@@ -185,6 +209,39 @@ class EnrollmentWorker:
         x2, y2 = int(best.bbox.x2), int(best.bbox.y2)
         crop = img[y1:y2, x1:x2]
         return crop if crop.size else None
+
+    # ---- resume ------------------------------------------------------
+    # States that mean "committed for embedding but not finished" — these are
+    # safe to auto-resume. 'review'/'none' (media added, not yet committed)
+    # and 'ready' (already embedded) are intentionally excluded.
+    _RESUMABLE_STATES = {"queued", "processing", "pending_reid", "error"}
+
+    def _resume_pending(self) -> None:
+        """Re-queue committed recipients that still have no embeddings, so a
+        ReID engine built after they were enrolled finishes them on the next
+        start instead of leaving them stuck in 'pending_reid'."""
+        try:
+            roots = sorted(self._mgr.base_path.glob("*"))
+        except Exception:
+            logger.exception("enroll: could not scan for pending recipients")
+            return
+        resumed = 0
+        for root in roots:
+            if not root.is_dir():
+                continue
+            rid = root.name
+            state = self._mgr.get_status(rid).get("state")
+            if state not in self._RESUMABLE_STATES:
+                continue
+            if self._mgr.load_embeddings(rid).shape[0] > 0:
+                continue                       # already embedded (in gallery)
+            if not (self._mgr.media_names(rid) or self._mgr.list_videos(rid)):
+                continue                       # nothing to embed
+            logger.info("enroll: resuming %s (was '%s')", rid, state)
+            self.enqueue(rid)
+            resumed += 1
+        if resumed:
+            logger.info("enroll: re-queued %d pending recipient(s)", resumed)
 
     # ---- gallery -----------------------------------------------------
     def _rebuild_gallery(self) -> None:

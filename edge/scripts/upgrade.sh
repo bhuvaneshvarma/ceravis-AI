@@ -36,11 +36,14 @@ sleep 6
 
 echo "== [6/6] verify =="
 bash scripts/check_jetson.sh || true
+echo "-- ReID engine self-test --"
+python3 scripts/test_reid.py || echo "  (ReID self-test reported an issue — see above)"
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "============================================================"
 echo "  Upgrade complete."
 echo "  UI:     http://${IP:-<jetson-ip>}:8000/ui/setup.html"
 echo "  Detect test:  python3 scripts/test_detect.py"
+echo "  ReID test:    python3 scripts/test_reid.py"
 echo "  Logs:   journalctl -u ceravis -f"
 echo "============================================================"
