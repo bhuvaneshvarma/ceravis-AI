@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     reid_adaptive_max: int = 50              # capped FIFO per recipient (newest kept)
     reid_adaptive_min_score: float = 0.70    # only capture above this match score
     reid_adaptive_dedup_cos: float = 0.92    # skip near-duplicates of existing vectors
+    reid_adaptive_min_interval_secs: float = 4.0  # min seconds between capture attempts
     reid_adaptive_rebuild_secs: float = 5.0  # min seconds between gallery rebuilds
 
     # ---- Pipeline focus / efficiency --------------------------------

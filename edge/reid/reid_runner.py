@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 
@@ -54,7 +55,15 @@ class ReIDRunner:
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_query_frame: dict[tuple[str, int], int] = {}
-        self._last_adapt_rebuild = 0.0             # throttle adaptive gallery rebuilds
+
+        # Adaptive online-learning runs on a SEPARATE low-rate thread so its
+        # disk I/O (np.load/save, gallery rebuild) never blocks the inference
+        # tick or starves the capture/stream threads via the GIL. The tick only
+        # does a cheap, time-throttled hand-off onto this queue.
+        self._adapt_q: "queue.Queue[tuple[str, object, str]]" = queue.Queue(maxsize=64)
+        self._adapt_thread: threading.Thread | None = None
+        self._last_adapt_attempt = 0.0             # throttle capture attempts (per tick)
+        self._last_adapt_rebuild = 0.0             # throttle gallery rebuilds
 
     @property
     def is_running(self) -> bool:
@@ -77,6 +86,11 @@ class ReIDRunner:
             target=self._run, daemon=True, name="reid-runner",
         )
         self._thread.start()
+        if settings.reid_adaptive_enabled:
+            self._adapt_thread = threading.Thread(
+                target=self._adaptive_loop, daemon=True, name="reid-adaptive",
+            )
+            self._adapt_thread.start()
 
     def stop(self) -> None:
         self._running = False
@@ -84,6 +98,8 @@ class ReIDRunner:
     def join(self, timeout: float | None = None) -> None:
         if self._thread:
             self._thread.join(timeout)
+        if self._adapt_thread:
+            self._adapt_thread.join(timeout)
 
     def _run(self) -> None:
         interval = 1.0 / settings.reid_fps
@@ -149,37 +165,55 @@ class ReIDRunner:
                 if is_target and rid is not None:
                     # Lock (or refresh) the target on this track id.
                     self._targets.lock(camera_id, track.track_id, rid)
-                    # Online learning: capture this appearance if confident.
-                    if (settings.reid_adaptive_enabled
-                            and score >= settings.reid_adaptive_min_score):
-                        self._maybe_adapt(camera_id, track.track_id, rid, emb)
+                    # Online learning: hand the appearance to the background
+                    # thread — cheap and time-throttled so the inference tick
+                    # never touches the disk.
+                    self._queue_adapt(camera_id, track.track_id, rid, score, emb)
                 self._last_query_frame[key] = frame_data.frame_id
 
-    def _maybe_adapt(self, camera_id: str, track_id: int, rid: str, emb) -> None:
-        """
-        Persist a high-confidence target embedding into the recipient's adaptive
-        store (vectors only) and, when enough time has passed, rebuild the shared
-        gallery so the new appearance starts helping matches. Best-effort: any
-        failure here must never disturb live identification.
-        """
+    # ---- adaptive online learning (off the inference tick) -----------
+    def _queue_adapt(self, camera_id: str, track_id: int, rid: str,
+                     score: float, emb) -> None:
+        """Cheap, time-throttled hand-off: no disk, no blocking. Most ticks do
+        nothing here; at most one sample every reid_adaptive_min_interval_secs
+        is copied and pushed to the background writer."""
+        if not settings.reid_adaptive_enabled or score < settings.reid_adaptive_min_score:
+            return
+        now = time.monotonic()
+        if now - self._last_adapt_attempt < settings.reid_adaptive_min_interval_secs:
+            return
+        self._last_adapt_attempt = now
+        label = ""
+        if self._postures is not None:
+            rec = self._postures.get(camera_id, track_id)
+            label = rec.posture.value if rec is not None else ""
         try:
-            label = ""
-            if self._postures is not None:
-                rec = self._postures.get(camera_id, track_id)
-                label = rec.posture.value if rec is not None else ""
-            added = self._enroll_mgr.append_adaptive(
-                rid, emb, label,
-                cap=settings.reid_adaptive_max,
-                dedup_cos=settings.reid_adaptive_dedup_cos,
-            )
-            if not added:
-                return
-            now = time.monotonic()
-            if now - self._last_adapt_rebuild >= settings.reid_adaptive_rebuild_secs:
-                emb_all, ids = self._enroll_mgr.load_gallery()
-                self._gallery.rebuild(emb_all, ids)
-                self._last_adapt_rebuild = now
-                logger.info("reid: adaptive store updated for %s "
-                            "(gallery now %d vectors)", rid, len(ids))
-        except Exception:
-            logger.exception("reid: adaptive capture failed")
+            self._adapt_q.put_nowait((rid, emb.copy(), label))
+        except queue.Full:
+            pass                                   # writer busy — just skip this one
+
+    def _adaptive_loop(self) -> None:
+        """Background writer: dedup + persist novel embeddings and rebuild the
+        gallery, fully off the inference path. All disk I/O lives here."""
+        while self._running:
+            try:
+                rid, emb, label = self._adapt_q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                added = self._enroll_mgr.append_adaptive(
+                    rid, emb, label,
+                    cap=settings.reid_adaptive_max,
+                    dedup_cos=settings.reid_adaptive_dedup_cos,
+                )
+                if not added:
+                    continue
+                now = time.monotonic()
+                if now - self._last_adapt_rebuild >= settings.reid_adaptive_rebuild_secs:
+                    emb_all, ids = self._enroll_mgr.load_gallery()
+                    self._gallery.rebuild(emb_all, ids)
+                    self._last_adapt_rebuild = now
+                    logger.info("reid: adaptive store updated for %s "
+                                "(gallery now %d vectors)", rid, len(ids))
+            except Exception:
+                logger.exception("reid: adaptive capture failed")
