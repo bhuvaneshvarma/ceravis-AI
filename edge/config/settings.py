@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     max_reconnect_delay_secs: float = 30.0
     frame_stale_secs: float = 5.0
 
+    # ---- Streaming / RTSP transport ---------------------------------
+    # RTSP transport: "tcp" re-sends lost packets, so a lossy WiFi link no
+    # longer corrupts H.264 frames (the "melting/mesh" artifacts) at a little
+    # latency; "udp" is lower latency but lossy. rtsp_latency_ms is the
+    # rtspsrc jitter buffer — raise it to smooth a jittery network.
+    rtsp_transport: str = "tcp"
+    rtsp_latency_ms: int = 100
+    # Live WebSocket stream only — does NOT change what the AI engines see.
+    stream_jpeg_quality: int = 70
+    stream_max_width: int = 0          # 0 = full resolution; e.g. 960 downscales the wall feed
+
     # ---- Detection (YOLO26m) ----------------------------------------
     # Detection must scan the full frame, so it's the heaviest stage. 10 fps
     # is ample to catch new people; ByteTrack carries IDs between detections.

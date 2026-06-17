@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
@@ -41,6 +42,12 @@ class RTSPReader:
         self._target_fps = (
             target_fps
             or settings.target_camera_fps
+        )
+
+        # Make the FFmpeg fallback backend use the same RTSP transport (tcp/udp)
+        # as the GStreamer pipelines, so all three connect paths behave the same.
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            f"rtsp_transport;{settings.rtsp_transport}"
         )
 
         self._capture: cv2.VideoCapture | None = None
@@ -182,14 +189,16 @@ class RTSPReader:
             )
 
         return (
-            f"rtspsrc location={self._camera.rtsp_url} latency=100 ! "
+            f"rtspsrc location={self._camera.rtsp_url} "
+            f"protocols={settings.rtsp_transport} "
+            f"latency={settings.rtsp_latency_ms} drop-on-latency=true ! "
             f"{depay} ! "
             f"nvv4l2decoder ! "
             f"nvvidconv ! "
             f"video/x-raw,format=BGRx ! "
             f"videoconvert ! "
             f"video/x-raw,format=BGR ! "
-            f"appsink drop=1"
+            f"appsink drop=true max-buffers=1 sync=false"
         )
 
     def _build_sw_pipeline(self) -> str:
@@ -204,9 +213,11 @@ class RTSPReader:
             depay = "rtph264depay ! h264parse ! avdec_h264"
 
         return (
-            f"rtspsrc location={self._camera.rtsp_url} latency=100 ! "
+            f"rtspsrc location={self._camera.rtsp_url} "
+            f"protocols={settings.rtsp_transport} "
+            f"latency={settings.rtsp_latency_ms} drop-on-latency=true ! "
             f"{depay} ! videoconvert ! "
-            f"video/x-raw,format=BGR ! appsink drop=1"
+            f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
         )
 
     def _connect(self) -> bool:
