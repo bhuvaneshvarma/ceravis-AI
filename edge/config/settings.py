@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     walking_motion_body_fraction: float = 0.6       # body-lengths / sec to qualify
     walking_confirm_frames: int = 3                 # consecutive frames before WALKING
     walking_min_pixels: float = 12.0                # absolute displacement floor
+    # Sit<->stand transitions must be corroborated by head vertical motion
+    # (head rises to stand, falls to sit) — stops a small seated shift, or the
+    # legs leaving the frame, from flipping the label. View-invariant.
+    posture_transition_head_frac: float = 0.15      # head move (× body length) to corroborate
+    posture_transition_confirm_frames: int = 3      # frames of corroboration to switch
     sitting_min_secs: float = 5.0
     standing_min_secs: float = 2.0
     fall_torso_angle_deg: float = 60.0              # > = horizontal

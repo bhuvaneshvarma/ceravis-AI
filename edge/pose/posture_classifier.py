@@ -42,6 +42,8 @@ from pose.pose_schema import PoseEstimation
 
 # ---- COCO indices ----------------------------------------------------
 NOSE = 0
+LEFT_EYE, RIGHT_EYE = 1, 2
+LEFT_EAR, RIGHT_EAR = 3, 4
 LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
 LEFT_HIP, RIGHT_HIP = 11, 12
 LEFT_KNEE, RIGHT_KNEE = 13, 14
@@ -70,6 +72,10 @@ class PostureResult:
     # scale-invariant — a chair-roll near the camera and a stride across a
     # far room then compare on the same footing.
     body_ref_px: float = 1.0
+    # Head reference point's image-y (nose/eyes/ears, fallback shoulder). The
+    # tracker watches this rise/fall to corroborate sit<->stand transitions —
+    # the first thing that moves when standing up is the head going up.
+    head_y: float = 0.0
 
 
 # =====================================================================
@@ -124,11 +130,16 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
     ankle = _avg_point([kps[LEFT_ANKLE], kps[RIGHT_ANKLE]])
 
     if shoulder is None or hip is None:
-        return PostureResult(Posture.UNKNOWN, 0.0, 0.0, 0.0, (0.0, 0.0), 1.0)
+        return PostureResult(Posture.UNKNOWN, 0.0, 0.0, 0.0, (0.0, 0.0), 1.0, 0.0)
 
     sx, sy, _ = shoulder
     hx, hy, _ = hip
     torso_ang = _angle_from_vertical((sx, sy), (hx, hy))
+
+    # Head reference (top of the body): nose/eyes/ears, fallback to shoulders.
+    head = _avg_point([kps[NOSE], kps[LEFT_EYE], kps[RIGHT_EYE],
+                       kps[LEFT_EAR], kps[RIGHT_EAR]])
+    head_y = head[1] if head is not None else sy
 
     # Centroid for motion tracking
     xs = [k.x for k in pose.keypoints if k.confidence >= _MIN_KP_CONF]
@@ -142,8 +153,12 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
         body_ref = (max(ys) - min(ys)) if ys else 1.0
     body_ref = max(body_ref, 1.0)
 
-    # Knee angle — used to distinguish sitting from standing
+    # Knee angle (hip-knee-ankle) — a JOINT angle, so it is view-invariant: it
+    # reads the same whether the camera is level or ceiling-mounted at a tilt.
+    # This is the primary sit/stand cue. present[] also tells us whether the
+    # legs are actually visible.
     knee_ang = 180.0
+    present: list[float] = []
     if knee is not None and ankle is not None:
         k_left = _angle_deg(
             (kps[LEFT_HIP][0], kps[LEFT_HIP][1]),
@@ -161,22 +176,28 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
         if present:
             knee_ang = sum(present) / len(present)
 
-    # ---- decision tree --------------------------------------------
+    # ---- decision tree (view-invariant) ---------------------------
     fall_thr = settings.fall_torso_angle_deg
 
     # Strong fall: torso is closer to horizontal than to vertical.
     if torso_ang >= fall_thr:
-        return PostureResult(Posture.FALLEN, 0.85, torso_ang, knee_ang, centroid, body_ref)
+        return PostureResult(Posture.FALLEN, 0.85, torso_ang, knee_ang,
+                             centroid, body_ref, head_y)
 
-    # Upright torso + bent knees => sitting.
-    # Also if hips are at ~knee height (small vertical drop), sitting wins.
-    if knee_ang < 140.0:
-        if knee is not None and abs(knee[1] - hy) < (abs(hy - sy) * 0.6):
-            return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang, centroid, body_ref)
+    # Decide sit vs stand ONLY when the legs are actually visible (knee joint
+    # angle available). Bent knees => sitting, straight => standing.
+    if present:
+        if knee_ang < 140.0:
+            return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang,
+                                 centroid, body_ref, head_y)
+        return PostureResult(Posture.STANDING, 0.75, torso_ang, knee_ang,
+                             centroid, body_ref, head_y)
 
-    # Otherwise we treat as standing — walking is decided by the
-    # stateful PostureTracker below, which folds in motion.
-    return PostureResult(Posture.STANDING, 0.75, torso_ang, knee_ang, centroid, body_ref)
+    # Legs NOT visible (e.g. seated at a desk, legs out of frame): we cannot
+    # tell sit from stand this frame. Return UNKNOWN so the tracker HOLDS the
+    # last confirmed posture instead of wrongly flipping to standing.
+    return PostureResult(Posture.UNKNOWN, 0.40, torso_ang, knee_ang,
+                         centroid, body_ref, head_y)
 
 
 # =====================================================================
@@ -187,8 +208,11 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
 class _TrackState:
     last_postures: deque
     last_centroids: deque        # (ts, x, y, body_ref_px)
+    last_heads: deque            # (ts, head_y, body_ref_px)
     fall_streak: int = 0
     walk_streak: int = 0
+    stable: Posture = Posture.UNKNOWN   # last CONFIRMED sit/stand/fall posture
+    sit_stand_streak: int = 0           # frames of corroborated sit<->stand transition
 
 
 class PostureTracker:
@@ -209,6 +233,7 @@ class PostureTracker:
             lambda: _TrackState(
                 last_postures=deque(maxlen=self.HISTORY),
                 last_centroids=deque(maxlen=self.HISTORY),
+                last_heads=deque(maxlen=self.HISTORY),
             )
         )
         self._last_fall: dict[tuple[str, int], datetime] = {}
@@ -224,57 +249,90 @@ class PostureTracker:
 
         st.last_postures.append(raw.posture)
         st.last_centroids.append((pose.timestamp, *raw.centroid_xy, raw.body_ref_px))
+        st.last_heads.append((pose.timestamp, raw.head_y, raw.body_ref_px))
 
-        # ---- walking detection (scale-normalized + confirmed) ------
-        # Walking must be (a) fast relative to the person's own body size
-        # (so a chair-roll near the camera no longer beats a fixed pixel
-        # threshold), (b) above an absolute pixel floor (kills sub-pixel
-        # jitter), and (c) sustained for N consecutive frames (so a single
-        # turn/lean can't trip it). Otherwise the person stays STANDING.
-        moving = False
-        if raw.posture == Posture.STANDING and len(st.last_centroids) >= 2:
-            t_old, x_old, y_old, _ = st.last_centroids[0]
-            t_new, x_new, y_new, _ = st.last_centroids[-1]
-            dt = max((t_new - t_old).total_seconds(), 1e-3)
-            if dt <= settings.walking_motion_window_secs:
-                disp = math.hypot(x_new - x_old, y_new - y_old)
-                speed_px = disp / dt
-                body_ref = max(raw.body_ref_px, 1.0)
-                speed_frac = speed_px / body_ref          # body-lengths / sec
-                moving = (
-                    speed_frac >= settings.walking_motion_body_fraction
-                    and disp >= settings.walking_min_pixels
-                )
+        def out(posture: Posture) -> PostureResult:
+            return PostureResult(posture, raw.confidence, raw.torso_angle_deg,
+                                 raw.avg_knee_angle_deg, raw.centroid_xy,
+                                 raw.body_ref_px, raw.head_y)
 
-        if raw.posture == Posture.STANDING:
-            st.walk_streak = st.walk_streak + 1 if moving else 0
-            if st.walk_streak >= settings.walking_confirm_frames:
-                return PostureResult(
-                    Posture.WALKING, raw.confidence,
-                    raw.torso_angle_deg, raw.avg_knee_angle_deg,
-                    raw.centroid_xy, raw.body_ref_px,
-                )
-        else:
-            st.walk_streak = 0
-
-        # ---- N-frame fall confirmation -----------------------------
+        # ---- N-frame fall confirmation (highest priority) ----------
         if raw.posture == Posture.FALLEN:
             st.fall_streak += 1
-            if st.fall_streak < settings.fall_confirmation_frames:
-                # Not confirmed yet — fall back to previous stable posture
-                stable = next(
-                    (p for p in reversed(list(st.last_postures)[:-1])
-                     if p in (Posture.STANDING, Posture.SITTING, Posture.WALKING)),
-                    Posture.UNKNOWN,
-                )
-                return PostureResult(
-                    stable, raw.confidence * 0.5,
-                    raw.torso_angle_deg, raw.avg_knee_angle_deg, raw.centroid_xy,
-                )
+            if st.fall_streak >= settings.fall_confirmation_frames:
+                st.stable = Posture.FALLEN
+                return out(Posture.FALLEN)
+            # not confirmed yet -> hold the last confirmed posture (below)
         else:
             st.fall_streak = 0
 
-        return raw
+        # ---- sit/stand with transition evidence --------------------
+        # A confident SITTING/STANDING only OVERRIDES the confirmed state when
+        # corroborated: the head must rise (to stand) or fall (to sit) by a
+        # fraction of body length, sustained for N frames. UNKNOWN frames (e.g.
+        # legs left the frame) HOLD the confirmed state — so a small shift while
+        # seated can no longer flip the label to standing.
+        base = raw.posture if raw.posture in (Posture.STANDING, Posture.SITTING) else None
+        if base is not None:
+            if st.stable in (Posture.UNKNOWN, Posture.FALLEN):
+                st.stable = base                       # first/again-confident read
+                st.sit_stand_streak = 0
+            elif base == st.stable:
+                st.sit_stand_streak = 0
+            elif self._head_supports(st, st.stable, base):
+                st.sit_stand_streak += 1
+                if st.sit_stand_streak >= settings.posture_transition_confirm_frames:
+                    st.stable = base
+                    st.sit_stand_streak = 0
+            else:
+                st.sit_stand_streak = 0                # no head motion -> don't switch
+
+        stable = st.stable if st.stable != Posture.UNKNOWN else raw.posture
+
+        # ---- walking: confirmed standing + sustained, scale-normalized motion
+        if stable == Posture.STANDING:
+            st.walk_streak = st.walk_streak + 1 if self._is_moving(st, raw) else 0
+            if st.walk_streak >= settings.walking_confirm_frames:
+                return out(Posture.WALKING)
+        else:
+            st.walk_streak = 0
+
+        return out(stable)
+
+    # ---- transition helpers -----------------------------------------
+    def _is_moving(self, st: _TrackState, raw: PostureResult) -> bool:
+        """Scale-normalized centroid speed over the window, with a pixel floor."""
+        if len(st.last_centroids) < 2:
+            return False
+        t_old, x_old, y_old, _ = st.last_centroids[0]
+        t_new, x_new, y_new, _ = st.last_centroids[-1]
+        dt = max((t_new - t_old).total_seconds(), 1e-3)
+        if dt > settings.walking_motion_window_secs:
+            return False
+        disp = math.hypot(x_new - x_old, y_new - y_old)
+        speed_frac = (disp / dt) / max(raw.body_ref_px, 1.0)     # body-lengths / sec
+        return (speed_frac >= settings.walking_motion_body_fraction
+                and disp >= settings.walking_min_pixels)
+
+    def _head_supports(self, st: _TrackState,
+                       from_posture: Posture, to_posture: Posture) -> bool:
+        """True if head vertical motion corroborates the sit<->stand change:
+        head rising (image-y decreasing) supports sit->stand; falling supports
+        stand->sit. Normalized by body length so it is distance-independent."""
+        if len(st.last_heads) < 2:
+            return False
+        t_old, y_old, _ = st.last_heads[0]
+        t_new, y_new, ref_new = st.last_heads[-1]
+        dt = (t_new - t_old).total_seconds()
+        if dt <= 0 or dt > settings.walking_motion_window_secs:
+            return False
+        dy_frac = (y_new - y_old) / max(ref_new, 1.0)    # +ve = head moved DOWN
+        thr = settings.posture_transition_head_frac
+        if from_posture == Posture.SITTING and to_posture == Posture.STANDING:
+            return dy_frac <= -thr                        # head moved UP
+        if from_posture == Posture.STANDING and to_posture == Posture.SITTING:
+            return dy_frac >= thr                         # head moved DOWN
+        return False
 
     # Helpers for FallRule
     def confirm_fall(self, camera_id: str, track_id: int) -> bool:

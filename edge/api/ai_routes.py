@@ -48,6 +48,7 @@ def ai_state(request: Request, camera_id: str | None = None):
                     round(posture.confidence, 2) if posture else None,
                 "recipient_id": identity.recipient_id if identity else None,
                 "is_target": identity.is_target if identity else False,
+                "reid_score": round(identity.confidence, 3) if identity else None,
             })
         out[cam] = {
             "frame_id": (result.frame_id if result

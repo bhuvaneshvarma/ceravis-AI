@@ -93,6 +93,14 @@ function camsWithTarget(state) {
   return Object.keys(state).filter(
     cam => (state[cam].tracks || []).some(t => t.is_target));
 }
+// Reality check: there is only ONE enrolled recipient, so only ONE target is
+// ever shown — the highest ReID-score match among any is_target tracks.
+function bestTarget(camState) {
+  const ts = ((camState && camState.tracks) || []).filter(t => t.is_target);
+  if (!ts.length) return null;
+  const sc = t => (t.reid_score != null ? t.reid_score : (t.confidence || 0));
+  return ts.reduce((a, b) => (sc(b) > sc(a) ? b : a));
+}
 function pickCamera(state) {
   const cams = Object.keys(state);
   if (!cams.length) return { cam: null, searching: true };
@@ -132,9 +140,9 @@ function draw() {
   }
   ctx.drawImage(img, 0, 0);
   if (M.searching) { drawSearching(); return; }
-  // Only the ReID-matched target is drawn — other detected people are ignored.
-  const tracks = ((M.state[M.cam] && M.state[M.cam].tracks) || [])
-    .filter(t => t.is_target);
+  // Only the single best-matching target is drawn — other people are ignored.
+  const best = bestTarget(M.state[M.cam]);
+  const tracks = best ? [best] : [];
   const lw = Math.max(2, canvas.width / 480);
   ctx.font = `600 ${Math.max(14, canvas.width / 70)}px sans-serif`;
   tracks.forEach(t => {
@@ -192,9 +200,9 @@ async function pollState() {
   setCamera(pick.cam, pick.searching);
   updateHeader();
 
-  // Target-only tracks (everyone else the YOLO sees is intentionally ignored).
-  const tracks = M.searching ? []
-    : ((M.state[M.cam] || {}).tracks || []).filter(t => t.is_target);
+  // Exactly one target (highest ReID score); everyone else is ignored.
+  const best = M.searching ? null : bestTarget(M.state[M.cam]);
+  const tracks = best ? [best] : [];
 
   // chips
   document.getElementById("m-chips").innerHTML = tracks.length === 0
@@ -240,7 +248,7 @@ function updateHeader() {
       ? `Scanning ${camName} — no enrolled target in view`
       : "No cameras available";
   } else {
-    const t = ((M.state[M.cam] || {}).tracks || []).find(x => x.is_target);
+    const t = bestTarget(M.state[M.cam]);
     const who = (t && t.recipient_id) || "target";
     modeEl.className = "pill pill-ok"; modeEl.textContent = "TARGET LOCKED";
     activeEl.textContent = `${who} · ${camName}`;
