@@ -59,6 +59,13 @@ def enroll_status(recipient_id: str):
     return enrollment_manager.get_status(recipient_id)
 
 
+@router.get("/{recipient_id}/embeddings/stats")
+def embedding_stats(recipient_id: str):
+    """Enrolled vs live-captured (adaptive) embedding counts, last capture
+    time and label breakdown — so you can confirm live capture is working."""
+    return enrollment_manager.embedding_stats(recipient_id)
+
+
 @router.get("/{recipient_id}/media")
 def list_media(recipient_id: str):
     return _media_payload(recipient_id)

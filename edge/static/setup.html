@@ -699,13 +699,18 @@ function stopEnrollPreview() {
 async function pollEnroll() {
   if (!enrollRid) return;
   try {
-    const s = await api(`/api/v1/recipients/${enrollRid}/enroll/status`);
+    const [s, stats] = await Promise.all([
+      api(`/api/v1/recipients/${enrollRid}/enroll/status`),
+      api(`/api/v1/recipients/${enrollRid}/embeddings/stats`).catch(() => null),
+    ]);
     document.getElementById("enroll-state").className =
       "pill " + (ENROLL_PILL[s.state] || "pill-mute");
     document.getElementById("enroll-state").textContent = s.state;
+    // "live-learned" = adaptive embeddings captured during live monitoring.
+    const adapt = stats ? ` · live-learned ${stats.adaptive}/${stats.adaptive_cap}` : "";
     document.getElementById("en-status").innerHTML =
       `${s.message || ""} <span class="faint">· emb ${s.embeddings || 0}`
-      + (s.references ? ` · ref ${s.references}` : "") + `</span>`;
+      + (s.references ? ` · ref ${s.references}` : "") + adapt + `</span>`;
   } catch {}
 }
 

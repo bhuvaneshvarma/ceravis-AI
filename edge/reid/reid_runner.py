@@ -208,6 +208,8 @@ class ReIDRunner:
                 )
                 if not added:
                     continue
+                logger.info("reid: adaptive sample saved for %s (label=%s)",
+                            rid, label or "—")
                 now = time.monotonic()
                 if now - self._last_adapt_rebuild >= settings.reid_adaptive_rebuild_secs:
                     emb_all, ids = self._enroll_mgr.load_gallery()

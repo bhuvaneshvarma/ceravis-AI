@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import time
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -210,9 +212,8 @@ class EnrollmentManager:
                     if adaptive.shape[0] else emb[None, :])
         labels = self._load_adaptive_labels(recipient_id)
         labels.append(label)
-        if adaptive.shape[0] > cap:               # FIFO — drop oldest
-            adaptive = adaptive[-cap:]
-            labels = labels[-cap:]
+        if adaptive.shape[0] > cap:
+            adaptive, labels = self._prune_redundant(adaptive, labels, cap)
 
         body = self.create_recipient_folder(recipient_id) / "body"
         body.mkdir(parents=True, exist_ok=True)
@@ -222,6 +223,42 @@ class EnrollmentManager:
         os.replace(tmp, body / "adaptive.npy")
         (body / "adaptive_labels.json").write_text(json.dumps(labels))
         return True
+
+    @staticmethod
+    def _prune_redundant(vecs: np.ndarray, labels: list[str],
+                         cap: int) -> tuple[np.ndarray, list[str]]:
+        """Keep a DIVERSE set: when over cap, drop the most redundant vector
+        (the one nearest another), not the oldest — so distinct appearances
+        (e.g. a different outfit) are retained instead of FIFO-evicted, and the
+        recipient still matches if they re-wear an old outfit days later."""
+        labels = list(labels)
+        while vecs.shape[0] > cap:
+            sim = vecs @ vecs.T                   # cosine (rows are L2-normalized)
+            np.fill_diagonal(sim, -1.0)
+            drop = int(np.argmax(sim.max(axis=1)))    # most redundant vector
+            keep = [i for i in range(vecs.shape[0]) if i != drop]
+            vecs = vecs[keep]
+            labels = [labels[i] for i in keep]
+        return vecs, labels
+
+    def embedding_stats(self, recipient_id: str) -> dict:
+        """Inspect what's stored / being captured for a recipient — so live
+        adaptive capture is observable (counts, last capture time, labels)."""
+        enrolled = self.load_embeddings(recipient_id)
+        adaptive = self.load_adaptive(recipient_id)
+        labels = self._load_adaptive_labels(recipient_id)
+        root = self.get_recipient_folder(recipient_id)
+        af = root / "body" / "adaptive.npy" if root else None
+        last = None
+        if af and af.exists():
+            last = datetime.fromtimestamp(af.stat().st_mtime, timezone.utc).isoformat()
+        return {
+            "enrolled": int(enrolled.shape[0]),
+            "adaptive": int(adaptive.shape[0]),
+            "adaptive_cap": settings.reid_adaptive_max,
+            "last_adaptive_capture": last,
+            "adaptive_labels": dict(Counter(lbl for lbl in labels if lbl)),
+        }
 
     def load_gallery(self) -> tuple[np.ndarray, list[str]]:
         """Concatenate every recipient's enrolled + adaptive embeddings."""
