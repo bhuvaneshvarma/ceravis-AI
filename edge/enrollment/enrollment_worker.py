@@ -256,8 +256,8 @@ class EnrollmentWorker:
     def _rebuild_gallery(self) -> None:
         if self._gallery is None:
             return
-        emb, ids = self._mgr.load_gallery()
+        emb, ids, labels = self._mgr.load_gallery()
         try:
-            self._gallery.rebuild(emb, ids)
+            self._gallery.rebuild(emb, ids, labels)
         except Exception:
             logger.exception("enroll: gallery rebuild failed")

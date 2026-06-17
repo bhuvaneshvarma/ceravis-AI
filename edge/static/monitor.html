@@ -215,6 +215,7 @@ async function pollState() {
           <span class="sq" style="background:${c}"></span>
           ${who} — <b style="color:${c}">${t.posture || "detecting…"}</b>
           ${t.posture_confidence ? `<span class="faint">${Math.round(t.posture_confidence*100)}%</span>` : ""}
+          ${t.view_label ? `<span class="faint">· ${t.view_label}</span>` : ""}
         </span>`;
       }).join("");
 

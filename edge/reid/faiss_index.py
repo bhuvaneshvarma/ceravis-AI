@@ -35,21 +35,26 @@ class FaissGallery:
         self._swap_lock = threading.Lock()
         self._index: "faiss.Index" = faiss.IndexFlatIP(self._dim)
         self._ids: list[str] = []
+        self._labels: list[str] = []     # per-vector view/pose label (parallel to _ids)
 
     # ---- build -------------------------------------------------------
     def rebuild(
         self,
         embeddings: np.ndarray,  # (N, dim) float32, L2-normalized
         recipient_ids: list[str],
+        labels: list[str] | None = None,   # per-vector view/pose label (optional)
     ) -> None:
         if embeddings.ndim != 2 or embeddings.shape[1] != self._dim:
             raise ValueError(f"Expected (N,{self._dim}) embeddings")
         new_index = faiss.IndexFlatIP(self._dim)
         if embeddings.size > 0:
             new_index.add(embeddings.astype(np.float32))
+        new_labels = (list(labels) if labels is not None
+                      else [""] * len(recipient_ids))
         with self._swap_lock:
             self._index = new_index
             self._ids = list(recipient_ids)
+            self._labels = new_labels
         logger.info("FAISS gallery rebuilt: %d entries", len(recipient_ids))
 
     # ---- query -------------------------------------------------------
@@ -57,18 +62,20 @@ class FaissGallery:
         self,
         embedding: np.ndarray,
         top_k: int = 1,
-    ) -> tuple[str | None, float]:
-        # Hold reference locally so atomic swap can't race us
+    ) -> tuple[str | None, float, str | None]:
+        # Hold references locally so an atomic swap can't race us
         index = self._index
         ids = self._ids
+        labels = self._labels
         if index.ntotal == 0:
-            return None, 0.0
+            return None, 0.0, None
         q = embedding.reshape(1, -1).astype(np.float32)
         scores, idxs = index.search(q, top_k)
         i = int(idxs[0, 0])
         if i < 0 or i >= len(ids):
-            return None, 0.0
-        return ids[i], float(scores[0, 0])
+            return None, 0.0, None
+        label = labels[i] if i < len(labels) else None
+        return ids[i], float(scores[0, 0]), (label or None)
 
     @property
     def size(self) -> int:

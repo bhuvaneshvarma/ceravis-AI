@@ -260,15 +260,30 @@ class EnrollmentManager:
             "adaptive_labels": dict(Counter(lbl for lbl in labels if lbl)),
         }
 
-    def load_gallery(self) -> tuple[np.ndarray, list[str]]:
-        """Concatenate every recipient's enrolled + adaptive embeddings."""
+    def _labels_aligned(self, root: Path, fname: str, n: int) -> list[str]:
+        """Read a labels json and pad/truncate to exactly n entries."""
+        f = root / "body" / fname
+        out: list[str] = []
+        if f.exists():
+            try:
+                out = [str(x) for x in json.loads(f.read_text())]
+            except Exception:
+                out = []
+        if len(out) < n:
+            out += [""] * (n - len(out))
+        return out[:n]
+
+    def load_gallery(self) -> tuple[np.ndarray, list[str], list[str]]:
+        """Concatenate every recipient's enrolled + adaptive embeddings, with a
+        parallel recipient-id list and a per-vector view/pose label list."""
         all_emb: list[np.ndarray] = []
         ids: list[str] = []
+        labels: list[str] = []
         for root in sorted(self.base_path.glob("*")):
             if not root.is_dir():
                 continue
-            parts: list[np.ndarray] = []
-            for fname in ("embeddings.npy", "adaptive.npy"):
+            for fname, lname in (("embeddings.npy", "labels_emb.json"),
+                                 ("adaptive.npy", "adaptive_labels.json")):
                 f = root / "body" / fname
                 if not f.exists():
                     continue
@@ -277,15 +292,13 @@ class EnrollmentManager:
                 except Exception:
                     continue
                 if arr.ndim == 2 and arr.shape[0] > 0:
-                    parts.append(arr)
-            if not parts:
-                continue
-            emb = np.concatenate(parts, axis=0)
-            all_emb.append(emb)
-            ids.extend([root.name] * emb.shape[0])
+                    all_emb.append(arr)
+                    ids.extend([root.name] * arr.shape[0])
+                    labels.extend(self._labels_aligned(root, lname, arr.shape[0]))
         if not all_emb:
-            return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32), []
-        return np.concatenate(all_emb, axis=0), ids
+            return (np.zeros((0, settings.reid_embedding_dim), dtype=np.float32),
+                    [], [])
+        return np.concatenate(all_emb, axis=0), ids, labels
 
     # ---- status ------------------------------------------------------
     def set_status(self, recipient_id: str, **fields) -> None:

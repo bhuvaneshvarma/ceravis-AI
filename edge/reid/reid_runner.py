@@ -149,7 +149,7 @@ class ReIDRunner:
                     continue
 
                 emb = self._extractor.embed(crop)
-                rid, score = self._gallery.search(emb)
+                rid, score, view = self._gallery.search(emb)
                 is_target = score >= threshold
                 self._identities.update(
                     Identity(
@@ -160,6 +160,7 @@ class ReIDRunner:
                         recipient_id=rid if is_target else None,
                         is_target=is_target,
                         confidence=float(score),
+                        view_label=view if is_target else None,
                     )
                 )
                 if is_target and rid is not None:
@@ -212,8 +213,8 @@ class ReIDRunner:
                             rid, label or "—")
                 now = time.monotonic()
                 if now - self._last_adapt_rebuild >= settings.reid_adaptive_rebuild_secs:
-                    emb_all, ids = self._enroll_mgr.load_gallery()
-                    self._gallery.rebuild(emb_all, ids)
+                    emb_all, ids, labels = self._enroll_mgr.load_gallery()
+                    self._gallery.rebuild(emb_all, ids, labels)
                     self._last_adapt_rebuild = now
                     logger.info("reid: adaptive store updated for %s "
                                 "(gallery now %d vectors)", rid, len(ids))

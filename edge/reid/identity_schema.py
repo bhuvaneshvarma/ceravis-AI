@@ -14,3 +14,5 @@ class Identity(BaseModel):
     recipient_id: str | None
     is_target: bool         # True if matched to an enrolled recipient
     confidence: float       # cosine similarity, [-1, 1] (we clamp to [0, 1])
+    view_label: str | None = None   # label of the best-matching enrolled view
+                                     # (e.g. "left/sitting") — for snapshot notes
