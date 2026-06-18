@@ -9,9 +9,8 @@ Events emitted:
   - 'standing_up'        : SITTING -> STANDING transition
   - 'walking_started'    : * -> WALKING transition
   - 'no_movement'        : STANDING with no centroid motion > 30 s
-                           (the InactivityRule already covers the
-                           generic "track hasn't moved" case — this one
-                           is posture-aware, fires sooner if upright)
+                           (posture-aware stillness; the SpatialRule handles
+                           area-aware inactivity over much longer windows)
 
 These are infrequent (1 Hz tick), so they don't tax the Orin Nano.
 """

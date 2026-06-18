@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     events_dir: str = "data/events"
     event_snapshot_quality: int = 80
     rest_zone_keywords: str = "bed,couch,sofa,recliner,chair,bench,lounge"
+    # Recipient alone + no area change for this long -> inactivity event (also
+    # the re-emit interval for the periodic activity snapshot). Default 30 min.
+    inactivity_secs: float = 1800.0
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""

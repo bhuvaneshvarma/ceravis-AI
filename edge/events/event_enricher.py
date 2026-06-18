@@ -30,6 +30,7 @@ _ALERT_MAP: dict[str, tuple[str, str]] = {
     "standing_up": ("info", "Stood up"),
     "walking_started": ("info", "Started walking"),
     "inactivity": ("warning", "Prolonged inactivity"),
+    "area_transition": ("info", "Moved area"),
 }
 
 
@@ -80,6 +81,8 @@ class EventEnricher:
         loc = event.room_name + (f" / {area}" if area else "")
         who = event.recipient_id or "person"
         event.message = f"{title} — {who}" + (f" in {loc}" if loc.strip() else "")
+        if event.detail:
+            event.message += f" · {event.detail}"
 
         self._write_snapshot(event, ctx, bbox, area)
         return event

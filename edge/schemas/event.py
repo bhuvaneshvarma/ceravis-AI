@@ -23,6 +23,10 @@ class Event(BaseModel):
     # right box and resolve the area). Set by the rules.
     track_id: int | None = None
 
+    # Optional rule-specific context (e.g. "kitchen → living room"), folded
+    # into the message by the enricher. Transient (not persisted).
+    detail: str | None = None
+
     # Filled by EventEnricher: operator-facing alert fields.
     severity: str | None = None         # critical | warning | info
     title: str | None = None
