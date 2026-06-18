@@ -18,3 +18,17 @@ class Event(BaseModel):
     snapshot_path: str | None = None
 
     video_path: str | None = None
+
+    # Which tracked person this event is about (lets the enricher draw the
+    # right box and resolve the area). Set by the rules.
+    track_id: int | None = None
+
+    # Filled by EventEnricher: operator-facing alert fields.
+    severity: str | None = None         # critical | warning | info
+    title: str | None = None
+    message: str | None = None
+
+    # Operator acknowledgement (audit).
+    acknowledged: bool = False
+    ack_by: str | None = None
+    ack_at: str | None = None

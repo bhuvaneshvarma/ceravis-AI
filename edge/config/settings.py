@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     data_dir: str = "data"
     sqlite_path: str = "data/ceravis.db"
 
+    # ---- Events / alerts -------------------------------------------
+    # Event snapshots are saved S3-mirrored: <events_dir>/<device_id>/<date>/
+    # <event_id>.jpg, so the cutover to the CERAVIS Health S3 bucket is a path
+    # swap. rest_zone_keywords: a fall whose foot point is inside a zone whose
+    # name contains one of these is treated as intentional lying (not an alarm).
+    events_dir: str = "data/events"
+    event_snapshot_quality: int = 80
+    rest_zone_keywords: str = "bed,couch,sofa,recliner,chair,bench,lounge"
+
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""
     mqtt_port: int = 8883

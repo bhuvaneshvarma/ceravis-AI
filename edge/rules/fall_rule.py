@@ -48,6 +48,7 @@ class FallRule:
                         room_name="",   # filled by EventEnricher (camera config)
                         recipient_id=identity.recipient_id if identity else None,
                         timestamp=now.isoformat(),
+                        track_id=track_id,   # lets the enricher resolve area + box
                     )
                 )
                 logger.warning(

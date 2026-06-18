@@ -25,9 +25,11 @@ class RuleEngine:
 
     TICK_HZ = 1.0
 
-    def __init__(self, context: RuleContext, bus: EventBus) -> None:
+    def __init__(self, context: RuleContext, bus: EventBus,
+                 enricher=None) -> None:
         self._ctx = context
         self._bus = bus
+        self._enricher = enricher          # EventEnricher | None
         self._rules = [FallRule(), PostureRule(), InactivityRule(), VisitorRule()]
         self._running = False
         self._thread: threading.Thread | None = None
@@ -55,6 +57,11 @@ class RuleEngine:
             for rule in self._rules:
                 try:
                     for event in rule.evaluate(self._ctx):
+                        if self._enricher is not None:
+                            try:
+                                event = self._enricher.enrich(event, self._ctx)
+                            except Exception:
+                                logger.exception("event enrich failed")
                         self._bus.publish(event)
                 except Exception:
                     logger.exception("rule failed: %s", rule.__class__.__name__)

@@ -163,10 +163,12 @@ async def lifespan(app: FastAPI):
 
     # ---- rules (posture-aware) --------------------------------
     rule_engine = None
+    event_enricher = None
     if posture_tracker is not None:
         try:
             from rules.rule_engine import RuleEngine
             from rules.rule_context import RuleContext
+            from events.event_enricher import EventEnricher
             ctx = RuleContext(
                 frames=camera_manager.frame_buffer,
                 detections=detection_buffer,
@@ -176,7 +178,10 @@ async def lifespan(app: FastAPI):
                 posture_tracker=posture_tracker,
                 identities=identity_buffer,
             )
-            rule_engine = RuleEngine(ctx, event_bus)
+            # Enriches each event with room/area + an annotated snapshot +
+            # severity (zone-aware fall: lying on a bed/couch is not an alarm).
+            event_enricher = EventEnricher()
+            rule_engine = RuleEngine(ctx, event_bus, enricher=event_enricher)
             rule_engine.start()
         except Exception:
             logger.exception("RuleEngine disabled")
@@ -203,6 +208,7 @@ async def lifespan(app: FastAPI):
     app.state.enroll_worker = enroll_worker
     app.state.event_bus = event_bus
     app.state.event_store = event_store
+    app.state.event_enricher = event_enricher
     app.state.metrics_registry = metrics_registry
     app.state.system_monitor = system_monitor
 

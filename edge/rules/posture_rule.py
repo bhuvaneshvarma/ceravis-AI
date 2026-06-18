@@ -70,9 +70,9 @@ class PostureRule:
         now: datetime,
     ) -> None:
         if old == Posture.SITTING and new == Posture.STANDING:
-            events.append(self._make("standing_up", camera_id, now))
+            events.append(self._make("standing_up", camera_id, now, track_id))
         elif new == Posture.WALKING and old != Posture.WALKING:
-            events.append(self._make("walking_started", camera_id, now))
+            events.append(self._make("walking_started", camera_id, now, track_id))
 
     def _duration_events(
         self,
@@ -89,20 +89,22 @@ class PostureRule:
         if posture == Posture.SITTING and in_state > settings.sitting_min_secs * 12:
             # 12x sitting_min_secs is the "prolonged" boundary — default 60s
             if "prolonged_sitting" not in already:
-                events.append(self._make("prolonged_sitting", camera_id, now))
+                events.append(self._make("prolonged_sitting", camera_id, now, track_id))
                 already["prolonged_sitting"] = now
 
         if posture == Posture.STANDING and in_state > self.NO_MOVE_SECS:
             if "no_movement" not in already:
-                events.append(self._make("no_movement", camera_id, now))
+                events.append(self._make("no_movement", camera_id, now, track_id))
                 already["no_movement"] = now
 
     @staticmethod
-    def _make(event_type: str, camera_id: str, now: datetime) -> Event:
+    def _make(event_type: str, camera_id: str, now: datetime,
+              track_id: int | None = None) -> Event:
         return Event(
             event_id=str(uuid.uuid4()),
             event_type=event_type,
             camera_id=camera_id,
             room_name="",
             timestamp=now.isoformat(),
+            track_id=track_id,
         )
