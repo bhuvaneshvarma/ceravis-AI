@@ -22,6 +22,23 @@
   .sidecol .card { margin-bottom: 14px; }
   #live-log { max-height: 420px; }
   #event-log { max-height: 300px; }
+  /* real-time alert banners */
+  #alert-stack { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  .alert-card { display: grid; grid-template-columns: 96px 1fr auto; gap: 12px; align-items: center;
+                padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line);
+                background: var(--panel-2); }
+  .alert-card.sev-critical { border-color: rgba(248,113,113,.6); background: rgba(248,113,113,.10);
+                             animation: blink 1.2s infinite; }
+  .alert-card.sev-warning { border-color: rgba(251,191,36,.5); background: rgba(251,191,36,.08); }
+  .alert-thumb { width: 96px; height: 64px; object-fit: cover; border-radius: 8px;
+                 border: 1px solid var(--line); background: #000; }
+  .alert-title { font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .alert-msg { font-size: 12.5px; }
+  .alert-meta { font-size: 11.5px; margin-top: 2px; }
+  .sev-pill { font-size: 10px; padding: 1px 7px; border-radius: 999px; letter-spacing: .5px;
+              background: var(--panel); border: 1px solid var(--line); }
+  .sev-critical .sev-pill { background: rgba(248,113,113,.2); border-color: rgba(248,113,113,.6); }
+  .alert-actions { display: flex; flex-direction: column; gap: 6px; }
 </style>
 </head>
 <body>
@@ -31,6 +48,8 @@
     <div class="sub">Live detection, tracking and posture recognition — boxes are drawn
       from the edge pipeline in real time; every recognized movement is logged on the right.</div>
   </div>
+
+  <div id="alert-stack"></div>
 
   <div class="row mb" style="align-items:center; gap:10px">
     <span class="pill pill-mute" id="m-mode">SEARCHING</span>
@@ -73,6 +92,7 @@ const M = {
   state: {},                 // latest ai/state for ALL cameras
   lastPosture: {},           // track_id -> posture (for transition log)
   searching: true,           // true when no enrolled target is in view
+  manualCam: null, manualUntil: 0,   // "view camera" override (alert click)
 };
 const canvas = document.getElementById("m-canvas");
 const ctx = canvas.getContext("2d");
@@ -104,6 +124,11 @@ function bestTarget(camState) {
 function pickCamera(state) {
   const cams = Object.keys(state);
   if (!cams.length) return { cam: null, searching: true };
+  // "View camera" override from an alert click — pin to that camera briefly.
+  if (M.manualCam && Date.now() < M.manualUntil && state[M.manualCam]) {
+    const hasTarget = (state[M.manualCam].tracks || []).some(t => t.is_target);
+    return { cam: M.manualCam, searching: !hasTarget };
+  }
   const withTarget = camsWithTarget(state);
   if (M.cam && withTarget.includes(M.cam))      // target still here -> stay
     return { cam: M.cam, searching: false };
@@ -259,20 +284,77 @@ function updateHeader() {
 /* ---- persisted events (rule engine) -------------------------------- */
 async function pollEvents() {
   try {
-    const evts = await api(`/api/v1/events?limit=25${M.cam ? "&camera_id=" + M.cam : ""}`);
+    const evts = await api(`/api/v1/events?limit=25`);
     document.getElementById("event-log").innerHTML = evts.length === 0
       ? `<div class="faint" style="font-size:12.5px">No events recorded yet.</div>`
-      : evts.map(e => `
-        <div class="log-entry ${e.event_type === "fall" ? "fall" : ""}">
-          <span class="t">${new Date(e.timestamp).toLocaleTimeString([], {hour12:false})}</span>
-          <span class="what"><b>${e.event_type}</b>
-            <span class="faint">· ${e.room_name || e.camera_id}${e.recipient_id ? " · " + e.recipient_id : ""}</span>
-          </span>
-        </div>`).join("");
+      : evts.map(e => {
+          const sev = e.severity || "info";
+          const where = `${e.room_name || e.camera_id}${e.zone_name ? " · " + e.zone_name : ""}`;
+          return `<div class="log-entry sev-${sev} ${e.event_type === "fall" ? "fall" : ""}">
+            <span class="t">${new Date(e.timestamp).toLocaleTimeString([], {hour12:false})}</span>
+            <span class="what"><b>${e.title || e.event_type}</b>
+              <span class="faint">· ${where}${e.recipient_id ? " · " + e.recipient_id : ""}${e.acknowledged ? " · ✓" : ""}</span>
+            </span>
+          </div>`;
+        }).join("");
   } catch {}
 }
 
+/* ---- real-time alerts (WebSocket push) ---------------------------- */
+function playBeep() {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.value = 880; o.connect(g); g.connect(ac.destination);
+    g.gain.setValueAtTime(0.15, ac.currentTime);
+    o.start(); o.stop(ac.currentTime + 0.25);
+  } catch {}
+}
+function renderAlert(a) {
+  if (!a || !a.event_id) return;
+  const sev = a.severity || "info";
+  if (sev === "info") return;        // info events stay in the history list only
+  const stack = document.getElementById("alert-stack");
+  const card = el("div", `alert-card sev-${sev}`);
+  const shot = a.snapshot_path
+    ? `/api/v1/events/snapshot?path=${encodeURIComponent(a.snapshot_path)}`
+    : `/api/v1/events/${a.event_id}/snapshot`;
+  card.innerHTML = `
+    <img class="alert-thumb" src="${shot}"
+         onerror="this.style.visibility='hidden'" alt="snapshot" />
+    <div>
+      <div class="alert-title">${a.title || a.event_type}
+        <span class="sev-pill">${sev.toUpperCase()}</span></div>
+      <div class="alert-msg">${a.message || ""}</div>
+      <div class="alert-meta faint">${a.room_name || a.camera_id}${a.zone_name ? " · " + a.zone_name : ""}
+        · ${a.timestamp ? fmtTime(new Date(a.timestamp)) : fmtTime()}</div>
+    </div>
+    <div class="alert-actions">
+      <button class="btn btn-sm" data-view>View camera</button>
+      <button class="btn btn-sm btn-ghost" data-ack>Acknowledge</button>
+    </div>`;
+  card.querySelector("[data-view]").onclick = () => {
+    M.manualCam = a.camera_id; M.manualUntil = Date.now() + 20000;
+  };
+  card.querySelector("[data-ack]").onclick = async () => {
+    try { await api(`/api/v1/events/${a.event_id}/ack`,
+      { method: "POST", body: JSON.stringify({ ack_by: "monitor" }) }); } catch {}
+    card.remove();
+  };
+  stack.prepend(card);
+  while (stack.children.length > 5) stack.lastChild.remove();
+  if (sev === "critical") playBeep();
+}
+function connectAlerts() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/alerts/stream`);
+  ws.onmessage = e => { try { renderAlert(JSON.parse(e.data)); } catch {} };
+  ws.onclose = () => setTimeout(connectAlerts, 2000);
+  ws.onerror = () => { try { ws.close(); } catch {} };
+}
+
 initCamNames();
+connectAlerts();
 setInterval(pollState, 400);
 setInterval(pollEvents, 5000);
 pollEvents();

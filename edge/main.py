@@ -161,6 +161,18 @@ async def lifespan(app: FastAPI):
     event_writer = EventWriter(event_bus, event_store)
     event_writer.start()
 
+    # Real-time alert push to the monitor (subscribe before the rules start
+    # publishing). Bridges the threaded bus to async WebSocket clients.
+    alert_broadcaster = None
+    try:
+        import asyncio
+        from alerts.alert_broadcaster import AlertBroadcaster
+        alert_broadcaster = AlertBroadcaster(event_bus)
+        alert_broadcaster.bind_loop(asyncio.get_running_loop())
+        alert_broadcaster.start()
+    except Exception:
+        logger.exception("AlertBroadcaster disabled")
+
     # ---- rules (posture-aware) --------------------------------
     rule_engine = None
     event_enricher = None
@@ -209,6 +221,7 @@ async def lifespan(app: FastAPI):
     app.state.event_bus = event_bus
     app.state.event_store = event_store
     app.state.event_enricher = event_enricher
+    app.state.alert_broadcaster = alert_broadcaster
     app.state.metrics_registry = metrics_registry
     app.state.system_monitor = system_monitor
 
@@ -219,7 +232,7 @@ async def lifespan(app: FastAPI):
 
     # ---- shutdown ----------------------------------------------
     for runner in (
-        mqtt_publisher, rule_engine, event_writer, enroll_worker,
+        mqtt_publisher, alert_broadcaster, rule_engine, event_writer, enroll_worker,
         reid_runner, pose_runner, tracking_runner, detection_runner,
     ):
         if runner is None:
@@ -286,3 +299,22 @@ async def websocket_stream(websocket: WebSocket, camera_id: str):
         websocket.app.state.camera_manager.frame_buffer,
         camera_id,
     )
+
+
+@app.websocket("/alerts/stream")
+async def websocket_alerts(websocket: WebSocket):
+    """Real-time push of enriched events/alerts to the monitor console."""
+    await websocket.accept()
+    bc = getattr(websocket.app.state, "alert_broadcaster", None)
+    if bc is None:
+        await websocket.close()
+        return
+    q = await bc.register()
+    try:
+        while True:
+            payload = await q.get()
+            await websocket.send_json(payload)
+    except Exception:
+        pass
+    finally:
+        await bc.unregister(q)

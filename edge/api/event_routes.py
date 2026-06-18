@@ -17,6 +17,19 @@ def recent_events(request: Request, limit: int = 50,
     return event_store.recent(limit=min(int(limit), 500), camera_id=camera_id)
 
 
+@router.get("/snapshot")
+def event_snapshot_by_path(path: str, request: Request):
+    """Serve a snapshot by its (sanitized) relative path — used by the live
+    alert banner, which has the path from the push and needn't wait for the DB."""
+    enricher = getattr(request.app.state, "event_enricher", None)
+    if enricher is None:
+        raise HTTPException(503, "events not running")
+    f = enricher.snapshot_file(path)
+    if f is None:
+        raise HTTPException(404, "snapshot not found")
+    return FileResponse(str(f), media_type="image/jpeg")
+
+
 @router.get("/{event_id}/snapshot")
 def event_snapshot(event_id: str, request: Request):
     """Serve the annotated JPEG captured when the event fired."""
