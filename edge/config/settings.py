@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # Recipient alone + no area change for this long -> inactivity event (also
     # the re-emit interval for the periodic activity snapshot). Default 30 min.
     inactivity_secs: float = 1800.0
+    # Visit sessions: a visitor must be gone this long to close a visit; mid-
+    # visit "still here" snapshot cadence.
+    visit_absence_secs: float = 60.0
+    visit_mid_secs: float = 300.0
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""

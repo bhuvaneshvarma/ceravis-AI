@@ -9,7 +9,7 @@ from rules.fall_rule import FallRule
 from rules.posture_rule import PostureRule
 from rules.rule_context import RuleContext
 from rules.spatial_rule import SpatialRule
-from rules.visitor_rule import VisitorRule
+from rules.visit_session_rule import VisitSessionRule
 
 
 logger = logging.getLogger("rules")
@@ -30,7 +30,7 @@ class RuleEngine:
         self._ctx = context
         self._bus = bus
         self._enricher = enricher          # EventEnricher | None
-        self._rules = [FallRule(), PostureRule(), SpatialRule(), VisitorRule()]
+        self._rules = [FallRule(), PostureRule(), SpatialRule(), VisitSessionRule()]
         self._running = False
         self._thread: threading.Thread | None = None
 
