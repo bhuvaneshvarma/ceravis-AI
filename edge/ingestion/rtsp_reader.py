@@ -44,12 +44,6 @@ class RTSPReader:
             or settings.target_camera_fps
         )
 
-        # Make the FFmpeg fallback backend use the same RTSP transport (tcp/udp)
-        # as the GStreamer pipelines, so all three connect paths behave the same.
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-            f"rtsp_transport;{settings.rtsp_transport}"
-        )
-
         self._capture: cv2.VideoCapture | None = None
 
         self._thread: threading.Thread | None = None
@@ -169,6 +163,19 @@ class RTSPReader:
     # Connection
     # =====================================================
 
+    # Per-camera RTSP transport / jitter buffer, falling back to the globals.
+    # A clean direct-Ethernet camera -> "udp" + low latency = minimal lag; a
+    # lossy WiFi camera -> "tcp".
+    @property
+    def _transport(self) -> str:
+        return (getattr(self._camera, "transport", None)
+                or settings.rtsp_transport)
+
+    @property
+    def _latency_ms(self) -> int:
+        v = getattr(self._camera, "rtsp_latency_ms", None)
+        return int(v) if v is not None else int(settings.rtsp_latency_ms)
+
     def _build_gstreamer_pipeline(
         self
     ) -> str:
@@ -190,8 +197,8 @@ class RTSPReader:
 
         return (
             f"rtspsrc location={self._camera.rtsp_url} "
-            f"protocols={settings.rtsp_transport} "
-            f"latency={settings.rtsp_latency_ms} drop-on-latency=true ! "
+            f"protocols={self._transport} "
+            f"latency={self._latency_ms} drop-on-latency=true ! "
             f"{depay} ! "
             f"nvv4l2decoder ! "
             f"nvvidconv ! "
@@ -214,8 +221,8 @@ class RTSPReader:
 
         return (
             f"rtspsrc location={self._camera.rtsp_url} "
-            f"protocols={settings.rtsp_transport} "
-            f"latency={settings.rtsp_latency_ms} drop-on-latency=true ! "
+            f"protocols={self._transport} "
+            f"latency={self._latency_ms} drop-on-latency=true ! "
             f"{depay} ! videoconvert ! "
             f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
         )
@@ -224,6 +231,12 @@ class RTSPReader:
 
         self._health_state = (
             CameraHealthState.CONNECTING
+        )
+
+        # Make the FFmpeg fallback use THIS camera's transport (set per-connect
+        # so two cameras with different transports don't clobber each other).
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            f"rtsp_transport;{self._transport}"
         )
 
         # Try, in order: hardware GStreamer (nvv4l2decoder), software

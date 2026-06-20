@@ -93,6 +93,20 @@
             </select>
           </div>
         </div>
+        <div class="grid-2">
+          <div>
+            <label class="f">RTSP transport</label>
+            <select id="c-transport">
+              <option value="">Auto (global default)</option>
+              <option value="udp">UDP — direct/Ethernet (lowest lag)</option>
+              <option value="tcp">TCP — WiFi (loss-resistant)</option>
+            </select>
+          </div>
+          <div>
+            <label class="f">Jitter buffer ms <span class="faint">(blank = auto)</span></label>
+            <input type="number" id="c-latency" placeholder="auto" min="0" max="2000" />
+          </div>
+        </div>
         <label class="f">Display name</label>
         <input type="text" id="c-name" placeholder="Kitchen Camera" />
         <label class="f">Room</label>
@@ -394,12 +408,15 @@ document.getElementById("c-probe").onclick = async () => {
 };
 
 document.getElementById("c-save").onclick = async () => {
+  const lat = document.getElementById("c-latency").value;
   const cam = {
     camera_id: document.getElementById("c-id").value.trim(),
     camera_name: document.getElementById("c-name").value.trim(),
     room_name: document.getElementById("c-room").value.trim(),
     rtsp_url: document.getElementById("c-url").value.trim(),
     codec: document.getElementById("c-codec").value,
+    transport: document.getElementById("c-transport").value || null,
+    rtsp_latency_ms: lat !== "" ? parseInt(lat, 10) : null,
     is_enabled: true,
   };
   if (!cam.camera_id || !cam.rtsp_url || !cam.room_name)
@@ -408,7 +425,8 @@ document.getElementById("c-save").onclick = async () => {
     await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
     await api(`/api/v1/cameras/${cam.camera_id}/start`, { method: "POST" });
     toast(`Camera ${cam.camera_id} saved & started`);
-    ["c-url","c-id","c-name","c-room"].forEach(i => document.getElementById(i).value = "");
+    ["c-url","c-id","c-name","c-room","c-latency"].forEach(i => document.getElementById(i).value = "");
+    document.getElementById("c-transport").value = "";
     document.getElementById("c-probe-out").textContent = "";
     refreshCameras();
   } catch (e) { toast(e.detail || "Save failed", "err"); }

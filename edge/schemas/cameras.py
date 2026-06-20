@@ -17,3 +17,10 @@ class Camera(BaseModel):
     codec: CameraCodec = CameraCodec.H264
 
     is_enabled: bool = True
+
+    # Per-camera RTSP tuning (override the global settings). A clean direct-
+    # Ethernet camera wants "udp" + a low jitter buffer for minimal lag; a
+    # lossy WiFi camera wants "tcp". None = use the global RTSP_TRANSPORT /
+    # RTSP_LATENCY_MS defaults.
+    transport: str | None = None              # "tcp" | "udp" | None
+    rtsp_latency_ms: int | None = None        # jitter buffer ms; None = global
