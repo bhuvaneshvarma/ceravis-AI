@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
+import subprocess
 import threading
 import time
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import cv2
 
@@ -45,6 +48,10 @@ class RTSPReader:
         )
 
         self._capture: cv2.VideoCapture | None = None
+
+        # RTSP transport/latency, resolved per-connect by _resolve_rtsp().
+        self._rtsp_transport: str = "tcp"
+        self._rtsp_latency: int = int(settings.rtsp_latency_ms)
 
         self._thread: threading.Thread | None = None
 
@@ -163,18 +170,73 @@ class RTSPReader:
     # Connection
     # =====================================================
 
-    # Per-camera RTSP transport / jitter buffer, falling back to the globals.
-    # A clean direct-Ethernet camera -> "udp" + low latency = minimal lag; a
-    # lossy WiFi camera -> "tcp".
-    @property
-    def _transport(self) -> str:
-        return (getattr(self._camera, "transport", None)
-                or settings.rtsp_transport)
+    # RTSP transport + jitter buffer, AUTO-DETECTED at connect time and never
+    # persisted. A camera on a WIRED egress (clean, like direct Ethernet) gets
+    # UDP + a low jitter buffer = minimal lag; a WIRELESS egress (lossy WiFi)
+    # gets TCP, which re-sends lost packets and kills macroblock corruption. An
+    # explicit per-camera override or a non-"auto" global wins over detection.
+    def _resolve_rtsp(self) -> None:
+        cam_t = (getattr(self._camera, "transport", None) or "").lower()
+        cam_l = getattr(self._camera, "rtsp_latency_ms", None)
+        glob = (settings.rtsp_transport or "auto").lower()
 
-    @property
-    def _latency_ms(self) -> int:
-        v = getattr(self._camera, "rtsp_latency_ms", None)
-        return int(v) if v is not None else int(settings.rtsp_latency_ms)
+        if cam_t in ("tcp", "udp"):
+            transport = cam_t
+        elif glob in ("tcp", "udp"):
+            transport = glob
+        else:                                    # "auto"
+            transport = self._auto_transport()
+
+        if cam_l is not None:
+            latency = int(cam_l)
+        elif transport == "udp":
+            latency = int(settings.rtsp_udp_latency_ms)
+        else:
+            latency = int(settings.rtsp_latency_ms)
+
+        self._rtsp_transport, self._rtsp_latency = transport, latency
+
+    def _auto_transport(self) -> str:
+        """Wired egress -> 'udp' (low lag); wireless/unknown -> 'tcp' (safe)."""
+        dev = self._egress_dev(self._camera_ip())
+        wireless = self._is_wireless(dev)
+        transport = "udp" if wireless is False else "tcp"
+        logger.info("camera=%s auto RTSP transport=%s (egress=%s wireless=%s)",
+                    self.camera_id, transport, dev, wireless)
+        return transport
+
+    def _camera_ip(self) -> str | None:
+        host = urlparse(self._camera.rtsp_url).hostname
+        if not host:
+            return None
+        try:
+            return socket.gethostbyname(host)
+        except Exception:
+            return host                          # already an IP / unresolved
+
+    @staticmethod
+    def _egress_dev(ip: str | None) -> str | None:
+        """Egress interface the kernel would use to reach `ip` (ip route get)."""
+        if not ip:
+            return None
+        try:
+            toks = subprocess.run(
+                ["ip", "route", "get", ip],
+                capture_output=True, text=True, timeout=2,
+            ).stdout.split()
+            if "dev" in toks:
+                return toks[toks.index("dev") + 1]
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _is_wireless(dev: str | None) -> bool | None:
+        if not dev:
+            return None                          # unknown -> treat as wireless (safe TCP)
+        if os.path.exists(f"/sys/class/net/{dev}/wireless"):
+            return True
+        return dev.startswith(("wl", "wlan"))    # name fallback
 
     def _build_gstreamer_pipeline(
         self
@@ -197,8 +259,8 @@ class RTSPReader:
 
         return (
             f"rtspsrc location={self._camera.rtsp_url} "
-            f"protocols={self._transport} "
-            f"latency={self._latency_ms} drop-on-latency=true ! "
+            f"protocols={self._rtsp_transport} "
+            f"latency={self._rtsp_latency} drop-on-latency=true ! "
             f"{depay} ! "
             f"nvv4l2decoder ! "
             f"nvvidconv ! "
@@ -221,8 +283,8 @@ class RTSPReader:
 
         return (
             f"rtspsrc location={self._camera.rtsp_url} "
-            f"protocols={self._transport} "
-            f"latency={self._latency_ms} drop-on-latency=true ! "
+            f"protocols={self._rtsp_transport} "
+            f"latency={self._rtsp_latency} drop-on-latency=true ! "
             f"{depay} ! videoconvert ! "
             f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
         )
@@ -233,10 +295,12 @@ class RTSPReader:
             CameraHealthState.CONNECTING
         )
 
-        # Make the FFmpeg fallback use THIS camera's transport (set per-connect
-        # so two cameras with different transports don't clobber each other).
+        # Auto-detect transport/latency for THIS camera (wired->udp, wifi->tcp),
+        # then make the FFmpeg fallback use the same (set per-connect so two
+        # cameras with different transports don't clobber each other).
+        self._resolve_rtsp()
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-            f"rtsp_transport;{self._transport}"
+            f"rtsp_transport;{self._rtsp_transport}"
         )
 
         # Try, in order: hardware GStreamer (nvv4l2decoder), software
