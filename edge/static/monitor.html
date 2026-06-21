@@ -164,46 +164,23 @@ function draw() {
     canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
   }
   ctx.drawImage(img, 0, 0);
-  if (M.searching) { drawSearching(); return; }
-  // Only the single best-matching target is drawn — other people are ignored.
+  if (M.searching) return;                  // clean preview — no search overlay
+  // Mark the target with a single head dot (the box is kept for saved snapshots
+  // only). Green = tracked normally, red = fall / needs attention.
   const best = bestTarget(M.state[M.cam]);
-  const tracks = best ? [best] : [];
-  const lw = Math.max(2, canvas.width / 480);
-  ctx.font = `600 ${Math.max(14, canvas.width / 70)}px sans-serif`;
-  tracks.forEach(t => {
-    const [x1, y1, x2, y2] = t.bbox;
-    const color = POSTURE_COLOR[t.posture || "unknown"] || POSTURE_COLOR.unknown;
-    ctx.lineWidth = lw; ctx.strokeStyle = color;
-    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-    const who = t.is_target && t.recipient_id ? t.recipient_id
-              : t.recipient_id ? t.recipient_id : `person #${t.track_id}`;
-    const label = `${who}${t.posture ? " · " + t.posture.toUpperCase() : ""}`;
-    const tw = ctx.measureText(label).width;
-    const lh = Math.max(20, canvas.width / 50);
-    ctx.fillStyle = "rgba(0,0,0,.78)";
-    ctx.fillRect(x1, Math.max(0, y1 - lh), tw + 14, lh);
-    ctx.fillStyle = color;
-    ctx.fillText(label, x1 + 7, Math.max(lh - 6, y1 - 6));
-    if (t.posture === "fallen") {           // red emphasis frame
-      ctx.save(); ctx.strokeStyle = "rgba(248,113,113,.55)";
-      ctx.lineWidth = lw * 3; ctx.strokeRect(x1 - 6, y1 - 6, x2 - x1 + 12, y2 - y1 + 12);
-      ctx.restore();
-    }
-  });
-}
-function drawSearching() {
+  if (!best) return;
+  const [x1, y1, x2, y2] = best.bbox;
+  const cx = (x1 + x2) / 2;
+  const cy = y1 + (y2 - y1) * 0.08;          // sit the dot on the head
+  const r = Math.max(7, canvas.width / 110); // noticeable but not big
+  const color = best.posture === "fallen" ? "#ef4444" : "#22c55e";
   ctx.save();
-  ctx.fillStyle = "rgba(0,0,0,.32)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#fbbf24";
-  ctx.font = `600 ${Math.max(20, canvas.width / 42)}px sans-serif`;
-  ctx.fillText("🔍 Searching for target…", canvas.width / 2, canvas.height / 2);
-  ctx.fillStyle = "rgba(255,255,255,.72)";
-  ctx.font = `500 ${Math.max(13, canvas.width / 80)}px sans-serif`;
-  ctx.fillText("No enrolled recipient in view",
-    canvas.width / 2, canvas.height / 2 + Math.max(26, canvas.width / 28));
-  ctx.textAlign = "start";
+  ctx.shadowColor = "rgba(0,0,0,.65)"; ctx.shadowBlur = r;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.fill();
+  ctx.shadowBlur = 0;                        // crisp white ring on top
+  ctx.lineWidth = Math.max(2, r * 0.3); ctx.strokeStyle = "rgba(255,255,255,.95)";
+  ctx.stroke();
   ctx.restore();
 }
 

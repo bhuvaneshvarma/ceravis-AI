@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from common.annotate import annotate_event_frame
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from configuration.camera_config import CameraConfig
+from configuration.recipient_config import RecipientConfig
 from rules.rule_context import RuleContext
 from schemas.event import Event
 
@@ -51,13 +53,17 @@ class EventEnricher:
         self,
         camera_config: CameraConfig | None = None,
         zone_resolver: ZoneResolver | None = None,
+        recipient_config: RecipientConfig | None = None,
     ) -> None:
         self._cams = camera_config or CameraConfig()
         self._zones = zone_resolver or ZoneResolver()
+        self._recipients = recipient_config or RecipientConfig()
         edir = Path(settings.events_dir)
         self._events_root = edir if edir.is_absolute() else (_EDGE_ROOT / edir)
         self._rest_kw = [k.strip().lower()
                          for k in settings.rest_zone_keywords.split(",") if k.strip()]
+        self._name_cache: dict[str, str] = {}      # recipient_id -> full_name
+        self._name_cache_at = 0.0
 
     # ---- public ------------------------------------------------------
     def enrich(self, event: Event, ctx: RuleContext) -> Event:
@@ -82,7 +88,7 @@ class EventEnricher:
         event.severity = severity
         event.title = title
         loc = event.room_name + (f" / {area}" if area else "")
-        who = event.recipient_id or "person"
+        who = self._recipient_name(event.recipient_id) or "person"
         event.message = f"{title} — {who}" + (f" in {loc}" if loc.strip() else "")
         if event.detail:
             event.message += f" · {event.detail}"
@@ -110,6 +116,25 @@ class EventEnricher:
         words = set(re.findall(r"[a-z]+", area.lower()))
         return any(kw in words for kw in self._rest_kw)
 
+    def _recipient_name(self, rid: str | None) -> str | None:
+        """Resolve a recipient_id to the saved full name (for snapshot label +
+        alert text). Cached briefly — events are infrequent. Falls back to the
+        id if the name isn't found, and None when there's no recipient."""
+        if not rid:
+            return None
+        now = time.monotonic()
+        if now - self._name_cache_at > 10.0:
+            try:
+                self._name_cache = {
+                    r.get("recipient_id"): r.get("full_name")
+                    for r in self._recipients.get_all()
+                    if r.get("recipient_id") and r.get("full_name")
+                }
+            except Exception:
+                logger.exception("recipient name lookup failed")
+            self._name_cache_at = now
+        return self._name_cache.get(rid) or rid
+
     @staticmethod
     def _fmt_timestamp(iso: str) -> str:
         """Detection time for the snapshot's top-left, e.g. '2026-06-22  14:30:45 UTC'."""
@@ -134,7 +159,7 @@ class EventEnricher:
                 timestamp_text=self._fmt_timestamp(event.timestamp),
                 title=title,
                 location=location,
-                subject=event.recipient_id,
+                subject=self._recipient_name(event.recipient_id),
                 severity=event.severity or "info",
             )
             cv2.imwrite(str(out), img,
