@@ -110,6 +110,14 @@ class EventEnricher:
         words = set(re.findall(r"[a-z]+", area.lower()))
         return any(kw in words for kw in self._rest_kw)
 
+    @staticmethod
+    def _fmt_timestamp(iso: str) -> str:
+        """Detection time for the snapshot's top-left, e.g. '2026-06-22  14:30:45 UTC'."""
+        try:
+            return datetime.fromisoformat(iso).strftime("%Y-%m-%d  %H:%M:%S UTC")
+        except Exception:
+            return iso or ""
+
     def _write_snapshot(self, event: Event, ctx: RuleContext, bbox, area) -> None:
         try:
             fd = ctx.frames.get(event.camera_id)
@@ -119,9 +127,16 @@ class EventEnricher:
             rel = Path(settings.device_id) / day / f"{event.event_id}.jpg"
             out = self._events_root / rel
             out.parent.mkdir(parents=True, exist_ok=True)
-            caption = f"{event.title} · {area or event.room_name}".strip(" ·")
-            box_label = (event.recipient_id or "person")
-            img = annotate_event_frame(fd.frame, bbox, caption, box_label)
+            location = ", ".join(p for p in (area, event.room_name) if p)
+            title = event.title or event.event_type.replace("_", " ").title()
+            img = annotate_event_frame(
+                fd.frame, bbox,
+                timestamp_text=self._fmt_timestamp(event.timestamp),
+                title=title,
+                location=location,
+                subject=event.recipient_id,
+                severity=event.severity or "info",
+            )
             cv2.imwrite(str(out), img,
                         [cv2.IMWRITE_JPEG_QUALITY, int(settings.event_snapshot_quality)])
             # Store the path RELATIVE to the events root — maps 1:1 to the
