@@ -80,6 +80,17 @@ class Settings(BaseSettings):
     reid_fps: float = 3.0
     reid_match_threshold: float = 0.55       # cosine; tune per gallery
 
+    # ---- Hybrid set-to-set matching ---------------------------------
+    # The query is scored against EVERY stored vector of each recipient and
+    # aggregated, instead of trusting a single top-1 vector. A lock needs a
+    # strong score AND a clear margin over the runner-up AND a majority of the
+    # recipient's vectors agreeing — so a fleeting look-alike can't steal the ID.
+    reid_hybrid_alpha: float = 0.6           # weight on best-single vs mean-top-k
+    reid_hybrid_top_k: int = 5               # how many top vectors form the consensus
+    reid_match_margin: float = 0.06          # best - runner-up recipient must exceed this
+    reid_hybrid_min_votes: int = 1           # ≥N of the recipient's vectors above floor
+    reid_hybrid_vote_floor: float = 0.45     # cosine floor for a vector to "vote"
+
     # ---- Adaptive ReID (online learning) ----------------------------
     # While the target is matched with HIGH confidence, novel body embeddings
     # are captured live (vectors only — no frames) into a per-recipient adaptive
@@ -99,12 +110,38 @@ class Settings(BaseSettings):
     target_only_pose: bool = True            # once ReID locks the target, pose that crop only
     target_lock_ttl_secs: float = 5.0        # keep target lock this long after last sighting
 
-    # ---- Tracking (ByteTrack) ---------------------------------------
+    # ---- Tracking (clean-room BoT-SORT) -----------------------------
+    # Two-stage ByteTrack association + Kalman + OSNet appearance fusion. The
+    # appearance term (the SAME OSNet that feeds the gallery) is what stops the
+    # target ID jumping to a person who crosses in front; a lost track is kept
+    # for tracker_track_buffer frames and re-matched by appearance on return.
     tracker_high_thresh: float = 0.5
     tracker_low_thresh: float = 0.1
     tracker_new_track_thresh: float = 0.6
-    tracker_track_buffer: int = 30
+    tracker_track_buffer: int = 30           # frames a lost track survives for re-id
     tracker_match_thresh: float = 0.8
+    tracker_proximity_thresh: float = 0.5    # appearance is vetoed below this IoU
+    tracker_appearance_thresh: float = 0.25  # max appearance distance to fuse
+    tracker_with_reid: bool = True           # fuse OSNet appearance into association
+    # Appearance is computed for ALL people when ≥ this many are present (the
+    # crossover case that needs it); with one person, OSNet runs only at reid_fps
+    # to refresh the target feature for gallery matching — so the common single-
+    # occupant case stays as cheap as before (no per-frame embedding).
+    tracker_appearance_min_persons: int = 2
+
+    # ---- Target lock manager (occlusion-safe single-target follow) --
+    # IoU above which the target is considered occluded by another person — the
+    # lock is then FROZEN (identity not updated, adaptive capture paused so the
+    # intruder can't poison the gallery) until they separate.
+    target_occlusion_iou: float = 0.30
+    # Verified mismatches (target track scores below threshold while NOT occluded)
+    # needed before the lock is released — so we drop a bad lock fast instead of
+    # riding it until the TTL on the wrong person.
+    target_mismatch_release_checks: int = 2
+    # On reappearance after a lost track, a candidate must be within this many
+    # body-widths of the target's last known position to be eligible (spatial
+    # gate) on top of the appearance match.
+    target_reacquire_max_dist_frac: float = 6.0
 
     # ---- Posture (sitting / standing / walking / fallen) ------------
     # Walking is scale-normalized (motion relative to the person's own body
@@ -126,6 +163,24 @@ class Settings(BaseSettings):
     fall_torso_angle_deg: float = 60.0              # > = horizontal
     fall_confirmation_frames: int = 3
     fall_cooldown_secs: float = 30.0
+    # ---- Scene-aware fall FSM ---------------------------------------
+    # A fall is an EVENT with phases, not a single horizontal frame:
+    #   upright -> rapid downward motion (impact) -> horizontal & near-floor
+    #   -> immobile for a few seconds.
+    # Requiring the impact velocity AND the post-fall stillness near the floor
+    # crushes the false positives that angle-alone produced (bending, sitting on
+    # the floor, exercising, a steep camera angle).
+    fall_velocity_body_frac: float = 1.2     # head drop speed (body-lengths/sec) = impact
+    fall_velocity_window_secs: float = 0.6   # window the drop speed is measured over
+    fall_immobility_secs: float = 3.0        # must lie still this long to confirm
+    fall_immobility_body_frac: float = 0.35  # max centroid drift (× body) to count as still
+    # Floor reference: a zone whose name contains this keyword marks the ground
+    # plane. A standing person's head sits ABOVE (outside) it; a fallen person's
+    # head drops INTO it — a view-tolerant "near the floor" test. If no floor
+    # zone is drawn the FSM still works on velocity + immobility (just without
+    # the ground gate).
+    floor_zone_keyword: str = "floor"
+    fall_require_near_floor: bool = False    # if True, only confirm when head is near the floor
 
     # ---- Storage ---------------------------------------------------
     data_dir: str = "data"

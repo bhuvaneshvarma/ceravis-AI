@@ -4,48 +4,55 @@ import logging
 import threading
 import time
 
-from datetime import datetime, timezone
-
 import numpy as np
 
+from common.crops import crop_person
 from config.settings import settings
 from detection.detection_buffer import DetectionBuffer
-from detection.detection_schema import BoundingBox
-from tracking.bytetrack_adapter import ByteTrackAdapter
+from detection.detection_schema import BoundingBox, DetectionClass
+from ingestion.frame_buffer import FrameBuffer
+from tracking.botsort import BoTSORT
 from tracking.track_buffer import TrackBuffer
+from tracking.track_feature_buffer import TrackFeatureBuffer
 from tracking.track_schema import Track, TrackResult
 
 
 logger = logging.getLogger("tracking")
 
-# supervision ships ByteTrack — light, pure-python
-try:
-    import supervision as sv  # type: ignore
-    _SV_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    sv = None  # type: ignore
-    _SV_AVAILABLE = False
-
 
 class TrackingRunner:
     """
-    Per-camera ByteTrack instance, polled from DetectionBuffer.
+    Per-camera clean-room BoT-SORT, polled from the DetectionBuffer.
 
-    Cheap: ByteTrack is pure CPU and runs in microseconds.
+    Appearance (OSNet, the same engine the gallery uses) is fused into the
+    association so IDs survive a crossover. To stay cheap, embeddings are only
+    computed when there are several people in frame (the case that needs it);
+    with a single person the tracker is pure motion + a low-rate feature refresh
+    so the gallery match still has something fresh to compare.
     """
 
     def __init__(
         self,
         detection_buffer: DetectionBuffer,
         track_buffer: TrackBuffer,
+        frame_buffer: FrameBuffer | None = None,
+        feature_buffer: TrackFeatureBuffer | None = None,
+        metrics_registry=None,
     ) -> None:
-        if not _SV_AVAILABLE:
-            raise RuntimeError("supervision not installed")
-
         self._detections = detection_buffer
         self._tracks = track_buffer
-        self._trackers: dict[str, sv.ByteTrack] = {}
+        self._frames = frame_buffer
+        self._features = feature_buffer
+        self._metrics = (
+            metrics_registry.get_or_create("reid_embed") if metrics_registry else None
+        )
+
+        self._trackers: dict[str, BoTSORT] = {}
         self._last_seen_frame: dict[str, int] = {}
+        self._last_embed: dict[str, float] = {}
+
+        self._extractor = None              # OSNet; None => motion-only tracking
+        self._with_reid = False
 
         self._running = False
         self._thread: threading.Thread | None = None
@@ -58,11 +65,27 @@ class TrackingRunner:
     def start(self) -> None:
         if self._running:
             return
+        # Appearance is optional: if the ReID engine isn't built (e.g. on a dev
+        # box) the tracker degrades to motion-only ByteTrack and the rest of the
+        # pipeline keeps working.
+        if (settings.tracker_with_reid and self._frames is not None
+                and self._features is not None):
+            try:
+                from reid.reid_extractor import ReIDExtractor
+                self._extractor = ReIDExtractor()
+                self._with_reid = True
+                logger.info("Tracking: BoT-SORT with OSNet appearance fusion")
+            except FileNotFoundError as exc:
+                logger.warning("Tracking: appearance off — ReID engine not built "
+                               "(%s); running motion-only BoT-SORT", exc)
+            except Exception:
+                logger.exception("Tracking: appearance off — ReID engine load failed")
+        else:
+            logger.info("Tracking: motion-only BoT-SORT (appearance disabled)")
+
         self._running = True
         self._thread = threading.Thread(
-            target=self._run,
-            daemon=True,
-            name="tracking-runner",
+            target=self._run, daemon=True, name="tracking-runner",
         )
         self._thread.start()
 
@@ -74,12 +97,18 @@ class TrackingRunner:
             self._thread.join(timeout)
 
     # ---- internals ---------------------------------------------------
-    def _tracker(self, camera_id: str) -> "sv.ByteTrack":
+    def _tracker(self, camera_id: str) -> BoTSORT:
         if camera_id not in self._trackers:
-            self._trackers[camera_id] = sv.ByteTrack(
-                track_activation_threshold=settings.tracker_high_thresh,
-                lost_track_buffer=settings.tracker_track_buffer,
-                minimum_matching_threshold=settings.tracker_match_thresh,
+            self._trackers[camera_id] = BoTSORT(
+                track_high_thresh=settings.tracker_high_thresh,
+                track_low_thresh=settings.tracker_low_thresh,
+                new_track_thresh=settings.tracker_new_track_thresh,
+                match_thresh=settings.tracker_match_thresh,
+                track_buffer=settings.tracker_track_buffer,
+                proximity_thresh=settings.tracker_proximity_thresh,
+                appearance_thresh=settings.tracker_appearance_thresh,
+                with_reid=self._with_reid,
+                frame_rate=settings.detection_fps,
             )
         return self._trackers[camera_id]
 
@@ -101,44 +130,72 @@ class TrackingRunner:
                 continue
             self._last_seen_frame[camera_id] = det_result.frame_id
 
-            xyxy_conf = ByteTrackAdapter.to_bytetrack(det_result)
-            if xyxy_conf.size == 0:
-                self._tracks.update(
-                    TrackResult(
-                        camera_id=camera_id,
-                        frame_id=det_result.frame_id,
-                        timestamp=det_result.timestamp,
-                        tracks=[],
-                    )
-                )
+            persons = [d for d in det_result.detections
+                       if d.class_name == DetectionClass.PERSON]
+            if not persons:
+                self._tracks.update(TrackResult(
+                    camera_id=camera_id, frame_id=det_result.frame_id,
+                    timestamp=det_result.timestamp, tracks=[]))
+                if self._features is not None:
+                    self._features.prune(camera_id, set())
                 continue
 
-            detections = sv.Detections(
-                xyxy=xyxy_conf[:, :4],
-                confidence=xyxy_conf[:, 4],
-                class_id=np.zeros(len(xyxy_conf), dtype=int),
-            )
-            tracked = self._tracker(camera_id).update_with_detections(detections)
+            dets_xywh = np.array(
+                [[(d.bbox.x1 + d.bbox.x2) / 2.0, (d.bbox.y1 + d.bbox.y2) / 2.0,
+                  d.bbox.width, d.bbox.height] for d in persons], dtype=np.float32)
+            scores = np.array([d.confidence for d in persons], dtype=np.float32)
+
+            feats = self._maybe_embed(camera_id, persons)
+            active = self._tracker(camera_id).update(dets_xywh, scores, feats)
 
             out: list[Track] = []
-            for i in range(len(tracked)):
-                x1, y1, x2, y2 = tracked.xyxy[i]
-                out.append(
-                    Track(
-                        track_id=int(tracked.tracker_id[i]),
-                        camera_id=camera_id,
-                        frame_id=det_result.frame_id,
-                        timestamp=det_result.timestamp,
-                        bbox=BoundingBox(x1=float(x1), y1=float(y1),
-                                         x2=float(x2), y2=float(y2)),
-                        confidence=float(tracked.confidence[i]),
-                    )
-                )
-            self._tracks.update(
-                TrackResult(
-                    camera_id=camera_id,
-                    frame_id=det_result.frame_id,
-                    timestamp=det_result.timestamp,
-                    tracks=out,
-                )
-            )
+            alive: set[int] = set()
+            for st in active:
+                x1, y1, x2, y2 = st.xyxy
+                out.append(Track(
+                    track_id=int(st.track_id), camera_id=camera_id,
+                    frame_id=det_result.frame_id, timestamp=det_result.timestamp,
+                    bbox=BoundingBox(x1=float(x1), y1=float(y1),
+                                     x2=float(x2), y2=float(y2)),
+                    confidence=float(st.score)))
+                alive.add(int(st.track_id))
+                if self._features is not None and st.smooth_feat is not None:
+                    self._features.update(
+                        camera_id, int(st.track_id),
+                        smooth=st.smooth_feat.copy(),
+                        curr=(st.curr_feat.copy() if st.curr_feat is not None
+                              else st.smooth_feat.copy()),
+                        frame_id=det_result.frame_id, timestamp=det_result.timestamp)
+
+            self._tracks.update(TrackResult(
+                camera_id=camera_id, frame_id=det_result.frame_id,
+                timestamp=det_result.timestamp, tracks=out))
+            if self._features is not None:
+                self._features.prune(camera_id, alive)
+
+    def _maybe_embed(self, camera_id: str, persons) -> np.ndarray | None:
+        """OSNet embeddings for each person, gated to keep the common case cheap."""
+        if not self._with_reid or self._extractor is None or self._frames is None:
+            return None
+        now = time.monotonic()
+        many = len(persons) >= settings.tracker_appearance_min_persons
+        due = (now - self._last_embed.get(camera_id, 0.0)) >= (1.0 / settings.reid_fps)
+        if not (many or due):
+            return None
+        fd = self._frames.get(camera_id)
+        if fd is None:
+            return None
+
+        t = time.perf_counter()
+        out = []
+        for d in persons:
+            crop, _, _ = crop_person(fd.frame, d.bbox.x1, d.bbox.y1,
+                                     d.bbox.x2, d.bbox.y2, settings.crop_padding_frac)
+            if crop.size == 0:
+                out.append(np.zeros(settings.reid_embedding_dim, dtype=np.float32))
+            else:
+                out.append(self._extractor.embed(crop))
+        if self._metrics:
+            self._metrics.record(time.perf_counter() - t)
+        self._last_embed[camera_id] = now
+        return np.stack(out, axis=0)

@@ -30,6 +30,12 @@ class TargetRegistry:
         with self._lock:
             self._targets[camera_id] = (track_id, recipient_id, time.monotonic())
 
+    def unlock(self, camera_id: str) -> None:
+        """Drop the lock immediately (e.g. confirmed mismatch) instead of
+        waiting for the TTL to lapse on the wrong person."""
+        with self._lock:
+            self._targets.pop(camera_id, None)
+
     def get(self, camera_id: str) -> int | None:
         """Current target track_id for a camera, or None if none/expired."""
         with self._lock:

@@ -5,6 +5,7 @@ import threading
 import time
 
 from common.crops import crop_person
+from common.floor_reference import FloorReference
 from config.settings import settings
 from ingestion.frame_buffer import FrameBuffer
 from pose.pose_buffer import PoseBuffer
@@ -59,6 +60,7 @@ class PoseRunner:
         self._postures = posture_buffer
         self._targets = target_registry or TargetRegistry()
         self._tracker = PostureTracker()
+        self._floor = FloorReference()         # scene-aware fall: ground reference
         self._metrics = (
             metrics_registry.get_or_create("pose") if metrics_registry else None
         )
@@ -197,7 +199,8 @@ class PoseRunner:
     # ---- shared posture write ---------------------------------------
     def _classify(self, camera_id: str, track_id: int,
                   pose: PoseEstimation) -> None:
-        res = self._tracker.update(camera_id, track_id, pose)
+        floor_q = lambda x, y: self._floor.near_floor(camera_id, x, y)  # noqa: E731
+        res = self._tracker.update(camera_id, track_id, pose, floor_query=floor_q)
         self._postures.update(
             PostureRecord(
                 camera_id=camera_id, track_id=track_id,

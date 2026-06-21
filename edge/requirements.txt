@@ -10,7 +10,9 @@
 #
 # Installed separately by scripts/install_native.sh:
 #   pycuda       (pip, compiles against /usr/local/cuda)
-#   supervision  (pip --no-deps, so it can't drag in opencv-python)
+#   scipy        (apt: python3-scipy) — the BoT-SORT tracker uses
+#                scipy.optimize.linear_sum_assignment for data association
+#   supervision  (pip --no-deps) — legacy; no longer on the tracking path
 #
 # NOT runtime deps at all:
 #   torch / torchvision / ultralytics — used once for ONNX export inside a

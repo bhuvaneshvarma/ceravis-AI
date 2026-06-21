@@ -69,6 +69,8 @@ async def lifespan(app: FastAPI):
     # ---- buffers (always on) -----------------------------------
     detection_buffer = DetectionBuffer()
     track_buffer = TrackBuffer()
+    from tracking.track_feature_buffer import TrackFeatureBuffer
+    feature_buffer = TrackFeatureBuffer()      # per-track OSNet features (tracker -> reid)
     pose_buffer = PoseBuffer()
     posture_buffer = PostureBuffer()
     identity_buffer = IdentityBuffer()
@@ -93,11 +95,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("DetectionRunner failed to start")
 
-    # ---- tracking (ByteTrack) ----------------------------------
+    # ---- tracking (clean-room BoT-SORT + OSNet appearance) -----
     tracking_runner = None
     try:
         from tracking.tracking_runner import TrackingRunner
-        tracking_runner = TrackingRunner(detection_buffer, track_buffer)
+        tracking_runner = TrackingRunner(
+            detection_buffer, track_buffer,
+            frame_buffer=camera_manager.frame_buffer,
+            feature_buffer=feature_buffer,
+            metrics_registry=metrics_registry,
+        )
         tracking_runner.start()
     except Exception:
         logger.exception("TrackingRunner disabled")
@@ -133,8 +140,8 @@ async def lifespan(app: FastAPI):
         try:
             from reid.reid_runner import ReIDRunner
             reid_runner = ReIDRunner(
-                frame_buffer=camera_manager.frame_buffer,
                 track_buffer=track_buffer,
+                feature_buffer=feature_buffer,
                 identity_buffer=identity_buffer,
                 gallery=gallery,
                 target_registry=target_registry,

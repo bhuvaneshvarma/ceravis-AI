@@ -5,18 +5,15 @@ import queue
 import threading
 import time
 
-from datetime import datetime, timezone
-
-from common.crops import crop_person
 from config.settings import settings
 from enrollment.enrollment_manager import EnrollmentManager
-from ingestion.frame_buffer import FrameBuffer
 from reid.faiss_index import FaissGallery
 from reid.identity_buffer import IdentityBuffer
 from reid.identity_schema import Identity
-from reid.reid_extractor import ReIDExtractor
+from reid.target_lock import TargetLockManager
 from reid.target_registry import TargetRegistry
 from tracking.track_buffer import TrackBuffer
+from tracking.track_feature_buffer import TrackFeatureBuffer
 
 
 logger = logging.getLogger("reid")
@@ -24,46 +21,47 @@ logger = logging.getLogger("reid")
 
 class ReIDRunner:
     """
-    Runs OSNet on tracked person crops at settings.reid_fps (default 2 FPS).
+    Identity + target-lock orchestrator.
 
-    Strategy:
-      - Only crop already-tracked persons (no wasted compute).
-      - One ID per (camera_id, track_id) cached; re-query only every N frames.
+    The heavy lifting (OSNet appearance) now happens once, inside the tracker,
+    and lands in the TrackFeatureBuffer. This runner is light: at reid_fps it
+    reads per-track features, runs the hybrid set-to-set gallery match through
+    the TargetLockManager (acquire / verify / freeze-on-occlusion / release /
+    reacquire), writes identities + the shared target lock, and hands confident,
+    NON-occluded appearances to a background thread for adaptive learning.
+
+    No frame access, no inference on this path — so it can't lag the stream.
     """
-
-    REQUERY_EVERY_N_FRAMES = 10
 
     def __init__(
         self,
-        frame_buffer: FrameBuffer,
         track_buffer: TrackBuffer,
+        feature_buffer: TrackFeatureBuffer,
         identity_buffer: IdentityBuffer,
         gallery: FaissGallery,
         target_registry: TargetRegistry | None = None,
         posture_buffer=None,
         enroll_manager: EnrollmentManager | None = None,
     ) -> None:
-        self._frames = frame_buffer
         self._tracks = track_buffer
+        self._features = feature_buffer
         self._identities = identity_buffer
         self._gallery = gallery
         self._targets = target_registry or TargetRegistry()
-        self._postures = posture_buffer            # optional — labels adaptive captures
+        self._postures = posture_buffer
         self._enroll_mgr = enroll_manager or EnrollmentManager()
-        self._extractor: ReIDExtractor | None = None
+        self._manager = TargetLockManager(gallery)
 
         self._running = False
         self._thread: threading.Thread | None = None
-        self._last_query_frame: dict[tuple[str, int], int] = {}
 
-        # Adaptive online-learning runs on a SEPARATE low-rate thread so its
-        # disk I/O (np.load/save, gallery rebuild) never blocks the inference
-        # tick or starves the capture/stream threads via the GIL. The tick only
-        # does a cheap, time-throttled hand-off onto this queue.
+        # Adaptive online-learning on a separate low-rate thread so its disk I/O
+        # never blocks identity decisions. The tick only does a cheap, throttled
+        # hand-off onto this queue.
         self._adapt_q: "queue.Queue[tuple[str, object, str]]" = queue.Queue(maxsize=64)
         self._adapt_thread: threading.Thread | None = None
-        self._last_adapt_attempt = 0.0             # throttle capture attempts (per tick)
-        self._last_adapt_rebuild = 0.0             # throttle gallery rebuilds
+        self._last_adapt_attempt = 0.0
+        self._last_adapt_rebuild = 0.0
 
     @property
     def is_running(self) -> bool:
@@ -72,24 +70,13 @@ class ReIDRunner:
     def start(self) -> None:
         if self._running:
             return
-        try:
-            self._extractor = ReIDExtractor()
-        except FileNotFoundError as exc:
-            logger.warning("ReIDRunner disabled — ReID engine not built "
-                           "(run scripts/export_reid.sh): %s", exc)
-            return
-        except Exception:
-            logger.exception("ReIDRunner disabled — ReID engine failed to load")
-            return
         self._running = True
         self._thread = threading.Thread(
-            target=self._run, daemon=True, name="reid-runner",
-        )
+            target=self._run, daemon=True, name="reid-runner")
         self._thread.start()
         if settings.reid_adaptive_enabled:
             self._adapt_thread = threading.Thread(
-                target=self._adaptive_loop, daemon=True, name="reid-adaptive",
-            )
+                target=self._adaptive_loop, daemon=True, name="reid-adaptive")
             self._adapt_thread.start()
 
     def stop(self) -> None:
@@ -114,70 +101,46 @@ class ReIDRunner:
                 time.sleep(sleep)
 
     def _tick(self) -> None:
-        if self._extractor is None:
-            return
-        threshold = settings.reid_match_threshold
-
-        pad = settings.crop_padding_frac
         for camera_id, track_result in self._tracks.get_all().items():
-            frame_data = self._frames.get(camera_id)
-            if frame_data is None or not track_result.tracks:
+            if not track_result.tracks:
                 continue
+            boxes = {t.track_id: (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2)
+                     for t in track_result.tracks}
 
-            target_tid = self._targets.get(camera_id)
+            def feat_for(tid: int):
+                rec = self._features.get(camera_id, tid)
+                return rec.smooth if rec is not None else None
 
-            for track in track_result.tracks:
-                key = (camera_id, track.track_id)
+            outcome = self._manager.update(camera_id, boxes, feat_for)
 
-                # Focus: while the target lock is fresh, only re-verify the
-                # target itself — skip embedding the other people (the GPU
-                # saving you asked for). Non-target tracks are still counted
-                # by detection/tracking, just not re-identified every tick.
-                if target_tid is not None and track.track_id != target_tid:
-                    continue
+            # Apply the lock decision to the shared registry (pose + UI read it).
+            if outcome.released:
+                self._targets.unlock(camera_id)
+            if outcome.target_track_id is not None and outcome.recipient_id:
+                self._targets.lock(camera_id, outcome.target_track_id,
+                                   outcome.recipient_id)
 
-                last = self._last_query_frame.get(key, -1)
-                if frame_data.frame_id - last < self.REQUERY_EVERY_N_FRAMES \
-                   and self._identities.get(camera_id, track.track_id) is not None:
-                    continue
+            # Publish identities.
+            ts = track_result.timestamp
+            fid = track_result.frame_id
+            for tid, (rid, is_target, score, view) in outcome.identities.items():
+                self._identities.update(Identity(
+                    track_id=tid, camera_id=camera_id, frame_id=fid, timestamp=ts,
+                    recipient_id=rid if is_target else None,
+                    is_target=is_target, confidence=float(score),
+                    view_label=view if is_target else None))
 
-                crop, _, _ = crop_person(
-                    frame_data.frame, track.bbox.x1, track.bbox.y1,
-                    track.bbox.x2, track.bbox.y2, pad,
-                )
-                if crop.size == 0:
-                    continue
-
-                emb = self._extractor.embed(crop)
-                rid, score, view = self._gallery.search(emb)
-                is_target = score >= threshold
-                self._identities.update(
-                    Identity(
-                        track_id=track.track_id,
-                        camera_id=camera_id,
-                        frame_id=frame_data.frame_id,
-                        timestamp=frame_data.timestamp,
-                        recipient_id=rid if is_target else None,
-                        is_target=is_target,
-                        confidence=float(score),
-                        view_label=view if is_target else None,
-                    )
-                )
-                if is_target and rid is not None:
-                    # Lock (or refresh) the target on this track id.
-                    self._targets.lock(camera_id, track.track_id, rid)
-                    # Online learning: hand the appearance to the background
-                    # thread — cheap and time-throttled so the inference tick
-                    # never touches the disk.
-                    self._queue_adapt(camera_id, track.track_id, rid, score, emb)
-                self._last_query_frame[key] = frame_data.frame_id
+            # Adaptive capture — ONLY for a confidently-matched, NON-occluded
+            # target (the manager already gated occlusion), so we never learn an
+            # intruder's appearance into the recipient's gallery.
+            if outcome.adaptive is not None:
+                tid, rid, score = outcome.adaptive
+                rec = self._features.get(camera_id, tid)
+                if rec is not None:
+                    self._queue_adapt(camera_id, tid, rid, score, rec.curr)
 
     # ---- adaptive online learning (off the inference tick) -----------
-    def _queue_adapt(self, camera_id: str, track_id: int, rid: str,
-                     score: float, emb) -> None:
-        """Cheap, time-throttled hand-off: no disk, no blocking. Most ticks do
-        nothing here; at most one sample every reid_adaptive_min_interval_secs
-        is copied and pushed to the background writer."""
+    def _queue_adapt(self, camera_id, track_id, rid, score, emb) -> None:
         if not settings.reid_adaptive_enabled or score < settings.reid_adaptive_min_score:
             return
         now = time.monotonic()
@@ -191,11 +154,9 @@ class ReIDRunner:
         try:
             self._adapt_q.put_nowait((rid, emb.copy(), label))
         except queue.Full:
-            pass                                   # writer busy — just skip this one
+            pass
 
     def _adaptive_loop(self) -> None:
-        """Background writer: dedup + persist novel embeddings and rebuild the
-        gallery, fully off the inference path. All disk I/O lives here."""
         while self._running:
             try:
                 rid, emb, label = self._adapt_q.get(timeout=1.0)
@@ -205,8 +166,7 @@ class ReIDRunner:
                 added = self._enroll_mgr.append_adaptive(
                     rid, emb, label,
                     cap=settings.reid_adaptive_max,
-                    dedup_cos=settings.reid_adaptive_dedup_cos,
-                )
+                    dedup_cos=settings.reid_adaptive_dedup_cos)
                 if not added:
                     continue
                 logger.info("reid: adaptive sample saved for %s (label=%s)",

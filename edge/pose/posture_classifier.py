@@ -76,6 +76,7 @@ class PostureResult:
     # tracker watches this rise/fall to corroborate sit<->stand transitions —
     # the first thing that moves when standing up is the head going up.
     head_y: float = 0.0
+    head_x: float = 0.0              # head image-x — for the floor point-in-polygon test
 
 
 # =====================================================================
@@ -140,6 +141,7 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
     head = _avg_point([kps[NOSE], kps[LEFT_EYE], kps[RIGHT_EYE],
                        kps[LEFT_EAR], kps[RIGHT_EAR]])
     head_y = head[1] if head is not None else sy
+    head_x = head[0] if head is not None else sx
 
     # Centroid for motion tracking
     xs = [k.x for k in pose.keypoints if k.confidence >= _MIN_KP_CONF]
@@ -182,22 +184,22 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
     # Strong fall: torso is closer to horizontal than to vertical.
     if torso_ang >= fall_thr:
         return PostureResult(Posture.FALLEN, 0.85, torso_ang, knee_ang,
-                             centroid, body_ref, head_y)
+                             centroid, body_ref, head_y, head_x)
 
     # Decide sit vs stand ONLY when the legs are actually visible (knee joint
     # angle available). Bent knees => sitting, straight => standing.
     if present:
         if knee_ang < 140.0:
             return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang,
-                                 centroid, body_ref, head_y)
+                                 centroid, body_ref, head_y, head_x)
         return PostureResult(Posture.STANDING, 0.75, torso_ang, knee_ang,
-                             centroid, body_ref, head_y)
+                             centroid, body_ref, head_y, head_x)
 
     # Legs NOT visible (e.g. seated at a desk, legs out of frame): we cannot
     # tell sit from stand this frame. Return UNKNOWN so the tracker HOLDS the
     # last confirmed posture instead of wrongly flipping to standing.
     return PostureResult(Posture.UNKNOWN, 0.40, torso_ang, knee_ang,
-                         centroid, body_ref, head_y)
+                         centroid, body_ref, head_y, head_x)
 
 
 # =====================================================================
@@ -213,6 +215,12 @@ class _TrackState:
     walk_streak: int = 0
     stable: Posture = Posture.UNKNOWN   # last CONFIRMED sit/stand/fall posture
     sit_stand_streak: int = 0           # frames of corroborated sit<->stand transition
+    # ---- scene-aware fall FSM (0 upright, 1 down, 2 confirmed) ----
+    fall_phase: int = 0
+    fall_down_since: datetime | None = None
+    fall_still_since: datetime | None = None
+    fall_impact_since: datetime | None = None
+    fall_confirmed_pending: bool = False
 
 
 class PostureTracker:
@@ -243,6 +251,7 @@ class PostureTracker:
         camera_id: str,
         track_id: int,
         pose: PoseEstimation,
+        floor_query=None,          # callable(head_x, head_y) -> bool|None, or None
     ) -> PostureResult:
         st = self._state[(camera_id, track_id)]
         raw = classify_frame(pose)
@@ -251,10 +260,13 @@ class PostureTracker:
         st.last_centroids.append((pose.timestamp, *raw.centroid_xy, raw.body_ref_px))
         st.last_heads.append((pose.timestamp, raw.head_y, raw.body_ref_px))
 
+        # Scene-aware fall FSM (impact -> horizontal & near-floor -> immobility).
+        self._update_fall_fsm(st, raw, pose.timestamp, floor_query)
+
         def out(posture: Posture) -> PostureResult:
             return PostureResult(posture, raw.confidence, raw.torso_angle_deg,
                                  raw.avg_knee_angle_deg, raw.centroid_xy,
-                                 raw.body_ref_px, raw.head_y)
+                                 raw.body_ref_px, raw.head_y, raw.head_x)
 
         # ---- N-frame fall confirmation (highest priority) ----------
         if raw.posture == Posture.FALLEN:
@@ -334,13 +346,89 @@ class PostureTracker:
             return dy_frac >= thr                         # head moved DOWN
         return False
 
+    # ---- scene-aware fall FSM ---------------------------------------
+    def _update_fall_fsm(self, st: _TrackState, raw: PostureResult,
+                         ts: datetime, floor_query) -> None:
+        """Phase machine: a fall is a fast downward motion (impact) that ends
+        horizontal, near the floor, and then stays still — not just one
+        horizontal frame. This is what separates a real fall from bending over,
+        sitting on the floor, exercising, or a steep camera angle."""
+        # impact — peak downward head speed in body-lengths / sec
+        v_down = self._head_down_speed(st)
+        if v_down >= settings.fall_velocity_body_frac:
+            st.fall_impact_since = ts
+        impact_recent = (
+            st.fall_impact_since is not None
+            and (ts - st.fall_impact_since).total_seconds()
+            <= settings.fall_velocity_window_secs * 3.0)
+
+        horizontal = raw.torso_angle_deg >= settings.fall_torso_angle_deg
+        near = floor_query(raw.head_x, raw.head_y) if floor_query is not None else None
+        near_ok = (near is True) or (near is None and not settings.fall_require_near_floor)
+
+        # stillness — body barely drifting marks the post-fall settle
+        speed = self._centroid_speed(st)
+        if speed < settings.fall_immobility_body_frac:
+            if st.fall_still_since is None:
+                st.fall_still_since = ts
+        else:
+            st.fall_still_since = None
+
+        if horizontal and near_ok:
+            if st.fall_phase == 0 and (impact_recent or near is True):
+                st.fall_phase = 1
+                st.fall_down_since = ts
+            if st.fall_phase == 1:
+                still_long = (
+                    st.fall_still_since is not None
+                    and (ts - st.fall_still_since).total_seconds()
+                    >= settings.fall_immobility_secs)
+                if still_long:
+                    st.fall_phase = 2
+                    st.fall_confirmed_pending = True
+        else:
+            # recovered / was only bending or sitting -> reset
+            st.fall_phase = 0
+            st.fall_down_since = None
+
+    def _head_down_speed(self, st: _TrackState) -> float:
+        """Downward head speed over the velocity window (body-lengths/sec, >=0)."""
+        if len(st.last_heads) < 2:
+            return 0.0
+        t_new, y_new, ref_new = st.last_heads[-1]
+        window = settings.fall_velocity_window_secs
+        t_old, y_old = t_new, y_new
+        for t, y, _ in reversed(st.last_heads):
+            if (t_new - t).total_seconds() <= window:
+                t_old, y_old = t, y
+            else:
+                break
+        dt = (t_new - t_old).total_seconds()
+        if dt <= 0:
+            return 0.0
+        dy = y_new - y_old                      # +ve = head moved DOWN
+        return max(0.0, (dy / dt) / max(ref_new, 1.0))
+
+    def _centroid_speed(self, st: _TrackState) -> float:
+        """Recent centroid speed (body-lengths/sec) — small => still."""
+        if len(st.last_centroids) < 2:
+            return 0.0
+        t_new, x_new, y_new, ref_new = st.last_centroids[-1]
+        t_old, x_old, y_old, _ = st.last_centroids[-2]
+        dt = (t_new - t_old).total_seconds()
+        if dt <= 0:
+            return 0.0
+        disp = math.hypot(x_new - x_old, y_new - y_old)
+        return (disp / dt) / max(ref_new, 1.0)
+
     # Helpers for FallRule
     def confirm_fall(self, camera_id: str, track_id: int) -> bool:
-        """Has a fall been confirmed *and* are we past cooldown?"""
+        """True once when the FSM confirms a fall and we're past cooldown."""
         key = (camera_id, track_id)
         st = self._state.get(key)
-        if st is None or st.fall_streak < settings.fall_confirmation_frames:
+        if st is None or not st.fall_confirmed_pending:
             return False
+        st.fall_confirmed_pending = False        # consume the one-shot
         now = datetime.now(timezone.utc)
         last = self._last_fall.get(key)
         if last is not None and (now - last).total_seconds() < settings.fall_cooldown_secs:
