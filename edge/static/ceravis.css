@@ -87,7 +87,8 @@ body {
 /* ---- forms ------------------------------------------------------- */
 label.f { display: block; font-size: 11.5px; color: var(--muted); margin: 12px 0 5px;
           text-transform: uppercase; letter-spacing: 1px; }
-input[type=text], input[type=tel], input[type=date], select, textarea {
+input[type=text], input[type=tel], input[type=email], input[type=number],
+input[type=password], input[type=date], select, textarea {
   width: 100%; padding: 10px 12px;
   background: #0a0f18; border: 1px solid var(--line); border-radius: 9px;
   color: var(--text); font-size: 14px; font-family: inherit;
@@ -98,6 +99,13 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px rgba(45,212,191,.13);
 }
 textarea { resize: vertical; min-height: 64px; }
+/* Keep browser autofill on-theme instead of the default white/yellow box. */
+input:-webkit-autofill, input:-webkit-autofill:hover,
+input:-webkit-autofill:focus, input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px #0a0f18 inset;
+  caret-color: var(--text); transition: background-color 9999s ease-in-out 0s;
+}
 
 /* ---- buttons ----------------------------------------------------- */
 .btn {

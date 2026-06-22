@@ -200,49 +200,15 @@
     <div class="split">
       <div class="card">
         <h2>Care recipient</h2>
-        <div class="grid-2">
-          <div>
-            <label class="f">Recipient ID</label>
-            <input type="text" id="r-id" placeholder="recipient-001" />
-          </div>
-          <div>
-            <label class="f">Edge device ID</label>
-            <input type="text" id="r-device" placeholder="edge-0001" />
-          </div>
-        </div>
-        <label class="f">Full name</label>
-        <input type="text" id="r-name" placeholder="Full name" />
-        <div class="grid-2">
-          <div>
-            <label class="f">Date of birth</label>
-            <input type="date" id="r-dob" />
-          </div>
-          <div>
-            <label class="f">Primary recipient</label>
-            <select id="r-primary"><option value="true">Yes</option><option value="false">No</option></select>
-          </div>
-        </div>
-        <label class="f">Home address</label>
-        <input type="text" id="r-address" placeholder="Street, city" />
-        <label class="f">Medical notes (mobility, conditions, medication)</label>
-        <textarea id="r-medical" placeholder="e.g. limited mobility on left side; fall history"></textarea>
-
-        <h2 class="mt">Emergency contacts</h2>
-        <div id="r-contacts"></div>
-        <button class="btn btn-ghost btn-sm" id="r-add-contact">+ Add contact</button>
-
-        <div class="row mt">
-          <button class="btn btn-primary" id="r-save">Save recipient</button>
-        </div>
+        <div class="hint mb">Your verified CERAVIS profile — registered as the care
+          recipient on this device.</div>
+        <div id="r-profile"></div>
       </div>
       <div class="card">
-        <h2>Account on file</h2>
-        <div id="r-acct" class="hint mb">—</div>
-        <hr class="sep" />
-        <h2>Registered recipients</h2>
+        <h2>Registered on this device</h2>
         <table class="tbl"><tbody id="r-table"></tbody></table>
-        <div class="hint mt">Save the recipient, then continue → cameras → zones →
-          enrollment (final step) to capture face/body embeddings.</div>
+        <div class="hint mt">Face/body enrollment is the final step. Falls &amp;
+          posture work without it; enrollment adds identity (recipient vs visitor).</div>
       </div>
     </div>
   </section>
@@ -687,40 +653,51 @@ document.getElementById("z-save").onclick = async () => {
 };
 
 /* ================= STEP 2 — recipient ================= */
-function contactRow(c = {}) {
-  const row = el("div", "contact-row");
-  row.innerHTML = `
-    <input type="text" placeholder="Contact name" value="${c.name || ""}" data-cf="name" />
-    <input type="text" placeholder="Relation" value="${c.relation || ""}" data-cf="relation" />
-    <input type="tel" placeholder="Phone (+91…)" value="${c.phone || ""}" data-cf="phone" />
-    <button class="btn btn-danger btn-sm" title="remove">✕</button>`;
-  row.querySelector("button").onclick = () => row.remove();
-  return row;
+function profRow(k, v) {
+  return `<div style="display:flex;justify-content:space-between;padding:5px 0;
+    border-bottom:1px solid var(--line-soft);font-size:13px">
+    <span class="faint">${k}</span><b>${v}</b></div>`;
 }
 async function initRecipient() {
-  const box = document.getElementById("r-contacts");
-  if (!box.children.length) box.appendChild(contactRow());
-  // Show the verified account + pre-fill the recipient name from it.
+  const prof = document.getElementById("r-profile");
   const u = ACCOUNT.user;
-  if (u) {
-    const nm = [u.firstName, u.lastName].filter(Boolean).join(" ");
-    const rn = document.getElementById("r-name");
-    if (rn && !rn.value && nm) rn.value = nm;
-    const acct = document.getElementById("r-acct");
-    if (acct) acct.innerHTML = `Linked to <b>${nm || u.email || "account"}</b>`
-      + `<span class="faint"> · ${u.email || ""}${u.phone ? " · " + u.phone : ""}`
-      + `${u.role ? " · " + u.role : ""}${u.tier ? " · " + u.tier : ""}`
-      + ` · CERAVIS #${u.ceravisUserId ?? "—"}</span>`;
+  if (!u) {
+    if (prof) prof.innerHTML = `<span class="faint">Verify your account first (step 1).</span>`;
+    refreshRecipients();
+    return;
   }
-  try {  // prefill device id from the edge itself
-    const h = await api("/health");
-    const f = document.getElementById("r-device");
-    if (!f.value) f.value = h.device_id || "";
-  } catch {}
+  const name = [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email || "—";
+  if (prof) prof.innerHTML =
+    `<div style="font-size:17px;font-weight:600;margin-bottom:10px">${name}</div>`
+    + profRow("CERAVIS user", "#" + (u.ceravisUserId ?? "—"))
+    + profRow("First name", u.firstName || "—")
+    + profRow("Last name", u.lastName || "—")
+    + profRow("Email", u.email || "—")
+    + profRow("Mobile", u.phone || "—")
+    + profRow("Gender", u.gender || "—")
+    + profRow("Role", u.role || "—")
+    + profRow("Tier", u.tier || "—");
+  await ensureRecipient(u);
   refreshRecipients();
 }
-document.getElementById("r-add-contact").onclick = () =>
-  document.getElementById("r-contacts").appendChild(contactRow());
+async function ensureRecipient(u) {
+  // Register the verified account as this device's care recipient (once).
+  const rid = "ceravis-" + u.ceravisUserId;
+  pendingEnrollRid = pendingEnrollRid || rid;       // enroll this one at the final step
+  try {
+    const list = await api("/api/v1/recipients").catch(() => []);
+    if (list.some(r => r.recipient_id === rid)) return;
+    let dev = "";
+    try { dev = (await api("/health")).device_id || ""; } catch {}
+    await api("/api/v1/recipients", { method: "POST", body: JSON.stringify({
+      recipient_id: rid,
+      full_name: [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email,
+      is_primary_recipient: true,
+      device_id: dev,
+    }) });
+    toast("Care recipient profile created");
+  } catch (e) { /* exists already / save failed — non-fatal */ }
+}
 
 const ENROLL_PILL = {
   ready: "pill-ok", processing: "pill-info", queued: "pill-info",
@@ -748,34 +725,6 @@ async function refreshRecipients() {
   document.querySelectorAll("[data-enroll-sel]").forEach(b =>
     b.onclick = () => selectEnroll(b.dataset.enrollSel));
 }
-document.getElementById("r-save").onclick = async () => {
-  const contacts = [...document.querySelectorAll("#r-contacts .contact-row")]
-    .map(row => {
-      const v = f => row.querySelector(`[data-cf=${f}]`).value.trim();
-      return { name: v("name"), relation: v("relation") || null, phone: v("phone") };
-    }).filter(c => c.name && c.phone);
-  const rec = {
-    recipient_id: document.getElementById("r-id").value.trim(),
-    full_name: document.getElementById("r-name").value.trim(),
-    is_primary_recipient: document.getElementById("r-primary").value === "true",
-    date_of_birth: document.getElementById("r-dob").value || null,
-    device_id: document.getElementById("r-device").value.trim() || null,
-    address: document.getElementById("r-address").value.trim() || null,
-    emergency_contacts: contacts,
-    medical_notes: document.getElementById("r-medical").value.trim() || null,
-  };
-  if (!rec.recipient_id || !rec.full_name)
-    return toast("Recipient ID and full name are required", "err");
-  if (!contacts.length)
-    return toast("Add at least one emergency contact", "err");
-  try {
-    await api("/api/v1/recipients", { method: "POST", body: JSON.stringify(rec) });
-    toast(`Recipient ${rec.full_name} registered — continue to cameras`);
-    refreshRecipients();
-    pendingEnrollRid = rec.recipient_id;   // enroll this one at the final step
-  } catch (e) { toast(e.detail || "Save failed", "err"); }
-};
-
 /* ---- enrollment (photos / video / live) ---- */
 let enrollRid = null, enrollPoll = null, enrollPreview = null;
 const EN_MIN_FRAMES = 10;   // live capture: enable Enroll once this many frames

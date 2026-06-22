@@ -8,7 +8,6 @@ from pathlib import Path
 
 import cv2
 
-from common.annotate import annotate_event_frame
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -135,15 +134,10 @@ class EventEnricher:
             self._name_cache_at = now
         return self._name_cache.get(rid) or rid
 
-    @staticmethod
-    def _fmt_timestamp(iso: str) -> str:
-        """Detection time for the snapshot's top-left, e.g. '2026-06-22  14:30:45 UTC'."""
-        try:
-            return datetime.fromisoformat(iso).strftime("%Y-%m-%d  %H:%M:%S UTC")
-        except Exception:
-            return iso or ""
-
     def _write_snapshot(self, event: Event, ctx: RuleContext, bbox, area) -> None:
+        # Save a CLEAN frame (no overlay) — the alert message carries the
+        # severity/title/room/area/recipient/time. The app server renders its own
+        # UI; a raw frame is the most useful evidence and the smallest file.
         try:
             fd = ctx.frames.get(event.camera_id)
             if fd is None:
@@ -152,17 +146,7 @@ class EventEnricher:
             rel = Path(settings.device_id) / day / f"{event.event_id}.jpg"
             out = self._events_root / rel
             out.parent.mkdir(parents=True, exist_ok=True)
-            location = ", ".join(p for p in (area, event.room_name) if p)
-            title = event.title or event.event_type.replace("_", " ").title()
-            img = annotate_event_frame(
-                fd.frame, bbox,
-                timestamp_text=self._fmt_timestamp(event.timestamp),
-                title=title,
-                location=location,
-                subject=self._recipient_name(event.recipient_id),
-                severity=event.severity or "info",
-            )
-            cv2.imwrite(str(out), img,
+            cv2.imwrite(str(out), fd.frame,
                         [cv2.IMWRITE_JPEG_QUALITY, int(settings.event_snapshot_quality)])
             # Store the path RELATIVE to the events root — maps 1:1 to the
             # future S3 key (<device_id>/<date>/<event_id>.jpg).

@@ -17,6 +17,7 @@ silent if the app server isn't configured or no account has been verified yet.
 import logging
 import queue
 import threading
+from datetime import datetime
 
 from config.settings import settings
 from configuration.account_config import AccountConfig
@@ -73,10 +74,28 @@ class CloudAlertPublisher:
                     self._warned_no_account = True
                 continue
             alert_type = (event.event_type or "").upper()
-            message = event.message or event.title or event.event_type
+            message = self._format(event)
             try:
                 save_alert(pid, alert_type, message)
             except CeravisApiError as exc:
                 logger.warning("saveAlert failed (%s): %s", alert_type, exc)
             except Exception:
                 logger.exception("saveAlert unexpected error")
+
+    def _format(self, event) -> str:
+        """Professional, fixed-format alert line, e.g.
+        'CRITICAL · Fall detected · Kitchen / fridge · Ravi · 11:45 AM, 23 Jun 2026'."""
+        who = self._account.get().get("firstName") or "recipient"
+        sev = (event.severity or "info").upper()
+        title = event.title or (event.event_type or "").replace("_", " ").title()
+        loc = " / ".join(p for p in (event.room_name, event.zone_name) if p)
+        try:
+            ts = datetime.fromisoformat(event.timestamp).strftime("%I:%M %p, %d %b %Y")
+            ts = ts.lstrip("0")
+        except Exception:
+            ts = event.timestamp or ""
+        parts = [f"{sev} · {title}"]
+        if loc:
+            parts.append(loc)
+        parts += [who, ts]
+        return " · ".join(parts)
