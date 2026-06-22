@@ -215,6 +215,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("MqttPublisher disabled")
 
+    # Forward critical/warning alerts to the CERAVIS app server (saveAlert).
+    cloud_alert_publisher = None
+    try:
+        from alerts.cloud_alert_publisher import CloudAlertPublisher
+        cloud_alert_publisher = CloudAlertPublisher(event_bus)
+        cloud_alert_publisher.start()
+    except Exception:
+        logger.exception("CloudAlertPublisher disabled")
+
     # ---- expose ------------------------------------------------
     app.state.camera_manager = camera_manager
     app.state.detection_buffer = detection_buffer
@@ -240,7 +249,8 @@ async def lifespan(app: FastAPI):
 
     # ---- shutdown ----------------------------------------------
     for runner in (
-        mqtt_publisher, alert_broadcaster, rule_engine, event_writer, enroll_worker,
+        mqtt_publisher, cloud_alert_publisher, alert_broadcaster, rule_engine,
+        event_writer, enroll_worker,
         reid_runner, pose_runner, tracking_runner, detection_runner,
     ):
         if runner is None:

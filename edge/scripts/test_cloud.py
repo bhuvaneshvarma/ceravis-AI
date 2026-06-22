@@ -28,7 +28,8 @@ from config.settings import settings                                      # noqa
 from configuration.account_config import AccountConfig                    # noqa: E402
 from configuration.camera_config import CameraConfig                      # noqa: E402
 from integration.ceravis_api import (                                     # noqa: E402
-    CeravisApiError, get_user_details, is_configured, room_to_enum, save_cameras,
+    CeravisApiError, get_user_details, is_configured, room_to_enum,
+    save_alert, save_cameras,
 )
 
 
@@ -91,7 +92,7 @@ def main() -> int:
         if not cameras:
             print("\n    cannot send: no cameras registered")
             return 1
-        print("\n[3] POSTing saveCamera…")
+        print("\n[3] sending saveCamera…")
         try:
             res = save_cameras(pid, cameras)
             print("    server ->", res, "  ✓ CALL HIT")
@@ -99,7 +100,20 @@ def main() -> int:
             print("    ERROR:", exc)
             return 1
     else:
-        print("\n(add --send to actually POST userDetails + saveCamera)")
+        print("\n(add --send to actually call userDetails + saveCamera)")
+
+    # [4] optional test alert
+    if "--alert" in sys.argv:
+        if not pid:
+            print("\n[4] cannot send alert: no verified account")
+            return 1
+        print("\n[4] sending test saveAlert (FALL)…")
+        try:
+            res = save_alert(pid, "FALL", "Test alert from device sanity check")
+            print("    server ->", res, "  ✓ CALL HIT")
+        except CeravisApiError as exc:
+            print("    ERROR:", exc)
+            return 1
     return 0
 
 

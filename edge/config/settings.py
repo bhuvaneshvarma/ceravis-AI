@@ -213,6 +213,9 @@ class Settings(BaseSettings):
     # server (e.g. ws://192.168.1.50:8000 or wss://edge.ceravis.in). Blank =
     # auto-derive from the host the browser used to reach the device.
     device_stream_base: str = ""
+    # Which event severities are forwarded to the app server's saveAlert. Falls
+    # are critical; inactivity/visitor/no-movement are warnings. Comma-separated.
+    cloud_alert_severities: str = "critical,warning"
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""

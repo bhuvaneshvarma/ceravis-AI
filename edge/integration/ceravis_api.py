@@ -124,3 +124,33 @@ def save_cameras(patient_user_id, cameras: list[dict]):
         return _unwrap(resp.json())
     except ValueError:
         return True
+
+
+def save_alert(patient_user_id, alert_type: str, message_text: str):
+    """
+    POST /v1/ai/saveAlert — push one alert to the app server.
+    Body: { patientUserId, alertType (e.g. "FALL"), messageText }.
+    Returns the server's response; raises CeravisApiError on failure.
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveAlert"
+    payload = {"patientUserId": patient_user_id,
+               "alertType": alert_type, "messageText": message_text}
+    logger.info("saveAlert -> POST %s  patient=%s  type=%s", url,
+                patient_user_id, alert_type)
+    try:
+        resp = requests.post(url, json=payload, headers=_headers(),
+                             timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("saveAlert: cannot reach %s — %s", url, exc)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    logger.info("saveAlert <- HTTP %s  body=%s", resp.status_code, resp.text[:300])
+    if resp.status_code >= 400:
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+    try:
+        return _unwrap(resp.json())
+    except ValueError:
+        return True
