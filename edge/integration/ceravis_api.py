@@ -108,11 +108,11 @@ def save_cameras(patient_user_id, cameras: list[dict]):
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveCamera"
     payload = {"patientUserId": patient_user_id, "cameras": cameras}
-    logger.info("saveCamera -> POST %s  patient=%s  cameras=%d  rooms=%s",
+    logger.info("saveCamera -> PUT %s  patient=%s  cameras=%d  rooms=%s",
                 url, patient_user_id, len(cameras), [c.get("room") for c in cameras])
     try:
-        resp = requests.post(url, json=payload, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = requests.put(url, json=payload, headers=_headers(),
+                            timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("saveCamera: cannot reach %s — %s", url, exc)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
