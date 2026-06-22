@@ -3,8 +3,8 @@ from __future__ import annotations
 """
 Thin client for the CERAVIS application server (Spring).
 
-Only the calls the edge device needs. Everything goes through here so the base
-URL + access token live in ONE place (device config) and never in the browser.
+Only the calls the edge device needs. Everything goes through here so the
+server address lives in ONE place (device config) and never in the browser.
 
 Endpoint used during setup:
     POST {base}/v1/ai/userDetails   body {"email": "..."}
@@ -33,10 +33,8 @@ def is_configured() -> bool:
 
 
 def _headers() -> dict[str, str]:
-    h = {"Content-Type": "application/json", "Accept": "application/json"}
-    if settings.ceravis_api_token.strip():
-        h["Authorization"] = f"Bearer {settings.ceravis_api_token.strip()}"
-    return h
+    # No auth token — the app server accepts the email lookup directly.
+    return {"Content-Type": "application/json", "Accept": "application/json"}
 
 
 def _unwrap(body):
