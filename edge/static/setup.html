@@ -136,8 +136,9 @@
         <label class="f">Room</label>
         <input type="text" id="c-room" placeholder="Kitchen" list="room-suggestions" />
         <datalist id="room-suggestions">
+          <!-- match the CERAVIS CameraName enum so cloud sync maps cleanly -->
           <option>Kitchen</option><option>Bedroom</option><option>Living Room</option>
-          <option>Bathroom</option><option>Hallway</option><option>Entrance</option>
+          <option>Lounge</option><option>Live Feed</option>
         </datalist>
         <div class="row mt">
           <button class="btn btn-primary" id="c-save">Save &amp; start camera</button>

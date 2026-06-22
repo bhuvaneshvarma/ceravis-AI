@@ -12,6 +12,7 @@ from integration.ceravis_api import (
     CeravisApiError,
     get_user_details,
     is_configured,
+    room_to_enum,
     save_cameras,
 )
 
@@ -94,9 +95,11 @@ def sync_cameras(request: Request):
         "device": c.camera_id,
         "model": "",                         # not collected on the edge
         "supplier": "",                      # not collected on the edge
-        "room": c.room_name,                 # the room label we saved
+        "room": room_to_enum(c.room_name),   # -> server CameraName enum
         "url": f"{ws}/stream/{c.camera_id}",  # the camera's WebSocket stream
     } for c in cams]
+    logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
+                len(cameras), pid, [(c["room"], c["url"]) for c in cameras])
 
     try:
         result = save_cameras(pid, cameras)
