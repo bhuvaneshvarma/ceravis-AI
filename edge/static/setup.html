@@ -62,15 +62,39 @@
 <div class="page">
   <div class="page-head">
     <h1>Home setup</h1>
-    <div class="sub">Step-by-step onboarding: cameras &rarr; room zones &rarr; care recipient &rarr; review.
-      Everything saves to the device as you go — you can leave and come back.</div>
+    <div class="sub">Verify your account, then onboard: recipient &rarr; cameras &rarr;
+      room zones &rarr; enrollment. Everything saves to the device as you go.</div>
   </div>
 
   <!-- stepper -->
   <div class="stepper" id="stepper"></div>
 
-  <!-- ============ STEP 1 — CAMERAS ============ -->
+  <!-- ============ STEP 1 — ACCOUNT ============ -->
   <section id="step-1" hidden>
+    <div class="split">
+      <div class="card">
+        <h2>Account verification</h2>
+        <div class="hint mb">Enter the email and mobile number registered with your
+          CERAVIS account. They're verified with the CERAVIS server — only a
+          registered account can continue onboarding.</div>
+        <label class="f">Email</label>
+        <input type="email" id="a-email" placeholder="you@example.com" />
+        <label class="f">Mobile number</label>
+        <input type="tel" id="a-phone" placeholder="+91 98765 43210" />
+        <div class="row mt">
+          <button class="btn btn-primary" id="a-verify">Verify &amp; continue</button>
+          <span class="probe-result" id="a-out"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Your account</h2>
+        <div id="a-details" class="hint">Verify above to load your account details.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 3 — CAMERAS ============ -->
+  <section id="step-3" hidden>
     <div class="split">
       <div class="card">
         <h2>Add a camera</h2>
@@ -132,8 +156,8 @@
     </div>
   </section>
 
-  <!-- ============ STEP 2 — ZONES ============ -->
-  <section id="step-2" hidden>
+  <!-- ============ STEP 4 — ZONES ============ -->
+  <section id="step-4" hidden>
     <div class="split">
       <div class="card">
         <h2>Zone the rooms</h2>
@@ -164,8 +188,8 @@
     </div>
   </section>
 
-  <!-- ============ STEP 3 — RECIPIENT ============ -->
-  <section id="step-3" hidden>
+  <!-- ============ STEP 2 — RECIPIENT ============ -->
+  <section id="step-2" hidden>
     <div class="split">
       <div class="card">
         <h2>Care recipient</h2>
@@ -204,6 +228,21 @@
           <button class="btn btn-primary" id="r-save">Save recipient</button>
         </div>
       </div>
+      <div class="card">
+        <h2>Account on file</h2>
+        <div id="r-acct" class="hint mb">—</div>
+        <hr class="sep" />
+        <h2>Registered recipients</h2>
+        <table class="tbl"><tbody id="r-table"></tbody></table>
+        <div class="hint mt">Save the recipient, then continue → cameras → zones →
+          enrollment (final step) to capture face/body embeddings.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 5 — ENROLLMENT (embeddings) ============ -->
+  <section id="step-5" hidden>
+    <div class="split">
       <div class="card">
         <h2>Face / body enrollment</h2>
         <div id="enroll-none" class="hint">
@@ -271,31 +310,21 @@
         </div>
 
         <hr class="sep" />
-        <h2>Registered recipients</h2>
-        <table class="tbl"><tbody id="r-table"></tbody></table>
-        <div class="hint mt">
-          Falls + posture work without enrollment. Enrollment adds <i>identity</i>
-          (recipient vs visitor) and needs the ReID engine — build it with
-          <code>scripts/export_reid.sh</code>. Until then media is stored and shows
-          <span class="pill pill-warn">pending_reid</span>; embeddings build
-          automatically once ReID is on.
+        <div class="row" style="justify-content:space-between; align-items:center">
+          <span class="faint" id="en-current">Pick a recipient on the right to enroll.</span>
+          <a class="btn btn-primary btn-sm" href="live.html">Finish — open Live Wall</a>
         </div>
       </div>
-    </div>
-  </section>
-
-  <!-- ============ STEP 4 — REVIEW ============ -->
-  <section id="step-4" hidden>
-    <div class="split">
       <div class="card">
-        <h2>Configuration summary</h2>
-        <div id="rev-summary"></div>
-      </div>
-      <div class="card">
-        <h2>System readiness</h2>
-        <div class="checklist" id="rev-checks"></div>
-        <hr class="sep" />
-        <a class="btn btn-primary" href="live.html">Finish — open the Live Wall</a>
+        <h2>Recipients</h2>
+        <table class="tbl"><tbody id="r-table-en"></tbody></table>
+        <div class="hint mt">
+          Pick a recipient to enroll. Falls + posture work without enrollment;
+          enrollment adds <i>identity</i> (recipient vs visitor) and needs the ReID
+          engine — build it with <code>scripts/export_reid.sh</code>. Until then
+          media is stored and shows <span class="pill pill-warn">pending_reid</span>;
+          embeddings build automatically once ReID is on.
+        </div>
       </div>
     </div>
   </section>
@@ -311,7 +340,7 @@
 renderNav("setup.html");
 
 /* ================= wizard frame ================= */
-const STEPS = ["Cameras", "Room zones", "Recipient", "Review"];
+const STEPS = ["Account", "Recipient", "Cameras", "Room zones", "Enrollment"];
 let step = 1;
 const streams = {};            // camera_id -> liveStream handle (step 1 wall)
 
@@ -326,22 +355,85 @@ function renderStepper() {
   }).join("");
 }
 function show(n) {
-  step = Math.min(Math.max(n, 1), 4);
-  for (let i = 1; i <= 4; i++)
+  step = Math.min(Math.max(n, 1), 5);
+  for (let i = 1; i <= 5; i++)
     document.getElementById(`step-${i}`).hidden = i !== step;
   document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
-  document.getElementById("w-next").style.visibility = step === 4 ? "hidden" : "visible";
+  document.getElementById("w-next").style.visibility = step === 5 ? "hidden" : "visible";
+  // Step 1 (Account) gates the wizard: no Continue until verified.
+  if (step === 1 && !ACCOUNT.verified)
+    document.getElementById("w-next").style.visibility = "hidden";
   renderStepper();
-  if (step !== 3) stopEnrollPreview();          // don't keep the WS alive off-step
-  if (step === 1) refreshCameras();
-  if (step === 2) initZones();
-  if (step === 3) initRecipient();
-  if (step === 4) initReview();
+  if (step !== 5) stopEnrollPreview();          // don't keep the WS alive off-step
+  if (step === 1) initAccount();
+  if (step === 2) initRecipient();
+  if (step === 3) refreshCameras();
+  if (step === 4) initZones();
+  if (step === 5) initEnroll();
 }
 document.getElementById("w-back").onclick = () => show(step - 1);
-document.getElementById("w-next").onclick = () => show(step + 1);
+document.getElementById("w-next").onclick = () => {
+  if (step === 1 && !ACCOUNT.verified) return toast("Verify your account first", "err");
+  show(step + 1);
+};
 
-/* ================= STEP 1 — cameras ================= */
+/* ================= STEP 1 — account verification ================= */
+const ACCOUNT = { verified: false, user: null };
+let pendingEnrollRid = null;     // recipient to enroll once we reach the last step
+
+async function initAccount() {
+  try {
+    const a = await api("/api/v1/account");
+    if (a && a.user) {
+      document.getElementById("a-email").value = a.user.email || "";
+      document.getElementById("a-phone").value = a.user.phone || "";
+    }
+    if (a && a.verified && a.user) {
+      ACCOUNT.verified = true; ACCOUNT.user = a.user; renderAccount();
+      document.getElementById("w-next").style.visibility = "visible";
+    } else if (a && a.configured === false) {
+      document.getElementById("a-out").innerHTML =
+        `<span class="warn">CERAVIS server not configured on this device yet.</span>`;
+    }
+  } catch {}
+}
+function renderAccount() {
+  const u = ACCOUNT.user; if (!u) return;
+  const name = [u.firstName, u.lastName].filter(Boolean).join(" ") || "—";
+  document.getElementById("a-details").innerHTML = `
+    <div class="review-block"><b>${name}</b>
+      <div class="faint" style="margin-top:6px">
+        ${u.email || ""}${u.phone ? " · " + u.phone : ""}<br>
+        ${u.role ? "Role: " + u.role + " · " : ""}${u.tier ? "Tier: " + u.tier : ""}${u.gender ? " · " + u.gender : ""}<br>
+        <span class="faint">CERAVIS user #${u.ceravisUserId ?? "—"}</span>
+      </div></div>`;
+}
+document.getElementById("a-verify").onclick = async () => {
+  const email = document.getElementById("a-email").value.trim();
+  const phone = document.getElementById("a-phone").value.trim();
+  const out = document.getElementById("a-out");
+  if (!email || !phone)
+    return out.innerHTML = `<span class="bad">Email and mobile number are required.</span>`;
+  out.innerHTML = `<span class="muted">Verifying…</span>`;
+  try {
+    const r = await api("/api/v1/account/verify",
+      { method: "POST", body: JSON.stringify({ email, phone }) });
+    if (r.verified) {
+      ACCOUNT.verified = true; ACCOUNT.user = r.user; renderAccount();
+      out.innerHTML = `<span class="ok">✓ Verified</span>`;
+      document.getElementById("w-next").style.visibility = "visible";
+      toast("Account verified — continue to recipient");
+    } else {
+      ACCOUNT.verified = false; ACCOUNT.user = null;
+      document.getElementById("a-details").innerHTML =
+        `<span class="faint">Verify above to load your account details.</span>`;
+      out.innerHTML = `<span class="bad">✗ ${r.reason || "Not verified"}</span>`;
+      document.getElementById("w-next").style.visibility = "hidden";
+    }
+  } catch (e) { out.innerHTML = `<span class="bad">✗ verification failed</span>`; }
+};
+
+/* ================= STEP 3 — cameras ================= */
 async function refreshCameras() {
   const [cams, status] = await Promise.all([
     api("/api/v1/cameras"), api("/api/v1/cameras/status").catch(() => ({})),
@@ -431,9 +523,9 @@ document.getElementById("c-save").onclick = async () => {
     refreshCameras();
   } catch (e) { toast(e.detail || "Save failed", "err"); }
 };
-setInterval(() => { if (step === 1) refreshCameras(); }, 5000);
+setInterval(() => { if (step === 3) refreshCameras(); }, 5000);
 
-/* ================= STEP 2 — zones ================= */
+/* ================= STEP 4 — zones ================= */
 const Z = { cam: null, img: null, zones: [], drawing: [], sel: -1, drag: null };
 const zCanvas = document.getElementById("z-canvas");
 const zCtx = zCanvas.getContext("2d");
@@ -565,7 +657,7 @@ document.getElementById("z-save").onclick = async () => {
   } catch (e) { toast("Save failed", "err"); }
 };
 
-/* ================= STEP 3 — recipient ================= */
+/* ================= STEP 2 — recipient ================= */
 function contactRow(c = {}) {
   const row = el("div", "contact-row");
   row.innerHTML = `
@@ -579,6 +671,17 @@ function contactRow(c = {}) {
 async function initRecipient() {
   const box = document.getElementById("r-contacts");
   if (!box.children.length) box.appendChild(contactRow());
+  // Show the verified account + pre-fill the recipient name from it.
+  const u = ACCOUNT.user;
+  if (u) {
+    const nm = [u.firstName, u.lastName].filter(Boolean).join(" ");
+    const rn = document.getElementById("r-name");
+    if (rn && !rn.value && nm) rn.value = nm;
+    const acct = document.getElementById("r-acct");
+    if (acct) acct.innerHTML = `Linked to <b>${nm || u.email || "account"}</b>`
+      + `<span class="faint"> · ${u.email || ""}${u.phone ? " · " + u.phone : ""}`
+      + `${u.tier ? " · " + u.tier : ""}</span>`;
+  }
   try {  // prefill device id from the edge itself
     const h = await api("/health");
     const f = document.getElementById("r-device");
@@ -596,18 +699,24 @@ const ENROLL_PILL = {
 };
 async function refreshRecipients() {
   const list = await api("/api/v1/recipients").catch(() => []);
-  document.getElementById("r-table").innerHTML = list.length === 0
+  const rows = (attr) => list.length === 0
     ? `<tr><td class="faint">No recipients registered yet.</td></tr>`
     : list.map(r => {
         const st = (r.enrollment || {}).state || "none";
-        return `<tr data-rid="${r.recipient_id}" style="cursor:pointer">
+        return `<tr>
           <td><b>${r.full_name}</b><br><span class="faint">${r.recipient_id}</span></td>
           <td><span class="pill ${ENROLL_PILL[st] || "pill-mute"}">${st}</span></td>
-          <td><button class="btn btn-ghost btn-sm" data-enroll="${r.recipient_id}">Enroll</button></td>
+          <td><button class="btn btn-ghost btn-sm" ${attr}="${r.recipient_id}">Enroll</button></td>
         </tr>`;
       }).join("");
-  document.querySelectorAll("[data-enroll]").forEach(b =>
-    b.onclick = () => selectEnroll(b.dataset.enroll));
+  const t1 = document.getElementById("r-table");        // step 2 (Recipient)
+  if (t1) t1.innerHTML = rows("data-enroll-nav");
+  const t2 = document.getElementById("r-table-en");      // step 5 (Enrollment)
+  if (t2) t2.innerHTML = rows("data-enroll-sel");
+  document.querySelectorAll("[data-enroll-nav]").forEach(b =>
+    b.onclick = () => { pendingEnrollRid = b.dataset.enrollNav; show(5); });
+  document.querySelectorAll("[data-enroll-sel]").forEach(b =>
+    b.onclick = () => selectEnroll(b.dataset.enrollSel));
 }
 document.getElementById("r-save").onclick = async () => {
   const contacts = [...document.querySelectorAll("#r-contacts .contact-row")]
@@ -631,9 +740,9 @@ document.getElementById("r-save").onclick = async () => {
     return toast("Add at least one emergency contact", "err");
   try {
     await api("/api/v1/recipients", { method: "POST", body: JSON.stringify(rec) });
-    toast(`Recipient ${rec.full_name} registered`);
+    toast(`Recipient ${rec.full_name} registered — continue to cameras`);
     refreshRecipients();
-    selectEnroll(rec.recipient_id, rec.full_name);   // reveal enrollment panel
+    pendingEnrollRid = rec.recipient_id;   // enroll this one at the final step
   } catch (e) { toast(e.detail || "Save failed", "err"); }
 };
 
@@ -700,6 +809,8 @@ async function selectEnroll(rid, name) {
   document.getElementById("enroll-none").hidden = true;
   document.getElementById("enroll-panel").hidden = false;
   document.getElementById("enroll-who").textContent = name || rid;
+  const cur = document.getElementById("en-current");
+  if (cur) cur.textContent = "Enrolling: " + (name || rid);
   setCtx("photos");
   const cams = await api("/api/v1/cameras").catch(() => []);
   document.getElementById("en-cam").innerHTML = cams.length
@@ -844,40 +955,25 @@ document.getElementById("en-commit").onclick = async () => {
   } catch (e) { toast(e.detail || "Enroll failed", "err"); }
 };
 
-/* ================= STEP 4 — review ================= */
-async function initReview() {
-  const [cams, status, zones, recips, metrics] = await Promise.all([
-    api("/api/v1/cameras").catch(() => []),
-    api("/api/v1/cameras/status").catch(() => ({})),
-    api("/api/v1/zones").catch(() => []),
-    api("/api/v1/recipients").catch(() => []),
-    api("/api/v1/metrics").catch(() => null),
-  ]);
-  const zByCam = {};
-  zones.forEach(z => (zByCam[z.camera_id] = zByCam[z.camera_id] || []).push(z));
-  document.getElementById("rev-summary").innerHTML = `
-    <div class="review-block"><b>${cams.length}</b> camera(s)
-      ${cams.map(c => `<div class="mt" style="margin-top:6px">
-        ${healthPill((status[c.camera_id]||{}).health_state)}
-        <b>${c.camera_name}</b> <span class="faint">· ${c.room_name} ·
-        ${(zByCam[c.camera_id]||[]).map(z=>z.zone_name).join(", ") || "no zones"}</span>
-      </div>`).join("")}</div>
-    <div class="review-block"><b>${recips.length}</b> recipient(s)
-      ${recips.map(r => `<div style="margin-top:6px"><b>${r.full_name}</b>
-        <span class="faint">· ${r.recipient_id} ·
-        ${(r.emergency_contacts||[]).length} emergency contact(s)</span></div>`).join("")}
-    </div>`;
-  const checks = [];
-  const okIcon = b => b ? `<span class="ok">●</span>` : `<span class="bad">●</span>`;
-  const running = Object.values(status).filter(s => (s.health_state||"") === "running").length;
-  checks.push([running > 0, `${running}/${cams.length} cameras streaming`]);
-  checks.push([!!(metrics && metrics.detection && metrics.detection.running),
-               "AI detection pipeline running"]);
-  checks.push([!!(metrics && metrics.postures && true), "Posture analysis reachable"]);
-  checks.push([zones.length > 0, `${zones.length} zone(s) drawn`]);
-  checks.push([recips.length > 0, "Care recipient registered"]);
-  document.getElementById("rev-checks").innerHTML =
-    checks.map(([ok, label]) => `<div>${okIcon(ok)} ${label}</div>`).join("");
+/* ================= STEP 5 — enrollment ================= */
+async function initEnroll() {
+  refreshRecipients();
+  let rid = pendingEnrollRid;
+  if (!rid) {
+    const list = await api("/api/v1/recipients").catch(() => []);
+    rid = (list[0] || {}).recipient_id || null;
+  }
+  if (!rid) {
+    document.getElementById("enroll-none").hidden = false;
+    document.getElementById("enroll-panel").hidden = true;
+    const cur = document.getElementById("en-current");
+    if (cur) cur.textContent = "No recipient yet — add one in the Recipient step.";
+    return;
+  }
+  const list = await api("/api/v1/recipients").catch(() => []);
+  const rec = list.find(r => r.recipient_id === rid);
+  selectEnroll(rid, rec && rec.full_name);
+  pendingEnrollRid = null;
 }
 
 /* ================= boot ================= */

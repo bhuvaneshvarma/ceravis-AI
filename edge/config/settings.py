@@ -202,6 +202,15 @@ class Settings(BaseSettings):
     visit_absence_secs: float = 60.0
     visit_mid_secs: float = 300.0
 
+    # ---- CERAVIS application server (cloud) ------------------------
+    # The Spring app that owns user accounts + receives alerts. Setup verifies
+    # the operator's email against it before onboarding continues. The edge
+    # device PROXIES these calls (base URL + token stay on the device, no
+    # browser CORS). Leave base_url empty to run the device standalone.
+    ceravis_api_base_url: str = ""           # e.g. https://api.ceravishealth.com
+    ceravis_api_token: str = ""              # optional bearer token ("call access")
+    ceravis_api_timeout_secs: float = 8.0
+
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""
     mqtt_port: int = 8883

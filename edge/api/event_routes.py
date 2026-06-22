@@ -55,3 +55,4 @@ def ack_event(event_id: str, request: Request, body: dict | None = None):
     ack_by = (body or {}).get("ack_by") if isinstance(body, dict) else None
     store.acknowledge(event_id, ack_by)
     return {"status": "acknowledged", "event_id": event_id}
+

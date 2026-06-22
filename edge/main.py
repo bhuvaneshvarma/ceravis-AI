@@ -35,6 +35,7 @@ from api.zone_routes import router as zone_router
 from api.metrics_routes import router as metrics_router
 from api.event_routes import router as event_router
 from api.ai_routes import router as ai_router
+from api.account_routes import router as account_router
 
 from ingestion.camera_manager import CameraManager
 from detection.detection_buffer import DetectionBuffer
@@ -274,6 +275,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(account_router)
 app.include_router(camera_router)
 app.include_router(zone_router)
 app.include_router(recipient_router)
