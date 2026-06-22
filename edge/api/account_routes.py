@@ -2,16 +2,35 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from config.settings import settings
 from configuration.account_config import AccountConfig
-from integration.ceravis_api import CeravisApiError, get_user_details, is_configured
+from configuration.camera_config import CameraConfig
+from integration.ceravis_api import (
+    CeravisApiError,
+    get_user_details,
+    is_configured,
+    save_cameras,
+)
 
 
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
 account_config = AccountConfig()
 logger = logging.getLogger("account")
+
+
+def _ws_base(request: Request) -> str:
+    """Externally-reachable WebSocket base for the camera streams. Prefer the
+    configured override; otherwise reuse the host the browser used to reach us
+    (so a LAN IP like 192.168.x.x flows straight through)."""
+    base = settings.device_stream_base.strip()
+    if base:
+        return base.rstrip("/")
+    host = request.headers.get("host") or "localhost:8000"
+    scheme = "wss" if request.url.scheme == "https" else "ws"
+    return f"{scheme}://{host}"
 
 
 class VerifyRequest(BaseModel):
@@ -53,6 +72,40 @@ def verify(req: VerifyRequest):
     logger.info("account verified: user #%s (%s)",
                 account["ceravisUserId"], account["email"])
     return {"verified": True, "user": account}
+
+
+@router.post("/sync-cameras")
+def sync_cameras(request: Request):
+    """
+    Push every registered camera to the app server for the verified patient:
+    POST /v1/ai/saveCamera with patientUserId + [{ device, model, supplier,
+    room, url }]. `room` = the room label; `url` = the camera's WebSocket stream.
+    """
+    acct = account_config.get()
+    pid = acct.get("ceravisUserId")
+    if not pid:
+        return {"synced": False, "reason": "Account not verified — verify first"}
+    cams = CameraConfig().get_all()
+    if not cams:
+        return {"synced": False, "reason": "No cameras registered yet"}
+
+    ws = _ws_base(request)
+    cameras = [{
+        "device": c.camera_id,
+        "model": "",                         # not collected on the edge
+        "supplier": "",                      # not collected on the edge
+        "room": c.room_name,                 # the room label we saved
+        "url": f"{ws}/stream/{c.camera_id}",  # the camera's WebSocket stream
+    } for c in cams]
+
+    try:
+        result = save_cameras(pid, cameras)
+    except CeravisApiError as exc:
+        logger.warning("saveCamera failed (user #%s): %s", pid, exc)
+        return {"synced": False, "reason": str(exc), "count": len(cameras)}
+    logger.info("saveCamera: %d camera(s) sent for user #%s", len(cameras), pid)
+    return {"synced": True, "count": len(cameras),
+            "patientUserId": pid, "cameras": cameras, "server": result}
 
 
 @router.get("")

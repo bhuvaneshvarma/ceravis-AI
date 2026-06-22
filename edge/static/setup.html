@@ -145,6 +145,12 @@
         <hr class="sep" />
         <h2>Registered cameras</h2>
         <table class="tbl"><tbody id="c-table"></tbody></table>
+        <div class="row mt">
+          <button class="btn btn-ghost" id="c-sync">Sync cameras to CERAVIS account</button>
+          <span class="probe-result" id="c-sync-out"></span>
+        </div>
+        <div class="hint">Sends each camera's room and live WebSocket URL to your
+          CERAVIS account. Runs automatically when you press Continue.</div>
       </div>
 
       <div class="card">
@@ -374,6 +380,7 @@ function show(n) {
 document.getElementById("w-back").onclick = () => show(step - 1);
 document.getElementById("w-next").onclick = () => {
   if (step === 1 && !ACCOUNT.verified) return toast("Verify your account first", "err");
+  if (step === 3 && ACCOUNT.verified) syncCameras(false);   // push cameras on the way out
   show(step + 1);
 };
 
@@ -524,6 +531,27 @@ document.getElementById("c-save").onclick = async () => {
   } catch (e) { toast(e.detail || "Save failed", "err"); }
 };
 setInterval(() => { if (step === 3) refreshCameras(); }, 5000);
+
+/* Push registered cameras (room + WebSocket URL) to the CERAVIS account. */
+async function syncCameras(manual) {
+  const out = document.getElementById("c-sync-out");
+  if (!ACCOUNT.verified) {
+    if (out) out.innerHTML = `<span class="warn">Verify your account first.</span>`;
+    return;
+  }
+  if (out) out.innerHTML = `<span class="muted">Syncing…</span>`;
+  try {
+    const r = await api("/api/v1/account/sync-cameras", { method: "POST" });
+    if (r.synced) {
+      if (out) out.innerHTML = `<span class="ok">✓ ${r.count} camera(s) synced to CERAVIS</span>`;
+      if (manual) toast(`${r.count} camera(s) sent to CERAVIS`);
+    } else {
+      if (out) out.innerHTML = `<span class="bad">✗ ${r.reason || "sync failed"}</span>`;
+      if (manual) toast(r.reason || "Camera sync failed", "err");
+    }
+  } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; }
+}
+document.getElementById("c-sync").onclick = () => syncCameras(true);
 
 /* ================= STEP 4 — zones ================= */
 const Z = { cam: null, img: null, zones: [], drawing: [], sel: -1, drag: null };
@@ -680,7 +708,8 @@ async function initRecipient() {
     const acct = document.getElementById("r-acct");
     if (acct) acct.innerHTML = `Linked to <b>${nm || u.email || "account"}</b>`
       + `<span class="faint"> · ${u.email || ""}${u.phone ? " · " + u.phone : ""}`
-      + `${u.tier ? " · " + u.tier : ""}</span>`;
+      + `${u.role ? " · " + u.role : ""}${u.tier ? " · " + u.tier : ""}`
+      + ` · CERAVIS #${u.ceravisUserId ?? "—"}</span>`;
   }
   try {  // prefill device id from the edge itself
     const h = await api("/health");

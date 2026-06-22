@@ -207,8 +207,12 @@ class Settings(BaseSettings):
     # against it before onboarding continues. The ONLY thing to configure is the
     # server's address; no auth token (the app server accepts the email request
     # directly). Leave base_url empty to run the device standalone.
-    ceravis_api_base_url: str = ""           # e.g. https://api.ceravishealth.com
+    ceravis_api_base_url: str = ""           # e.g. https://app.ceravishealth.in/ch
     ceravis_api_timeout_secs: float = 8.0
+    # Externally-reachable base for the camera WebSocket streams sent to the app
+    # server (e.g. ws://192.168.1.50:8000 or wss://edge.ceravis.in). Blank =
+    # auto-derive from the host the browser used to reach the device.
+    device_stream_base: str = ""
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""
