@@ -4,9 +4,9 @@ import logging
 import socket
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from config.settings import settings
@@ -51,7 +51,7 @@ from storage.event_store import EventStore
 from events.event_writer import EventWriter
 from monitoring.pipeline_metrics import MetricsRegistry
 from monitoring.system_monitor import SystemMonitor
-from streaming.websocket_stream import stream_camera
+from streaming.websocket_stream import mjpeg_camera, stream_camera
 
 
 logging.basicConfig(
@@ -317,6 +317,17 @@ async def websocket_stream(websocket: WebSocket, camera_id: str):
         websocket,
         websocket.app.state.camera_manager.frame_buffer,
         camera_id,
+    )
+
+
+@app.get("/stream.mjpeg/{camera_id}")
+async def mjpeg_stream(camera_id: str, request: Request):
+    """HTTP(S) MJPEG live stream — embeddable in an <img>/browser and the link
+    handed to the cloud monitor (TLS-able via a reverse proxy)."""
+    frame_buffer = request.app.state.camera_manager.frame_buffer
+    return StreamingResponse(
+        mjpeg_camera(frame_buffer, camera_id),
+        media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
 

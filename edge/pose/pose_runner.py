@@ -199,8 +199,10 @@ class PoseRunner:
     # ---- shared posture write ---------------------------------------
     def _classify(self, camera_id: str, track_id: int,
                   pose: PoseEstimation) -> None:
-        floor_q = lambda x, y: self._floor.near_floor(camera_id, x, y)  # noqa: E731
-        res = self._tracker.update(camera_id, track_id, pose, floor_query=floor_q)
+        # "low" = on/near the floor OR below nearby furniture height (table/
+        # chair/bed) — the scene-aware fall cue.
+        low_q = lambda x, y: self._floor.is_low(camera_id, x, y)  # noqa: E731
+        res = self._tracker.update(camera_id, track_id, pose, floor_query=low_q)
         self._postures.update(
             PostureRecord(
                 camera_id=camera_id, track_id=track_id,

@@ -140,6 +140,24 @@
           <option>Kitchen</option><option>Bedroom</option><option>Living Room</option>
           <option>Lounge</option><option>Live Feed</option>
         </datalist>
+        <div class="grid-2">
+          <div>
+            <label class="f">Camera number</label>
+            <select id="c-number">
+              <option value="">—</option><option>1</option><option>2</option>
+              <option>3</option><option>4</option>
+            </select>
+          </div>
+          <div>
+            <label class="f">Designation</label>
+            <div style="display:flex;gap:14px;padding-top:9px;font-size:12.5px;color:var(--muted)">
+              <label style="display:flex;gap:6px;align-items:center">
+                <input type="checkbox" id="c-bath" style="width:auto"> * bathroom</label>
+              <label style="display:flex;gap:6px;align-items:center">
+                <input type="checkbox" id="c-egress" style="width:auto"> &amp; main entrance</label>
+            </div>
+          </div>
+        </div>
         <div class="row mt">
           <button class="btn btn-primary" id="c-save">Save &amp; start camera</button>
         </div>
@@ -417,8 +435,10 @@ async function refreshCameras() {
     ? `<tr><td class="faint">No cameras yet — add your first above.</td></tr>`
     : cams.map(c => {
         const s = status[c.camera_id] || {};
+        const sym = (c.has_bathroom_entrance ? "*" : "") + (c.is_main_egress ? "&" : "");
+        const num = c.camera_number ? `Cam ${c.camera_number}${sym} · ` : "";
         return `<tr>
-          <td><b>${c.camera_name}</b><br><span class="faint">${c.camera_id} · ${c.room_name}</span></td>
+          <td><b>${c.camera_name}</b><br><span class="faint">${num}${c.camera_id} · ${c.room_name}</span></td>
           <td>${healthPill(s.health_state)}</td>
           <td><button class="btn btn-danger btn-sm" data-del="${c.camera_id}">Remove</button></td>
         </tr>`;
@@ -483,6 +503,10 @@ document.getElementById("c-save").onclick = async () => {
     codec: document.getElementById("c-codec").value,
     transport: document.getElementById("c-transport").value || null,
     rtsp_latency_ms: lat !== "" ? parseInt(lat, 10) : null,
+    camera_number: document.getElementById("c-number").value
+      ? parseInt(document.getElementById("c-number").value, 10) : null,
+    has_bathroom_entrance: document.getElementById("c-bath").checked,
+    is_main_egress: document.getElementById("c-egress").checked,
     is_enabled: true,
   };
   if (!cam.camera_id || !cam.rtsp_url || !cam.room_name)
@@ -491,8 +515,10 @@ document.getElementById("c-save").onclick = async () => {
     await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
     await api(`/api/v1/cameras/${cam.camera_id}/start`, { method: "POST" });
     toast(`Camera ${cam.camera_id} saved & started`);
-    ["c-url","c-id","c-name","c-room","c-latency"].forEach(i => document.getElementById(i).value = "");
+    ["c-url","c-id","c-name","c-room","c-latency","c-number"].forEach(i => document.getElementById(i).value = "");
     document.getElementById("c-transport").value = "";
+    document.getElementById("c-bath").checked = false;
+    document.getElementById("c-egress").checked = false;
     document.getElementById("c-probe-out").textContent = "";
     refreshCameras();
   } catch (e) { toast(e.detail || "Save failed", "err"); }

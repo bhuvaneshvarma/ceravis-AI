@@ -181,6 +181,11 @@ class Settings(BaseSettings):
     # the ground gate).
     floor_zone_keyword: str = "floor"
     fall_require_near_floor: bool = False    # if True, only confirm when head is near the floor
+    # Furniture zones give a height reference: a fall also counts when the body
+    # drops BELOW the height of nearby furniture (table/chair/bed/counter) — the
+    # "whole body lower than a table/chair/bed" rule. Draw these as named zones.
+    furniture_zone_keywords: str = ("bed,couch,sofa,recliner,chair,bench,lounge,"
+                                    "table,counter,desk,dresser,stove")
 
     # ---- Storage ---------------------------------------------------
     data_dir: str = "data"
@@ -209,9 +214,10 @@ class Settings(BaseSettings):
     # directly). Leave base_url empty to run the device standalone.
     ceravis_api_base_url: str = ""           # e.g. https://app.ceravishealth.in/ch
     ceravis_api_timeout_secs: float = 8.0
-    # Externally-reachable base for the camera WebSocket streams sent to the app
-    # server (e.g. ws://192.168.1.50:8000 or wss://edge.ceravis.in). Blank =
-    # auto-derive from the host the browser used to reach the device.
+    # Externally-reachable base for the camera streams sent to the app server,
+    # e.g. https://edge.ceravishealth.in (point it at a TLS reverse proxy for a
+    # real https link) or http://192.168.1.50:8000 on a LAN. Blank = auto-derive
+    # from the host the browser used to reach the device.
     device_stream_base: str = ""
     # Which event severities are forwarded to the app server's saveAlert. Falls
     # are critical; inactivity/visitor/no-movement are warnings. Comma-separated.

@@ -33,17 +33,17 @@ from integration.ceravis_api import (                                     # noqa
 )
 
 
-def _ws_base() -> str:
+def _stream_base() -> str:
     b = settings.device_stream_base.strip()
     if b:
-        return b.rstrip("/")
+        return b.rstrip("/").replace("wss://", "https://").replace("ws://", "http://")
     ip = "localhost"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
     except Exception:
         pass
-    return f"ws://{ip}:8000"
+    return f"http://{ip}:8000"
 
 
 def main() -> int:
@@ -75,11 +75,11 @@ def main() -> int:
 
     # [2] saveCamera payload
     cams = CameraConfig().get_all()
-    ws = _ws_base()
+    base = _stream_base()
     cameras = [{
         "device": c.camera_id, "model": "", "supplier": "",
         "room": room_to_enum(c.room_name),
-        "url": f"{ws}/stream/{c.camera_id}",
+        "url": f"{base}/stream.mjpeg/{c.camera_id}",
     } for c in cams]
     print(f"\n[2] saveCamera payload — {len(cameras)} camera(s), patientUserId={pid}")
     print(json.dumps({"patientUserId": pid, "cameras": cameras}, indent=2))

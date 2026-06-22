@@ -22,15 +22,17 @@ account_config = AccountConfig()
 logger = logging.getLogger("account")
 
 
-def _ws_base(request: Request) -> str:
-    """Externally-reachable WebSocket base for the camera streams. Prefer the
-    configured override; otherwise reuse the host the browser used to reach us
-    (so a LAN IP like 192.168.x.x flows straight through)."""
+def _stream_base(request: Request) -> str:
+    """Externally-reachable HTTP(S) base for the MJPEG camera streams handed to
+    the cloud. Prefer the configured override (point it at a TLS reverse proxy
+    for a real https link); otherwise reuse the host the browser used to reach
+    us. A ws/wss override is normalized to http/https for the MJPEG link."""
     base = settings.device_stream_base.strip()
     if base:
-        return base.rstrip("/")
+        return (base.rstrip("/")
+                .replace("wss://", "https://").replace("ws://", "http://"))
+    scheme = "https" if request.url.scheme == "https" else "http"
     host = request.headers.get("host") or "localhost:8000"
-    scheme = "wss" if request.url.scheme == "https" else "ws"
     return f"{scheme}://{host}"
 
 
@@ -90,13 +92,13 @@ def sync_cameras(request: Request):
     if not cams:
         return {"synced": False, "reason": "No cameras registered yet"}
 
-    ws = _ws_base(request)
+    base = _stream_base(request)
     cameras = [{
         "device": c.camera_id,
         "model": "",                         # not collected on the edge
         "supplier": "",                      # not collected on the edge
         "room": room_to_enum(c.room_name),   # -> server CameraName enum
-        "url": f"{ws}/stream/{c.camera_id}",  # the camera's WebSocket stream
+        "url": f"{base}/stream.mjpeg/{c.camera_id}",  # HTTP(S) MJPEG stream
     } for c in cams]
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
                 len(cameras), pid, [(c["room"], c["url"]) for c in cameras])

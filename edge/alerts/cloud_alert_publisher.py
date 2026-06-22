@@ -21,6 +21,7 @@ from datetime import datetime
 
 from config.settings import settings
 from configuration.account_config import AccountConfig
+from configuration.camera_config import CameraConfig
 from events.event_bus import EventBus
 from integration.ceravis_api import CeravisApiError, is_configured, save_alert
 
@@ -32,6 +33,7 @@ class CloudAlertPublisher:
     def __init__(self, bus: EventBus) -> None:
         self._queue = bus.subscribe()
         self._account = AccountConfig()
+        self._cameras = CameraConfig()
         self._severities = {s.strip().lower()
                             for s in settings.cloud_alert_severities.split(",")
                             if s.strip()}
@@ -88,7 +90,17 @@ class CloudAlertPublisher:
         who = self._account.get().get("firstName") or "recipient"
         sev = (event.severity or "info").upper()
         title = event.title or (event.event_type or "").replace("_", " ").title()
-        loc = " / ".join(p for p in (event.room_name, event.zone_name) if p)
+        # Camera label with its * (bathroom) / & (egress) designation, per spec.
+        cam_label = ""
+        try:
+            cam = self._cameras.get_by_id(event.camera_id)
+        except Exception:
+            cam = None
+        if cam is not None and cam.camera_number:
+            sym = ("*" if cam.has_bathroom_entrance else "") \
+                + ("&" if cam.is_main_egress else "")
+            cam_label = f"Camera {cam.camera_number}{sym} "
+        loc = cam_label + " / ".join(p for p in (event.room_name, event.zone_name) if p)
         try:
             ts = datetime.fromisoformat(event.timestamp).strftime("%I:%M %p, %d %b %Y")
             ts = ts.lstrip("0")

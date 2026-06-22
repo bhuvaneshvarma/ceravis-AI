@@ -24,3 +24,10 @@ class Camera(BaseModel):
     # RTSP_LATENCY_MS defaults.
     transport: str | None = None              # "tcp" | "udp" | None
     rtsp_latency_ms: int | None = None        # jitter buffer ms; None = global
+
+    # Care-monitoring labeling (per the spec): cameras are numbered 1-4 and a
+    # room may carry a designation — '*' if it has a bathroom entrance, '&' if it
+    # houses the home's main entrance/egress. Used in alert/snapshot labels.
+    camera_number: int | None = None          # 1..4
+    has_bathroom_entrance: bool = False        # shown as '*'
+    is_main_egress: bool = False               # shown as '&'
