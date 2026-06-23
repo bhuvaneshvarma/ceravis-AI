@@ -212,7 +212,7 @@ class Settings(BaseSettings):
     # against it before onboarding continues. The ONLY thing to configure is the
     # server's address; no auth token (the app server accepts the email request
     # directly). Leave base_url empty to run the device standalone.
-    ceravis_api_base_url: str = ""           # e.g. https://app.ceravishealth.in/ch
+    ceravis_api_base_url: str = "https://app.ceravishealth.in/ch"
     ceravis_api_timeout_secs: float = 8.0
     # Externally-reachable base for the camera streams sent to the app server,
     # e.g. https://edge.ceravishealth.in (point it at a TLS reverse proxy for a
