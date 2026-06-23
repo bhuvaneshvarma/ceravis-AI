@@ -17,6 +17,11 @@ class Event(BaseModel):
 
     snapshot_path: str | None = None
 
+    # Phase B: a "significant motion" summary is first/middle/last frames. When
+    # set, ALL of these are sent (as a 3-snapshot nest) with the alert; falls
+    # back to [snapshot_path] when empty.
+    snapshot_paths: list[str] | None = None
+
     video_path: str | None = None
 
     # Which tracked person this event is about (lets the enricher draw the

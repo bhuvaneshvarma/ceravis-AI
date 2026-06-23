@@ -11,6 +11,8 @@ Prints the base URL, the verified account, the exact saveCamera payload (with th
 room normalized to the server's CameraName enum), and — with --send — fires the
 real calls and prints the HTTP result, so you can see whether they hit.
 """
+import base64
+import glob
 import json
 import logging
 import os
@@ -29,7 +31,7 @@ from configuration.account_config import AccountConfig                    # noqa
 from configuration.camera_config import CameraConfig                      # noqa: E402
 from integration.ceravis_api import (                                     # noqa: E402
     CeravisApiError, get_user_details, is_configured, room_to_enum,
-    save_alert, save_cameras,
+    save_alert, save_cameras, save_snapshot,
 )
 
 
@@ -44,6 +46,11 @@ def _stream_base() -> str:
     except Exception:
         pass
     return f"http://{ip}:8000"
+
+
+def _latest_snapshot() -> str | None:
+    files = glob.glob(os.path.join("data", "events", "**", "*.jpg"), recursive=True)
+    return max(files, key=os.path.getmtime) if files else None
 
 
 def main() -> int:
@@ -110,6 +117,29 @@ def main() -> int:
         print("\n[4] sending test saveAlert (FALL)…")
         try:
             res = save_alert(pid, "FALL", "Test alert from device sanity check")
+            print("    server ->", res, "  ✓ CALL HIT")
+        except CeravisApiError as exc:
+            print("    ERROR:", exc)
+            return 1
+
+    # [5] optional test snapshot
+    if "--snapshot" in sys.argv:
+        if not pid:
+            print("\n[5] cannot send snapshot: no verified account")
+            return 1
+        snap = _latest_snapshot()
+        if snap:
+            b64 = base64.b64encode(open(snap, "rb").read()).decode("ascii")
+            print(f"\n[5] sending saveSnapshot using {snap} ({len(b64)} b64 bytes)…")
+        else:
+            import numpy as np  # placeholder when no real snapshot exists yet
+            import cv2
+            ok, buf = cv2.imencode(".jpg", np.full((240, 320, 3), 60, np.uint8))
+            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+            print(f"\n[5] no saved snapshot — sending a placeholder ({len(b64)} b64 bytes)…")
+        cam = room_to_enum(cams[0].room_name) if cams else "LIVE_FEED"
+        try:
+            res = save_snapshot(pid, b64, "CRITICAL · Fall detected · test", cam)
             print("    server ->", res, "  ✓ CALL HIT")
         except CeravisApiError as exc:
             print("    ERROR:", exc)

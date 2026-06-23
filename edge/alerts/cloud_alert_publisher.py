@@ -14,19 +14,26 @@ Fire-and-forget per event (errors are logged, never block the pipeline). Stays
 silent if the app server isn't configured or no account has been verified yet.
 """
 
+import base64
 import logging
 import queue
 import threading
 from datetime import datetime
+from pathlib import Path
 
 from config.settings import settings
 from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
 from events.event_bus import EventBus
-from integration.ceravis_api import CeravisApiError, is_configured, save_alert
+from integration.ceravis_api import (
+    CeravisApiError, is_configured, room_to_enum, save_alert, save_snapshot,
+)
 
 
 logger = logging.getLogger("alerts")
+
+# edge/ project root — to resolve event.snapshot_path (relative) to a file.
+_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CloudAlertPublisher:
@@ -83,6 +90,44 @@ class CloudAlertPublisher:
                 logger.warning("saveAlert failed (%s): %s", alert_type, exc)
             except Exception:
                 logger.exception("saveAlert unexpected error")
+            # Send the associated snapshot(s) with the same alert (Phase B will
+            # populate snapshot_paths with the first/middle/last 3-frame nest).
+            self._send_snapshots(pid, event, message)
+
+    def _send_snapshots(self, pid, event, text: str) -> None:
+        """Base64-encode and POST each snapshot tied to this alert. One today;
+        the first/middle/last nest once Phase B fills snapshot_paths."""
+        paths = list(event.snapshot_paths or [])
+        if not paths and event.snapshot_path:
+            paths = [event.snapshot_path]
+        if not paths:
+            return
+        camera_number = room_to_enum(event.room_name)
+        n = len(paths)
+        for i, rel in enumerate(paths):
+            b64 = self._b64(rel)
+            if not b64:
+                continue
+            label = text if n == 1 else f"{text} · frame {i + 1}/{n}"
+            try:
+                save_snapshot(pid, b64, label, camera_number)
+            except CeravisApiError as exc:
+                logger.warning("saveSnapshot failed: %s", exc)
+            except Exception:
+                logger.exception("saveSnapshot unexpected error")
+
+    @staticmethod
+    def _b64(rel_path: str) -> str | None:
+        edir = Path(settings.events_dir)
+        root = edir if edir.is_absolute() else (_EDGE_ROOT / edir)
+        f = root / rel_path
+        try:
+            if not f.exists():
+                return None
+            return base64.b64encode(f.read_bytes()).decode("ascii")
+        except Exception:
+            logger.exception("snapshot read failed: %s", f)
+            return None
 
     def _format(self, event) -> str:
         """Professional, fixed-format alert line, e.g.

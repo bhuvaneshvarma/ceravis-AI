@@ -154,3 +154,35 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
         return _unwrap(resp.json())
     except ValueError:
         return True
+
+
+def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str):
+    """
+    POST /v1/ai/saveSnapshot — one snapshot tied to an alert/action.
+    Body: { patientId, base64Image, text, cameraNumber }.
+      base64Image : the JPEG, base64-encoded (no data-URI prefix)
+      text        : the same labeled line the alert carries
+      cameraNumber: the room CameraName enum (KITCHEN, LIVING_ROOM, …)
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveSnapshot"
+    payload = {"patientId": patient_id, "base64Image": base64_image,
+               "text": text, "cameraNumber": camera_number}
+    logger.info("saveSnapshot -> POST %s  patient=%s  cam=%s  img_b64=%d bytes",
+                url, patient_id, camera_number, len(base64_image or ""))
+    try:
+        resp = requests.post(url, json=payload, headers=_headers(),
+                             timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("saveSnapshot: cannot reach %s — %s", url, exc)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    logger.info("saveSnapshot <- HTTP %s  body=%s", resp.status_code, resp.text[:200])
+    if resp.status_code >= 400:
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+    try:
+        return _unwrap(resp.json())
+    except ValueError:
+        return True
