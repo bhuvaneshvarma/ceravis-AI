@@ -44,6 +44,10 @@ class CloudAlertPublisher:
         self._severities = {s.strip().lower()
                             for s in settings.cloud_alert_severities.split(",")
                             if s.strip()}
+        self._event_types = {s.strip().lower()
+                             for s in settings.cloud_alert_event_types.split(",")
+                             if s.strip()}
+        self._recipient_only = bool(settings.cloud_alert_recipient_only)
         self._running = False
         self._thread: threading.Thread | None = None
         self._warned_no_account = False
@@ -56,8 +60,9 @@ class CloudAlertPublisher:
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="cloud-alert-publisher")
         self._thread.start()
-        logger.info("Cloud alerts on — forwarding %s to saveAlert",
-                    sorted(self._severities))
+        logger.info("Cloud alerts on — forwarding types=%s recipient_only=%s",
+                    sorted(self._event_types) or sorted(self._severities),
+                    self._recipient_only)
 
     def stop(self) -> None:
         self._running = False
@@ -73,7 +78,15 @@ class CloudAlertPublisher:
             except queue.Empty:
                 continue
             sev = (event.severity or "info").lower()
-            if sev not in self._severities:
+            etype = (event.event_type or "").lower()
+            # Gate: only the configured event types (default: falls), and only
+            # the enrolled recipient's events (recipient_id set on the event).
+            if self._event_types:
+                if etype not in self._event_types:
+                    continue
+            elif sev not in self._severities:
+                continue
+            if self._recipient_only and not event.recipient_id:
                 continue
             pid = self._account.get().get("ceravisUserId")
             if not pid:

@@ -219,9 +219,13 @@ class Settings(BaseSettings):
     # real https link) or http://192.168.1.50:8000 on a LAN. Blank = auto-derive
     # from the host the browser used to reach the device.
     device_stream_base: str = ""
-    # Which event severities are forwarded to the app server's saveAlert. Falls
-    # are critical; inactivity/visitor/no-movement are warnings. Comma-separated.
-    cloud_alert_severities: str = "critical,warning"
+    # What gets forwarded to the app server (saveAlert + saveSnapshot). For now
+    # ONLY the enrolled recipient's falls: event type must be in this list AND
+    # (if recipient_only) the event must be about the matched recipient. Widen
+    # cloud_alert_event_types later (e.g. "fall,inactivity,visitor_arrival").
+    cloud_alert_event_types: str = "fall"
+    cloud_alert_recipient_only: bool = True
+    cloud_alert_severities: str = "critical,warning"   # fallback if event_types is blank
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""

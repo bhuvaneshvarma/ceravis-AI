@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -20,6 +21,11 @@ from integration.ceravis_api import (
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
 account_config = AccountConfig()
 logger = logging.getLogger("account")
+
+
+def _slug(s: str) -> str:
+    """URL-safe label, e.g. 'Kitchen Camera' -> 'kitchen-camera'."""
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
 
 
 def _stream_base(request: Request) -> str:
@@ -98,7 +104,9 @@ def sync_cameras(request: Request):
         "model": "",                         # not collected on the edge
         "supplier": "",                      # not collected on the edge
         "room": room_to_enum(c.room_name),   # -> server CameraName enum
-        "url": f"{base}/stream.mjpeg/{c.camera_id}",  # HTTP(S) MJPEG stream
+        # Last path segment is the camera's LABEL (its display name), not the
+        # raw id — the MJPEG endpoint resolves name/room/id all the same.
+        "url": f"{base}/stream.mjpeg/{_slug(c.camera_name) or c.camera_id}",
     } for c in cams]
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
                 len(cameras), pid, [(c["room"], c["url"]) for c in cameras])

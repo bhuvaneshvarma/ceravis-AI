@@ -4,8 +4,11 @@ CERAVIS cloud connectivity sanity check — run ON THE DEVICE.
 
     cd ~/ceravis/edge
     python scripts/test_cloud.py                 # inspect config + payload (no send)
-    python scripts/test_cloud.py --send          # actually POST userDetails + saveCamera
-    python scripts/test_cloud.py someone@x.com --send
+    python scripts/test_cloud.py --send          # actually call userDetails + saveCamera
+    python scripts/test_cloud.py --alert         # send a test FALL alert
+    python scripts/test_cloud.py --snapshot      # send a test snapshot
+    python scripts/test_cloud.py --fall          # simulate a real fall: LIVE snapshot
+                                                 # + matching FALL alert, together
 
 Prints the base URL, the verified account, the exact saveCamera payload (with the
 room normalized to the server's CameraName enum), and — with --send — fires the
@@ -18,6 +21,8 @@ import logging
 import os
 import socket
 import sys
+import urllib.request
+from datetime import datetime, timezone
 
 # make `config`, `integration`, … importable and resolve data/ no matter the cwd
 _EDGE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,6 +56,26 @@ def _stream_base() -> str:
 def _latest_snapshot() -> str | None:
     files = glob.glob(os.path.join("data", "events", "**", "*.jpg"), recursive=True)
     return max(files, key=os.path.getmtime) if files else None
+
+
+def _live_jpeg(camera_id: str) -> bytes | None:
+    """Grab a current frame from the RUNNING service's snapshot endpoint."""
+    url = f"http://localhost:8000/api/v1/cameras/{camera_id}/snapshot?quality=80"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.read()
+    except Exception as exc:
+        print("    (live snapshot fetch failed:", exc, ")")
+        return None
+
+
+def _fall_label(acct: dict, cam) -> str:
+    """The same labeled line a real fall alert carries."""
+    who = acct.get("firstName") or "recipient"
+    sym = ("*" if cam.has_bathroom_entrance else "") + ("&" if cam.is_main_egress else "")
+    head = f"Camera {cam.camera_number}{sym} " if cam.camera_number else ""
+    ts = datetime.now(timezone.utc).strftime("%I:%M %p, %d %b %Y").lstrip("0")
+    return f"CRITICAL · Fall detected · {head}{cam.room_name} · {who} · {ts}"
 
 
 def main() -> int:
@@ -141,6 +166,36 @@ def main() -> int:
         try:
             res = save_snapshot(pid, b64, "CRITICAL · Fall detected · test", cam)
             print("    server ->", res, "  ✓ CALL HIT")
+        except CeravisApiError as exc:
+            print("    ERROR:", exc)
+            return 1
+
+    # [6] simulate a real fall: live snapshot + matching FALL alert, together
+    if "--fall" in sys.argv:
+        if not pid:
+            print("\n[6] cannot simulate fall: no verified account")
+            return 1
+        if not cams:
+            print("\n[6] cannot simulate fall: no cameras registered")
+            return 1
+        cam = cams[0]
+        label = _fall_label(acct, cam)
+        room = room_to_enum(cam.room_name)
+        jpg = _live_jpeg(cam.camera_id)
+        if jpg is None:
+            snap = _latest_snapshot()
+            jpg = open(snap, "rb").read() if snap else None
+        if jpg is None:
+            print("\n[6] no frame available (service running? camera up?)")
+            return 1
+        b64 = base64.b64encode(jpg).decode("ascii")
+        print(f"\n[6] simulating FALL on {cam.camera_id} ({cam.room_name})")
+        print("    label:", label)
+        try:
+            a = save_alert(pid, "FALL", label)
+            print("    saveAlert  ->", a, "  ✓")
+            s = save_snapshot(pid, b64, label, room)
+            print("    saveSnapshot ->", s, "  ✓")
         except CeravisApiError as exc:
             print("    ERROR:", exc)
             return 1
