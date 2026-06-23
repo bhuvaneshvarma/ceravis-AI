@@ -90,6 +90,7 @@ async def lifespan(app: FastAPI):
         frame_buffer=camera_manager.frame_buffer,
         detection_buffer=detection_buffer,
         metrics_registry=metrics_registry,
+        target_registry=target_registry,      # focus detection on the recipient's camera
     )
     try:
         detection_runner.start()

@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     crop_padding_frac: float = 0.08          # margin around a person box for crops
     target_only_pose: bool = True            # once ReID locks the target, pose that crop only
     target_lock_ttl_secs: float = 5.0        # keep target lock this long after last sighting
+    # Focus ALL processing on the recipient's camera: once the target is locked
+    # on a camera, detection (and therefore tracking/reid/pose) runs ONLY there;
+    # the other cameras idle until the lock lapses (target leaves / TTL), when we
+    # scan every camera again to re-find them. Saves GPU on multi-camera homes.
+    active_camera_only: bool = True
 
     # ---- Tracking (clean-room BoT-SORT) -----------------------------
     # Two-stage ByteTrack association + Kalman + OSNet appearance fusion. The

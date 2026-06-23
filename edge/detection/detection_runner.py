@@ -29,9 +29,11 @@ class DetectionRunner:
         frame_buffer: FrameBuffer,
         detection_buffer: DetectionBuffer,
         metrics_registry=None,
+        target_registry=None,
     ) -> None:
         self._frame_buffer = frame_buffer
         self._detection_buffer = detection_buffer
+        self._targets = target_registry      # focus detection on the active camera
         self._metrics = (
             metrics_registry.get_or_create("detection")
             if metrics_registry else None
@@ -96,12 +98,26 @@ class DetectionRunner:
             if sleep > 0:
                 time.sleep(sleep)
 
+    def _active_cameras(self) -> set:
+        """Cameras to run detection on. Once the enrolled recipient is locked on
+        a camera, focus ONLY on that camera (others go idle — no detection /
+        tracking / pose). With no lock we scan EVERY camera to (re)find them."""
+        if not settings.active_camera_only or self._targets is None:
+            return set()
+        try:
+            return set(self._targets.all().keys())
+        except Exception:
+            return set()
+
     def _process_all_frames(self) -> None:
         assert self._detector is not None
         frames = self._frame_buffer.get_all_latest()
         if not frames:
             return
+        active = self._active_cameras()           # empty => searching (all cameras)
         for camera_id, fd in frames.items():
+            if active and camera_id not in active:
+                continue                           # recipient is elsewhere; skip
             if self._last_seen_frame.get(camera_id) == fd.frame_id:
                 continue
             self._last_seen_frame[camera_id] = fd.frame_id

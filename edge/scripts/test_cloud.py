@@ -58,6 +58,33 @@ def _latest_snapshot() -> str | None:
     return max(files, key=os.path.getmtime) if files else None
 
 
+def _target_camera_id() -> str | None:
+    """Ask the RUNNING service which camera the enrolled recipient is on."""
+    try:
+        with urllib.request.urlopen("http://localhost:8000/api/v1/ai/state", timeout=5) as r:
+            state = json.loads(r.read())
+    except Exception:
+        return None
+    for cam, info in (state or {}).items():
+        if info.get("target_track_id") is not None:
+            return cam
+        if any(t.get("is_target") for t in info.get("tracks", [])):
+            return cam
+    return None
+
+
+def _pick_camera(cams):
+    """The camera the recipient is currently on; else the first as a fallback."""
+    tid = _target_camera_id()
+    if tid:
+        for c in cams:
+            if c.camera_id == tid:
+                print(f"    target recipient is on camera '{tid}'")
+                return c
+    print("    (no recipient locked right now — falling back to the first camera)")
+    return cams[0] if cams else None
+
+
 def _live_jpeg(camera_id: str) -> bytes | None:
     """Grab a current frame from the RUNNING service's snapshot endpoint."""
     url = f"http://localhost:8000/api/v1/cameras/{camera_id}/snapshot?quality=80"
@@ -67,6 +94,23 @@ def _live_jpeg(camera_id: str) -> bytes | None:
     except Exception as exc:
         print("    (live snapshot fetch failed:", exc, ")")
         return None
+
+
+def _target_camera(cams):
+    """The camera the enrolled target is currently detected on (from live AI
+    state) — so a fall test snapshots the right room, not just camera #1."""
+    try:
+        with urllib.request.urlopen("http://localhost:8000/api/v1/ai/state", timeout=5) as r:
+            state = json.loads(r.read())
+    except Exception:
+        return None
+    for camid, s in (state or {}).items():
+        if s.get("target_track_id") is not None or \
+           any(t.get("is_target") for t in s.get("tracks", [])):
+            for c in cams:
+                if c.camera_id == camid:
+                    return c
+    return None
 
 
 def _fall_label(acct: dict, cam) -> str:
@@ -162,7 +206,8 @@ def main() -> int:
             ok, buf = cv2.imencode(".jpg", np.full((240, 320, 3), 60, np.uint8))
             b64 = base64.b64encode(buf.tobytes()).decode("ascii")
             print(f"\n[5] no saved snapshot — sending a placeholder ({len(b64)} b64 bytes)…")
-        cam = room_to_enum(cams[0].room_name) if cams else "LIVE_FEED"
+        picked = _pick_camera(cams) if cams else None
+        cam = room_to_enum(picked.room_name) if picked else "LIVE_FEED"
         try:
             res = save_snapshot(pid, b64, "CRITICAL · Fall detected · test", cam)
             print("    server ->", res, "  ✓ CALL HIT")
@@ -178,7 +223,7 @@ def main() -> int:
         if not cams:
             print("\n[6] cannot simulate fall: no cameras registered")
             return 1
-        cam = cams[0]
+        cam = _pick_camera(cams)                 # the recipient's camera, not cams[0]
         label = _fall_label(acct, cam)
         room = room_to_enum(cam.room_name)
         jpg = _live_jpeg(cam.camera_id)
