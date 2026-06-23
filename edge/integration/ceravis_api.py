@@ -95,7 +95,7 @@ def get_user_details(email: str) -> dict | None:
 
 def save_cameras(patient_user_id, cameras: list[dict]):
     """
-    POST /v1/ai/saveCamera — register this patient's cameras with the app server.
+    PUT /v1/ai/saveCamera — register this patient's cameras with the app server.
 
     Body:
         { "patientUserId": <id>,
@@ -128,7 +128,7 @@ def save_cameras(patient_user_id, cameras: list[dict]):
 
 def save_alert(patient_user_id, alert_type: str, message_text: str):
     """
-    POST /v1/ai/saveAlert — push one alert to the app server.
+    PUT /v1/ai/saveAlert — push one alert to the app server.
     Body: { patientUserId, alertType (e.g. "FALL"), messageText }.
     Returns the server's response; raises CeravisApiError on failure.
     """
@@ -138,11 +138,11 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveAlert"
     payload = {"patientUserId": patient_user_id,
                "alertType": alert_type, "messageText": message_text}
-    logger.info("saveAlert -> POST %s  patient=%s  type=%s", url,
+    logger.info("saveAlert -> PUT %s  patient=%s  type=%s", url,
                 patient_user_id, alert_type)
     try:
-        resp = requests.post(url, json=payload, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = requests.put(url, json=payload, headers=_headers(),
+                            timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("saveAlert: cannot reach %s — %s", url, exc)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
