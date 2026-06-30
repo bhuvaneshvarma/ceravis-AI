@@ -231,6 +231,16 @@ class Settings(BaseSettings):
     cloud_alert_event_types: str = "fall"
     cloud_alert_recipient_only: bool = True
     cloud_alert_severities: str = "critical,warning"   # fallback if event_types is blank
+    # Snapshot-ONLY event types: routed to saveSnapshot (no saveAlert). Posture
+    # transitions + the inactivity burst. Also recipient-gated.
+    cloud_snapshot_event_types: str = ("standing_up,sitting_down,walking_started,"
+                                       "walking_stopped,inactivity_snapshot")
+    # Inactivity burst: after this long with no movement, take one snapshot every
+    # interval, up to `count` times (default: 30 min still → 1/min for 15 min).
+    inactivity_snapshot_after_secs: float = 1800.0
+    inactivity_snapshot_interval_secs: float = 60.0
+    inactivity_snapshot_count: int = 15
+    inactivity_snapshot_move_frac: float = 0.15   # bbox-height fraction = "moved"
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""

@@ -39,6 +39,12 @@ class PostureRule:
 
         for camera_id, per_track in ctx.postures.get_all().items():
             for track_id, rec in per_track.items():
+                # Only the enrolled recipient (the CR). Sets recipient_id so the
+                # cloud publisher's recipient gate passes.
+                identity = ctx.identities.get(camera_id, track_id)
+                if not (identity and identity.is_target):
+                    continue
+                rid = identity.recipient_id
                 key = (camera_id, track_id)
                 prev = self._state.get(key)
 
@@ -46,7 +52,7 @@ class PostureRule:
                 if prev is None or prev[0] != rec.posture:
                     if prev is not None:
                         self._on_transition(events, camera_id, track_id,
-                                            prev[0], rec.posture, now)
+                                            prev[0], rec.posture, now, rid)
                     self._state[key] = (rec.posture, now)
                     self._fired[key].clear()
                     continue
@@ -55,7 +61,7 @@ class PostureRule:
                 entered = prev[1]
                 in_state = (now - entered).total_seconds()
                 self._duration_events(events, camera_id, track_id, rec.posture,
-                                      in_state, now, key)
+                                      in_state, now, key, rid)
         return events
 
     # ----------------------------------------------------------------
@@ -67,11 +73,17 @@ class PostureRule:
         old: Posture,
         new: Posture,
         now: datetime,
+        rid: str | None,
     ) -> None:
+        # Each maps to a snapshot-only event; the publisher renders the arrow.
         if old == Posture.SITTING and new == Posture.STANDING:
-            events.append(self._make("standing_up", camera_id, now, track_id))
+            events.append(self._make("standing_up", camera_id, now, track_id, rid))
+        elif old == Posture.STANDING and new == Posture.SITTING:
+            events.append(self._make("sitting_down", camera_id, now, track_id, rid))
         elif new == Posture.WALKING and old != Posture.WALKING:
-            events.append(self._make("walking_started", camera_id, now, track_id))
+            events.append(self._make("walking_started", camera_id, now, track_id, rid))
+        elif old == Posture.WALKING and new == Posture.STANDING:
+            events.append(self._make("walking_stopped", camera_id, now, track_id, rid))
 
     def _duration_events(
         self,
@@ -82,28 +94,30 @@ class PostureRule:
         in_state: float,
         now: datetime,
         key: tuple[str, int],
+        rid: str | None,
     ) -> None:
         already = self._fired[key]
 
         if posture == Posture.SITTING and in_state > settings.sitting_min_secs * 12:
             # 12x sitting_min_secs is the "prolonged" boundary — default 60s
             if "prolonged_sitting" not in already:
-                events.append(self._make("prolonged_sitting", camera_id, now, track_id))
+                events.append(self._make("prolonged_sitting", camera_id, now, track_id, rid))
                 already["prolonged_sitting"] = now
 
         if posture == Posture.STANDING and in_state > self.NO_MOVE_SECS:
             if "no_movement" not in already:
-                events.append(self._make("no_movement", camera_id, now, track_id))
+                events.append(self._make("no_movement", camera_id, now, track_id, rid))
                 already["no_movement"] = now
 
     @staticmethod
     def _make(event_type: str, camera_id: str, now: datetime,
-              track_id: int | None = None) -> Event:
+              track_id: int | None = None, rid: str | None = None) -> Event:
         return Event(
             event_id=str(uuid.uuid4()),
             event_type=event_type,
             camera_id=camera_id,
             room_name="",
+            recipient_id=rid,
             timestamp=now.isoformat(),
             track_id=track_id,
         )

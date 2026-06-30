@@ -9,6 +9,8 @@ CERAVIS cloud connectivity sanity check — run ON THE DEVICE.
     python scripts/test_cloud.py --snapshot      # send a test snapshot
     python scripts/test_cloud.py --fall          # simulate a real fall: LIVE snapshot
                                                  # + matching FALL alert, together
+    python scripts/test_cloud.py --transition    # posture-transition snapshot (NO alert)
+    python scripts/test_cloud.py --inactivity    # inactivity snapshot (NO alert)
 
 Prints the base URL, the verified account, the exact saveCamera payload (with the
 room normalized to the server's CameraName enum), and — with --send — fires the
@@ -113,13 +115,43 @@ def _target_camera(cams):
     return None
 
 
-def _fall_label(acct: dict, cam) -> str:
-    """The same labeled line a real fall alert carries."""
+def _label(acct: dict, cam, head: str) -> str:
+    """Format-A line: '<head> · Camera N* Room · FirstName · time'."""
     who = acct.get("firstName") or "recipient"
     sym = ("*" if cam.has_bathroom_entrance else "") + ("&" if cam.is_main_egress else "")
-    head = f"Camera {cam.camera_number}{sym} " if cam.camera_number else ""
+    camlbl = f"Camera {cam.camera_number}{sym} " if cam.camera_number else ""
     ts = datetime.now(timezone.utc).strftime("%I:%M %p, %d %b %Y").lstrip("0")
-    return f"CRITICAL · Fall detected · {head}{cam.room_name} · {who} · {ts}"
+    return f"{head} · {camlbl}{cam.room_name} · {who} · {ts}"
+
+
+def _fall_label(acct: dict, cam) -> str:
+    return _label(acct, cam, "CRITICAL · Fall detected")
+
+
+def _snap_only(pid, acct, cams, head: str, tag: str) -> int:
+    """Send a saveSnapshot ONLY (no alert) from the recipient's camera."""
+    if not cams:
+        print(f"\n[{tag}] no cameras registered")
+        return 1
+    cam = _pick_camera(cams)
+    label = _label(acct, cam, head)
+    jpg = _live_jpeg(cam.camera_id)
+    if jpg is None:
+        snap = _latest_snapshot()
+        jpg = open(snap, "rb").read() if snap else None
+    if jpg is None:
+        print(f"\n[{tag}] no frame available")
+        return 1
+    b64 = base64.b64encode(jpg).decode("ascii")
+    print(f"\n[{tag}] saveSnapshot only (no alert)")
+    print("    label:", label)
+    try:
+        res = save_snapshot(pid, b64, label, room_to_enum(cam.room_name))
+        print("    server ->", res, "  ✓ CALL HIT")
+    except CeravisApiError as exc:
+        print("    ERROR:", exc)
+        return 1
+    return 0
 
 
 def main() -> int:
@@ -243,6 +275,18 @@ def main() -> int:
             print("    saveSnapshot ->", s, "  ✓")
         except CeravisApiError as exc:
             print("    ERROR:", exc)
+            return 1
+
+    # [7/8] snapshot-only cases (posture transition / inactivity) — NO alert
+    if "--transition" in sys.argv:
+        if not pid:
+            print("\n[7] no verified account"); return 1
+        if _snap_only(pid, acct, cams, "Sitting → Standing", "7 transition"):
+            return 1
+    if "--inactivity" in sys.argv:
+        if not pid:
+            print("\n[8] no verified account"); return 1
+        if _snap_only(pid, acct, cams, "No movement 1/15 min", "8 inactivity"):
             return 1
     return 0
 

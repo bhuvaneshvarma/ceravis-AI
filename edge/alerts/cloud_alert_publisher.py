@@ -44,9 +44,12 @@ class CloudAlertPublisher:
         self._severities = {s.strip().lower()
                             for s in settings.cloud_alert_severities.split(",")
                             if s.strip()}
-        self._event_types = {s.strip().lower()
+        self._event_types = {s.strip().lower()           # alert + snapshot
                              for s in settings.cloud_alert_event_types.split(",")
                              if s.strip()}
+        self._snapshot_types = {s.strip().lower()         # snapshot ONLY (no alert)
+                                for s in settings.cloud_snapshot_event_types.split(",")
+                                if s.strip()}
         self._recipient_only = bool(settings.cloud_alert_recipient_only)
         self._running = False
         self._thread: threading.Thread | None = None
@@ -60,8 +63,8 @@ class CloudAlertPublisher:
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="cloud-alert-publisher")
         self._thread.start()
-        logger.info("Cloud alerts on — forwarding types=%s recipient_only=%s",
-                    sorted(self._event_types) or sorted(self._severities),
+        logger.info("Cloud on — alert+snap=%s snap-only=%s recipient_only=%s",
+                    sorted(self._event_types), sorted(self._snapshot_types),
                     self._recipient_only)
 
     def stop(self) -> None:
@@ -77,33 +80,29 @@ class CloudAlertPublisher:
                 event = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
-            sev = (event.severity or "info").lower()
             etype = (event.event_type or "").lower()
-            # Gate: only the configured event types (default: falls), and only
-            # the enrolled recipient's events (recipient_id set on the event).
-            if self._event_types:
-                if etype not in self._event_types:
-                    continue
-            elif sev not in self._severities:
+            is_alert = etype in self._event_types          # saveAlert + saveSnapshot
+            is_snap = etype in self._snapshot_types         # saveSnapshot only
+            if not (is_alert or is_snap):
                 continue
             if self._recipient_only and not event.recipient_id:
                 continue
             pid = self._account.get().get("ceravisUserId")
             if not pid:
                 if not self._warned_no_account:
-                    logger.warning("saveAlert skipped — no verified account yet "
+                    logger.warning("cloud send skipped — no verified account yet "
                                    "(run setup account verification)")
                     self._warned_no_account = True
                 continue
-            alert_type = (event.event_type or "").upper()
             message = self._format(event)
-            try:
-                save_alert(pid, alert_type, message)
-            except CeravisApiError as exc:
-                logger.warning("saveAlert failed (%s): %s", alert_type, exc)
-            except Exception:
-                logger.exception("saveAlert unexpected error")
-            # Send the associated snapshot(s) with the same alert (Phase B will
+            if is_alert:
+                try:
+                    save_alert(pid, etype.upper(), message)
+                except CeravisApiError as exc:
+                    logger.warning("saveAlert failed (%s): %s", etype, exc)
+                except Exception:
+                    logger.exception("saveAlert unexpected error")
+            # Snapshot goes with both alert and snapshot-only events (Phase B will
             # populate snapshot_paths with the first/middle/last 3-frame nest).
             self._send_snapshots(pid, event, message)
 
@@ -142,12 +141,32 @@ class CloudAlertPublisher:
             logger.exception("snapshot read failed: %s", f)
             return None
 
-    def _format(self, event) -> str:
-        """Professional, fixed-format alert line, e.g.
-        'CRITICAL · Fall detected · Kitchen / fridge · Ravi · 11:45 AM, 23 Jun 2026'."""
-        who = self._account.get().get("firstName") or "recipient"
+    # event_type -> "from → to" arrow head (same line shape as the fall alert)
+    _ARROWS = {
+        "standing_up": "Sitting → Standing",
+        "sitting_down": "Standing → Sitting",
+        "walking_started": "Standing → Walking",
+        "walking_stopped": "Walking → Standing",
+    }
+
+    def _head(self, event) -> str:
+        """The leading segment: 'CRITICAL · Fall detected' for an alert, the
+        posture arrow for a transition, 'No movement N/15 min' for inactivity."""
+        et = (event.event_type or "").lower()
+        if et in self._ARROWS:
+            return self._ARROWS[et]
+        if et == "inactivity_snapshot":
+            det = (event.detail or "").strip()
+            return f"No movement {det} min" if det else "No movement"
         sev = (event.severity or "info").upper()
-        title = event.title or (event.event_type or "").replace("_", " ").title()
+        title = event.title or et.replace("_", " ").title()
+        return f"{sev} · {title}"
+
+    def _format(self, event) -> str:
+        """Fixed-format line, e.g.
+        'CRITICAL · Fall detected · Camera 1* Kitchen / fridge · Ravi · 11:45 AM, 23 Jun 2026'
+        or 'Sitting → Standing · Camera 1 Kitchen · Ravi · 11:45 AM, 23 Jun 2026'."""
+        who = self._account.get().get("firstName") or "recipient"
         # Camera label with its * (bathroom) / & (egress) designation, per spec.
         cam_label = ""
         try:
@@ -164,7 +183,7 @@ class CloudAlertPublisher:
             ts = ts.lstrip("0")
         except Exception:
             ts = event.timestamp or ""
-        parts = [f"{sev} · {title}"]
+        parts = [self._head(event)]
         if loc:
             parts.append(loc)
         parts += [who, ts]
