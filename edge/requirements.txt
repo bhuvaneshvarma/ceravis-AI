@@ -12,7 +12,6 @@
 #   pycuda       (pip, compiles against /usr/local/cuda)
 #   scipy        (apt: python3-scipy) — the BoT-SORT tracker uses
 #                scipy.optimize.linear_sum_assignment for data association
-#   supervision  (pip --no-deps) — legacy; no longer on the tracking path
 #
 # NOT runtime deps at all:
 #   torch / torchvision / ultralytics — used once for ONNX export inside a
@@ -23,7 +22,7 @@
 
 # numpy MUST stay 1.x: JetPack's apt python3-opencv is built against the
 # numpy 1 ABI, and a stray pip numpy 2.x in ~/.local shadows it and breaks
-# "import cv2". Pinning here stops scipy/matplotlib from dragging in 2.x.
+# "import cv2". Pinning here stops other wheels from dragging in 2.x.
 numpy<2
 
 # ---- Web / API ----
@@ -35,15 +34,7 @@ websockets
 python-multipart       # required for photo/video upload endpoints
 
 # ---- Events / alerts / similarity ----
-paho-mqtt
 faiss-cpu
 
-# ---- needed by supervision (installed --no-deps) ----
-# numpy / opencv / scipy / matplotlib come from apt (JetPack/system), NOT pip
-# — see scripts/install_native.sh. Only the small pure-python ones here.
-pyyaml
-defusedxml
-pillow
+# ---- Cloud app-server calls (integration/ceravis_api.py) ----
 requests
-tqdm
-pydeprecate

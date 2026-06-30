@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import cv2
 import numpy as np
 
-from config.settings import settings
 from enrollment.enrollment_manager import EnrollmentManager
 
 

@@ -208,15 +208,7 @@ async def lifespan(app: FastAPI):
             logger.exception("RuleEngine disabled")
 
     # ---- alerts ------------------------------------------------
-    mqtt_publisher = None
-    try:
-        from alerts.mqtt_publisher import MqttPublisher
-        mqtt_publisher = MqttPublisher(event_bus)
-        mqtt_publisher.start()
-    except Exception:
-        logger.exception("MqttPublisher disabled")
-
-    # Forward critical/warning alerts to the CERAVIS app server (saveAlert).
+    # Forward the recipient's falls to the CERAVIS app server (saveAlert).
     cloud_alert_publisher = None
     try:
         from alerts.cloud_alert_publisher import CloudAlertPublisher
@@ -250,7 +242,7 @@ async def lifespan(app: FastAPI):
 
     # ---- shutdown ----------------------------------------------
     for runner in (
-        mqtt_publisher, cloud_alert_publisher, alert_broadcaster, rule_engine,
+        cloud_alert_publisher, alert_broadcaster, rule_engine,
         event_writer, enroll_worker,
         reid_runner, pose_runner, tracking_runner, detection_runner,
     ):

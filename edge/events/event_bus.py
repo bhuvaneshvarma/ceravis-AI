@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import queue
-from typing import Callable
 
 from schemas.event import Event
 

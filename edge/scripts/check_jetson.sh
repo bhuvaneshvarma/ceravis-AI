@@ -100,14 +100,14 @@ fi
 # ---- 6. Python runtime deps -------------------------------------
 echo "-- python runtime deps (pip)"
 for mod in fastapi uvicorn pydantic pydantic_settings websockets \
-           paho.mqtt.client faiss supervision pycuda yaml; do
+           requests faiss scipy pycuda; do
     if python3 -c "import $mod" 2>/dev/null; then
         ok "$mod"
     else
         case "$mod" in
-            pycuda)      F="bash scripts/install_native.sh   (compiles pycuda)" ;;
-            supervision) F="pip3 install --user --no-deps supervision" ;;
-            *)           F="pip3 install --user -r requirements.txt" ;;
+            pycuda) F="bash scripts/install_native.sh   (compiles pycuda)" ;;
+            scipy)  F="sudo apt-get install -y python3-scipy" ;;
+            *)      F="pip3 install --user -r requirements.txt" ;;
         esac
         bad "python module '$mod' missing" "$F"
     fi
