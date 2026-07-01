@@ -13,7 +13,7 @@
 # seconds. If a stage fails, fix and RE-RUN THIS SAME SCRIPT — completed
 # work is never repeated, so no progress is lost.
 #
-# Run:  bash scripts/setup.sh
+# Run:  bash setup/setup.sh
 set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

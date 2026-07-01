@@ -6,17 +6,18 @@
 # (torch is only needed here, never at runtime), then JetPack's trtexec builds
 # the FP16 engine. After this, restart ceravis and ReID activates.
 #
-# Run once:  bash scripts/export_reid.sh
+# Run once:  bash setup/export_reid.sh
 set -euo pipefail
 
-EDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_DIR="$(dirname "$EDGE_DIR")"
+SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SETUP_DIR")"
+EDGE_DIR="$REPO_DIR/edge"
 VENV="${VENV:-/tmp/ceravis-export-venv}"
 
 cd "$EDGE_DIR"
 set -a
 # shellcheck disable=SC1091
-. "$REPO_DIR/infra/env/jetson.env"
+. "$EDGE_DIR/infra/env/jetson.env"
 set +a
 
 ONNX="${REID_ONNX_PATH:-models/reid/reid.onnx}"
@@ -65,7 +66,7 @@ print("ONNX written:", out)
 PY
 
 echo "== building TensorRT engine (trtexec, torch-free) =="
-python3 scripts/export_models.py
+python3 "$SETUP_DIR/export_models.py"
 
 echo
 echo "ReID engine built. Restart the service:  sudo systemctl restart ceravis"

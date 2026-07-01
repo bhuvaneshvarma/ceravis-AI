@@ -5,7 +5,7 @@ Build TensorRT engines using JetPack's own tooling (trtexec).
 Two stages, both idempotent:
 
   1. ONNX export — needs ultralytics + CPU torch. Run once via
-     scripts/export_engines.sh, which creates a disposable venv for it.
+     setup/export_engines.sh, which creates a disposable venv for it.
      Inference NEVER uses torch; it runs pure TensorRT (see detection/).
 
   2. ONNX -> FP16 .engine via trtexec — ships with JetPack at
@@ -53,7 +53,7 @@ def export_onnx(weights: str, onnx_path: Path, imgsz: int) -> bool:
         from ultralytics import YOLO
     except ImportError:
         print(f"[skip] {onnx_path.name}: ultralytics not installed — "
-              "run scripts/export_engines.sh once to create the ONNX")
+              "run setup/export_engines.sh once to create the ONNX")
         return False
 
     print(f"[onnx] {weights} -> {onnx_path}  (imgsz={imgsz}, cpu)")
@@ -101,7 +101,7 @@ def build_engine(onnx_path: Path, engine_path: Path,
 # --------------------------------------------------------------- ReID
 def export_reid(engine_path: Path) -> None:
     """
-    Build the ReID engine from a local ONNX (produced by scripts/export_reid.sh)
+    Build the ReID engine from a local ONNX (produced by setup/export_reid.sh)
     or, if REID_ONNX_URL is set, a downloaded one. Engine-only step — no torch.
     """
     if _have(engine_path):
@@ -112,7 +112,7 @@ def export_reid(engine_path: Path) -> None:
     if not _have(onnx_path):
         url = _env("REID_ONNX_URL", "")
         if not url:
-            print("[skip] no ReID ONNX — run scripts/export_reid.sh to create "
+            print("[skip] no ReID ONNX — run setup/export_reid.sh to create "
                   f"{onnx_path} (ReID stays disabled until then)")
             return
         print(f"[download] {url}")

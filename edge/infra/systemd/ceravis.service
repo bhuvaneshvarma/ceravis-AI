@@ -1,7 +1,7 @@
 # CERAVIS edge — native systemd unit (no Docker).
-# Installed by edge/scripts/install_service.sh, which substitutes the
-# real repo path and user automatically. Don't edit /etc copy by hand;
-# re-run the installer instead.
+# Installed by setup/install_service.sh, which substitutes the real repo
+# path and user automatically. Don't edit the /etc copy by hand; re-run
+# the installer instead.
 [Unit]
 Description=CERAVIS Edge AI (native, JetPack stack)
 After=network-online.target
@@ -11,10 +11,11 @@ Wants=network-online.target
 Type=simple
 User=ceravis
 WorkingDirectory=/home/ceravis/ceravis2/edge
-EnvironmentFile=/home/ceravis/ceravis2/infra/env/jetson.env
-# Rebuild engines if missing (skips instantly when already built).
-# "-" prefix: a failure here must not block the API from starting.
-ExecStartPre=-/usr/bin/python3 scripts/export_models.py
+EnvironmentFile=/home/ceravis/ceravis2/edge/infra/env/jetson.env
+# Rebuild engines if missing (skips instantly when already built). Runs from the
+# WorkingDirectory (edge) so model paths resolve; "-" prefix: a failure here must
+# not block the API from starting.
+ExecStartPre=-/usr/bin/python3 /home/ceravis/ceravis2/setup/export_models.py
 ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 # An engine rebuild in ExecStartPre can take several minutes — don't let
 # systemd's default 90 s start timeout kill the service mid-build.

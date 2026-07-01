@@ -14,9 +14,9 @@ test could pass while the worker still failed with
 real deployment condition. Use --main-thread to force the old behaviour.
 
 Usage (on the Jetson):
-    python3 scripts/test_reid.py                 # dummy crop, worker-thread
-    python3 scripts/test_reid.py /path/img.jpg   # embed a real image
-    python3 scripts/test_reid.py --main-thread   # run on the main thread
+    python3 tests/test_reid.py                 # dummy crop, worker-thread
+    python3 tests/test_reid.py /path/img.jpg   # embed a real image
+    python3 tests/test_reid.py --main-thread   # run on the main thread
 
 Exit code 0 = engine loaded and produced a valid embedding off-thread.
 """
@@ -39,7 +39,7 @@ def _run_once(img_path: str | None) -> int:
         extractor = ReIDExtractor()
     except FileNotFoundError as exc:
         print(f"[reid] ENGINE NOT BUILT: {exc}")
-        print("[reid] -> run: bash scripts/export_reid.sh")
+        print("[reid] -> run: bash setup/export_reid.sh")
         return 2
     except Exception:
         import traceback

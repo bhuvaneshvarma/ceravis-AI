@@ -3,15 +3,15 @@
 CERAVIS cloud connectivity sanity check — run ON THE DEVICE.
 
     cd ~/ceravis/edge
-    python scripts/test_cloud.py                 # inspect config + payload (no send)
-    python scripts/test_cloud.py --send          # actually call userDetails + saveCamera
-    python scripts/test_cloud.py --alert         # send a test FALL alert
-    python scripts/test_cloud.py --snapshot      # send a test snapshot
-    python scripts/test_cloud.py --fall          # simulate a real fall: LIVE snapshot
+    python tests/test_cloud.py                 # inspect config + payload (no send)
+    python tests/test_cloud.py --send          # actually call userDetails + saveCamera
+    python tests/test_cloud.py --alert         # send a test FALL alert
+    python tests/test_cloud.py --snapshot      # send a test snapshot
+    python tests/test_cloud.py --fall          # simulate a real fall: LIVE snapshot
                                                  # + matching FALL alert, together
-    python scripts/test_cloud.py --transition      # posture-transition snap (NO alert)
-    python scripts/test_cloud.py --no-transition   # no-transition burst snap (NO alert)
-    python scripts/test_cloud.py --no-motion       # CRITICAL no-movement alert + snap
+    python tests/test_cloud.py --transition      # posture-transition snap (NO alert)
+    python tests/test_cloud.py --no-transition   # no-transition burst snap (NO alert)
+    python tests/test_cloud.py --no-motion       # CRITICAL no-movement alert + snap
 
 Prints the base URL, the verified account, the exact saveCamera payload (with the
 room normalized to the server's CameraName enum), and — with --send — fires the

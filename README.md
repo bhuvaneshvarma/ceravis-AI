@@ -37,30 +37,39 @@ edge/
   alerts/         broadcaster (WS) + cloud_alert_publisher (HTTPS app server)
   integration/    CERAVIS app-server client (userDetails/saveCamera/alert/snapshot)
   storage/        SQLite wrapper + EventStore
+  bootstrap/      Pipeline assembly (build/start/stop) — keeps main.py thin
   monitoring/     Pipeline metrics + tegrastats parser
   streaming/      WebSocket + MJPEG live stream
   enrollment/     Per-recipient folder mgmt
   static/         /ui dashboard, camera + zone labeling pages
   models/         detection/ pose/ reid/ — .onnx + .engine (gitignored)
-  scripts/
-    install_native.sh   One-time: apt + pip deps on JetPack
-    export_engines.sh   One-time: ONNX (CPU venv) -> trtexec FP16 engines
-    install_service.sh  One-time: systemd unit (start at boot)
-    export_models.py    The exporter both scripts drive
+  tests/          Pure-python regression + on-device cloud sanity (test_*.py)
+  infra/env/jetson.env       All tunables (FPS, thresholds, paths, cloud API)
+  infra/systemd/             ceravis.service template
 
-infra/env/jetson.env       All tunables (FPS, thresholds, paths, cloud API)
-infra/systemd/             ceravis.service template
+setup/            One-time provisioning (flash to the device / pendrive):
+  setup.sh              End-to-end bring-up (runs everything below)
+  install_native.sh     apt + pip deps on JetPack
+  export_engines.sh     ONNX (CPU venv) -> trtexec FP16 engines
+  export_reid.sh        OSNet ReID engine
+  install_service.sh    systemd unit (start at boot)
+  check_jetson.sh       Dependency/model doctor
+  export_models.py      The exporter both export scripts drive
 ```
+The `edge/` app is what you upgrade (git pull / docker); `setup/` is the one-time
+device provisioning a technician runs on-site.
 
 ## Setup on the Jetson (JetPack 6.x flashed via SDK Manager)
 ```bash
 git clone https://github.com/bhuvaneshvarma/ceravis-AI.git ~/ceravis
-cd ~/ceravis/edge
+cd ~/ceravis
 
-bash scripts/install_native.sh    # apt + pip deps          (~10 min)
-nano data/cameras.json            # your real RTSP URL(s)
-bash scripts/export_engines.sh    # build TRT engines       (~20 min, one-time)
-bash scripts/install_service.sh   # start now + at every boot
+bash setup/setup.sh               # one command: deps + engines + service + doctor
+# (or step by step:)
+bash setup/install_native.sh      # apt + pip deps          (~10 min)
+nano edge/data/cameras.json       # your real RTSP URL(s)
+bash setup/export_engines.sh      # build TRT engines       (~20 min, one-time)
+bash setup/install_service.sh     # start now + at every boot
 ```
 
 ## Use

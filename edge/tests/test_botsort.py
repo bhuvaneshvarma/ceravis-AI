@@ -1,7 +1,7 @@
 """
 Local sanity test for the clean-room BoT-SORT tracker (no TRT/torch needed).
 
-Run:  PYTHONPATH=edge python edge/scripts/test_botsort.py
+Run:  PYTHONPATH=edge python edge/tests/test_botsort.py
 
 Scenario 1 (crossover): two people walk through each other; appearance must
 keep their IDs from swapping.

@@ -7,13 +7,14 @@
 # (no CUDA torch, no NVIDIA wheel hunting), export the ONNX, then build
 # FP16 engines with JetPack's own trtexec.
 #
-# Run once:  bash scripts/export_engines.sh
+# Run once:  bash setup/export_engines.sh
 # Re-run anytime — every stage skips work that is already done.
 # Afterwards you can reclaim ~1.5 GB with:  rm -rf /tmp/ceravis-export-venv
 set -euo pipefail
 
-EDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_DIR="$(dirname "$EDGE_DIR")"
+SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SETUP_DIR")"
+EDGE_DIR="$REPO_DIR/edge"
 VENV="${VENV:-/tmp/ceravis-export-venv}"
 
 cd "$EDGE_DIR"
@@ -31,16 +32,16 @@ fi
 # Load model paths/weights config so the script and the app agree.
 set -a
 # shellcheck disable=SC1091
-. "$REPO_DIR/infra/env/jetson.env"
+. "$EDGE_DIR/infra/env/jetson.env"
 set +a
 
 echo "== pass 1/2: ONNX export (venv, CPU torch) =="
-"$VENV/bin/python" scripts/export_models.py --onnx-only
+"$VENV/bin/python" "$SETUP_DIR/export_models.py" --onnx-only
 
 echo "== pass 2/2: TensorRT engine build (fresh torch-free process) =="
 # Separate process so torch's ~2 GB is released before trtexec runs —
 # on the shared-memory Orin Nano that headroom is what lets CUDA init.
-python3 scripts/export_models.py
+python3 "$SETUP_DIR/export_models.py"
 
 echo
 echo "Engines in $EDGE_DIR/models/. Optional cleanup: rm -rf $VENV"

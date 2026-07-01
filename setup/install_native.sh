@@ -6,11 +6,13 @@
 # OpenCV (GStreamer build), GStreamer. Only small pure-python deps
 # come from pip. Idempotent — safe to re-run anytime.
 #
-# Run:  bash scripts/install_native.sh
-# (Or just run scripts/setup.sh, which runs everything end-to-end.)
+# Run:  bash setup/install_native.sh
+# (Or just run setup/setup.sh, which runs everything end-to-end.)
 set -euo pipefail
 
-EDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SETUP_DIR")"
+EDGE_DIR="$REPO_DIR/edge"
 
 echo "== [1/5] apt packages (most are already present on JetPack) =="
 sudo apt-get update

@@ -1,7 +1,7 @@
 """
 Local test for TargetLockManager (no TRT/faiss needed).
 
-Run:  PYTHONPATH=edge python edge/scripts/test_target_lock.py
+Run:  PYTHONPATH=edge python edge/tests/test_target_lock.py
 """
 import numpy as np
 

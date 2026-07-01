@@ -6,11 +6,12 @@
 # repairs dependencies (scipy/matplotlib via apt), builds the OSNet ReID
 # engine, and restarts the service. Idempotent — safe to re-run.
 #
-# Run:  bash scripts/upgrade.sh
+# Run:  bash setup/upgrade.sh
 set -euo pipefail
 
-EDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_DIR="$(dirname "$EDGE_DIR")"
+SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SETUP_DIR")"
+EDGE_DIR="$REPO_DIR/edge"
 cd "$EDGE_DIR"
 
 echo "== [1/6] latest code =="
@@ -25,25 +26,25 @@ sudo apt-get autoremove -y >/dev/null 2>&1 || true
 echo "  cleaned."
 
 echo "== [3/6] dependencies (scipy/matplotlib via apt fixes 'No module scipy') =="
-bash scripts/install_native.sh
+bash "$SETUP_DIR/install_native.sh"
 
 echo "== [4/6] build OSNet ReID engine =="
-bash scripts/export_reid.sh
+bash "$SETUP_DIR/export_reid.sh"
 
 echo "== [5/6] restart service =="
 sudo systemctl restart ceravis
 sleep 6
 
 echo "== [6/6] verify =="
-bash scripts/check_jetson.sh || true
+bash "$SETUP_DIR/check_jetson.sh" || true
 echo "-- ReID engine self-test --"
-python3 scripts/test_reid.py || echo "  (ReID self-test reported an issue — see above)"
+PYTHONPATH="$EDGE_DIR" python3 "$EDGE_DIR/tests/test_reid.py" || echo "  (ReID self-test reported an issue — see above)"
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "============================================================"
 echo "  Upgrade complete."
 echo "  UI:     http://${IP:-<jetson-ip>}:8000/ui/setup.html"
-echo "  Detect test:  python3 scripts/test_detect.py"
-echo "  ReID test:    python3 scripts/test_reid.py"
+echo "  Detect test:  PYTHONPATH="$EDGE_DIR" python3 "$EDGE_DIR/tests/test_detect.py""
+echo "  ReID test:    PYTHONPATH="$EDGE_DIR" python3 "$EDGE_DIR/tests/test_reid.py""
 echo "  Logs:   journalctl -u ceravis -f"
 echo "============================================================"

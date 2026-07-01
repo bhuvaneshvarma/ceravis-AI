@@ -8,9 +8,9 @@ attached, otherwise it prints counts and writes an annotated frame to
 /tmp/ceravis_detect.jpg so you can view it over SSH.
 
 Usage (on the Jetson):
-    python3 scripts/test_detect.py                      # first enabled camera
-    python3 scripts/test_detect.py rtsp://user:pass@ip:554/stream
-    python3 scripts/test_detect.py <rtsp_or_camera_id> 0.20   # custom conf
+    python3 tests/test_detect.py                      # first enabled camera
+    python3 tests/test_detect.py rtsp://user:pass@ip:554/stream
+    python3 tests/test_detect.py <rtsp_or_camera_id> 0.20   # custom conf
 
 Press ESC or q to quit (windowed mode), or Ctrl+C (headless).
 """

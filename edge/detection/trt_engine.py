@@ -86,7 +86,7 @@ class TensorRTEngine:
         if not self._engine_path.exists():
             raise FileNotFoundError(
                 f"TensorRT engine not found: {self._engine_path}. "
-                "Run scripts/export_models.py to build it."
+                "Run setup/export_models.py to build it."
             )
 
         logger.info("Loading TRT engine: %s", self._engine_path)

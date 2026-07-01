@@ -99,7 +99,7 @@ class EnrollmentWorker:
                 self._reid_error = None
             except FileNotFoundError:
                 self._reid_error = ("ReID engine not built — run "
-                                    "scripts/export_reid.sh, then re-enroll")
+                                    "setup/export_reid.sh, then re-enroll")
                 logger.warning("enroll: %s", self._reid_error)
             except Exception as exc:
                 # Engine file exists but failed to load (corrupt, TRT version
@@ -131,7 +131,7 @@ class EnrollmentWorker:
         crops, labels = self._collect_crops(recipient_id)
         if not reid_ready:
             reason = self._reid_error or (
-                "media stored; run scripts/export_reid.sh to build the ReID "
+                "media stored; run setup/export_reid.sh to build the ReID "
                 "engine, then re-enroll to generate embeddings")
             self._mgr.set_status(recipient_id, state="pending_reid",
                                  photos=len(crops), embeddings=0, message=reason)

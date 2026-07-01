@@ -68,7 +68,7 @@ class Settings(BaseSettings):
 
     # ---- ReID (OSNet by default; FastReid supported) ----------------
     # OSNet x1_0 is light + accurate — ideal for the Orin Nano. Build its
-    # engine with scripts/export_reid.sh. FastReid BoT_R50 works too: drop its
+    # engine with setup/export_reid.sh. FastReid BoT_R50 works too: drop its
     # ONNX at reid_onnx_path and set reid_embedding_dim=2048.
     reid_model_name: str = "osnet_x1_0"      # torchreid model for export_reid.sh
     reid_model_path: str = "models/reid/reid.engine"
@@ -258,7 +258,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Resolve relative to the repo, not the process cwd, so the env file
         # is found whether launched by systemd, a shell, or an IDE.
-        env_file=str(Path(__file__).resolve().parents[2] / "infra" / "env" / "jetson.env"),
+        env_file=str(Path(__file__).resolve().parents[1] / "infra" / "env" / "jetson.env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

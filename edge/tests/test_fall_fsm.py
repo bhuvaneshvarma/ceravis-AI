@@ -1,7 +1,7 @@
 """
 Local test for the scene-aware fall FSM (no TRT needed).
 
-Run:  PYTHONPATH=edge python edge/scripts/test_fall_fsm.py
+Run:  PYTHONPATH=edge python edge/tests/test_fall_fsm.py
 """
 from datetime import datetime, timedelta, timezone
 

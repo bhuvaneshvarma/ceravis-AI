@@ -3,7 +3,7 @@
 # CERAVIS Jetson doctor — verifies every dependency, with fixes.
 # Read-only: changes nothing on the system.
 #
-# Run:  bash scripts/check_jetson.sh
+# Run:  bash setup/check_jetson.sh
 # Exit code 0 = ready to run CERAVIS; 1 = something needs fixing.
 # =============================================================
 
@@ -13,7 +13,9 @@ ok()   { echo "  [ OK ] $1"; PASS=$((PASS+1)); }
 bad()  { echo "  [FAIL] $1"; [ -n "$2" ] && echo "         fix:  $2"; FAIL=$((FAIL+1)); }
 warn() { echo "  [WARN] $1"; [ -n "$2" ] && echo "         note: $2"; WARN=$((WARN+1)); }
 
-EDGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SETUP_DIR")"
+EDGE_DIR="$REPO_DIR/edge"
 
 echo "================ CERAVIS Jetson doctor ================"
 
@@ -105,7 +107,7 @@ for mod in fastapi uvicorn pydantic pydantic_settings websockets \
         ok "$mod"
     else
         case "$mod" in
-            pycuda) F="bash scripts/install_native.sh   (compiles pycuda)" ;;
+            pycuda) F="bash setup/install_native.sh   (compiles pycuda)" ;;
             scipy)  F="sudo apt-get install -y python3-scipy" ;;
             *)      F="pip3 install --user -r requirements.txt" ;;
         esac
@@ -119,9 +121,9 @@ for m in detection/yolo26m pose/yolo26m-pose; do
     if [ -s "$EDGE_DIR/models/$m.engine" ]; then
         ok "$m.engine ($(du -h "$EDGE_DIR/models/$m.engine" | cut -f1))"
     elif [ -s "$EDGE_DIR/models/$m.onnx" ]; then
-        warn "$m.onnx present but engine not built" "python3 scripts/export_models.py"
+        warn "$m.onnx present but engine not built" "python3 setup/export_models.py"
     else
-        warn "$m not exported yet" "bash scripts/export_engines.sh"
+        warn "$m not exported yet" "bash setup/export_engines.sh"
     fi
 done
 
@@ -146,7 +148,7 @@ if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis.service'; then
     [ "$STATE" = "active" ] && ok "ceravis.service active" \
         || warn "ceravis.service installed but $STATE" "sudo systemctl restart ceravis && journalctl -u ceravis -n 30"
 else
-    warn "ceravis.service not installed" "bash scripts/install_service.sh"
+    warn "ceravis.service not installed" "bash setup/install_service.sh"
 fi
 
 # ---- summary -------------------------------------------------------
