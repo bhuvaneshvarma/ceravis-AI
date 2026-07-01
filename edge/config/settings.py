@@ -214,10 +214,13 @@ class Settings(BaseSettings):
 
     # ---- CERAVIS application server (cloud) ------------------------
     # The Spring app that owns user accounts. Setup verifies the operator's email
-    # against it before onboarding continues. The ONLY thing to configure is the
-    # server's address; no auth token (the app server accepts the email request
-    # directly). Leave base_url empty to run the device standalone.
+    # against it before onboarding continues. Configure the server's address +
+    # the API key. Leave base_url empty to run the device standalone.
     ceravis_api_base_url: str = "https://app.ceravishealth.in/ch"
+    # API key sent as the "X-API-Key" header on EVERY app-server call. Override
+    # via CERAVIS_API_KEY (it's a secret — rotate there, see jetson.env).
+    ceravis_api_key: str = ("sk-0r1g6k7j8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7"
+                            "e8f9g0h1i2j3k4l5m6n7o8p9q0r1s2t3u4v5w6x7y8z9")
     ceravis_api_timeout_secs: float = 8.0
     # Externally-reachable base for the camera streams sent to the app server,
     # e.g. https://edge.ceravishealth.in (point it at a TLS reverse proxy for a

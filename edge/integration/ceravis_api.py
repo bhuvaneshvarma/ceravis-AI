@@ -46,8 +46,12 @@ def is_configured() -> bool:
 
 
 def _headers() -> dict[str, str]:
-    # No auth token — the app server accepts the email lookup directly.
-    return {"Content-Type": "application/json", "Accept": "application/json"}
+    # Every app-server call carries the API key in the "X-API-Key" header.
+    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    key = settings.ceravis_api_key.strip()
+    if key:
+        h["X-API-Key"] = key
+    return h
 
 
 def _unwrap(body):
