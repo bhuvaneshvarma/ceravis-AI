@@ -155,9 +155,12 @@ class CloudAlertPublisher:
         et = (event.event_type or "").lower()
         if et in self._ARROWS:
             return self._ARROWS[et]
-        if et == "inactivity_snapshot":
-            det = (event.detail or "").strip()
+        det = (event.detail or "").strip()
+        if et == "no_motion_snapshot":
             return f"No movement {det} min" if det else "No movement"
+        if et == "no_transition_snapshot":
+            return f"No transition {det} min" if det else "No transition"
+        # fall, the critical no_motion alert, and anything else -> SEV · Title
         sev = (event.severity or "info").upper()
         title = event.title or et.replace("_", " ").title()
         return f"{sev} · {title}"

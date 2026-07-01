@@ -9,8 +9,9 @@ CERAVIS cloud connectivity sanity check — run ON THE DEVICE.
     python scripts/test_cloud.py --snapshot      # send a test snapshot
     python scripts/test_cloud.py --fall          # simulate a real fall: LIVE snapshot
                                                  # + matching FALL alert, together
-    python scripts/test_cloud.py --transition    # posture-transition snapshot (NO alert)
-    python scripts/test_cloud.py --inactivity    # inactivity snapshot (NO alert)
+    python scripts/test_cloud.py --transition      # posture-transition snap (NO alert)
+    python scripts/test_cloud.py --no-transition   # no-transition burst snap (NO alert)
+    python scripts/test_cloud.py --no-motion       # CRITICAL no-movement alert + snap
 
 Prints the base URL, the verified account, the exact saveCamera payload (with the
 room normalized to the server's CameraName enum), and — with --send — fires the
@@ -154,6 +155,33 @@ def _snap_only(pid, acct, cams, head: str, tag: str) -> int:
     return 0
 
 
+def _alert_snap(pid, acct, cams, head: str, alert_type: str, tag: str) -> int:
+    """Send saveAlert + saveSnapshot together from the recipient's camera."""
+    if not cams:
+        print(f"\n[{tag}] no cameras registered")
+        return 1
+    cam = _pick_camera(cams)
+    label = _label(acct, cam, head)
+    jpg = _live_jpeg(cam.camera_id)
+    if jpg is None:
+        snap = _latest_snapshot()
+        jpg = open(snap, "rb").read() if snap else None
+    if jpg is None:
+        print(f"\n[{tag}] no frame available")
+        return 1
+    b64 = base64.b64encode(jpg).decode("ascii")
+    print(f"\n[{tag}] {alert_type} alert + snapshot")
+    print("    label:", label)
+    try:
+        print("    saveAlert  ->", save_alert(pid, alert_type, label), "  ✓")
+        print("    saveSnapshot ->",
+              save_snapshot(pid, b64, label, room_to_enum(cam.room_name)), "  ✓")
+    except CeravisApiError as exc:
+        print("    ERROR:", exc)
+        return 1
+    return 0
+
+
 def main() -> int:
     send = "--send" in sys.argv
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -277,16 +305,24 @@ def main() -> int:
             print("    ERROR:", exc)
             return 1
 
-    # [7/8] snapshot-only cases (posture transition / inactivity) — NO alert
+    # [7] posture transition — snapshot only, NO alert
     if "--transition" in sys.argv:
         if not pid:
             print("\n[7] no verified account"); return 1
         if _snap_only(pid, acct, cams, "Sitting → Standing", "7 transition"):
             return 1
-    if "--inactivity" in sys.argv:
+    # [8] no-transition burst — snapshot only, NO alert
+    if "--no-transition" in sys.argv:
         if not pid:
             print("\n[8] no verified account"); return 1
-        if _snap_only(pid, acct, cams, "No movement 1/15 min", "8 inactivity"):
+        if _snap_only(pid, acct, cams, "No transition 1/15 min", "8 no-transition"):
+            return 1
+    # [9] no-motion — CRITICAL alert + snapshot (the 60-min emergency)
+    if "--no-motion" in sys.argv:
+        if not pid:
+            print("\n[9] no verified account"); return 1
+        if _alert_snap(pid, acct, cams, "CRITICAL · No movement", "NO_MOTION",
+                       "9 no-motion"):
             return 1
     return 0
 

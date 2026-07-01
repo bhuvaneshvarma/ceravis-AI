@@ -6,10 +6,10 @@ import time
 
 from events.event_bus import EventBus
 from rules.fall_rule import FallRule
-from rules.inactivity_snapshot_rule import InactivitySnapshotRule
 from rules.posture_rule import PostureRule
 from rules.rule_context import RuleContext
 from rules.spatial_rule import SpatialRule
+from rules.stillness_rule import StillnessRule
 from rules.visit_session_rule import VisitSessionRule
 
 
@@ -31,7 +31,7 @@ class RuleEngine:
         self._ctx = context
         self._bus = bus
         self._enricher = enricher          # EventEnricher | None
-        self._rules = [FallRule(), PostureRule(), InactivitySnapshotRule(),
+        self._rules = [FallRule(), PostureRule(), StillnessRule(),
                        SpatialRule(), VisitSessionRule()]
         self._running = False
         self._thread: threading.Thread | None = None

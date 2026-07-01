@@ -224,23 +224,27 @@ class Settings(BaseSettings):
     # real https link) or http://192.168.1.50:8000 on a LAN. Blank = auto-derive
     # from the host the browser used to reach the device.
     device_stream_base: str = ""
-    # What gets forwarded to the app server (saveAlert + saveSnapshot). For now
-    # ONLY the enrolled recipient's falls: event type must be in this list AND
-    # (if recipient_only) the event must be about the matched recipient. Widen
-    # cloud_alert_event_types later (e.g. "fall,inactivity,visitor_arrival").
-    cloud_alert_event_types: str = "fall"
+    # ALERT + snapshot event types (recipient-gated). Falls + the CRITICAL
+    # no-motion welfare alert.
+    cloud_alert_event_types: str = "fall,no_motion"
     cloud_alert_recipient_only: bool = True
     cloud_alert_severities: str = "critical,warning"   # fallback if event_types is blank
-    # Snapshot-ONLY event types: routed to saveSnapshot (no saveAlert). Posture
-    # transitions + the inactivity burst. Also recipient-gated.
-    cloud_snapshot_event_types: str = ("standing_up,sitting_down,walking_started,"
-                                       "walking_stopped,inactivity_snapshot")
-    # Inactivity burst: after this long with no movement, take one snapshot every
-    # interval, up to `count` times (default: 30 min still → 1/min for 15 min).
-    inactivity_snapshot_after_secs: float = 1800.0
-    inactivity_snapshot_interval_secs: float = 60.0
-    inactivity_snapshot_count: int = 15
-    inactivity_snapshot_move_frac: float = 0.15   # bbox-height fraction = "moved"
+    # Snapshot-ONLY event types (no saveAlert): posture transitions + the two
+    # long-dwell bursts (no_motion_snapshot / no_transition_snapshot).
+    cloud_snapshot_event_types: str = (
+        "standing_up,sitting_down,walking_started,walking_stopped,"
+        "no_motion_snapshot,no_transition_snapshot")
+    # ---- Long-dwell welfare checks (StillnessRule) ------------------
+    # A 75-min slot: WINDOW minutes quiet, then one snapshot per minute for
+    # (COUNT) minutes, then the slot resets and repeats.
+    #   NO MOTION   = box-centre frozen for the window -> CRITICAL alert at the
+    #                 window mark + a snapshot each minute (the serious case).
+    #   NO TRANSITION = posture unchanged (still active/moving) for the window ->
+    #                 snapshot-only burst (suppressed while no-motion is active).
+    stillness_window_secs: float = 3600.0        # 60 min quiet before the burst
+    stillness_burst_interval_secs: float = 60.0  # one snapshot per minute
+    stillness_burst_count: int = 15              # for 15 minutes (-> 75-min slot)
+    no_motion_move_frac: float = 0.05            # box-centre drift (×height) = MOTION
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""
