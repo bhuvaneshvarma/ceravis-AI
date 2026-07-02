@@ -49,12 +49,21 @@
       from the edge pipeline in real time; every recognized movement is logged on the right.</div>
   </div>
 
+  <div id="cloud-banner" style="display:none; margin-bottom:12px; padding:10px 14px;
+       border-radius:10px; background:rgba(251,191,36,.12); border:1px solid #fbbf24;
+       color:#fbbf24; font-size:13px; font-weight:600">
+    ☁ Cloud OFF — alerts &amp; snapshots are saved locally
+    (<code>data/cloud_outbox/</code>), not sent to the server.
+  </div>
+
   <div id="alert-stack"></div>
 
   <div class="row mb" style="align-items:center; gap:10px">
     <span class="pill pill-mute" id="m-mode">SEARCHING</span>
     <span id="m-active" class="faint"></span>
     <span id="m-state" class="faint"></span>
+    <button id="cloud-toggle" class="btn btn-ghost btn-sm" style="margin-left:auto"
+            title="Turn cloud forwarding on/off (off = save locally for testing)">☁ Cloud: …</button>
   </div>
 
   <div class="mon">
@@ -81,6 +90,30 @@
 <script src="ceravis.js"></script>
 <script>
 renderNav("monitor.html");
+
+/* ---- cloud on/off (local test mode) ---- */
+async function refreshCloud() {
+  try {
+    const s = await api("/api/v1/cloud/state");
+    const btn = document.getElementById("cloud-toggle");
+    const banner = document.getElementById("cloud-banner");
+    if (btn) {
+      btn.textContent = s.on ? "☁ Cloud: ON" : "☁ Cloud: OFF";
+      btn.style.color = s.on ? "var(--ok, #34d399)" : "#fbbf24";
+      btn.style.borderColor = s.on ? "" : "#fbbf24";
+    }
+    if (banner) banner.style.display = s.on ? "none" : "block";
+  } catch {}
+}
+document.getElementById("cloud-toggle").onclick = async () => {
+  try {
+    const r = await api("/api/v1/cloud/toggle", { method: "POST" });
+    toast(r.on ? "Cloud ON — sending to server" : "Cloud OFF — saving locally", r.on ? "ok" : "warn");
+  } catch { toast("Cloud toggle failed", "err"); }
+  refreshCloud();
+};
+refreshCloud();
+setInterval(refreshCloud, 5000);
 
 const POSTURE_COLOR = {
   standing: "#34d399", sitting: "#60a5fa", walking: "#2dd4bf",

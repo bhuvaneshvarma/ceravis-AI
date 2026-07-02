@@ -28,6 +28,8 @@ from events.event_bus import EventBus
 from integration.ceravis_api import (
     CeravisApiError, is_configured, room_to_enum, save_alert, save_snapshot,
 )
+from cloud.cloud_switch import switch
+from cloud import local_outbox
 
 
 logger = logging.getLogger("alerts")
@@ -95,6 +97,11 @@ class CloudAlertPublisher:
                     self._warned_no_account = True
                 continue
             message = self._format(event)
+            # Switch OFF -> write the would-be payload to data/cloud_outbox/,
+            # nothing hits the API (local testing without flooding DB/S3).
+            if not switch.is_on():
+                self._to_outbox(pid, event, message, is_alert)
+                continue
             if is_alert:
                 try:
                     save_alert(pid, etype.upper(), message)
@@ -105,6 +112,17 @@ class CloudAlertPublisher:
             # Snapshot goes with both alert and snapshot-only events (Phase B will
             # populate snapshot_paths with the first/middle/last 3-frame nest).
             self._send_snapshots(pid, event, message)
+
+    def _to_outbox(self, pid, event, text: str, is_alert: bool) -> None:
+        paths = list(event.snapshot_paths or [])
+        if not paths and event.snapshot_path:
+            paths = [event.snapshot_path]
+        imgs = [p for p in (self._abs(r) for r in paths) if p]
+        local_outbox.write(
+            "alert" if is_alert else "snapshot", patient_id=pid, text=text,
+            camera_number=room_to_enum(event.room_name),
+            alert_type=(event.event_type or "").upper() if is_alert else None,
+            image_paths=imgs)
 
     def _send_snapshots(self, pid, event, text: str) -> None:
         """Base64-encode and POST each snapshot tied to this alert. One today;
@@ -129,13 +147,18 @@ class CloudAlertPublisher:
                 logger.exception("saveSnapshot unexpected error")
 
     @staticmethod
-    def _b64(rel_path: str) -> str | None:
+    def _abs(rel_path: str):
+        """Resolve a stored snapshot path to an absolute file, or None."""
         edir = Path(settings.events_dir)
         root = edir if edir.is_absolute() else (_EDGE_ROOT / edir)
         f = root / rel_path
+        return f if f.exists() else None
+
+    def _b64(self, rel_path: str) -> str | None:
+        f = self._abs(rel_path)
+        if f is None:
+            return None
         try:
-            if not f.exists():
-                return None
             return base64.b64encode(f.read_bytes()).decode("ascii")
         except Exception:
             logger.exception("snapshot read failed: %s", f)

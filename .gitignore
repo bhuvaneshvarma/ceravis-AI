@@ -35,3 +35,7 @@ edge/data/cameras.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Cloud switch runtime state (device-local)
+edge/data/cloud_mode.json
+edge/data/cloud_outbox/
