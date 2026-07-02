@@ -10,8 +10,16 @@ CERAVIS cloud connectivity sanity check — run ON THE DEVICE.
     python tests/test_cloud.py --fall          # simulate a real fall: LIVE snapshot
                                                  # + matching FALL alert, together
     python tests/test_cloud.py --transition      # posture-transition snap (NO alert)
-    python tests/test_cloud.py --no-transition   # no-transition burst snap (NO alert)
-    python tests/test_cloud.py --no-motion       # CRITICAL no-movement alert + snap
+    python tests/test_cloud.py --no-transition   # replay a full NO-TRANSITION slot:
+                                                 #   the 15-snap burst, NO alert
+    python tests/test_cloud.py --no-motion       # replay a full NO-MOTION slot: the
+                                                 #   CRITICAL alert + its 15-snap burst
+
+The two "no-*" flags replay one complete 75-minute stillness slot (60 min quiet,
+then one snapshot per minute for 15 min) as a rapid burst — each snapshot's label
+timestamp advances by the real burst interval, so the annotations read exactly as
+the live StillnessRule would emit them. Every snapshot in a NO-MOTION slot carries
+the alertId returned by that slot's saveAlert.
 
 Prints the base URL, the verified account, the exact saveCamera payload (with the
 room normalized to the server's CameraName enum), and — with --send — fires the
@@ -25,7 +33,7 @@ import os
 import socket
 import sys
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # make `config`, `integration`, … importable and resolve data/ no matter the cwd
 _EDGE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,8 +46,8 @@ from config.settings import settings                                      # noqa
 from configuration.account_config import AccountConfig                    # noqa: E402
 from configuration.camera_config import CameraConfig                      # noqa: E402
 from integration.ceravis_api import (                                     # noqa: E402
-    CeravisApiError, get_user_details, is_configured, room_to_enum,
-    save_alert, save_cameras, save_snapshot,
+    CeravisApiError, alert_id_of, get_user_details, is_configured,
+    room_to_enum, save_alert, save_cameras, save_snapshot,
 )
 
 
@@ -116,12 +124,13 @@ def _target_camera(cams):
     return None
 
 
-def _label(acct: dict, cam, head: str) -> str:
-    """Format-A line: '<head> · Camera N* Room · FirstName · time'."""
+def _label(acct: dict, cam, head: str, when: datetime | None = None) -> str:
+    """Format-A line: '<head> · Camera N* Room · FirstName · time'. `when` sets
+    the timestamp (defaults to now) so a replayed burst can advance it per snap."""
     who = acct.get("firstName") or "recipient"
     sym = ("*" if cam.has_bathroom_entrance else "") + ("&" if cam.is_main_egress else "")
     camlbl = f"Camera {cam.camera_number}{sym} " if cam.camera_number else ""
-    ts = datetime.now(timezone.utc).strftime("%I:%M %p, %d %b %Y").lstrip("0")
+    ts = (when or datetime.now(timezone.utc)).strftime("%I:%M %p, %d %b %Y").lstrip("0")
     return f"{head} · {camlbl}{cam.room_name} · {who} · {ts}"
 
 
@@ -136,14 +145,10 @@ def _snap_only(pid, acct, cams, head: str, tag: str) -> int:
         return 1
     cam = _pick_camera(cams)
     label = _label(acct, cam, head)
-    jpg = _live_jpeg(cam.camera_id)
-    if jpg is None:
-        snap = _latest_snapshot()
-        jpg = open(snap, "rb").read() if snap else None
-    if jpg is None:
+    b64 = _frame_for(cam)
+    if b64 is None:
         print(f"\n[{tag}] no frame available")
         return 1
-    b64 = base64.b64encode(jpg).decode("ascii")
     print(f"\n[{tag}] saveSnapshot only (no alert)")
     print("    label:", label)
     try:
@@ -155,30 +160,65 @@ def _snap_only(pid, acct, cams, head: str, tag: str) -> int:
     return 0
 
 
-def _alert_snap(pid, acct, cams, head: str, alert_type: str, tag: str) -> int:
-    """Send saveAlert + saveSnapshot together from the recipient's camera."""
-    if not cams:
-        print(f"\n[{tag}] no cameras registered")
-        return 1
-    cam = _pick_camera(cams)
-    label = _label(acct, cam, head)
+def _frame_for(cam) -> str | None:
+    """A live JPEG from the recipient's camera, else the latest saved snapshot,
+    base64-encoded — or None if nothing is available."""
     jpg = _live_jpeg(cam.camera_id)
     if jpg is None:
         snap = _latest_snapshot()
         jpg = open(snap, "rb").read() if snap else None
-    if jpg is None:
-        print(f"\n[{tag}] no frame available")
+    return base64.b64encode(jpg).decode("ascii") if jpg is not None else None
+
+
+def _stillness_slot(pid, acct, cams, *, motion: bool, tag: str) -> int:
+    """Replay one full 75-minute stillness slot as a rapid burst, exactly as the
+    live StillnessRule emits it: WINDOW minutes quiet, then COUNT snapshots (one
+    per minute). Each snapshot's label timestamp advances by the real burst
+    interval so the annotations read minute-by-minute, even though we fire them
+    back-to-back.
+
+      motion=True  -> NO-MOTION slot: snapshot 1 also fires the CRITICAL
+                      no_motion alert, and every snapshot in the slot links to
+                      that alertId.
+      motion=False -> NO-TRANSITION slot: snapshot-only burst, no alert.
+    """
+    if not cams:
+        print(f"\n[{tag}] no cameras registered")
         return 1
-    b64 = base64.b64encode(jpg).decode("ascii")
-    print(f"\n[{tag}] {alert_type} alert + snapshot")
-    print("    label:", label)
-    try:
-        print("    saveAlert  ->", save_alert(pid, alert_type, label), "  ✓")
-        print("    saveSnapshot ->",
-              save_snapshot(pid, b64, label, room_to_enum(cam.room_name)), "  ✓")
-    except CeravisApiError as exc:
-        print("    ERROR:", exc)
+    cam = _pick_camera(cams)
+    room = room_to_enum(cam.room_name)
+    b64 = _frame_for(cam)
+    if b64 is None:
+        print(f"\n[{tag}] no frame available (service running? camera up?)")
         return 1
+
+    count = settings.stillness_burst_count
+    interval = settings.stillness_burst_interval_secs
+    window_min = int(settings.stillness_window_secs // 60)
+    base = datetime.now(timezone.utc)          # the moment the quiet window elapsed
+    kind = "NO-MOTION" if motion else "NO-TRANSITION"
+    print(f"\n[{tag}] replay {kind} slot on {cam.camera_id} ({cam.room_name}) — "
+          f"{window_min} min quiet, then {count} snaps (1 / {interval:.0f}s)")
+
+    alert_id = None
+    for n in range(1, count + 1):
+        when = base + timedelta(seconds=(n - 1) * interval)
+        if motion:
+            head = "CRITICAL · No movement" if n == 1 else f"No movement {n}/{count} min"
+        else:
+            head = f"No transition {n}/{count} min"
+        label = _label(acct, cam, head, when)
+        try:
+            if motion and n == 1:                       # slot opens with the alert
+                resp = save_alert(pid, "NO_MOTION", label)
+                alert_id = alert_id_of(resp)
+                print(f"    [{n:2d}/{count}] saveAlert -> {resp}  alertId={alert_id}  ✓")
+            save_snapshot(pid, b64, label, room, alert_id=alert_id)
+            clock = when.strftime("%I:%M %p").lstrip("0")
+            print(f"    [{n:2d}/{count}] saveSnapshot @ {clock}  alertId={alert_id}  ✓")
+        except CeravisApiError as exc:
+            print("    ERROR:", exc)
+            return 1
     return 0
 
 
@@ -286,20 +326,17 @@ def main() -> int:
         cam = _pick_camera(cams)                 # the recipient's camera, not cams[0]
         label = _fall_label(acct, cam)
         room = room_to_enum(cam.room_name)
-        jpg = _live_jpeg(cam.camera_id)
-        if jpg is None:
-            snap = _latest_snapshot()
-            jpg = open(snap, "rb").read() if snap else None
-        if jpg is None:
+        b64 = _frame_for(cam)
+        if b64 is None:
             print("\n[6] no frame available (service running? camera up?)")
             return 1
-        b64 = base64.b64encode(jpg).decode("ascii")
         print(f"\n[6] simulating FALL on {cam.camera_id} ({cam.room_name})")
         print("    label:", label)
         try:
             a = save_alert(pid, "FALL", label)
-            print("    saveAlert  ->", a, "  ✓")
-            s = save_snapshot(pid, b64, label, room)
+            alert_id = alert_id_of(a)
+            print("    saveAlert  ->", a, f"  alertId={alert_id}  ✓")
+            s = save_snapshot(pid, b64, label, room, alert_id=alert_id)
             print("    saveSnapshot ->", s, "  ✓")
         except CeravisApiError as exc:
             print("    ERROR:", exc)
@@ -311,18 +348,17 @@ def main() -> int:
             print("\n[7] no verified account"); return 1
         if _snap_only(pid, acct, cams, "Sitting → Standing", "7 transition"):
             return 1
-    # [8] no-transition burst — snapshot only, NO alert
+    # [8] no-transition — replay the full snapshot-only burst, NO alert
     if "--no-transition" in sys.argv:
         if not pid:
             print("\n[8] no verified account"); return 1
-        if _snap_only(pid, acct, cams, "No transition 1/15 min", "8 no-transition"):
+        if _stillness_slot(pid, acct, cams, motion=False, tag="8 no-transition"):
             return 1
-    # [9] no-motion — CRITICAL alert + snapshot (the 60-min emergency)
+    # [9] no-motion — replay the full slot: CRITICAL alert + its linked burst
     if "--no-motion" in sys.argv:
         if not pid:
             print("\n[9] no verified account"); return 1
-        if _alert_snap(pid, acct, cams, "CRITICAL · No movement", "NO_MOTION",
-                       "9 no-motion"):
+        if _stillness_slot(pid, acct, cams, motion=True, tag="9 no-motion"):
             return 1
     return 0
 
