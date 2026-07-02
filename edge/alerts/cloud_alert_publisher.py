@@ -26,7 +26,8 @@ from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
 from events.event_bus import EventBus
 from integration.ceravis_api import (
-    CeravisApiError, is_configured, room_to_enum, save_alert, save_snapshot,
+    CeravisApiError, alert_id_of, is_configured, room_to_enum, save_alert,
+    save_snapshot,
 )
 from cloud.cloud_switch import switch
 from cloud import local_outbox
@@ -56,6 +57,10 @@ class CloudAlertPublisher:
         self._running = False
         self._thread: threading.Thread | None = None
         self._warned_no_account = False
+        # recipient_id -> alertId of that recipient's current no_motion slot, so
+        # the follow-up no_motion_snapshot burst (fired minute-by-minute over the
+        # rest of the slot) links back to the alert that opened it.
+        self._slot_alert_id: dict = {}
 
     def start(self) -> None:
         if not is_configured():
@@ -102,16 +107,23 @@ class CloudAlertPublisher:
             if not switch.is_on():
                 self._to_outbox(pid, event, message, is_alert)
                 continue
+            alert_id = None
             if is_alert:
                 try:
-                    save_alert(pid, etype.upper(), message)
+                    resp = save_alert(pid, etype.upper(), message)
+                    alert_id = alert_id_of(resp)
+                    if etype == "no_motion" and event.recipient_id:
+                        self._slot_alert_id[event.recipient_id] = alert_id
                 except CeravisApiError as exc:
                     logger.warning("saveAlert failed (%s): %s", etype, exc)
                 except Exception:
                     logger.exception("saveAlert unexpected error")
+            elif etype == "no_motion_snapshot" and event.recipient_id:
+                # a follow-up snap in the no_motion slot -> reuse the slot's alertId
+                alert_id = self._slot_alert_id.get(event.recipient_id)
             # Snapshot goes with both alert and snapshot-only events (Phase B will
             # populate snapshot_paths with the first/middle/last 3-frame nest).
-            self._send_snapshots(pid, event, message)
+            self._send_snapshots(pid, event, message, alert_id)
 
     def _to_outbox(self, pid, event, text: str, is_alert: bool) -> None:
         paths = list(event.snapshot_paths or [])
@@ -124,9 +136,10 @@ class CloudAlertPublisher:
             alert_type=(event.event_type or "").upper() if is_alert else None,
             image_paths=imgs)
 
-    def _send_snapshots(self, pid, event, text: str) -> None:
-        """Base64-encode and POST each snapshot tied to this alert. One today;
-        the first/middle/last nest once Phase B fills snapshot_paths."""
+    def _send_snapshots(self, pid, event, text: str, alert_id=None) -> None:
+        """Base64-encode and POST each snapshot tied to this alert, linking it
+        to alert_id when the event has one. One today; the first/middle/last
+        nest once Phase B fills snapshot_paths."""
         paths = list(event.snapshot_paths or [])
         if not paths and event.snapshot_path:
             paths = [event.snapshot_path]
@@ -140,7 +153,7 @@ class CloudAlertPublisher:
                 continue
             label = text if n == 1 else f"{text} · frame {i + 1}/{n}"
             try:
-                save_snapshot(pid, b64, label, camera_number)
+                save_snapshot(pid, b64, label, camera_number, alert_id=alert_id)
             except CeravisApiError as exc:
                 logger.warning("saveSnapshot failed: %s", exc)
             except Exception:

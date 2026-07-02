@@ -130,11 +130,35 @@ def save_cameras(patient_user_id, cameras: list[dict]):
         return True
 
 
+def alert_id_of(response) -> int | None:
+    """Pull the created alert's id out of a saveAlert response so it can be
+    linked onto the snapshots that belong to it. Tolerant of shape: the
+    unwrapped payload may be the id itself (a bare Long) or an object carrying
+    it under alertId / alertID / id. Returns None if no id is present."""
+    def _as_long(v) -> int | None:
+        if isinstance(v, bool):          # bool is an int subclass — exclude it
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+            return int(v)
+        return None
+
+    if isinstance(response, dict):
+        for key in ("alertId", "alertID", "id"):
+            got = _as_long(response.get(key))
+            if got is not None:
+                return got
+        return None
+    return _as_long(response)
+
+
 def save_alert(patient_user_id, alert_type: str, message_text: str):
     """
     PUT /v1/ai/saveAlert — push one alert to the app server.
     Body: { patientUserId, alertType (e.g. "FALL"), messageText }.
-    Returns the server's response; raises CeravisApiError on failure.
+    Returns the server's response payload (carries the new alert's id — see
+    alert_id_of); raises CeravisApiError on failure.
     """
     if not is_configured():
         raise CeravisApiError(
@@ -160,13 +184,17 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
         return True
 
 
-def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str):
+def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str,
+                  alert_id: int | None = None):
     """
     POST /v1/ai/saveSnapshot — one snapshot tied to an alert/action.
-    Body: { patientId, base64Image, text, cameraNumber }.
+    Body: { patientId, base64Image, text, cameraNumber, alertId }.
       base64Image : the JPEG, base64-encoded (no data-URI prefix)
       text        : the same labeled line the alert carries
       cameraNumber: the room CameraName enum (KITCHEN, LIVING_ROOM, …)
+      alertId     : the id returned by saveAlert, linking this snapshot to its
+                    alert. Omitted for snapshot-only events (transitions) that
+                    have no originating alert.
     """
     if not is_configured():
         raise CeravisApiError(
@@ -174,8 +202,10 @@ def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str):
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveSnapshot"
     payload = {"patientId": patient_id, "base64Image": base64_image,
                "text": text, "cameraNumber": camera_number}
-    logger.info("saveSnapshot -> POST %s  patient=%s  cam=%s  img_b64=%d bytes",
-                url, patient_id, camera_number, len(base64_image or ""))
+    if alert_id is not None:
+        payload["alertId"] = alert_id
+    logger.info("saveSnapshot -> POST %s  patient=%s  cam=%s  alert=%s  img_b64=%d bytes",
+                url, patient_id, camera_number, alert_id, len(base64_image or ""))
     try:
         resp = requests.post(url, json=payload, headers=_headers(),
                              timeout=settings.ceravis_api_timeout_secs)
