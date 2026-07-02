@@ -19,8 +19,7 @@ def recent_events(request: Request, limit: int = 50,
 
 @router.get("/snapshot")
 def event_snapshot_by_path(path: str, request: Request):
-    """Serve a snapshot by its (sanitized) relative path — used by the live
-    alert banner, which has the path from the push and needn't wait for the DB."""
+    """Serve a snapshot by its (sanitized) relative path."""
     enricher = getattr(request.app.state, "event_enricher", None)
     if enricher is None:
         raise HTTPException(503, "events not running")
@@ -44,15 +43,4 @@ def event_snapshot(event_id: str, request: Request):
     if f is None:
         raise HTTPException(404, "snapshot file missing")
     return FileResponse(str(f), media_type="image/jpeg")
-
-
-@router.post("/{event_id}/ack")
-def ack_event(event_id: str, request: Request, body: dict | None = None):
-    """Operator acknowledges an alert (audit: who/when)."""
-    store = getattr(request.app.state, "event_store", None)
-    if store is None:
-        raise HTTPException(503, "event store not running")
-    ack_by = (body or {}).get("ack_by") if isinstance(body, dict) else None
-    store.acknowledge(event_id, ack_by)
-    return {"status": "acknowledged", "event_id": event_id}
 

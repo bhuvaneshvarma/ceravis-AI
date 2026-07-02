@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -18,7 +17,6 @@ from api.recipient_routes import router as recipient_router
 from api.metrics_routes import router as metrics_router
 from api.event_routes import router as event_router
 from api.ai_routes import router as ai_router
-from api.cloud_routes import router as cloud_router
 from api.system_routes import router as system_router
 
 
@@ -32,7 +30,7 @@ logger = logging.getLogger("ceravis")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pipeline = Pipeline()
-    pipeline.start(asyncio.get_running_loop())
+    pipeline.start()
     pipeline.attach(app.state)
     logger.info("CERAVIS edge ready")
     yield
@@ -50,7 +48,7 @@ app.add_middleware(
 )
 
 for _router in (account_router, camera_router, zone_router, recipient_router,
-                metrics_router, event_router, ai_router, cloud_router, system_router):
+                metrics_router, event_router, ai_router, system_router):
     app.include_router(_router)
 
 # Static UI (dashboard, cameras, zones) served same-origin.

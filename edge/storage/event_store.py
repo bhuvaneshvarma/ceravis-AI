@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from schemas.event import Event
 from storage.sqlite_store import SqliteStore
 
@@ -29,9 +27,6 @@ _MIGRATIONS = [
     ("severity", "TEXT"),
     ("title", "TEXT"),
     ("message", "TEXT"),
-    ("acknowledged", "INTEGER NOT NULL DEFAULT 0"),
-    ("ack_by", "TEXT"),
-    ("ack_at", "TEXT"),
 ]
 
 
@@ -59,30 +54,20 @@ class EventStore:
             """INSERT OR REPLACE INTO events
                (event_id, event_type, camera_id, room_name, zone_name,
                 recipient_id, timestamp, snapshot_path, video_path,
-                track_id, severity, title, message,
-                acknowledged, ack_by, ack_at, synced)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                track_id, severity, title, message, synced)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
             (
                 event.event_id, event.event_type, event.camera_id,
                 event.room_name, event.zone_name, event.recipient_id,
                 event.timestamp, event.snapshot_path, event.video_path,
                 event.track_id, event.severity, event.title, event.message,
-                1 if event.acknowledged else 0, event.ack_by, event.ack_at,
             ),
         )
-
-    def acknowledge(self, event_id: str, ack_by: str | None = None) -> bool:
-        now = datetime.now(timezone.utc).isoformat()
-        self._store.execute(
-            "UPDATE events SET acknowledged=1, ack_by=?, ack_at=? WHERE event_id=?",
-            (ack_by, now, event_id),
-        )
-        return True
 
     # ---- read --------------------------------------------------------
     _COLS = ("event_id", "event_type", "camera_id", "room_name", "zone_name",
              "recipient_id", "timestamp", "snapshot_path", "track_id",
-             "severity", "title", "message", "acknowledged", "synced")
+             "severity", "title", "message", "synced")
 
     def recent(self, limit: int = 50,
                camera_id: str | None = None) -> list[dict]:

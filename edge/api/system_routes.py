@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 """
-System endpoints: root redirect, health, and the live streams (WebSocket JPEG,
-HTTP MJPEG, and the alert push socket). Kept here so main.py is just app wiring.
+System endpoints: root redirect, health, and the live camera streams (WebSocket
+JPEG, HTTP MJPEG). Kept here so main.py is just app wiring.
 """
 
 import re
@@ -66,22 +66,3 @@ async def mjpeg_stream(label: str, request: Request):
     return StreamingResponse(
         mjpeg_camera(frame_buffer, _resolve_camera(label)),
         media_type="multipart/x-mixed-replace; boundary=frame")
-
-
-@router.websocket("/alerts/stream")
-async def websocket_alerts(websocket: WebSocket):
-    """Real-time push of enriched events/alerts to the monitor console."""
-    await websocket.accept()
-    bc = getattr(websocket.app.state, "alert_broadcaster", None)
-    if bc is None:
-        await websocket.close()
-        return
-    q = await bc.register()
-    try:
-        while True:
-            payload = await q.get()
-            await websocket.send_json(payload)
-    except Exception:
-        pass
-    finally:
-        await bc.unregister(q)

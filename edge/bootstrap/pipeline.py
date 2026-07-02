@@ -53,7 +53,7 @@ def lan_urls(port: int = 8000) -> list[str]:
 
 
 class Pipeline:
-    """Owns the whole runtime graph. `start(loop)` builds + starts everything,
+    """Owns the whole runtime graph. `start()` builds + starts everything,
     `attach(state)` publishes the shared objects to app.state, `stop()` tears it
     down in reverse dependency order."""
 
@@ -65,7 +65,7 @@ class Pipeline:
         self._sqlite_store = None
 
     # ---- lifecycle ---------------------------------------------------
-    def start(self, loop) -> None:
+    def start(self) -> None:
         # ---- ingestion ---------------------------------------------
         camera_manager = CameraManager()
         camera_manager.start_all()
@@ -159,16 +159,6 @@ class Pipeline:
         event_writer = EventWriter(event_bus, event_store)
         event_writer.start()
 
-        # Real-time alert push to the monitor (subscribe before rules publish).
-        alert_broadcaster = None
-        try:
-            from alerts.alert_broadcaster import AlertBroadcaster
-            alert_broadcaster = AlertBroadcaster(event_bus)
-            alert_broadcaster.bind_loop(loop)
-            alert_broadcaster.start()
-        except Exception:
-            logger.exception("AlertBroadcaster disabled")
-
         # ---- rules (posture-aware) ---------------------------------
         rule_engine = None
         event_enricher = None
@@ -211,13 +201,12 @@ class Pipeline:
             "event_bus": event_bus,
             "event_store": event_store,
             "event_enricher": event_enricher,
-            "alert_broadcaster": alert_broadcaster,
             "metrics_registry": metrics_registry,
             "system_monitor": system_monitor,
         }
         # stopped in this order on shutdown (reverse of dependency)
         self._shutdown = [
-            cloud_alert_publisher, alert_broadcaster, rule_engine, event_writer,
+            cloud_alert_publisher, rule_engine, event_writer,
             enroll_worker, reid_runner, pose_runner, tracking_runner, detection_runner,
         ]
 

@@ -29,8 +29,6 @@ from integration.ceravis_api import (
     CeravisApiError, alert_id_of, is_configured, room_to_enum, save_alert,
     save_snapshot,
 )
-from cloud.cloud_switch import switch
-from cloud import local_outbox
 
 
 logger = logging.getLogger("alerts")
@@ -102,11 +100,6 @@ class CloudAlertPublisher:
                     self._warned_no_account = True
                 continue
             message = self._format(event)
-            # Switch OFF -> write the would-be payload to data/cloud_outbox/,
-            # nothing hits the API (local testing without flooding DB/S3).
-            if not switch.is_on():
-                self._to_outbox(pid, event, message, is_alert)
-                continue
             alert_id = None
             if is_alert:
                 try:
@@ -124,17 +117,6 @@ class CloudAlertPublisher:
             # Snapshot goes with both alert and snapshot-only events (Phase B will
             # populate snapshot_paths with the first/middle/last 3-frame nest).
             self._send_snapshots(pid, event, message, alert_id)
-
-    def _to_outbox(self, pid, event, text: str, is_alert: bool) -> None:
-        paths = list(event.snapshot_paths or [])
-        if not paths and event.snapshot_path:
-            paths = [event.snapshot_path]
-        imgs = [p for p in (self._abs(r) for r in paths) if p]
-        local_outbox.write(
-            "alert" if is_alert else "snapshot", patient_id=pid, text=text,
-            camera_number=room_to_enum(event.room_name),
-            alert_type=(event.event_type or "").upper() if is_alert else None,
-            image_paths=imgs)
 
     def _send_snapshots(self, pid, event, text: str, alert_id=None) -> None:
         """Base64-encode and POST each snapshot tied to this alert, linking it

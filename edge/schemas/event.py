@@ -36,8 +36,3 @@ class Event(BaseModel):
     severity: str | None = None         # critical | warning | info
     title: str | None = None
     message: str | None = None
-
-    # Operator acknowledgement (audit).
-    acknowledged: bool = False
-    ack_by: str | None = None
-    ack_at: str | None = None

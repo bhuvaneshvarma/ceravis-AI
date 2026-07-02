@@ -36,10 +36,6 @@ edge/data/cameras.json
 .DS_Store
 Thumbs.db
 
-# Cloud switch runtime state (device-local)
-edge/data/cloud_mode.json
-edge/data/cloud_outbox/
-
 # Local-only (never commit): user report, root memory index, stray root data
 /CERAVIS_System_Status_Report.xlsx
 /MEMORY.md
