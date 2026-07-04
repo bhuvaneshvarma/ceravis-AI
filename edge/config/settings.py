@@ -61,6 +61,18 @@ class Settings(BaseSettings):
     record_retention_days: int = 7         # MediaMTX auto-deletes older segments
     record_post_roll_secs: float = 10.0    # keep recording this long after the last person
     record_poll_secs: float = 0.5          # detection-buffer poll cadence
+    # Recording standardization target (RECORDING ONLY — the main stream that
+    # feeds the AI and the WebRTC/HLS live links is NEVER modified). Discovery
+    # sets the camera's SECOND ONVIF profile to <= this height when supported;
+    # cameras without a usable second profile record their main stream as-is.
+    record_target_height: int = 1080
+
+    # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
+    onvif_discovery_secs: float = 3.0      # WS-Discovery listen window
+
+    # ---- Hotspot (Jetson as WiFi AP for the household cameras) --------
+    hotspot_interface: str = ""            # "" = auto-pick the first wifi device
+    hotspot_connection_name: str = "ceravis-hotspot"
 
     # Live WebSocket stream only — does NOT change what the AI engines see.
     stream_jpeg_quality: int = 70

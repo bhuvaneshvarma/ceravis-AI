@@ -25,6 +25,7 @@ stage() { echo; echo "============ [$1] $2 ============"; }
 stage "1/4" "dependencies"
 bash "$SCRIPTS_DIR/install_native.sh"
 bash "$SCRIPTS_DIR/install_mediamtx.sh"
+bash "$SCRIPTS_DIR/install_hotspot.sh"
 
 # ---- [2/4] engines -------------------------------------------------
 stage "2/4" "TensorRT engines (YOLO26m detect + pose)"

@@ -39,6 +39,14 @@ def path_name(camera_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_\-]+", "-", (camera_id or "").strip()) or "cam"
 
 
+def record_path_name(camera) -> str:
+    """The path that gets RECORDED for this camera: the dedicated -rec path
+    (the camera's second ONVIF profile, standardized to ~1080p) when one is
+    configured, else the main path (native quality, remuxed as-is)."""
+    base = path_name(camera.camera_id)
+    return f"{base}-rec" if getattr(camera, "record_rtsp_url", None) else base
+
+
 # ---- URLs handed to consumers ---------------------------------------
 
 def local_rtsp_url(camera_id: str) -> str:
@@ -83,9 +91,7 @@ def _path_config(source_url: str) -> dict:
     }
 
 
-def sync_path(camera_id: str, source_url: str) -> None:
-    """Create or update the MediaMTX path for one camera (idempotent)."""
-    name = path_name(camera_id)
+def _sync_named_path(name: str, source_url: str) -> None:
     cfg = _path_config(source_url)
     try:
         r = requests.post(_api(f"/config/paths/add/{name}"), json=cfg,
@@ -100,8 +106,7 @@ def sync_path(camera_id: str, source_url: str) -> None:
     logger.info("MediaMTX path synced: %s <- %s", name, source_url)
 
 
-def remove_path(camera_id: str) -> None:
-    name = path_name(camera_id)
+def _remove_named_path(name: str) -> None:
     try:
         r = requests.delete(_api(f"/config/paths/delete/{name}"), timeout=_TIMEOUT)
         if not r.ok and r.status_code != 404:
@@ -111,16 +116,39 @@ def remove_path(camera_id: str) -> None:
     logger.info("MediaMTX path removed: %s", name)
 
 
-def set_record(camera_id: str, on: bool) -> None:
-    """Toggle disk recording for one camera's path at runtime."""
-    name = path_name(camera_id)
+def sync_camera(camera) -> None:
+    """Mirror one camera into MediaMTX: main path always; a -rec path when a
+    dedicated recording stream is configured (removed again if it no longer is)."""
+    base = path_name(camera.camera_id)
+    _sync_named_path(base, camera.rtsp_url)
+    rec = getattr(camera, "record_rtsp_url", None)
+    if rec:
+        _sync_named_path(f"{base}-rec", rec)
+    else:
+        try:
+            _remove_named_path(f"{base}-rec")
+        except MediaMTXError:
+            pass                                 # never existed — fine
+
+
+def remove_camera(camera_id: str) -> None:
+    base = path_name(camera_id)
+    _remove_named_path(base)
     try:
-        r = requests.patch(_api(f"/config/paths/patch/{name}"),
+        _remove_named_path(f"{base}-rec")
+    except MediaMTXError:
+        pass
+
+
+def set_record(path: str, on: bool) -> None:
+    """Toggle disk recording for one MediaMTX path at runtime."""
+    try:
+        r = requests.patch(_api(f"/config/paths/patch/{path}"),
                            json={"record": bool(on)}, timeout=_TIMEOUT)
         if not r.ok:
-            raise MediaMTXError(f"record {name}: HTTP {r.status_code} {r.text[:200]}")
+            raise MediaMTXError(f"record {path}: HTTP {r.status_code} {r.text[:200]}")
     except requests.RequestException as exc:
-        raise MediaMTXError(f"record {name}: {exc}") from exc
+        raise MediaMTXError(f"record {path}: {exc}") from exc
 
 
 def path_info(camera_id: str) -> dict | None:
@@ -150,11 +178,11 @@ def _playback(path: str) -> str:
     return f"http://127.0.0.1:{settings.mediamtx_playback_port}{path}"
 
 
-def list_recordings(camera_id: str) -> list[dict]:
-    """Recorded time-ranges for one camera: [{start, duration}, ...]."""
+def list_recordings(path: str) -> list[dict]:
+    """Recorded time-ranges for one path: [{start, duration}, ...]."""
     try:
-        r = requests.get(_playback("/list"),
-                         params={"path": path_name(camera_id)}, timeout=_TIMEOUT)
+        r = requests.get(_playback("/list"), params={"path": path},
+                         timeout=_TIMEOUT)
         if r.status_code == 404:
             return []
         if not r.ok:
@@ -164,13 +192,13 @@ def list_recordings(camera_id: str) -> list[dict]:
         raise MediaMTXError(f"list recordings: {exc}") from exc
 
 
-def open_clip(camera_id: str, start: str, duration: float):
+def open_clip(path: str, start: str, duration: float):
     """Stream a recorded slice as MP4. Returns the live requests.Response
     (stream=True) — the API layer forwards its chunks to the client."""
     try:
         r = requests.get(
             _playback("/get"),
-            params={"path": path_name(camera_id), "start": start,
+            params={"path": path, "start": start,
                     "duration": duration, "format": "mp4"},
             stream=True, timeout=_TIMEOUT)
         if not r.ok:

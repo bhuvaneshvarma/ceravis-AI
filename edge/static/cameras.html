@@ -96,6 +96,16 @@
       </select>
       <img id="preview" class="preview" alt="select a camera to preview" />
       <div id="preview-meta" class="note"></div>
+      <div id="ptz-pad" class="row" hidden
+           style="margin-top:10px;gap:6px;flex-wrap:wrap">
+        <button class="ghost ptz" data-ptz="0,0.6,0"  title="tilt up">▲</button>
+        <button class="ghost ptz" data-ptz="0,-0.6,0" title="tilt down">▼</button>
+        <button class="ghost ptz" data-ptz="-0.6,0,0" title="pan left">◀</button>
+        <button class="ghost ptz" data-ptz="0.6,0,0"  title="pan right">▶</button>
+        <button class="ghost ptz" data-ptz="0,0,0.5"  title="zoom in">＋</button>
+        <button class="ghost ptz" data-ptz="0,0,-0.5" title="zoom out">－</button>
+        <span class="note" style="align-self:center">hold to move</span>
+      </div>
     </div>
   </div>
 
@@ -126,6 +136,7 @@ async function loadCameras() {
     api('/api/v1/cameras'),
     api('/api/v1/cameras/status').catch(() => ({})),
   ]);
+  CAMS = cams;
 
   const tbody = $('cam-table-body');
   tbody.innerHTML = cams.length === 0
@@ -211,7 +222,22 @@ $('btn-clear').onclick = () => {
 };
 
 // Live preview via the existing /stream/{camera_id} websocket
-$('preview-select').onchange = (e) => connectPreview(e.target.value);
+let CAMS = [];                    // refreshed by loadCameras for the PTZ pad
+$('preview-select').onchange = (e) => {
+  connectPreview(e.target.value);
+  const cam = CAMS.find(c => c.camera_id === e.target.value);
+  $('ptz-pad').hidden = !(cam && cam.ptz_supported);
+};
+
+// PTZ: move while the button is held, stop on release (ONVIF ContinuousMove).
+const ptzSend = (body) => api(
+  `/api/v1/cameras/${$('preview-select').value}/ptz`,
+  { method: 'POST', body: JSON.stringify(body) }).catch(() => {});
+document.querySelectorAll('.ptz').forEach(btn => {
+  const [pan, tilt, zoom] = btn.dataset.ptz.split(',').map(Number);
+  btn.onpointerdown = () => ptzSend({ pan, tilt, zoom });
+  btn.onpointerup = btn.onpointerleave = () => ptzSend({ action: 'stop' });
+});
 
 function connectPreview(camera_id) {
   if (previewSocket) { try { previewSocket.close(); } catch(_){} previewSocket = null; }

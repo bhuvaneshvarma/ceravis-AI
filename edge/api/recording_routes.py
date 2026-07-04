@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from configuration.camera_config import CameraConfig
 from media import mediamtx_client
-from media.mediamtx_client import MediaMTXError
+from media.mediamtx_client import MediaMTXError, record_path_name
 
 
 router = APIRouter(prefix="/api/v1/recordings", tags=["Recordings"])
@@ -29,7 +29,8 @@ def all_recordings():
     out = {}
     for cam in CameraConfig().get_all():
         try:
-            out[cam.camera_id] = mediamtx_client.list_recordings(cam.camera_id)
+            out[cam.camera_id] = mediamtx_client.list_recordings(
+                record_path_name(cam))
         except MediaMTXError:
             out[cam.camera_id] = []
     return out
@@ -37,10 +38,11 @@ def all_recordings():
 
 @router.get("/{camera_id}")
 def camera_recordings(camera_id: str):
-    if CameraConfig().get_by_id(camera_id) is None:
+    cam = CameraConfig().get_by_id(camera_id)
+    if cam is None:
         raise HTTPException(404, "Camera not found")
     try:
-        return mediamtx_client.list_recordings(camera_id)
+        return mediamtx_client.list_recordings(record_path_name(cam))
     except MediaMTXError as exc:
         raise HTTPException(503, f"recordings unavailable: {exc}")
 
@@ -48,10 +50,11 @@ def camera_recordings(camera_id: str):
 @router.get("/{camera_id}/clip")
 def recording_clip(camera_id: str, start: str, duration: float = 15.0):
     """One recorded slice as a standard MP4 (starts at `start`, ISO8601 UTC)."""
-    if CameraConfig().get_by_id(camera_id) is None:
+    cam = CameraConfig().get_by_id(camera_id)
+    if cam is None:
         raise HTTPException(404, "Camera not found")
     try:
-        upstream = mediamtx_client.open_clip(camera_id, start, duration)
+        upstream = mediamtx_client.open_clip(record_path_name(cam), start, duration)
     except MediaMTXError as exc:
         raise HTTPException(404, f"clip unavailable: {exc}")
     return StreamingResponse(

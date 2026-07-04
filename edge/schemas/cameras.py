@@ -11,6 +11,20 @@ class Camera(BaseModel):
     # transport are auto-detected — no per-camera tuning fields.
     rtsp_url: str
 
+    # Recording-only stream: the camera's SECOND ONVIF profile, standardized
+    # to ~1080p by discovery when the camera supports it. None = record the
+    # main stream as-is. The main stream itself is NEVER modified — AI and the
+    # WebRTC/HLS live links always get the camera's raw native quality.
+    record_rtsp_url: str | None = None
+
+    # ONVIF control endpoint + credentials (filled by discovery; cameras.json
+    # is gitignored). Enables PTZ and future re-probing/2-way audio.
+    onvif_xaddr: str | None = None
+    onvif_username: str | None = None
+    onvif_password: str | None = None
+    onvif_profile_token: str | None = None     # main profile (PTZ target)
+    ptz_supported: bool = False
+
     is_enabled: bool = True
 
     # Care-monitoring labeling (per the spec): cameras are numbered 1-4 and a

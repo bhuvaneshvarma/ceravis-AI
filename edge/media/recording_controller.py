@@ -22,9 +22,10 @@ import time
 from datetime import datetime, timezone
 
 from config.settings import settings
+from configuration.camera_config import CameraConfig
 from detection.detection_buffer import DetectionBuffer
 from media import mediamtx_client
-from media.mediamtx_client import MediaMTXError
+from media.mediamtx_client import MediaMTXError, record_path_name
 
 
 logger = logging.getLogger("media")
@@ -36,6 +37,7 @@ _FRESH_SECS = 3.0
 class RecordingController:
     def __init__(self, detections: DetectionBuffer) -> None:
         self._detections = detections
+        self._cameras = CameraConfig()
         self._running = False
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
@@ -87,11 +89,16 @@ class RecordingController:
                 self._set(cam, want)
 
     def _set(self, camera_id: str, on: bool) -> None:
+        # Record the camera's dedicated -rec path (standardized second ONVIF
+        # profile) when it has one; otherwise its main path, native quality.
+        cam = self._cameras.get_by_id(camera_id)
+        path = record_path_name(cam) if cam else camera_id
         try:
-            mediamtx_client.set_record(camera_id, on)
+            mediamtx_client.set_record(path, on)
         except MediaMTXError as exc:
             logger.warning("record %s %s failed: %s",
                            "start" if on else "stop", camera_id, exc)
             return
         self._recording[camera_id] = on
-        logger.info("recording %s: %s", "started" if on else "stopped", camera_id)
+        logger.info("recording %s: %s (path %s)",
+                    "started" if on else "stopped", camera_id, path)

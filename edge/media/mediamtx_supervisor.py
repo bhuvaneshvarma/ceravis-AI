@@ -177,6 +177,15 @@ class MediaMTXSupervisor:
                     "    sourceOnDemand: no",
                     "    record: no",         # flipped at runtime on person detection
                 ]
+                # Dedicated recording stream (second ONVIF profile @ ~1080p).
+                # The main path above stays untouched at native quality.
+                if getattr(cam, "record_rtsp_url", None):
+                    lines += [
+                        f"  {path_name(cam.camera_id)}-rec:",
+                        f"    source: {cam.record_rtsp_url}",
+                        "    sourceOnDemand: no",
+                        "    record: no",
+                    ]
         self._config_file.parent.mkdir(parents=True, exist_ok=True)
         self._config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         logger.info("MediaMTX config written (%d camera path(s), tls=%s)",

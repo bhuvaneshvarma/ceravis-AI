@@ -97,6 +97,32 @@
   <section id="step-3" hidden>
     <div class="split">
       <div class="card">
+        <h2>Find cameras <span class="faint">(WiFi / ONVIF)</span></h2>
+        <div class="hint mb">Scans this network — including cameras joined to the
+          device hotspot — and fills the form below automatically. Manual RTSP
+          entry always works too.</div>
+        <div class="row">
+          <button class="btn btn-ghost" id="d-scan">Scan network</button>
+          <span class="probe-result" id="d-scan-out"></span>
+        </div>
+        <div id="d-list" class="mt"></div>
+        <div id="d-creds" class="mt" hidden>
+          <div class="grid-2">
+            <div>
+              <label class="f">Camera username</label>
+              <input type="text" id="d-user" placeholder="admin" />
+            </div>
+            <div>
+              <label class="f">Camera password</label>
+              <input type="password" id="d-pass" />
+            </div>
+          </div>
+          <div class="row mt">
+            <button class="btn btn-ghost" id="d-probe">Connect &amp; fill form</button>
+            <span class="probe-result" id="d-probe-out"></span>
+          </div>
+        </div>
+        <hr class="sep" />
         <h2>Add a camera</h2>
         <label class="f">RTSP stream URL</label>
         <input type="text" id="c-url" placeholder="rtsp://user:pass@192.168.x.x:554/stream1" />
@@ -457,6 +483,70 @@ async function refreshCameras() {
   });
 }
 
+/* ---- ONVIF discovery (WiFi cameras on the LAN / device hotspot) ---- */
+const DISC = { cams: [], sel: null, probed: null };
+
+document.getElementById("d-scan").onclick = async () => {
+  const out = document.getElementById("d-scan-out");
+  out.innerHTML = `<span class="muted">Scanning (~3 s)…</span>`;
+  document.getElementById("d-list").innerHTML = "";
+  document.getElementById("d-creds").hidden = true;
+  DISC.sel = DISC.probed = null;
+  try {
+    const r = await api("/api/v1/discovery/scan");
+    DISC.cams = r.cameras || [];
+    out.innerHTML = DISC.cams.length
+      ? `<span class="ok">✓ ${DISC.cams.length} camera(s) found</span>`
+      : `<span class="warn">No ONVIF cameras answered.</span>`;
+    document.getElementById("d-list").innerHTML = DISC.cams.map((c, i) => `
+      <label style="display:flex;gap:8px;align-items:center;padding:6px 2px;
+                    font-size:13px;cursor:pointer">
+        <input type="radio" name="d-cam" value="${i}" style="width:auto">
+        <b>${c.name || c.hardware || "camera"}</b>
+        <span class="faint">${c.ip}${c.hardware ? " · " + c.hardware : ""}</span>
+      </label>`).join("");
+    document.querySelectorAll('input[name="d-cam"]').forEach(el => {
+      el.onchange = () => {
+        DISC.sel = DISC.cams[parseInt(el.value, 10)];
+        DISC.probed = null;
+        document.getElementById("d-creds").hidden = false;
+        document.getElementById("d-probe-out").textContent = "";
+      };
+    });
+  } catch (e) { out.innerHTML = `<span class="bad">✗ scan failed</span>`; }
+};
+
+document.getElementById("d-probe").onclick = async () => {
+  const out = document.getElementById("d-probe-out");
+  if (!DISC.sel) return;
+  out.innerHTML = `<span class="muted">Connecting…</span>`;
+  try {
+    const r = await api("/api/v1/discovery/probe", {
+      method: "POST",
+      body: JSON.stringify({
+        xaddr: DISC.sel.xaddr,
+        username: document.getElementById("d-user").value.trim(),
+        password: document.getElementById("d-pass").value,
+      }),
+    });
+    DISC.probed = r;
+    const main = r.profiles && r.profiles[0];
+    const rec = r.record_uri ? "dedicated rec stream ✓" : "rec = main stream";
+    out.innerHTML = `<span class="ok">✓ ${r.device.manufacturer || ""} ${r.device.model || ""}
+      — ${main ? main.width + "×" + main.height : "?"} · ${rec}${r.ptz ? " · PTZ ✓" : ""}</span>`;
+    // Fill the manual form — the operator only names it and picks the room.
+    document.getElementById("c-url").value = r.main_uri;
+    const slug = (r.device.model || DISC.sel.name || "cam")
+      .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!document.getElementById("c-id").value)
+      document.getElementById("c-id").value = `cam_${slug}`.slice(0, 24);
+    if (!document.getElementById("c-name").value && (DISC.sel.name || r.device.model))
+      document.getElementById("c-name").value = DISC.sel.name || r.device.model;
+  } catch (e) {
+    out.innerHTML = `<span class="bad">✗ ${e.detail || "connection failed (credentials?)"}</span>`;
+  }
+};
+
 document.getElementById("c-probe").onclick = async () => {
   const out = document.getElementById("c-probe-out");
   const url = document.getElementById("c-url").value.trim();
@@ -483,6 +573,16 @@ document.getElementById("c-save").onclick = async () => {
     is_main_egress: document.getElementById("c-egress").checked,
     is_enabled: true,
   };
+  // Discovered camera: carry the ONVIF details (dedicated ~1080p recording
+  // stream, PTZ endpoint + credentials) — only if the URL is still the probed one.
+  if (DISC.probed && cam.rtsp_url === DISC.probed.main_uri) {
+    cam.record_rtsp_url = DISC.probed.record_uri || null;
+    cam.onvif_xaddr = DISC.sel ? DISC.sel.xaddr : null;
+    cam.onvif_username = document.getElementById("d-user").value.trim() || null;
+    cam.onvif_password = document.getElementById("d-pass").value || null;
+    cam.onvif_profile_token = DISC.probed.main_profile_token || null;
+    cam.ptz_supported = !!DISC.probed.ptz;
+  }
   if (!cam.camera_id || !cam.rtsp_url || !cam.room_name)
     return toast("Camera ID, room and RTSP URL are required", "err");
   try {
@@ -493,6 +593,9 @@ document.getElementById("c-save").onclick = async () => {
     document.getElementById("c-bath").checked = false;
     document.getElementById("c-egress").checked = false;
     document.getElementById("c-probe-out").textContent = "";
+    DISC.probed = DISC.sel = null;                 // consumed by this save
+    document.getElementById("d-creds").hidden = true;
+    document.getElementById("d-probe-out").textContent = "";
     refreshCameras();
   } catch (e) { toast(e.detail || "Save failed", "err"); }
 };

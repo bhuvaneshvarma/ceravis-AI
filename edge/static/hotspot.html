@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CERAVIS — Hotspot</title>
+<link rel="stylesheet" href="ceravis.css" />
+<style>
+  .hs-wrap { max-width: 560px; }
+  .hs-state { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .client-row { display: flex; gap: 12px; padding: 7px 2px; font-size: 13px;
+                border-bottom: 1px solid var(--line); }
+  .client-row code { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <h1>Device hotspot</h1>
+    <div class="sub">The edge device broadcasts its own WiFi network — connect every
+      household camera to it, then add them on the Setup page with one scan.</div>
+  </div>
+
+  <div class="hs-wrap">
+    <div class="card">
+      <div class="hs-state">
+        <span class="pill pill-mute" id="hs-pill">…</span>
+        <span class="faint" id="hs-info"></span>
+      </div>
+      <label class="f">Network name (SSID)</label>
+      <input type="text" id="hs-ssid" placeholder="CERAVIS-HOME" />
+      <label class="f">Password <span class="faint">(min 8 characters, WPA2)</span></label>
+      <input type="password" id="hs-pass" placeholder="••••••••" />
+      <div class="row mt">
+        <button class="btn btn-primary" id="hs-start">Start hotspot</button>
+        <button class="btn btn-ghost" id="hs-stop">Stop</button>
+        <span class="probe-result" id="hs-out"></span>
+      </div>
+      <div class="hint">Starting replaces any previous hotspot settings. Cameras
+        keep their connection when you re-start with the same SSID and password.</div>
+    </div>
+
+    <div class="card mt">
+      <h2>Connected devices</h2>
+      <div id="hs-clients" class="faint" style="font-size:13px">—</div>
+    </div>
+  </div>
+</div>
+
+<script src="ceravis.js"></script>
+<script>
+renderNav("hotspot.html");
+
+async function refresh() {
+  let s;
+  try { s = await api("/api/v1/network/hotspot"); } catch { return; }
+  const pill = document.getElementById("hs-pill");
+  const info = document.getElementById("hs-info");
+  if (!s.supported) {
+    pill.className = "pill pill-warn"; pill.textContent = "NO WIFI ADAPTER";
+    info.textContent = s.reason || "";
+    document.getElementById("hs-start").disabled = true;
+    return;
+  }
+  pill.className = s.active ? "pill pill-ok" : "pill pill-mute";
+  pill.textContent = s.active ? "BROADCASTING" : "OFF";
+  info.textContent = (s.ssid ? `SSID “${s.ssid}” · ` : "") + `adapter ${s.device}`;
+  if (s.ssid && !document.getElementById("hs-ssid").value)
+    document.getElementById("hs-ssid").value = s.ssid;
+
+  const list = document.getElementById("hs-clients");
+  list.innerHTML = (s.clients || []).length === 0
+    ? (s.active ? "No devices connected yet." : "Hotspot is off.")
+    : s.clients.map(c => `<div class="client-row">
+        <b>${c.hostname || "device"}</b>
+        <span>${c.ip || ""}</span><code>${c.mac}</code></div>`).join("");
+}
+
+document.getElementById("hs-start").onclick = async () => {
+  const out = document.getElementById("hs-out");
+  out.innerHTML = `<span class="muted">Starting…</span>`;
+  try {
+    const r = await api("/api/v1/network/hotspot", {
+      method: "POST",
+      body: JSON.stringify({
+        ssid: document.getElementById("hs-ssid").value.trim(),
+        password: document.getElementById("hs-pass").value,
+      }),
+    });
+    out.innerHTML = `<span class="ok">✓ broadcasting “${r.ssid}”</span>`;
+    toast(`Hotspot “${r.ssid}” is up`);
+  } catch (e) {
+    out.innerHTML = `<span class="bad">✗ ${e.detail || "failed"}</span>`;
+  }
+  refresh();
+};
+
+document.getElementById("hs-stop").onclick = async () => {
+  try { await api("/api/v1/network/hotspot/stop", { method: "POST" }); }
+  catch (e) { toast(e.detail || "Stop failed", "err"); }
+  document.getElementById("hs-out").textContent = "";
+  refresh();
+};
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

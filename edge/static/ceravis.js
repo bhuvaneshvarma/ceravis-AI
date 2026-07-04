@@ -41,6 +41,7 @@ function renderNav(active) {
     ["dashboard.html", "Dashboard"],
     ["cameras.html",   "Cameras"],
     ["zones.html",     "Zones"],
+    ["hotspot.html",   "Hotspot"],
   ];
   const nav = links.map(([href, label]) =>
     `<a href="${href}" class="${active === href ? "active" : ""}">${label}</a>`

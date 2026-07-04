@@ -33,7 +33,7 @@ def _mtx_sync(request: Request, camera: Camera) -> None:
     if not getattr(request.app.state, "mediamtx_active", False):
         return
     try:
-        mediamtx_client.sync_path(camera.camera_id, camera.rtsp_url)
+        mediamtx_client.sync_camera(camera)
     except MediaMTXError as exc:
         logger.warning("MediaMTX path sync failed for %s: %s",
                        camera.camera_id, exc)
@@ -43,7 +43,7 @@ def _mtx_remove(request: Request, camera_id: str) -> None:
     if not getattr(request.app.state, "mediamtx_active", False):
         return
     try:
-        mediamtx_client.remove_path(camera_id)
+        mediamtx_client.remove_camera(camera_id)
     except MediaMTXError as exc:
         logger.warning("MediaMTX path remove failed for %s: %s", camera_id, exc)
 
@@ -158,6 +158,39 @@ def latest_snapshot(camera_id: str, request: Request, quality: int = 80):
     if not ok:
         raise HTTPException(500, "Encode failed")
     return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+
+@router.post("/{camera_id}/ptz")
+def ptz(camera_id: str, body: dict):
+    """
+    Pan/tilt/zoom via the camera's ONVIF service (discovered cameras only).
+    Body: { "pan": -1..1, "tilt": -1..1, "zoom": -1..1 } starts continuous
+    motion; all-zero (or "action": "stop") halts. The UI sends move on
+    button-press and stop on release.
+    """
+    cam = camera_config.get_by_id(camera_id)
+    if cam is None:
+        raise HTTPException(404, "Camera not found")
+    if not (cam.ptz_supported and cam.onvif_xaddr):
+        raise HTTPException(400, "Camera has no PTZ (or was added manually — "
+                                 "re-add it via discovery to enable PTZ)")
+    from onvif.client import OnvifCamera
+    from onvif.soap import OnvifError
+    pan = float((body or {}).get("pan", 0) or 0)
+    tilt = float((body or {}).get("tilt", 0) or 0)
+    zoom = float((body or {}).get("zoom", 0) or 0)
+    stop = (body or {}).get("action") == "stop" or not (pan or tilt or zoom)
+    onvif_cam = OnvifCamera(cam.onvif_xaddr, cam.onvif_username or "",
+                            cam.onvif_password or "")
+    token = cam.onvif_profile_token or ""
+    try:
+        if stop:
+            onvif_cam.ptz_stop(token)
+        else:
+            onvif_cam.ptz_move(token, pan, tilt, zoom)
+    except OnvifError as exc:
+        raise HTTPException(502, f"PTZ failed: {exc}")
+    return {"status": "stopped" if stop else "moving", "camera_id": camera_id}
 
 
 @router.post("/probe")
