@@ -110,29 +110,10 @@
             <input type="text" id="c-id" placeholder="cam_kitchen" />
           </div>
           <div>
-            <label class="f">Codec</label>
-            <select id="c-codec">
-              <option value="h264">H.264</option>
-              <option value="h265">H.265</option>
-            </select>
+            <label class="f">Display name</label>
+            <input type="text" id="c-name" placeholder="Kitchen Camera" />
           </div>
         </div>
-        <div class="grid-2">
-          <div>
-            <label class="f">RTSP transport</label>
-            <select id="c-transport">
-              <option value="">Auto (global default)</option>
-              <option value="udp">UDP — direct/Ethernet (lowest lag)</option>
-              <option value="tcp">TCP — WiFi (loss-resistant)</option>
-            </select>
-          </div>
-          <div>
-            <label class="f">Jitter buffer ms <span class="faint">(blank = auto)</span></label>
-            <input type="number" id="c-latency" placeholder="auto" min="0" max="2000" />
-          </div>
-        </div>
-        <label class="f">Display name</label>
-        <input type="text" id="c-name" placeholder="Kitchen Camera" />
         <label class="f">Room</label>
         <input type="text" id="c-room" placeholder="Kitchen" list="room-suggestions" />
         <datalist id="room-suggestions">
@@ -164,12 +145,9 @@
         <hr class="sep" />
         <h2>Registered cameras</h2>
         <table class="tbl"><tbody id="c-table"></tbody></table>
-        <div class="row mt">
-          <button class="btn btn-ghost" id="c-sync">Sync cameras to CERAVIS account</button>
-          <span class="probe-result" id="c-sync-out"></span>
-        </div>
-        <div class="hint">Sends each camera's room and live WebSocket URL to your
-          CERAVIS account. Runs automatically when you press Continue.</div>
+        <div class="row mt"><span class="probe-result" id="c-sync-out"></span></div>
+        <div class="hint">Pressing Continue syncs each camera's room and live
+          stream link to your CERAVIS account automatically.</div>
       </div>
 
       <div class="card">
@@ -494,15 +472,11 @@ document.getElementById("c-probe").onclick = async () => {
 };
 
 document.getElementById("c-save").onclick = async () => {
-  const lat = document.getElementById("c-latency").value;
   const cam = {
     camera_id: document.getElementById("c-id").value.trim(),
     camera_name: document.getElementById("c-name").value.trim(),
     room_name: document.getElementById("c-room").value.trim(),
     rtsp_url: document.getElementById("c-url").value.trim(),
-    codec: document.getElementById("c-codec").value,
-    transport: document.getElementById("c-transport").value || null,
-    rtsp_latency_ms: lat !== "" ? parseInt(lat, 10) : null,
     camera_number: document.getElementById("c-number").value
       ? parseInt(document.getElementById("c-number").value, 10) : null,
     has_bathroom_entrance: document.getElementById("c-bath").checked,
@@ -515,8 +489,7 @@ document.getElementById("c-save").onclick = async () => {
     await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
     await api(`/api/v1/cameras/${cam.camera_id}/start`, { method: "POST" });
     toast(`Camera ${cam.camera_id} saved & started`);
-    ["c-url","c-id","c-name","c-room","c-latency","c-number"].forEach(i => document.getElementById(i).value = "");
-    document.getElementById("c-transport").value = "";
+    ["c-url","c-id","c-name","c-room","c-number"].forEach(i => document.getElementById(i).value = "");
     document.getElementById("c-bath").checked = false;
     document.getElementById("c-egress").checked = false;
     document.getElementById("c-probe-out").textContent = "";
@@ -544,7 +517,6 @@ async function syncCameras(manual) {
     }
   } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; }
 }
-document.getElementById("c-sync").onclick = () => syncCameras(true);
 
 /* ================= STEP 4 — zones ================= */
 const Z = { cam: null, img: null, zones: [], drawing: [], sel: -1, drag: null };

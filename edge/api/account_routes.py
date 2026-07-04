@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -16,6 +15,7 @@ from integration.ceravis_api import (
     room_to_enum,
     save_cameras,
 )
+from media.mediamtx_client import webrtc_url
 
 
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
@@ -23,23 +23,17 @@ account_config = AccountConfig()
 logger = logging.getLogger("account")
 
 
-def _slug(s: str) -> str:
-    """URL-safe label, e.g. 'Kitchen Camera' -> 'kitchen-camera'."""
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
-
-
 def _stream_base(request: Request) -> str:
-    """Externally-reachable HTTP(S) base for the MJPEG camera streams handed to
-    the cloud. Prefer the configured override (point it at a TLS reverse proxy
-    for a real https link); otherwise reuse the host the browser used to reach
-    us. A ws/wss override is normalized to http/https for the MJPEG link."""
+    """Externally-reachable base for the WebRTC live links handed to the cloud.
+    Prefer the configured override (point it at a TLS reverse proxy for a
+    browser-trusted https link); otherwise the host the browser used to reach
+    us, served by MediaMTX's own HTTPS (self-signed cert)."""
     base = settings.device_stream_base.strip()
     if base:
         return (base.rstrip("/")
                 .replace("wss://", "https://").replace("ws://", "http://"))
-    scheme = "https" if request.url.scheme == "https" else "http"
-    host = request.headers.get("host") or "localhost:8000"
-    return f"{scheme}://{host}"
+    host = (request.headers.get("host") or "localhost").rsplit(":", 1)[0]
+    return f"https://{host}"
 
 
 class VerifyRequest(BaseModel):
@@ -87,8 +81,9 @@ def verify(req: VerifyRequest):
 def sync_cameras(request: Request):
     """
     Push every registered camera to the app server for the verified patient:
-    POST /v1/ai/saveCamera with patientUserId + [{ device, model, supplier,
-    room, url }]. `room` = the room label; `url` = the camera's WebSocket stream.
+    PUT /v1/ai/saveCamera with patientUserId + [{ device, model, supplier,
+    room, url }]. `url` = the camera's WebRTC HTTPS live link (MediaMTX) —
+    sub-second latency, plays natively in any modern browser.
     """
     acct = account_config.get()
     pid = acct.get("ceravisUserId")
@@ -104,9 +99,7 @@ def sync_cameras(request: Request):
         "model": "",                         # not collected on the edge
         "supplier": "",                      # not collected on the edge
         "room": room_to_enum(c.room_name),   # -> server CameraName enum
-        # Last path segment is the camera's LABEL (its display name), not the
-        # raw id — the MJPEG endpoint resolves name/room/id all the same.
-        "url": f"{base}/stream.mjpeg/{_slug(c.camera_name) or c.camera_id}",
+        "url": webrtc_url(c.camera_id, base),
     } for c in cams]
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
                 len(cameras), pid, [(c["room"], c["url"]) for c in cameras])

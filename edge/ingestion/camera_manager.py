@@ -31,15 +31,21 @@ class CameraManager:
     - Expose latest frames
 
     This is the single entrypoint into the ingestion subsystem.
+
+    `via_mediamtx=True` makes every reader pull the MediaMTX localhost
+    restream instead of the camera directly (the camera then has exactly one
+    consumer: MediaMTX).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, via_mediamtx: bool = False) -> None:
 
         self._camera_config = CameraConfig()
 
         self._frame_buffer = FrameBuffer()
 
         self._stream_registry = StreamRegistry()
+
+        self._via_mediamtx = via_mediamtx
 
     # =====================================================
     # Properties
@@ -136,8 +142,14 @@ class CameraManager:
 
             return False
 
-        try: 
-            reader = RTSPReader(camera=camera, frame_buffer=self._frame_buffer,)
+        source_url = None
+        if self._via_mediamtx:
+            from media.mediamtx_client import local_rtsp_url
+            source_url = local_rtsp_url(camera.camera_id)
+
+        try:
+            reader = RTSPReader(camera=camera, frame_buffer=self._frame_buffer,
+                                source_url=source_url)
             reader.start()
             self._stream_registry.register(camera_id, reader,)
             logger.info("Camera started: %s", camera_id,)

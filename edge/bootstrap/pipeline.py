@@ -63,11 +63,30 @@ class Pipeline:
         self._camera_manager = None
         self._system_monitor = None
         self._sqlite_store = None
+        self._mediamtx = None
 
     # ---- lifecycle ---------------------------------------------------
     def start(self) -> None:
+        # ---- media backbone (MediaMTX child process) ----------------
+        # Starts FIRST: it owns every camera connection and re-serves the
+        # compressed stream to ingestion / live view / the recorder. If the
+        # binary is missing, everything below falls back to direct reads.
+        mediamtx = None
+        via_mediamtx = False
+        try:
+            from media.mediamtx_supervisor import MediaMTXSupervisor
+            mediamtx = MediaMTXSupervisor()
+            mediamtx.start()
+            if mediamtx.available:
+                via_mediamtx = mediamtx.wait_ready()
+                if not via_mediamtx:
+                    logger.warning("MediaMTX API not ready — direct camera reads")
+        except Exception:
+            logger.exception("MediaMTX supervisor disabled")
+        self._mediamtx = mediamtx
+
         # ---- ingestion ---------------------------------------------
-        camera_manager = CameraManager()
+        camera_manager = CameraManager(via_mediamtx=via_mediamtx)
         camera_manager.start_all()
         self._camera_manager = camera_manager
         frames = camera_manager.frame_buffer
@@ -95,6 +114,16 @@ class Pipeline:
             detection_runner.start()
         except Exception:
             logger.exception("DetectionRunner failed to start")
+
+        # ---- person-triggered recording (MediaMTX fMP4 segments) ----
+        recording_controller = None
+        if via_mediamtx:
+            try:
+                from media.recording_controller import RecordingController
+                recording_controller = RecordingController(detection_buffer)
+                recording_controller.start()
+            except Exception:
+                logger.exception("RecordingController disabled")
 
         # ---- tracking (clean-room BoT-SORT + OSNet appearance) -----
         tracking_runner = None
@@ -203,10 +232,13 @@ class Pipeline:
             "event_enricher": event_enricher,
             "metrics_registry": metrics_registry,
             "system_monitor": system_monitor,
+            "mediamtx_active": via_mediamtx,
         }
-        # stopped in this order on shutdown (reverse of dependency)
+        # stopped in this order on shutdown (reverse of dependency). The
+        # recording controller goes first so open segments are closed while
+        # MediaMTX is still up; MediaMTX itself stops last (see stop()).
         self._shutdown = [
-            cloud_alert_publisher, rule_engine, event_writer,
+            recording_controller, cloud_alert_publisher, rule_engine, event_writer,
             enroll_worker, reid_runner, pose_runner, tracking_runner, detection_runner,
         ]
 
@@ -230,6 +262,8 @@ class Pipeline:
             self._system_monitor.stop()
         if self._camera_manager:
             self._camera_manager.stop_all()
+        if self._mediamtx:
+            self._mediamtx.stop()
         if self._sqlite_store:
             self._sqlite_store.close()
         logger.info("CERAVIS edge stopped")

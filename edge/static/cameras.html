@@ -78,12 +78,6 @@
       <label>Room</label>
       <input id="room_name" placeholder="Bedroom" />
 
-      <label>Codec</label>
-      <select id="codec">
-        <option value="h264" selected>H.264</option>
-        <option value="h265">H.265</option>
-      </select>
-
       <div class="row" style="margin-top:14px">
         <button id="btn-probe">Test connection</button>
         <button id="btn-save">Save camera</button>
@@ -111,7 +105,7 @@
     <table>
       <thead>
         <tr>
-          <th>ID</th><th>Name</th><th>Room</th><th>Codec</th>
+          <th>ID</th><th>Name</th><th>Room</th>
           <th>Status</th><th>FPS</th><th>Actions</th>
         </tr>
       </thead>
@@ -144,7 +138,6 @@ async function loadCameras() {
           <td><code>${c.camera_id}</code></td>
           <td>${c.camera_name}</td>
           <td>${c.room_name}</td>
-          <td>${c.codec}</td>
           <td><span class="${cls}">${state}</span></td>
           <td>${(s.current_fps || 0).toFixed(1)}</td>
           <td class="row">
@@ -197,7 +190,6 @@ $('btn-save').onclick = async () => {
     camera_name: $('camera_name').value.trim(),
     room_name: $('room_name').value.trim(),
     rtsp_url: $('rtsp_url').value.trim(),
-    codec: $('codec').value,
     is_enabled: true,
   };
   if (!camera.camera_id || !camera.rtsp_url) {

@@ -27,19 +27,22 @@ edge/
   schemas/        Domain models (Camera, Zone, Recipient, Event)
   configuration/  JSON-backed CRUD (cameras/zones/recipients/account)
   api/            FastAPI routers (incl. account = cloud proxy)
-  ingestion/      RTSP reader + frame buffer
+  ingestion/      RTSP reader (via MediaMTX localhost restream) + frame buffer
+  media/          MediaMTX supervisor (child process) + control client
+                  + person-triggered recording (15s fMP4 segments)
   detection/      YOLO TRT + buffer + runner (active-camera gated) + engine wrapper
   tracking/       clean-room BoT-SORT (kalman/matching) + buffers + runner
   pose/           YOLO-Pose TRT + posture/fall classifier + runner
   reid/           OSNet TRT + FAISS hybrid gallery + target-lock manager + runner
   rules/          Fall / posture / spatial / visit-session rule engine
   events/         In-process bus + enricher + SQLite writer
-  alerts/         broadcaster (WS) + cloud_alert_publisher (HTTPS app server)
+  alerts/         cloud_alert_publisher (HTTPS app server)
   integration/    CERAVIS app-server client (userDetails/saveCamera/alert/snapshot)
   storage/        SQLite wrapper + EventStore
   bootstrap/      Pipeline assembly (build/start/stop) — keeps main.py thin
   monitoring/     Pipeline metrics + tegrastats parser
-  streaming/      WebSocket + MJPEG live stream
+  streaming/      WebSocket JPEG stream (built-in UI); external live view is
+                  MediaMTX WebRTC :8889 / HLS :8888 over https
   enrollment/     Per-recipient folder mgmt
   static/         /ui dashboard, camera + zone labeling pages
   models/         detection/ pose/ reid/ — .onnx + .engine (gitignored)
@@ -50,6 +53,7 @@ edge/
 setup/            One-time provisioning (flash to the device / pendrive):
   setup.sh              End-to-end bring-up (runs everything below)
   install_native.sh     apt + pip deps on JetPack
+  install_mediamtx.sh   MediaMTX binary + self-signed TLS cert (media backbone)
   export_engines.sh     ONNX (CPU venv) -> trtexec FP16 engines
   export_reid.sh        OSNet ReID engine
   install_service.sh    systemd unit (start at boot)

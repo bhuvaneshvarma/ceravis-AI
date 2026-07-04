@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 
 import cv2
@@ -8,6 +9,8 @@ from fastapi.responses import Response
 
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
+from media import mediamtx_client
+from media.mediamtx_client import MediaMTXError
 from schemas.cameras import Camera
 
 
@@ -17,10 +20,32 @@ router = APIRouter(
 )
 
 camera_config = CameraConfig()
+logger = logging.getLogger("cameras")
 
 
 def _mgr(request: Request) -> CameraManager:
     return request.app.state.camera_manager
+
+
+def _mtx_sync(request: Request, camera: Camera) -> None:
+    """Mirror a camera create/update into its MediaMTX path (best-effort:
+    a media-backbone hiccup must not fail the camera save)."""
+    if not getattr(request.app.state, "mediamtx_active", False):
+        return
+    try:
+        mediamtx_client.sync_path(camera.camera_id, camera.rtsp_url)
+    except MediaMTXError as exc:
+        logger.warning("MediaMTX path sync failed for %s: %s",
+                       camera.camera_id, exc)
+
+
+def _mtx_remove(request: Request, camera_id: str) -> None:
+    if not getattr(request.app.state, "mediamtx_active", False):
+        return
+    try:
+        mediamtx_client.remove_path(camera_id)
+    except MediaMTXError as exc:
+        logger.warning("MediaMTX path remove failed for %s: %s", camera_id, exc)
 
 
 # =====================================================================
@@ -33,10 +58,11 @@ def list_cameras():
 
 
 @router.post("")
-def create_camera(camera: Camera):
+def create_camera(camera: Camera, request: Request):
     if camera_config.get_by_id(camera.camera_id):
         raise HTTPException(409, f"Camera exists: {camera.camera_id}")
     camera_config.add(camera)
+    _mtx_sync(request, camera)
     return {"status": "created", "camera_id": camera.camera_id}
 
 
@@ -61,16 +87,18 @@ def get_camera(camera_id: str):
 
 
 @router.put("/{camera_id}")
-def update_camera(camera_id: str, camera: Camera):
+def update_camera(camera_id: str, camera: Camera, request: Request):
     if not camera_config.update(camera_id, camera):
         raise HTTPException(404, "Camera not found")
+    _mtx_sync(request, camera)
     return {"status": "updated", "camera_id": camera_id}
 
 
 @router.delete("/{camera_id}")
-def delete_camera(camera_id: str):
+def delete_camera(camera_id: str, request: Request):
     if not camera_config.delete(camera_id):
         raise HTTPException(404, "Camera not found")
+    _mtx_remove(request, camera_id)
     return {"status": "deleted", "camera_id": camera_id}
 
 

@@ -33,16 +33,35 @@ class Settings(BaseSettings):
     max_reconnect_delay_secs: float = 30.0
     frame_stale_secs: float = 5.0
 
-    # ---- Streaming / RTSP transport ---------------------------------
-    # "auto" (default) picks per camera at connect time with zero config: a
-    # WIRED egress (clean, e.g. direct Ethernet) -> UDP + low jitter buffer
-    # (minimal lag); a WIRELESS egress (lossy WiFi) -> TCP, which re-sends lost
-    # packets and kills the "melting/mesh" corruption. Force "tcp"/"udp" to
-    # override globally. rtsp_latency_ms is the TCP/auto-TCP jitter buffer;
-    # rtsp_udp_latency_ms is the (low) buffer used for UDP links.
-    rtsp_transport: str = "auto"
-    rtsp_latency_ms: int = 200
-    rtsp_udp_latency_ms: int = 50
+    # ---- MediaMTX (media backbone) -----------------------------------
+    # MediaMTX is supervised as a CHILD of this process (one systemd service).
+    # It connects to each camera exactly ONCE and fans the compressed stream
+    # out to every consumer without re-encoding: the AI pipeline (local RTSP),
+    # the browser/cloud (WebRTC + HLS over HTTPS), and the disk recorder
+    # (person-triggered fMP4 segments). If the binary is missing the app falls
+    # back to reading cameras directly (dev machines / degraded mode).
+    mediamtx_binary: str = "/usr/local/bin/mediamtx"
+    mediamtx_rtsp_port: int = 8554         # local restream the AI reads
+    mediamtx_api_port: int = 9997          # control API (localhost only)
+    mediamtx_hls_port: int = 8888          # HLS over HTTPS
+    mediamtx_webrtc_port: int = 8889       # WebRTC over HTTPS (link sent to cloud)
+    mediamtx_playback_port: int = 9996     # recordings playback API (localhost only)
+    mediamtx_cert_dir: str = "data/certs"  # server.crt/server.key (installer generates)
+    # Local jitter buffer for the AI's localhost RTSP pull (ms). Small: the
+    # link is loopback TCP; MediaMTX absorbs the camera-side jitter itself.
+    rtsp_latency_ms: int = 100
+
+    # ---- Recording (person-triggered, native quality) ----------------
+    # Records ONLY while YOLO sees a person on that camera (+ post-roll).
+    # Segments are remuxed fMP4 — the camera's own H.264/H.265 untouched, so
+    # recording costs ~zero CPU (the Orin Nano has no hardware encoder).
+    record_enabled: bool = True
+    record_dir: str = "data/recordings"
+    record_segment_secs: int = 15
+    record_retention_days: int = 7         # MediaMTX auto-deletes older segments
+    record_post_roll_secs: float = 10.0    # keep recording this long after the last person
+    record_poll_secs: float = 0.5          # detection-buffer poll cadence
+
     # Live WebSocket stream only — does NOT change what the AI engines see.
     stream_jpeg_quality: int = 70
     stream_max_width: int = 0          # 0 = full resolution; e.g. 960 downscales the wall feed
@@ -240,14 +259,16 @@ class Settings(BaseSettings):
     # ---- Long-dwell welfare checks (StillnessRule) ------------------
     # A 75-min slot: WINDOW minutes quiet, then one snapshot per minute for
     # (COUNT) minutes, then the slot resets and repeats.
-    #   NO MOTION   = box-centre frozen for the window -> CRITICAL alert at the
-    #                 window mark + a snapshot each minute (the serious case).
-    #   NO TRANSITION = posture unchanged (still active/moving) for the window ->
-    #                 snapshot-only burst (suppressed while no-motion is active).
+    #   NO MOTION   = the whole pose skeleton is frozen (no keypoint moving) for
+    #                 the window -> CRITICAL alert + a snapshot each minute (the
+    #                 serious case: possible collapse / unconsciousness).
+    #   NO TRANSITION = posture unchanged (still active/moving, e.g. seated and
+    #                 knitting) for the window -> snapshot-only burst (suppressed
+    #                 while no-motion is active).
     stillness_window_secs: float = 3600.0        # 60 min quiet before the burst
     stillness_burst_interval_secs: float = 60.0  # one snapshot per minute
     stillness_burst_count: int = 15              # for 15 minutes (-> 75-min slot)
-    no_motion_move_frac: float = 0.05            # box-centre drift (×height) = MOTION
+    pose_move_frac: float = 0.15                 # keypoint drift (×torso length) = MOTION
 
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""

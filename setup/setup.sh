@@ -4,7 +4,8 @@
 # =============================================================
 # Runs the entire bring-up end-to-end, in the right order:
 #
-#   [1/4] deps        — apt + pip runtime stack  (install_native.sh)
+#   [1/4] deps        — apt + pip runtime stack (install_native.sh)
+#                       + MediaMTX media backbone (install_mediamtx.sh)
 #   [2/4] engines     — YOLO26m detect+pose -> FP16 TRT (export_engines.sh)
 #   [3/4] service     — systemd unit, start now + at boot (install_service.sh)
 #   [4/4] doctor      — full verification gate    (check_jetson.sh)
@@ -23,6 +24,7 @@ stage() { echo; echo "============ [$1] $2 ============"; }
 # ---- [1/4] dependencies -------------------------------------------
 stage "1/4" "dependencies"
 bash "$SCRIPTS_DIR/install_native.sh"
+bash "$SCRIPTS_DIR/install_mediamtx.sh"
 
 # ---- [2/4] engines -------------------------------------------------
 stage "2/4" "TensorRT engines (YOLO26m detect + pose)"

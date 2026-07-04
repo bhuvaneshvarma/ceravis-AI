@@ -49,9 +49,11 @@ from integration.ceravis_api import (                                     # noqa
     CeravisApiError, alert_id_of, get_user_details, is_configured,
     room_to_enum, save_alert, save_cameras, save_snapshot,
 )
+from media.mediamtx_client import webrtc_url                              # noqa: E402
 
 
 def _stream_base() -> str:
+    """Base for the WebRTC live links, mirroring account_routes._stream_base."""
     b = settings.device_stream_base.strip()
     if b:
         return b.rstrip("/").replace("wss://", "https://").replace("ws://", "http://")
@@ -61,7 +63,7 @@ def _stream_base() -> str:
         s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
     except Exception:
         pass
-    return f"http://{ip}:8000"
+    return f"https://{ip}"
 
 
 def _latest_snapshot() -> str | None:
@@ -255,7 +257,7 @@ def main() -> int:
     cameras = [{
         "device": c.camera_id, "model": "", "supplier": "",
         "room": room_to_enum(c.room_name),
-        "url": f"{base}/stream.mjpeg/{c.camera_id}",
+        "url": webrtc_url(c.camera_id, base),
     } for c in cams]
     print(f"\n[2] saveCamera payload — {len(cameras)} camera(s), patientUserId={pid}")
     print(json.dumps({"patientUserId": pid, "cameras": cameras}, indent=2))

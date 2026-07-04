@@ -22,6 +22,11 @@ edge/data/ceravis.db*
 edge/data/recipients/*/photos/*
 edge/data/recipients/*/videos/*
 
+# Media backbone runtime state (generated config, TLS cert, recordings)
+edge/data/mediamtx.yml
+edge/data/certs/
+edge/data/recordings/
+
 # Live camera config — contains real RTSP credentials, never commit
 edge/data/cameras.json
 

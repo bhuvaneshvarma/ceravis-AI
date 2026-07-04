@@ -1,10 +1,4 @@
-from enum import Enum
 from pydantic import BaseModel
-
-
-class CameraCodec(str, Enum):
-    H264 = "h264"
-    H265 = "h265"
 
 
 class Camera(BaseModel):
@@ -12,18 +6,12 @@ class Camera(BaseModel):
     camera_name: str
     room_name: str
 
+    # The camera's own RTSP URL (manual entry or ONVIF discovery). MediaMTX
+    # connects to it; everything else consumes MediaMTX's restream. Codec and
+    # transport are auto-detected — no per-camera tuning fields.
     rtsp_url: str
 
-    codec: CameraCodec = CameraCodec.H264
-
     is_enabled: bool = True
-
-    # Per-camera RTSP tuning (override the global settings). A clean direct-
-    # Ethernet camera wants "udp" + a low jitter buffer for minimal lag; a
-    # lossy WiFi camera wants "tcp". None = use the global RTSP_TRANSPORT /
-    # RTSP_LATENCY_MS defaults.
-    transport: str | None = None              # "tcp" | "udp" | None
-    rtsp_latency_ms: int | None = None        # jitter buffer ms; None = global
 
     # Care-monitoring labeling (per the spec): cameras are numbered 1-4 and a
     # room may carry a designation — '*' if it has a bathroom entrance, '&' if it
