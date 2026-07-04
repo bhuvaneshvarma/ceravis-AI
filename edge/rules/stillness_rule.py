@@ -6,20 +6,24 @@ Long-dwell welfare checks on the care recipient (CR).
 Each is a repeating **75-minute slot**: WINDOW minutes quiet, then one snapshot
 per minute for the next COUNT minutes, then the slot resets and repeats.
 
-  • NO MOTION — the CR's body is frozen (tracked box CENTRE not drifting) for the
-    full window. The serious case (possible collapse / unconsciousness): a
-    CRITICAL `no_motion` alert fires at the window mark, then a `no_motion_snapshot`
-    every minute to the end of the slot.
+  • NO MOTION — the CR's **whole skeleton is frozen**: not one pose keypoint has
+    moved for the full window. The serious case (possible collapse /
+    unconsciousness): a CRITICAL `no_motion` alert fires at the window mark, then
+    a `no_motion_snapshot` every minute to the end of the slot.
   • NO TRANSITION — the CR is still moving/active but hasn't changed posture
-    (e.g. sitting on the couch, shifting around) for the window. Snapshot-only
+    (e.g. sitting on the couch knitting for hours) for the window. Snapshot-only
     `no_transition_snapshot` burst; NO alert. Suppressed while NO MOTION is active,
     so a frozen person only raises the emergency, not the routine check.
 
 Definitions (kept deliberately simple + cheap for the 1 Hz rule tick):
-  - "motion" = the tracked box centre moving more than `no_motion_move_frac` of
-    its own height (scale-invariant WHOLE-BODY movement) — NOT pose keypoints and
-    NOT raw pixel / optical-flow motion. So breathing/tiny fidgets still read as
-    frozen; standing / walking / shifting seat count as motion and reset it.
+  - "motion" = ANY confident pose keypoint drifting more than `pose_move_frac`
+    of the body scale (torso length) from its anchored resting position — i.e.
+    real movement of the head/arms/legs/torso, read straight off the YOLO-pose
+    skeleton we already run. This is what makes NO MOTION mean *the body is
+    genuinely immobile*: a seated person whose hands are busy (stitching) keeps
+    resetting it even though their torso centre never moves — the old box-centre
+    check would have wrongly called that "frozen". Keypoints below _MIN_KP_CONF
+    are ignored; sub-pixel jitter stays under the threshold.
   - "transition" = the posture LABEL (sitting/standing/walking) changing.
 """
 
@@ -28,13 +32,17 @@ from datetime import datetime, timezone
 from math import hypot
 
 from config.settings import settings
-from pose.posture_classifier import Posture
+from pose.posture_classifier import (
+    Posture, LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP)
 from schemas.event import Event
 from rules.rule_context import RuleContext
 
 
 # postures that count as a "held" state for the no-transition check
 _HELD = (Posture.SITTING, Posture.STANDING)
+
+_MIN_KP_CONF = 0.20      # keypoints below this confidence are treated as missing
+_MIN_SHARED_KPS = 5      # need this many confident shared points to judge motion
 
 
 class _Burst:
@@ -65,7 +73,7 @@ class _Burst:
 class StillnessRule:
     def __init__(self) -> None:
         self._cam: str | None = None
-        self._anchor: tuple[float, float, float] | None = None   # cx, cy, h
+        self._kp_anchor: list | None = None          # resting-pose keypoints
         self._motion_still_since: datetime | None = None         # frozen since
         self._posture: Posture | None = None
         self._posture_since: datetime | None = None              # held since
@@ -78,9 +86,9 @@ class StillnessRule:
         if tgt is None:
             self._reset()
             return []
-        cam, tid, cx, cy, h, rid, posture = tgt
+        cam, tid, h, rid, posture, kps = tgt
 
-        self._track_motion(cam, cx, cy, h, now)
+        self._track_pose_motion(cam, kps, h, now)
         self._track_posture(posture, now)
 
         window = settings.stillness_window_secs
@@ -118,16 +126,31 @@ class StillnessRule:
         return events
 
     # ---- state tracking ---------------------------------------------
-    def _track_motion(self, cam, cx, cy, h, now) -> None:
-        if self._anchor is None or self._cam != cam:
+    def _track_pose_motion(self, cam, kps, h, now) -> None:
+        """Skeleton stillness: the frozen-clock only advances while EVERY confident
+        keypoint stays within `pose_move_frac` of the body scale from its anchored
+        resting pose. Any keypoint moving past that (a limb, the head, the whole
+        body) re-anchors and restarts the clock — so 'no motion' means the whole
+        body is immobile, not just that the torso centre held still."""
+        if self._cam != cam:                         # first sight / camera hop
             self._cam = cam
-            self._anchor = (cx, cy, h)
+            self._kp_anchor = kps
+            self._motion_still_since = now if kps is not None else None
+            self._nm.reset()
+            return
+        if kps is None:
+            return                                   # transient pose dropout — hold
+        if self._kp_anchor is None:                  # anchor the first usable pose
+            self._kp_anchor = kps
             self._motion_still_since = now
             self._nm.reset()
             return
-        ax, ay, _ = self._anchor
-        if hypot(cx - ax, cy - ay) > settings.no_motion_move_frac * h:   # moved
-            self._anchor = (cx, cy, h)
+        scale = self._body_scale(kps, h)
+        shift = self._max_kp_shift(self._kp_anchor, kps, scale)
+        if shift is None:
+            return                                   # too few shared points — hold
+        if shift > settings.pose_move_frac:          # a limb / the body moved
+            self._kp_anchor = kps
             self._motion_still_since = now
             self._nm.reset()
 
@@ -144,29 +167,81 @@ class StillnessRule:
     def _reset_posture(self, now) -> None:
         self._posture_since = now
 
+    # ---- pose-motion helpers ----------------------------------------
+    @staticmethod
+    def _max_kp_shift(anchor, current, scale: float) -> float | None:
+        """Largest keypoint displacement as a fraction of the body scale, over the
+        keypoints confident in BOTH the anchor and the current frame. None when
+        too few (< _MIN_SHARED_KPS) are shared to judge reliably."""
+        worst = 0.0
+        shared = 0
+        for a, c in zip(anchor, current):
+            if a.confidence >= _MIN_KP_CONF and c.confidence >= _MIN_KP_CONF:
+                shared += 1
+                d = hypot(c.x - a.x, c.y - a.y) / scale
+                if d > worst:
+                    worst = d
+        return worst if shared >= _MIN_SHARED_KPS else None
+
+    def _body_scale(self, kps, h) -> float:
+        """Torso length (mid-shoulder → mid-hip) in px, for scale-invariant motion;
+        falls back to the bbox height when the torso keypoints aren't confident."""
+        sh = self._mid(kps, LEFT_SHOULDER, RIGHT_SHOULDER)
+        hp = self._mid(kps, LEFT_HIP, RIGHT_HIP)
+        if sh and hp:
+            d = hypot(sh[0] - hp[0], sh[1] - hp[1])
+            if d > 1.0:
+                return d
+        return max(h, 1.0)
+
+    @staticmethod
+    def _mid(kps, i, j):
+        a, b = kps[i], kps[j]
+        if a.confidence >= _MIN_KP_CONF and b.confidence >= _MIN_KP_CONF:
+            return ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)
+        return None
+
     @staticmethod
     def _elapsed(since: datetime | None, now: datetime) -> float:
         return (now - since).total_seconds() if since else 0.0
 
+    # ---- target + pose lookup ---------------------------------------
     def _find_target(self, ctx: RuleContext):
-        """(camera_id, track_id, cx, cy, h, recipient_id, posture) of the locked
-        recipient, or None."""
+        """(camera_id, track_id, bbox_height, recipient_id, posture, keypoints) of
+        the locked recipient, or None. `keypoints` is the target's 17-pt pose (or
+        None if pose isn't available this frame)."""
         for camera_id, result in ctx.tracks.get_all().items():
             for t in result.tracks:
                 ident = ctx.identities.get(camera_id, t.track_id)
                 if not (ident and ident.is_target):
                     continue
-                b = t.bbox
                 rec = ctx.postures.get(camera_id, t.track_id)
                 posture = rec.posture if rec is not None else Posture.UNKNOWN
-                return (camera_id, t.track_id, (b.x1 + b.x2) / 2.0,
-                        (b.y1 + b.y2) / 2.0, max(b.height, 1.0),
-                        ident.recipient_id, posture)
+                kps = self._keypoints_for(ctx, camera_id, t.track_id)
+                return (camera_id, t.track_id, max(t.bbox.height, 1.0),
+                        ident.recipient_id, posture, kps)
         return None
+
+    @staticmethod
+    def _keypoints_for(ctx: RuleContext, camera_id: str, track_id: int):
+        """The target's 17 COCO keypoints on this camera, or None.
+
+        Pose runs TARGET-ONLY once the recipient is locked (see PoseRunner), so
+        the buffer holds a single pose — the target's — which is exactly when
+        this rule is active. Poses aren't tagged with a track_id in this pipeline,
+        so prefer a track_id match if one ever appears, else take the most
+        confident pose."""
+        pr = ctx.poses.get(camera_id)
+        if pr is None or not pr.poses:
+            return None
+        tagged = [p for p in pr.poses if p.track_id == track_id]
+        pose = tagged[0] if tagged else max(
+            pr.poses, key=lambda p: sum(k.confidence for k in p.keypoints))
+        return pose.keypoints if len(pose.keypoints) >= 17 else None
 
     def _reset(self) -> None:
         self._cam = None
-        self._anchor = None
+        self._kp_anchor = None
         self._motion_still_since = None
         self._posture = None
         self._posture_since = None
