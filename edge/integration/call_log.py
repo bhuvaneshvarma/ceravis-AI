@@ -2,7 +2,10 @@ from __future__ import annotations
 
 """
 Rolling log of every CERAVIS app-server call — what the monitor's Cloud Sync
-Console displays.
+Console displays. The pipeline also logs each DETECTION here (endpoint
+"event": ok=True when it was raised, ok=False with an `error` when the cloud
+gate dropped it), so a physical test reads on screen as
+    EVENT detected -> saveAlert / saveSnapshot hit (or the drop reason).
 
 File-backed (data/cloud_calls.jsonl) rather than in-memory on purpose: the
 service AND tests/test_cloud.py are separate processes, and both must show up
@@ -69,7 +72,7 @@ def record(endpoint: str, ok: bool, *, status: int | None = None,
     """Append one call record. Never raises."""
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
-        "endpoint": endpoint,            # userDetails|saveCamera|saveAlert|saveSnapshot
+        "endpoint": endpoint,   # userDetails|saveCamera|saveAlert|saveSnapshot|event
         "source": SOURCE,                # "live" (real pipeline) | "test" (test_cloud)
         "ok": bool(ok),
         "status": status,

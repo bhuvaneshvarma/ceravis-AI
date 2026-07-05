@@ -83,8 +83,11 @@ class FloorReference:
 
     def below_furniture(self, camera_id: str, x: float, y: float) -> bool | None:
         """True if the point is LOWER in the frame than the top of furniture above
-        it — i.e. the body has dropped below table/chair/bed height. None if no
-        furniture zones are drawn for this camera."""
+        it — i.e. the body has dropped below table/chair/bed height. None when
+        there is no height reference HERE: no furniture zones drawn, or none
+        spans this column (a chair by the window says nothing about a fall on
+        the other side of the room — returning False there would hard-block
+        fall confirmation everywhere except in front of the furniture)."""
         _, furn = self._polys(camera_id)
         if not furn:
             return None
@@ -94,7 +97,7 @@ class FloorReference:
             if xs.min() <= x <= xs.max():        # furniture spans this column
                 tops.append(int(ys.min()))       # its top edge (smallest y)
         if not tops:
-            return False
+            return None
         return y > min(tops)                     # point is below the highest top
 
     def is_low(self, camera_id: str, x: float, y: float) -> bool | None:

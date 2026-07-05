@@ -39,6 +39,7 @@
   .cs-ep.alert { color: #f87171; border-color: rgba(248,113,113,.45); }
   .cs-ep.snap  { color: #60a5fa; border-color: rgba(96,165,250,.45); }
   .cs-ep.cam   { color: #2dd4bf; border-color: rgba(45,212,191,.45); }
+  .cs-ep.evt   { color: #fbbf24; border-color: rgba(251,191,36,.45); }
   .cs-ep.test  { color: #c084fc; border-color: rgba(192,132,252,.45); }
   .cs-ok  { font-weight: 700; color: #34d399; font-size: 11px; }
   .cs-bad { font-weight: 700; color: #f87171; font-size: 11px; }
@@ -80,13 +81,15 @@
           <span class="faint" id="cs-stats"
                 style="margin-left:auto;font-weight:400;font-size:11.5px"></span>
         </h2>
-        <div class="hint" style="margin-top:2px">Every call this device fires at the
-          CERAVIS server — alerts, snapshots, camera sync — live with HTTP result,
-          latency, alertId and the uploaded snapshot link.</div>
+        <div class="hint" style="margin-top:2px">Every AI event this device raises
+          (fall, room change, posture, stillness) and every call it fires at the
+          CERAVIS server — with HTTP result, latency, alertId and the uploaded
+          snapshot link. An amber EVENT with “not sent” tells you exactly why a
+          detection never reached the cloud.</div>
         <div class="cs-log" id="cs-log">
-          <div class="faint" id="cs-empty" style="font-size:12.5px">No cloud calls yet —
-            trigger a test (fall, transition, stillness) and each call lands here
-            the moment it fires.</div>
+          <div class="faint" id="cs-empty" style="font-size:12.5px">Nothing yet —
+            trigger a test (fall, room change, stillness) and the detection plus
+            each cloud call lands here the moment it fires.</div>
         </div>
       </div>
     </div>
@@ -258,15 +261,20 @@ async function pollCloud() {
   CS.lastTs = calls[0].ts;
 
   const epCls = e => e === "saveAlert" ? "alert"
-    : e === "saveSnapshot" ? "snap" : "cam";
+    : e === "saveSnapshot" ? "snap" : e === "event" ? "evt" : "cam";
   const epTxt = e => ({ saveAlert: "ALERT", saveSnapshot: "SNAPSHOT",
-    saveCamera: "CAMERA", userDetails: "ACCOUNT" }[e] || (e || "?").toUpperCase());
+    saveCamera: "CAMERA", userDetails: "ACCOUNT", event: "EVENT" }[e]
+    || (e || "?").toUpperCase());
+  // Pipeline detections aren't HTTP calls — word their status accordingly.
+  const okTxt = c => c.endpoint === "event"
+    ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
+    : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
   document.getElementById("cs-log").innerHTML = calls.map(c => `
     <div class="cs-entry ${c.ok ? "" : "err"}">
       <div class="cs-top">
         <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
         ${c.source === "test" ? `<span class="cs-ep test">TEST</span>` : ""}
-        <span class="${c.ok ? "cs-ok" : "cs-bad"}">${c.ok ? "✓ CALL HIT" : "✗ FAILED"}</span>
+        <span class="${c.ok ? "cs-ok" : "cs-bad"}">${okTxt(c)}</span>
         <span class="cs-time">${new Date(c.ts).toLocaleTimeString([], { hour12: false })}</span>
       </div>
       ${c.label ? `<div class="cs-label">${csEsc(c.label)}</div>` : ""}

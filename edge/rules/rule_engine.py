@@ -5,8 +5,10 @@ import threading
 import time
 
 from events.event_bus import EventBus
+from integration import call_log
 from rules.fall_rule import FallRule
 from rules.posture_rule import PostureRule
+from rules.room_rule import RoomTransitionRule
 from rules.rule_context import RuleContext
 from rules.spatial_rule import SpatialRule
 from rules.stillness_rule import StillnessRule
@@ -31,7 +33,7 @@ class RuleEngine:
         self._bus = bus
         self._enricher = enricher          # EventEnricher | None
         self._rules = [FallRule(), PostureRule(), StillnessRule(),
-                       SpatialRule()]
+                       SpatialRule(), RoomTransitionRule()]
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -63,6 +65,14 @@ class RuleEngine:
                                 event = self._enricher.enrich(event, self._ctx)
                             except Exception:
                                 logger.exception("event enrich failed")
+                        # Every detection lands on the monitor's sync console
+                        # (endpoint "event") — including the ones the cloud
+                        # gate drops later — so a physical test is verifiable
+                        # on screen whether or not it reached the server.
+                        call_log.record(
+                            "event", True,
+                            label=f"{(event.severity or 'info').upper()} · "
+                                  f"{event.message or event.event_type}")
                         self._bus.publish(event)
                 except Exception:
                     logger.exception("rule failed: %s", rule.__class__.__name__)

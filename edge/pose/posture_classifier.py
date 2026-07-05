@@ -375,17 +375,26 @@ class PostureTracker:
             st.fall_still_since = None
 
         if horizontal and near_ok:
+            if st.fall_down_since is None:
+                st.fall_down_since = ts
             if st.fall_phase == 0 and (impact_recent or near is True):
                 st.fall_phase = 1
-                st.fall_down_since = ts
-            if st.fall_phase == 1:
-                still_long = (
-                    st.fall_still_since is not None
-                    and (ts - st.fall_still_since).total_seconds()
-                    >= settings.fall_immobility_secs)
-                if still_long:
-                    st.fall_phase = 2
-                    st.fall_confirmed_pending = True
+            still_long = (
+                st.fall_still_since is not None
+                and (ts - st.fall_still_since).total_seconds()
+                >= settings.fall_immobility_secs)
+            if st.fall_phase == 1 and still_long:
+                st.fall_phase = 2
+                st.fall_confirmed_pending = True
+            elif (st.fall_phase == 0 and still_long
+                  and (ts - st.fall_down_since).total_seconds()
+                  >= settings.fall_fallen_hold_secs):
+                # Slow-fall safety net: no impact spike and no floor/furniture
+                # reference for this spot (near is None here — near True enters
+                # phase 1 above, near False never reaches this branch). A body
+                # that stays horizontal AND motionless this long is down.
+                st.fall_phase = 2
+                st.fall_confirmed_pending = True
         else:
             # recovered / was only bending or sitting -> reset
             st.fall_phase = 0

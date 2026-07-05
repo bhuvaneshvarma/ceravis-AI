@@ -210,6 +210,11 @@ class Settings(BaseSettings):
     fall_velocity_window_secs: float = 0.6   # window the drop speed is measured over
     fall_immobility_secs: float = 3.0        # must lie still this long to confirm
     fall_immobility_body_frac: float = 0.35  # max centroid drift (× body) to count as still
+    # Slow-fall safety net (no impact spike AND no floor/furniture reference for
+    # the spot): a gentle collapse, sliding off a chair, or a person already on
+    # the ground when the camera comes up never shows the impact velocity. If
+    # the body stays horizontal AND immobile this long, confirm the fall anyway.
+    fall_fallen_hold_secs: float = 12.0
     # Floor reference: a zone whose name contains this keyword marks the ground
     # plane. A standing person's head sits ABOVE (outside) it; a fallen person's
     # head drops INTO it — a view-tolerant "near the floor" test. If no floor
@@ -238,6 +243,11 @@ class Settings(BaseSettings):
     # Recipient alone + no area change for this long -> inactivity event (also
     # the re-emit interval for the periodic activity snapshot). Default 30 min.
     inactivity_secs: float = 1800.0
+    # Room-to-room moves (RoomTransitionRule): after the recipient leaves view,
+    # the previous room stays valid as the transition origin for this long (an
+    # uncovered hallway between two cameras) — beyond it the trail is dropped
+    # and the next sighting starts fresh with no transition event.
+    room_transition_max_gap_secs: float = 600.0
 
     # ---- CERAVIS application server (cloud) ------------------------
     # The Spring app that owns user accounts. Setup verifies the operator's email
@@ -259,11 +269,13 @@ class Settings(BaseSettings):
     cloud_alert_event_types: str = "fall,no_motion"
     cloud_alert_recipient_only: bool = True
     cloud_alert_severities: str = "critical,warning"   # fallback if event_types is blank
-    # Snapshot-ONLY event types (no saveAlert): posture transitions + the two
-    # long-dwell bursts (no_motion_snapshot / no_transition_snapshot).
+    # Snapshot-ONLY event types (no saveAlert): posture transitions, the two
+    # long-dwell bursts (no_motion_snapshot / no_transition_snapshot), and the
+    # recipient's zone/room moves (area_transition / room_transition).
     cloud_snapshot_event_types: str = (
         "standing_up,sitting_down,walking_started,walking_stopped,"
-        "no_motion_snapshot,no_transition_snapshot")
+        "no_motion_snapshot,no_transition_snapshot,"
+        "area_transition,room_transition")
     # ---- Long-dwell welfare checks (StillnessRule) ------------------
     # A 75-min slot: WINDOW minutes quiet, then one snapshot per minute for
     # (COUNT) minutes, then the slot resets and repeats.

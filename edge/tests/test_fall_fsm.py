@@ -35,13 +35,13 @@ BENDING = {0: (200, 250), 1: (198, 248), 2: (202, 248), 3: (196, 250), 4: (204, 
 floor_q = lambda x, y: y >= 400          # floor zone = lower part of frame
 
 
-def _feed(tracker, cam, tid, coords, t0, n, dt=0.1):
+def _feed(tracker, cam, tid, coords, t0, n, dt=0.1, fq=floor_q):
     t = t0
     fired = False
     for k in range(n):
         pose = PoseEstimation(track_id=tid, camera_id=cam, frame_id=k,
                               timestamp=t, keypoints=_kp(coords))
-        tracker.update(cam, tid, pose, floor_query=floor_q)
+        tracker.update(cam, tid, pose, floor_query=fq)
         if tracker.confirm_fall(cam, tid):
             fired = True
         t = t + timedelta(seconds=dt)
@@ -82,8 +82,39 @@ def test_slow_settle_on_floor_fires():
     print("[slow settle] PASS")
 
 
+def test_found_down_no_references_fires():
+    # No floor/furniture zones drawn AND no impact in view (gentle test fall, a
+    # slow slump, or the camera came up with the person already on the ground):
+    # the slow-fall hold (fall_fallen_hold_secs) must still confirm.
+    from config.settings import settings
+    tr = PostureTracker()
+    t0 = datetime.now(timezone.utc)
+    no_ref = lambda x, y: None               # is_low() with nothing drawn
+    n = int((settings.fall_fallen_hold_secs + 3.0) / 0.1)
+    fired, _ = _feed(tr, "c", 4, FALLEN, t0, n, fq=no_ref)
+    print(f"[found down / no zones] confirmed={fired}")
+    assert fired, "horizontal + motionless past the hold must confirm without zones"
+    print("[found down / no zones] PASS")
+
+
+def test_short_horizontal_no_references_does_not_fire():
+    # Same no-zones setup but only briefly horizontal (picking something up off
+    # the floor): must NOT confirm before the hold elapses.
+    from config.settings import settings
+    tr = PostureTracker()
+    t0 = datetime.now(timezone.utc)
+    no_ref = lambda x, y: None
+    n = int(max(settings.fall_fallen_hold_secs - 4.0, 1.0) / 0.1)
+    fired, _ = _feed(tr, "c", 5, FALLEN, t0, n, fq=no_ref)
+    print(f"[short horizontal / no zones] confirmed={fired}")
+    assert not fired, "briefly horizontal without zones must NOT confirm"
+    print("[short horizontal / no zones] PASS")
+
+
 if __name__ == "__main__":
     test_real_fall_fires()
     test_bending_does_not_fire()
     test_slow_settle_on_floor_fires()
+    test_found_down_no_references_fires()
+    test_short_horizontal_no_references_does_not_fire()
     print("ALL FALL-FSM TESTS PASSED")

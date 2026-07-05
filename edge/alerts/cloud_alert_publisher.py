@@ -25,6 +25,7 @@ from config.settings import settings
 from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
 from events.event_bus import EventBus
+from integration import call_log
 from integration.ceravis_api import (
     CeravisApiError, alert_id_of, is_configured, room_to_enum, save_alert,
     save_snapshot,
@@ -91,6 +92,12 @@ class CloudAlertPublisher:
             if not (is_alert or is_snap):
                 continue
             if self._recipient_only and not event.recipient_id:
+                # Visible on the sync console: the detection happened but the
+                # track wasn't identified as the recipient, so nothing is sent.
+                call_log.record(
+                    "event", False, label=self._format(event),
+                    error="not sent — track not identified as the recipient "
+                          "(no ReID lock at event time)")
                 continue
             pid = self._account.get().get("ceravisUserId")
             if not pid:
@@ -98,6 +105,9 @@ class CloudAlertPublisher:
                     logger.warning("cloud send skipped — no verified account yet "
                                    "(run setup account verification)")
                     self._warned_no_account = True
+                call_log.record(
+                    "event", False, label=self._format(event),
+                    error="not sent — no verified account (run setup step 1)")
                 continue
             message = self._format(event)
             alert_id = None
@@ -174,6 +184,13 @@ class CloudAlertPublisher:
         if et in self._ARROWS:
             return self._ARROWS[et]
         det = (event.detail or "").strip()
+        if et in ("area_transition", "room_transition"):
+            # detail is the move itself, e.g. "kitchen → living room"
+            if "→" in det:
+                a, _, b = det.partition("→")
+                return f"{a.strip().title()} → {b.strip().title()}"
+            return det or ("Changed room" if et == "room_transition"
+                           else "Moved area")
         if et == "no_motion_snapshot":
             return f"No movement {det} min" if det else "No movement"
         if et == "no_transition_snapshot":

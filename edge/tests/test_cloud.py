@@ -10,6 +10,7 @@ CERAVIS cloud connectivity sanity check — run ON THE DEVICE.
     python tests/test_cloud.py --fall          # simulate a real fall: LIVE snapshot
                                                  # + matching FALL alert, together
     python tests/test_cloud.py --transition      # posture-transition snap (NO alert)
+    python tests/test_cloud.py --room            # room-to-room transition snap (NO alert)
     python tests/test_cloud.py --no-transition   # replay a full NO-TRANSITION slot:
                                                  #   the 15-snap burst, NO alert
     python tests/test_cloud.py --no-motion       # replay a full NO-MOTION slot: the
@@ -352,6 +353,12 @@ def main() -> int:
         if not pid:
             print("\n[7] no verified account"); return 1
         if _snap_only(pid, acct, cams, "Sitting → Standing", "7 transition"):
+            return 1
+    # [7b] room-to-room transition — snapshot only, NO alert
+    if "--room" in sys.argv:
+        if not pid:
+            print("\n[7b] no verified account"); return 1
+        if _snap_only(pid, acct, cams, "Kitchen → Living Room", "7b room-transition"):
             return 1
     # [8] no-transition — replay the full snapshot-only burst, NO alert
     if "--no-transition" in sys.argv:
