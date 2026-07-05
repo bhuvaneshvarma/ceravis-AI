@@ -27,6 +27,7 @@ from schemas.event import Event
 
 class SpatialRule:
     STABLE_TICKS = 2          # ticks settled in an area before a move counts
+    FRESH_SECS = 5.0          # ignore stale per-camera track results (idle cameras)
 
     def __init__(self, zone_resolver: ZoneResolver | None = None) -> None:
         self._zones = zone_resolver or ZoneResolver()
@@ -36,16 +37,20 @@ class SpatialRule:
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         events: list[Event] = []
         now = datetime.now(timezone.utc)
+        # Fresh cameras only — a camera the recipient left keeps its last
+        # TrackResult forever, and a frozen snapshot would re-emit phantom
+        # "inactivity" every interval.
+        fresh = ctx.fresh_tracks(now, self.FRESH_SECS)
 
         # "Alone" = no identified non-recipient person anywhere right now.
         other_present = any(
             (ident is not None and not ident.is_target)
-            for cam, res in ctx.tracks.get_all().items()
+            for cam, res in fresh.items()
             for t in res.tracks
             for ident in [ctx.identities.get(cam, t.track_id)]
         )
 
-        for camera_id, result in ctx.tracks.get_all().items():
+        for camera_id, result in fresh.items():
             for track in result.tracks:
                 ident = ctx.identities.get(camera_id, track.track_id)
                 if not (ident and ident.is_target):     # recipient only

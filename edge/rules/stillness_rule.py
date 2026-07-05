@@ -71,6 +71,8 @@ class _Burst:
 
 
 class StillnessRule:
+    FRESH_SECS = 5.0     # ignore stale per-camera track results (idle cameras)
+
     def __init__(self) -> None:
         self._cam: str | None = None
         self._kp_anchor: list | None = None          # resting-pose keypoints
@@ -82,7 +84,7 @@ class StillnessRule:
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         now = datetime.now(timezone.utc)
-        tgt = self._find_target(ctx)
+        tgt = self._find_target(ctx, now)
         if tgt is None:
             self._reset()
             return []
@@ -206,21 +208,33 @@ class StillnessRule:
         return (now - since).total_seconds() if since else 0.0
 
     # ---- target + pose lookup ---------------------------------------
-    def _find_target(self, ctx: RuleContext):
+    def _find_target(self, ctx: RuleContext, now: datetime):
         """(camera_id, track_id, bbox_height, recipient_id, posture, keypoints) of
         the locked recipient, or None. `keypoints` is the target's 17-pt pose (or
-        None if pose isn't available this frame)."""
-        for camera_id, result in ctx.tracks.get_all().items():
+        None if pose isn't available this frame).
+
+        FRESH tracks only, best ReID confidence on a tie: a camera the recipient
+        left keeps its last TrackResult + is_target identity forever, and acting
+        on that frozen snapshot would accumulate the no-motion clock into a false
+        CRITICAL alert an hour after a room change."""
+        best = None
+        best_conf = -1.0
+        for camera_id, result in ctx.fresh_tracks(now, self.FRESH_SECS).items():
             for t in result.tracks:
                 ident = ctx.identities.get(camera_id, t.track_id)
                 if not (ident and ident.is_target):
                     continue
-                rec = ctx.postures.get(camera_id, t.track_id)
-                posture = rec.posture if rec is not None else Posture.UNKNOWN
-                kps = self._keypoints_for(ctx, camera_id, t.track_id)
-                return (camera_id, t.track_id, max(t.bbox.height, 1.0),
-                        ident.recipient_id, posture, kps)
-        return None
+                if ident.confidence > best_conf:
+                    best_conf = ident.confidence
+                    best = (camera_id, t, ident)
+        if best is None:
+            return None
+        camera_id, t, ident = best
+        rec = ctx.postures.get(camera_id, t.track_id)
+        posture = rec.posture if rec is not None else Posture.UNKNOWN
+        kps = self._keypoints_for(ctx, camera_id, t.track_id)
+        return (camera_id, t.track_id, max(t.bbox.height, 1.0),
+                ident.recipient_id, posture, kps)
 
     @staticmethod
     def _keypoints_for(ctx: RuleContext, camera_id: str, track_id: int):

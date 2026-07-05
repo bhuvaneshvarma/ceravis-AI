@@ -82,12 +82,7 @@ class RoomTransitionRule:
         """(camera_id, track_id, identity) of the highest-confidence recipient
         track in a FRESH per-camera result, or None when out of view."""
         best = None
-        for camera_id, result in ctx.tracks.get_all().items():
-            ts = result.timestamp
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            if (now - ts).total_seconds() > self.FRESH_SECS:
-                continue
+        for camera_id, result in ctx.fresh_tracks(now, self.FRESH_SECS).items():
             for track in result.tracks:
                 ident = ctx.identities.get(camera_id, track.track_id)
                 if not (ident and ident.is_target):

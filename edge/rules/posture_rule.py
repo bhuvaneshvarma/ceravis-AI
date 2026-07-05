@@ -22,11 +22,12 @@ from datetime import datetime, timezone
 from config.settings import settings
 from pose.posture_classifier import Posture
 from schemas.event import Event
-from rules.rule_context import RuleContext
+from rules.rule_context import RuleContext, is_fresh
 
 
 class PostureRule:
     NO_MOVE_SECS = 30.0
+    FRESH_SECS = 10.0    # ignore stale posture records (cameras pose stopped on)
 
     def __init__(self) -> None:
         # (camera_id, track_id) -> (current_posture, entered_at)
@@ -39,6 +40,10 @@ class PostureRule:
 
         for camera_id, per_track in ctx.postures.get_all().items():
             for track_id, rec in per_track.items():
+                # A camera the target left keeps its last posture record forever
+                # — a frozen record would false-fire the duration events.
+                if not is_fresh(rec.timestamp, now, self.FRESH_SECS):
+                    continue
                 # Only the enrolled recipient (the CR). Sets recipient_id so the
                 # cloud publisher's recipient gate passes.
                 identity = ctx.identities.get(camera_id, track_id)

@@ -22,19 +22,23 @@ from datetime import datetime, timezone
 
 from schemas.event import Event
 from pose.posture_classifier import Posture
-from rules.rule_context import RuleContext
+from rules.rule_context import RuleContext, is_fresh
 
 
 logger = logging.getLogger("rules.fall")
 
 
 class FallRule:
+    FRESH_SECS = 10.0    # ignore stale posture records (cameras pose stopped on)
+
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         events: list[Event] = []
         now = datetime.now(timezone.utc)
 
         for camera_id, per_track in ctx.postures.get_all().items():
             for track_id, rec in per_track.items():
+                if not is_fresh(rec.timestamp, now, self.FRESH_SECS):
+                    continue
                 if rec.posture != Posture.FALLEN:
                     continue
                 if not ctx.posture_tracker.confirm_fall(camera_id, track_id):
