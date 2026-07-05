@@ -32,6 +32,12 @@ _LOCK = threading.Lock()
 _MAX_BYTES = 512 * 1024      # rotate past this…
 _KEEP_LINES = 300            # …down to the newest N records
 
+# Who is making the calls in THIS process: "live" = the service's real
+# pipeline (actual falls/transitions/stillness); "test" = tests/test_cloud.py
+# (it overrides this at startup). The console renders a TEST chip on the
+# latter so real events are unmistakable during end-to-end testing.
+SOURCE = "live"
+
 
 def _file() -> Path:
     base = settings.data_path
@@ -64,6 +70,7 @@ def record(endpoint: str, ok: bool, *, status: int | None = None,
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "endpoint": endpoint,            # userDetails|saveCamera|saveAlert|saveSnapshot
+        "source": SOURCE,                # "live" (real pipeline) | "test" (test_cloud)
         "ok": bool(ok),
         "status": status,
         "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,

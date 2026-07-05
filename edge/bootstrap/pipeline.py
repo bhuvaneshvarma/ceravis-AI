@@ -233,6 +233,7 @@ class Pipeline:
             "metrics_registry": metrics_registry,
             "system_monitor": system_monitor,
             "mediamtx_active": via_mediamtx,
+            "recording_controller": recording_controller,
         }
         # stopped in this order on shutdown (reverse of dependency). The
         # recording controller goes first so open segments are closed while

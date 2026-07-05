@@ -39,6 +39,7 @@
   .cs-ep.alert { color: #f87171; border-color: rgba(248,113,113,.45); }
   .cs-ep.snap  { color: #60a5fa; border-color: rgba(96,165,250,.45); }
   .cs-ep.cam   { color: #2dd4bf; border-color: rgba(45,212,191,.45); }
+  .cs-ep.test  { color: #c084fc; border-color: rgba(192,132,252,.45); }
   .cs-ok  { font-weight: 700; color: #34d399; font-size: 11px; }
   .cs-bad { font-weight: 700; color: #f87171; font-size: 11px; }
   .cs-time { margin-left: auto; color: var(--muted); font-size: 10.5px; }
@@ -61,6 +62,9 @@
     <span class="pill pill-mute" id="m-mode">SEARCHING</span>
     <span id="m-active" class="faint"></span>
     <span id="m-state" class="faint"></span>
+    <button id="rec-toggle" class="btn btn-ghost btn-sm" style="margin-left:auto"
+            title="Person-triggered video recording. OFF = nothing is saved to disk
+(frees space); alerts &amp; snapshots are unaffected.">⏺ Recording: …</button>
   </div>
 
   <div class="mon">
@@ -261,6 +265,7 @@ async function pollCloud() {
     <div class="cs-entry ${c.ok ? "" : "err"}">
       <div class="cs-top">
         <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
+        ${c.source === "test" ? `<span class="cs-ep test">TEST</span>` : ""}
         <span class="${c.ok ? "cs-ok" : "cs-bad"}">${c.ok ? "✓ CALL HIT" : "✗ FAILED"}</span>
         <span class="cs-time">${new Date(c.ts).toLocaleTimeString([], { hour12: false })}</span>
       </div>
@@ -275,10 +280,41 @@ async function pollCloud() {
     </div>`).join("");
 }
 
+/* ---- recording on/off (disk saver) --------------------------------- */
+async function refreshRec() {
+  let s;
+  try { s = await api("/api/v1/recordings/state"); } catch { return; }
+  const btn = document.getElementById("rec-toggle");
+  if (!s.available) {
+    btn.textContent = "⏺ Recording: n/a";
+    btn.disabled = true;
+    btn.title = "MediaMTX is not running on this device";
+    return;
+  }
+  btn.disabled = false;
+  const live = (s.recording || []).length;
+  btn.textContent = s.enabled
+    ? `⏺ Recording: ON${live ? ` · ${live} saving` : ""}`
+    : "⏺ Recording: OFF";
+  btn.style.color = s.enabled ? (live ? "#f87171" : "var(--ok, #34d399)") : "#8fa3bf";
+  btn.style.borderColor = s.enabled && live ? "rgba(248,113,113,.5)" : "";
+}
+document.getElementById("rec-toggle").onclick = async () => {
+  try {
+    const r = await api("/api/v1/recordings/toggle", { method: "POST" });
+    toast(r.enabled ? "Recording ON — saves while a person is in view"
+                    : "Recording OFF — nothing is written to disk",
+          r.enabled ? "ok" : "warn");
+  } catch (e) { toast(e.detail || "Recording toggle failed", "err"); }
+  refreshRec();
+};
+
 initCamNames();
 setInterval(pollState, 400);
 setInterval(pollCloud, 2000);
 pollCloud();
+setInterval(refreshRec, 5000);
+refreshRec();
 </script>
 </body>
 </html>

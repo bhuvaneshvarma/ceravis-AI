@@ -30,6 +30,9 @@ edge/data/recordings/
 # Cloud call log (monitor sync console runtime state)
 edge/data/cloud_calls.jsonl
 
+# Recording on/off runtime state (monitor button)
+edge/data/recording_mode.json
+
 # Live camera config — contains real RTSP credentials, never commit
 edge/data/cameras.json
 

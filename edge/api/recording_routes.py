@@ -12,7 +12,7 @@ frontend talks only to this device API:
         ?start=<ISO8601>&duration=<secs>
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from configuration.camera_config import CameraConfig
@@ -21,6 +21,31 @@ from media.mediamtx_client import MediaMTXError, record_path_name
 
 
 router = APIRouter(prefix="/api/v1/recordings", tags=["Recordings"])
+
+
+def _controller(request: Request):
+    rc = getattr(request.app.state, "recording_controller", None)
+    if rc is None:
+        raise HTTPException(503, "recording not available (MediaMTX not running)")
+    return rc
+
+
+@router.get("/state")
+def recording_state(request: Request):
+    """Runtime recording switch + which cameras are recording right now."""
+    rc = getattr(request.app.state, "recording_controller", None)
+    if rc is None:
+        return {"available": False, "enabled": False, "recording": []}
+    return {"available": True, "enabled": rc.is_enabled(),
+            "recording": rc.recording_now()}
+
+
+@router.post("/toggle")
+def recording_toggle(request: Request):
+    """Flip person-triggered recording on/off (persisted; OFF also stops any
+    active recordings immediately — nothing is saved until turned back on)."""
+    rc = _controller(request)
+    return {"enabled": rc.set_enabled(not rc.is_enabled())}
 
 
 @router.get("")

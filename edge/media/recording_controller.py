@@ -16,10 +16,12 @@ a couple of poll intervals are treated as "nobody" (a camera the AI focus has
 idled produces no fresh results, so its recording winds down naturally).
 """
 
+import json
 import logging
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -29,6 +31,8 @@ from media.mediamtx_client import MediaMTXError, record_path_name
 
 
 logger = logging.getLogger("media")
+
+_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # a detection result older than this is stale — its camera counts as empty
 _FRESH_SECS = 3.0
@@ -42,18 +46,51 @@ class RecordingController:
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
         self._last_person: dict[str, float] = {}   # camera_id -> monotonic time
+        # Runtime ON/OFF (monitor button) — persisted so a deliberate "stop
+        # filling the disk" choice survives restarts. Default from the env.
+        self._lock = threading.Lock()
+        base = settings.data_path
+        base = base if base.is_absolute() else (_EDGE_ROOT / base)
+        self._mode_file = base / "recording_mode.json"
+        self._enabled = self._load_enabled()
+
+    # ---- runtime enable/disable (monitor button) ---------------------
+    def _load_enabled(self) -> bool:
+        try:
+            return bool(json.loads(self._mode_file.read_text())["enabled"])
+        except Exception:
+            return bool(settings.record_enabled)
+
+    def is_enabled(self) -> bool:
+        with self._lock:
+            return self._enabled
+
+    def set_enabled(self, on: bool) -> bool:
+        """Flip recording; turning OFF also stops every active recording now."""
+        with self._lock:
+            self._enabled = bool(on)
+            try:
+                self._mode_file.parent.mkdir(parents=True, exist_ok=True)
+                self._mode_file.write_text(json.dumps({"enabled": self._enabled}))
+            except Exception:
+                logger.exception("recording mode persist failed")
+        if not on:
+            self._stop_all()
+        logger.info("recording %s (runtime toggle)", "ENABLED" if on else "DISABLED")
+        return self.is_enabled()
+
+    def recording_now(self) -> list[str]:
+        return [cam for cam, on in self._recording.items() if on]
 
     def start(self) -> None:
-        if not settings.record_enabled:
-            logger.info("Recording disabled (RECORD_ENABLED=false)")
-            return
         self._running = True
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="recording-controller")
         self._thread.start()
         logger.info("Recording on person detection — %ds segments, %.0fs post-roll, "
-                    "keep %dd", settings.record_segment_secs,
-                    settings.record_post_roll_secs, settings.record_retention_days)
+                    "keep %dd, enabled=%s", settings.record_segment_secs,
+                    settings.record_post_roll_secs, settings.record_retention_days,
+                    self.is_enabled())
 
     def stop(self) -> None:
         self._running = False
@@ -66,14 +103,20 @@ class RecordingController:
     def _run(self) -> None:
         while self._running:
             try:
-                self._tick()
+                if self.is_enabled():
+                    self._tick()
+                else:
+                    self._stop_all()          # idempotent — no-op once all off
             except Exception:
                 logger.exception("recording tick failed")
             time.sleep(settings.record_poll_secs)
-        # service stopping — close any open recordings
+        self._stop_all()                       # service stopping — close segments
+
+    def _stop_all(self) -> None:
         for cam, on in list(self._recording.items()):
             if on:
                 self._set(cam, False)
+        self._last_person.clear()
 
     def _tick(self) -> None:
         now = time.monotonic()

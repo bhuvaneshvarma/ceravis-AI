@@ -45,11 +45,14 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(messa
 from config.settings import settings                                      # noqa: E402
 from configuration.account_config import AccountConfig                    # noqa: E402
 from configuration.camera_config import CameraConfig                      # noqa: E402
+from integration import call_log                                          # noqa: E402
 from integration.ceravis_api import (                                     # noqa: E402
     CeravisApiError, alert_id_of, get_user_details, is_configured,
     room_to_enum, save_alert, save_cameras, save_snapshot,
 )
 from media.mediamtx_client import webrtc_url                              # noqa: E402
+
+call_log.SOURCE = "test"        # console shows a TEST chip on these calls
 
 
 def _stream_base() -> str:
