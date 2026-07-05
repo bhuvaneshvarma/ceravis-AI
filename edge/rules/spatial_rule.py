@@ -37,8 +37,8 @@ class SpatialRule:
         events: list[Event] = []
         now = datetime.now(timezone.utc)
 
-        # "Alone" = no identified visitor anywhere right now.
-        visitor_present = any(
+        # "Alone" = no identified non-recipient person anywhere right now.
+        other_present = any(
             (ident is not None and not ident.is_target)
             for cam, res in ctx.tracks.get_all().items()
             for t in res.tracks
@@ -62,7 +62,7 @@ class SpatialRule:
 
                 if area == st["area"]:
                     st["stable"] += 1
-                    self._maybe_inactivity(events, st, area, visitor_present,
+                    self._maybe_inactivity(events, st, area, other_present,
                                            camera_id, track.track_id, ident, now)
                     continue
 
@@ -77,9 +77,9 @@ class SpatialRule:
         return events
 
     # ----------------------------------------------------------------
-    def _maybe_inactivity(self, events, st, area, visitor_present,
+    def _maybe_inactivity(self, events, st, area, other_present,
                           camera_id, track_id, ident, now) -> None:
-        if area is None or visitor_present:
+        if area is None or other_present:
             return                                  # only when alone in a known area
         held = (now - st["since"]).total_seconds()
         if held < settings.inactivity_secs:

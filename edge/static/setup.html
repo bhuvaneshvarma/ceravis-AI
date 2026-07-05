@@ -230,7 +230,7 @@
         <h2>Registered on this device</h2>
         <table class="tbl"><tbody id="r-table"></tbody></table>
         <div class="hint mt">Face/body enrollment is the final step. Falls &amp;
-          posture work without it; enrollment adds identity (recipient vs visitor).</div>
+          posture work without it; enrollment adds identity (recipient vs others).</div>
       </div>
     </div>
   </section>
@@ -315,7 +315,7 @@
         <table class="tbl"><tbody id="r-table-en"></tbody></table>
         <div class="hint mt">
           Pick a recipient to enroll. Falls + posture work without enrollment;
-          enrollment adds <i>identity</i> (recipient vs visitor) and needs the ReID
+          enrollment adds <i>identity</i> (recipient vs others) and needs the ReID
           engine — build it with <code>scripts/export_reid.sh</code>. Until then
           media is stored and shows <span class="pill pill-warn">pending_reid</span>;
           embeddings build automatically once ReID is on.

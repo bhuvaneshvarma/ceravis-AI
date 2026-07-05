@@ -34,7 +34,7 @@ edge/
   tracking/       clean-room BoT-SORT (kalman/matching) + buffers + runner
   pose/           YOLO-Pose TRT + posture/fall classifier + runner
   reid/           OSNet TRT + FAISS hybrid gallery + target-lock manager + runner
-  rules/          Fall / posture / spatial / visit-session rule engine
+  rules/          Fall / posture / spatial rule engine
   events/         In-process bus + enricher + SQLite writer
   alerts/         cloud_alert_publisher (HTTPS app server)
   integration/    CERAVIS app-server client (userDetails/saveCamera/alert/snapshot)

@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api/v1/events", tags=["Events"])
 @router.get("")
 def recent_events(request: Request, limit: int = 50,
                   camera_id: str | None = None):
-    """Most recent rule-engine events (falls, postures, visitors), newest first."""
+    """Most recent rule-engine events (falls, postures, welfare), newest first."""
     event_store = getattr(request.app.state, "event_store", None)
     if event_store is None:
         raise HTTPException(503, "event store not running")
