@@ -20,8 +20,33 @@
   .track-chip.fallen { border-color: rgba(248,113,113,.5);
                        background: rgba(248,113,113,.1); animation: blink 1.2s infinite; }
   .sidecol .card { margin-bottom: 14px; }
-  #live-log { max-height: 420px; }
-  #event-log { max-height: 300px; }
+  /* Cloud sync console — live saveAlert/saveSnapshot call status */
+  .cs-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b;
+            flex: 0 0 auto; }
+  .cs-dot.ok  { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.7); }
+  .cs-dot.err { background: #f87171; box-shadow: 0 0 8px rgba(248,113,113,.7);
+                animation: blink 1.2s infinite; }
+  .cs-log { max-height: 620px; overflow-y: auto; margin-top: 10px;
+            display: flex; flex-direction: column; gap: 8px; }
+  .cs-entry { border: 1px solid var(--line); border-left: 3px solid #34d399;
+              border-radius: 9px; padding: 8px 10px; background: var(--panel-2);
+              font-size: 12px; }
+  .cs-entry.err { border-left-color: #f87171; background: rgba(248,113,113,.06); }
+  .cs-top { display: flex; align-items: center; gap: 7px; }
+  .cs-ep { font-size: 10px; font-weight: 700; letter-spacing: .6px;
+           padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
+           background: var(--panel); }
+  .cs-ep.alert { color: #f87171; border-color: rgba(248,113,113,.45); }
+  .cs-ep.snap  { color: #60a5fa; border-color: rgba(96,165,250,.45); }
+  .cs-ep.cam   { color: #2dd4bf; border-color: rgba(45,212,191,.45); }
+  .cs-ok  { font-weight: 700; color: #34d399; font-size: 11px; }
+  .cs-bad { font-weight: 700; color: #f87171; font-size: 11px; }
+  .cs-time { margin-left: auto; color: var(--muted); font-size: 10.5px; }
+  .cs-label { margin-top: 4px; word-break: break-word; }
+  .cs-meta { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 10px;
+             color: var(--muted); font-size: 10.5px; }
+  .cs-meta a { color: #60a5fa; }
+  .cs-alertid { color: #fbbf24; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -46,14 +71,19 @@
 
     <div class="sidecol">
       <div class="card">
-        <h2>Live activity log</h2>
-        <div class="log" id="live-log">
-          <div class="faint" id="log-empty">Waiting for movement…</div>
+        <h2 style="display:flex;align-items:center;gap:9px">
+          <span id="cs-dot" class="cs-dot"></span> Cloud sync console
+          <span class="faint" id="cs-stats"
+                style="margin-left:auto;font-weight:400;font-size:11.5px"></span>
+        </h2>
+        <div class="hint" style="margin-top:2px">Every call this device fires at the
+          CERAVIS server — alerts, snapshots, camera sync — live with HTTP result,
+          latency, alertId and the uploaded snapshot link.</div>
+        <div class="cs-log" id="cs-log">
+          <div class="faint" id="cs-empty" style="font-size:12.5px">No cloud calls yet —
+            trigger a test (fall, transition, stillness) and each call lands here
+            the moment it fires.</div>
         </div>
-      </div>
-      <div class="card">
-        <h2>Event history <span class="faint">(rule engine)</span></h2>
-        <div class="log" id="event-log"></div>
       </div>
     </div>
   </div>
@@ -71,7 +101,6 @@ const POSTURE_COLOR = {
 const M = {
   cam: null, stream: null, lastImg: null,
   state: {},                 // latest ai/state for ALL cameras
-  lastPosture: {},           // track_id -> posture (for transition log)
   searching: true,           // true when no enrolled target is in view
 };
 const canvas = document.getElementById("m-canvas");
@@ -121,7 +150,7 @@ function setCamera(camId, searching) {
   M.searching = searching;
   if (camId === M.cam) return;                   // no change — keep the stream
   if (M.stream) { M.stream.stop(); M.stream = null; }
-  M.cam = camId; M.lastPosture = {}; M.lastImg = null;
+  M.cam = camId; M.lastImg = null;
   if (!camId) return;
   const img = new Image();
   M.stream = liveStream(img, camId, {
@@ -159,16 +188,7 @@ function draw() {
   ctx.restore();
 }
 
-/* ---- AI state polling + movement log ------------------------------ */
-function logEntry(html, cls = "") {
-  const empty = document.getElementById("log-empty");
-  if (empty) empty.remove();
-  const box = document.getElementById("live-log");
-  const e = el("div", `log-entry ${cls}`,
-    `<span class="t">${fmtTime()}</span><span class="what">${html}</span>`);
-  box.prepend(e);
-  while (box.children.length > 80) box.lastChild.remove();
-}
+/* ---- AI state polling --------------------------------------------- */
 async function pollState() {
   let state;
   try { state = await api(`/api/v1/ai/state`); } catch { return; }   // ALL cameras
@@ -196,23 +216,6 @@ async function pollState() {
         </span>`;
       }).join("");
 
-  // transition log (target only)
-  const seen = new Set();
-  tracks.forEach(t => {
-    seen.add(t.track_id);
-    const prev = M.lastPosture[t.track_id];
-    if (t.posture && t.posture !== prev) {
-      const who = t.recipient_id || "target";
-      if (t.posture === "fallen")
-        logEntry(`⚠ ${who} — <b>FALL DETECTED</b>`, "fall");
-      else
-        logEntry(`${who}: ${prev ? prev + " → " : ""}<b>${t.posture}</b>`);
-      M.lastPosture[t.track_id] = t.posture;
-    }
-  });
-  Object.keys(M.lastPosture).forEach(id => {
-    if (!seen.has(Number(id))) delete M.lastPosture[id];
-  });
   draw();
 }
 
@@ -233,29 +236,49 @@ function updateHeader() {
   }
 }
 
-/* ---- persisted events (rule engine) -------------------------------- */
-async function pollEvents() {
-  try {
-    const evts = await api(`/api/v1/events?limit=25`);
-    document.getElementById("event-log").innerHTML = evts.length === 0
-      ? `<div class="faint" style="font-size:12.5px">No events recorded yet.</div>`
-      : evts.map(e => {
-          const sev = e.severity || "info";
-          const where = `${e.room_name || e.camera_id}${e.zone_name ? " · " + e.zone_name : ""}`;
-          return `<div class="log-entry sev-${sev} ${e.event_type === "fall" ? "fall" : ""}">
-            <span class="t">${new Date(e.timestamp).toLocaleTimeString([], {hour12:false})}</span>
-            <span class="what"><b>${e.title || e.event_type}</b>
-              <span class="faint">· ${where}${e.recipient_id ? " · " + e.recipient_id : ""}</span>
-            </span>
-          </div>`;
-        }).join("");
-  } catch {}
+/* ---- Cloud sync console (live saveAlert/saveSnapshot status) ------- */
+const CS = { lastTs: null };
+const csEsc = s => String(s).replace(/[&<>"]/g,
+  m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+
+async function pollCloud() {
+  let r;
+  try { r = await api("/api/v1/cloud/activity?limit=80"); } catch { return; }
+  const calls = r.calls || [];
+  const okN = calls.filter(c => c.ok).length;
+  document.getElementById("cs-stats").textContent =
+    calls.length ? `${okN} ✓ · ${calls.length - okN} ✗` : "";
+  const dot = document.getElementById("cs-dot");
+  dot.className = "cs-dot" + (calls.length ? (calls[0].ok ? " ok" : " err") : "");
+  if (!calls.length || calls[0].ts === CS.lastTs) return;   // nothing new — keep scroll
+  CS.lastTs = calls[0].ts;
+
+  const epCls = e => e === "saveAlert" ? "alert"
+    : e === "saveSnapshot" ? "snap" : "cam";
+  const epTxt = e => ({ saveAlert: "ALERT", saveSnapshot: "SNAPSHOT",
+    saveCamera: "CAMERA", userDetails: "ACCOUNT" }[e] || (e || "?").toUpperCase());
+  document.getElementById("cs-log").innerHTML = calls.map(c => `
+    <div class="cs-entry ${c.ok ? "" : "err"}">
+      <div class="cs-top">
+        <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
+        <span class="${c.ok ? "cs-ok" : "cs-bad"}">${c.ok ? "✓ CALL HIT" : "✗ FAILED"}</span>
+        <span class="cs-time">${new Date(c.ts).toLocaleTimeString([], { hour12: false })}</span>
+      </div>
+      ${c.label ? `<div class="cs-label">${csEsc(c.label)}</div>` : ""}
+      <div class="cs-meta">
+        ${c.status != null ? `<span>HTTP ${c.status}</span>` : ""}
+        ${c.latency_ms != null ? `<span>${Math.round(c.latency_ms)} ms</span>` : ""}
+        ${c.alert_id != null ? `<span class="cs-alertid">alertId ${csEsc(c.alert_id)}</span>` : ""}
+        ${c.link ? `<a href="${csEsc(c.link)}" target="_blank" rel="noopener">view snapshot ↗</a>` : ""}
+        ${c.error ? `<span class="cs-bad">${csEsc(c.error)}</span>` : ""}
+      </div>
+    </div>`).join("");
 }
 
 initCamNames();
 setInterval(pollState, 400);
-setInterval(pollEvents, 5000);
-pollEvents();
+setInterval(pollCloud, 2000);
+pollCloud();
 </script>
 </body>
 </html>

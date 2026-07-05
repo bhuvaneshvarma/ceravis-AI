@@ -16,10 +16,12 @@ email isn't found, onboarding is blocked.
 
 import logging
 import re
+import time
 
 import requests
 
 from config.settings import settings
+from integration import call_log
 
 
 logger = logging.getLogger("integration")
@@ -74,14 +76,20 @@ def get_user_details(email: str) -> dict | None:
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/userDetails"
     logger.info("userDetails -> POST %s  email=%s", url, email)
+    t0 = time.perf_counter()
     try:
         resp = requests.post(url, json={"email": email}, headers=_headers(),
                              timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("userDetails: cannot reach %s — %s", url, exc)
+        call_log.record("userDetails", False, label=email, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
 
+    lat = (time.perf_counter() - t0) * 1000
     logger.info("userDetails <- HTTP %s", resp.status_code)
+    call_log.record("userDetails", resp.status_code < 400, label=email,
+                    status=resp.status_code, latency_ms=lat)
     if resp.status_code == 404:
         return None
     if resp.status_code >= 400:
@@ -112,15 +120,23 @@ def save_cameras(patient_user_id, cameras: list[dict]):
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveCamera"
     payload = {"patientUserId": patient_user_id, "cameras": cameras}
+    label = f"{len(cameras)} camera(s): " + \
+        ", ".join(c.get("room", "?") for c in cameras)
     logger.info("saveCamera -> PUT %s  patient=%s  cameras=%d  rooms=%s",
                 url, patient_user_id, len(cameras), [c.get("room") for c in cameras])
+    t0 = time.perf_counter()
     try:
         resp = requests.put(url, json=payload, headers=_headers(),
                             timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("saveCamera: cannot reach %s — %s", url, exc)
+        call_log.record("saveCamera", False, label=label, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
     logger.info("saveCamera <- HTTP %s  body=%s", resp.status_code, resp.text[:300])
+    call_log.record("saveCamera", resp.status_code < 400, label=label,
+                    status=resp.status_code, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
@@ -166,22 +182,33 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveAlert"
     payload = {"patientUserId": patient_user_id,
                "alertType": alert_type, "messageText": message_text}
+    label = f"{alert_type} · {message_text}"
     logger.info("saveAlert -> PUT %s  patient=%s  type=%s", url,
                 patient_user_id, alert_type)
+    t0 = time.perf_counter()
     try:
         resp = requests.put(url, json=payload, headers=_headers(),
                             timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("saveAlert: cannot reach %s — %s", url, exc)
+        call_log.record("saveAlert", False, label=label, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
     logger.info("saveAlert <- HTTP %s  body=%s", resp.status_code, resp.text[:300])
     if resp.status_code >= 400:
+        call_log.record("saveAlert", False, label=label,
+                        status=resp.status_code, latency_ms=lat,
+                        error=resp.text[:200])
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
     try:
-        return _unwrap(resp.json())
+        result = _unwrap(resp.json())
     except ValueError:
-        return True
+        result = True
+    call_log.record("saveAlert", True, label=label, status=resp.status_code,
+                    latency_ms=lat, alert_id=alert_id_of(result))
+    return result
 
 
 def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str,
@@ -206,17 +233,29 @@ def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str,
         payload["alertId"] = alert_id
     logger.info("saveSnapshot -> POST %s  patient=%s  cam=%s  alert=%s  img_b64=%d bytes",
                 url, patient_id, camera_number, alert_id, len(base64_image or ""))
+    t0 = time.perf_counter()
     try:
         resp = requests.post(url, json=payload, headers=_headers(),
                              timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("saveSnapshot: cannot reach %s — %s", url, exc)
+        call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
+                        error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
     logger.info("saveSnapshot <- HTTP %s  body=%s", resp.status_code, resp.text[:200])
     if resp.status_code >= 400:
+        call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
+                        status=resp.status_code, latency_ms=lat,
+                        error=resp.text[:200])
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
     try:
-        return _unwrap(resp.json())
+        result = _unwrap(resp.json())
     except ValueError:
-        return True
+        result = True
+    call_log.record("saveSnapshot", True, label=text, alert_id=alert_id,
+                    status=resp.status_code, latency_ms=lat,
+                    link=call_log.find_link(result))
+    return result

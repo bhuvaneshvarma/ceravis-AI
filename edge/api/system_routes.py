@@ -27,6 +27,14 @@ async def health():
             "device_id": settings.device_id}
 
 
+@router.get("/api/v1/cloud/activity")
+def cloud_activity(limit: int = 100):
+    """Rolling log of app-server calls (saveAlert/saveSnapshot/…) — feeds the
+    monitor's Cloud Sync Console so end-to-end tests are verifiable on screen."""
+    from integration.call_log import recent
+    return {"calls": recent(limit=min(int(limit), 300))}
+
+
 @router.websocket("/stream/{camera_id}")
 async def websocket_stream(websocket: WebSocket, camera_id: str):
     await stream_camera(websocket,

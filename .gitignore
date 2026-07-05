@@ -27,6 +27,9 @@ edge/data/mediamtx.yml
 edge/data/certs/
 edge/data/recordings/
 
+# Cloud call log (monitor sync console runtime state)
+edge/data/cloud_calls.jsonl
+
 # Live camera config — contains real RTSP credentials, never commit
 edge/data/cameras.json
 
