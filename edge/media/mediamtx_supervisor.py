@@ -26,7 +26,8 @@ from pathlib import Path
 
 from config.settings import settings
 from configuration.camera_config import CameraConfig
-from media.mediamtx_client import is_up, path_name
+from integration import call_log
+from media.mediamtx_client import is_up, path_name, tls_enabled
 
 
 logger = logging.getLogger("media")
@@ -45,6 +46,7 @@ class MediaMTXSupervisor:
         self._thread: threading.Thread | None = None
         self._running = False
         self._config_file = _abs(settings.data_path) / "mediamtx.yml"
+        self._log_file = _abs(settings.data_path) / "mediamtx.log"
         self.available = False
 
     # ---- lifecycle ---------------------------------------------------
@@ -55,6 +57,13 @@ class MediaMTXSupervisor:
                 "MediaMTX binary not found at %s — media backbone disabled "
                 "(direct camera reads; no recording, no shared live links). "
                 "Run setup/install_mediamtx.sh on the device.", binary)
+            # Loud on the monitor's sync console too — a dead backbone means
+            # the live links pushed to the cloud are dead, silently.
+            call_log.record(
+                "event", False,
+                label="Media backbone DISABLED — live links & recording are dead",
+                error="mediamtx binary missing — run: bash setup/"
+                      "install_mediamtx.sh, then sudo systemctl restart ceravis")
             return
         self.available = True
         self._running = True
@@ -93,11 +102,20 @@ class MediaMTXSupervisor:
         while self._running:
             try:
                 self._write_config()
-                self._proc = subprocess.Popen(
-                    [settings.mediamtx_binary, str(self._config_file)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                logger.info("MediaMTX started (pid %s)", self._proc.pid)
+                # MediaMTX's own output goes to data/mediamtx.log — when it
+                # dies on boot (bad config, port in use) the reason must be
+                # readable, not swallowed by DEVNULL. Bounded: fresh past 5 MB.
+                self._log_file.parent.mkdir(parents=True, exist_ok=True)
+                if (self._log_file.exists()
+                        and self._log_file.stat().st_size > 5 * 1024 * 1024):
+                    self._log_file.unlink()
+                with open(self._log_file, "ab") as log:
+                    self._proc = subprocess.Popen(
+                        [settings.mediamtx_binary, str(self._config_file)],
+                        stdout=log, stderr=subprocess.STDOUT,
+                    )
+                logger.info("MediaMTX started (pid %s, log: %s)",
+                            self._proc.pid, self._log_file)
             except Exception:
                 logger.exception("MediaMTX spawn failed")
                 time.sleep(backoff)
@@ -119,7 +137,7 @@ class MediaMTXSupervisor:
         this file is the state MediaMTX boots with."""
         crt = _abs(settings.mediamtx_cert_dir) / "server.crt"
         key = _abs(settings.mediamtx_cert_dir) / "server.key"
-        tls = crt.is_file() and key.is_file()
+        tls = tls_enabled()     # one TLS decision — same check the links use
 
         record_path = _abs(settings.record_dir)
         record_path.mkdir(parents=True, exist_ok=True)

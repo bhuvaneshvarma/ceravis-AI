@@ -5,9 +5,9 @@ import logging
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from config.settings import settings
 from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
+from integration import call_log
 from integration.ceravis_api import (
     CeravisApiError,
     get_user_details,
@@ -15,7 +15,8 @@ from integration.ceravis_api import (
     room_to_enum,
     save_cameras,
 )
-from media.mediamtx_client import webrtc_url
+from media.mediamtx_client import is_up as media_backbone_up
+from media.mediamtx_client import stream_base, webrtc_url
 
 
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
@@ -24,16 +25,11 @@ logger = logging.getLogger("account")
 
 
 def _stream_base(request: Request) -> str:
-    """Externally-reachable base for the WebRTC live links handed to the cloud.
-    Prefer the configured override (point it at a TLS reverse proxy for a
-    browser-trusted https link); otherwise the host the browser used to reach
-    us, served by MediaMTX's own HTTPS (self-signed cert)."""
-    base = settings.device_stream_base.strip()
-    if base:
-        return (base.rstrip("/")
-                .replace("wss://", "https://").replace("ws://", "http://"))
-    host = (request.headers.get("host") or "localhost").rsplit(":", 1)[0]
-    return f"https://{host}"
+    """Externally-reachable base for the live links handed to the cloud —
+    delegates to media.mediamtx_client.stream_base (the ONE base builder,
+    shared with tests/test_cloud.py): DEVICE_STREAM_BASE override, else this
+    host with the scheme MediaMTX is actually serving."""
+    return stream_base(request.headers.get("host") or "localhost")
 
 
 class VerifyRequest(BaseModel):
@@ -104,13 +100,26 @@ def sync_cameras(request: Request):
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
                 len(cameras), pid, [(c["room"], c["url"]) for c in cameras])
 
+    # The links point at MediaMTX — if it isn't running they are dead on
+    # arrival. Sync anyway (the server needs the cameras registered), but say
+    # so loudly here AND on the monitor's sync console.
+    backbone = media_backbone_up()
+    if not backbone:
+        logger.warning("sync-cameras: media backbone DOWN — pushed live links "
+                       "will be dead until MediaMTX runs on this device")
+        call_log.record(
+            "event", False,
+            label="Camera live links pushed while the media backbone is DOWN",
+            error="links dead until MediaMTX runs — bash setup/"
+                  "install_mediamtx.sh + restart ceravis, then re-sync cameras")
+
     try:
         result = save_cameras(pid, cameras)
     except CeravisApiError as exc:
         logger.warning("saveCamera failed (user #%s): %s", pid, exc)
         return {"synced": False, "reason": str(exc), "count": len(cameras)}
     logger.info("saveCamera: %d camera(s) sent for user #%s", len(cameras), pid)
-    return {"synced": True, "count": len(cameras),
+    return {"synced": True, "count": len(cameras), "media_backbone": backbone,
             "patientUserId": pid, "cameras": cameras, "server": result}
 
 

@@ -52,23 +52,22 @@ from integration.ceravis_api import (                                     # noqa
     CeravisApiError, alert_id_of, get_user_details, is_configured,
     room_to_enum, save_alert, save_cameras, save_snapshot,
 )
-from media.mediamtx_client import webrtc_url                              # noqa: E402
+from media.mediamtx_client import is_up, stream_base, webrtc_url          # noqa: E402
 
 call_log.SOURCE = "test"        # console shows a TEST chip on these calls
 
 
 def _stream_base() -> str:
-    """Base for the WebRTC live links, mirroring account_routes._stream_base."""
-    b = settings.device_stream_base.strip()
-    if b:
-        return b.rstrip("/").replace("wss://", "https://").replace("ws://", "http://")
+    """Base for the live links — the SAME stream_base account_routes uses
+    (DEVICE_STREAM_BASE override, else this device's IP with the scheme
+    MediaMTX actually serves), fed with the LAN IP."""
     ip = "localhost"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
     except Exception:
         pass
-    return f"https://{ip}"
+    return stream_base(ip)
 
 
 def _latest_snapshot() -> str | None:
@@ -241,6 +240,10 @@ def main() -> int:
     # [2] saveCamera payload
     cams = CameraConfig().get_all()
     base = _stream_base()
+    up = is_up()
+    print(f"\nmedia backbone (MediaMTX): {'UP' if up else 'DOWN'}"
+          + ("" if up else "  <- live links below are DEAD until it runs: "
+             "bash setup/install_mediamtx.sh && sudo systemctl restart ceravis"))
     cameras = [{
         "device": c.camera_id, "model": "", "supplier": "",
         "room": room_to_enum(c.room_name),

@@ -19,6 +19,7 @@ MediaMTXError on failure so callers can degrade gracefully.
 
 import logging
 import re
+from pathlib import Path
 
 import requests
 
@@ -28,6 +29,7 @@ from config.settings import settings
 logger = logging.getLogger("media")
 
 _TIMEOUT = 3.0
+_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class MediaMTXError(Exception):
@@ -54,10 +56,35 @@ def local_rtsp_url(camera_id: str) -> str:
     return f"rtsp://127.0.0.1:{settings.mediamtx_rtsp_port}/{path_name(camera_id)}"
 
 
+def tls_enabled() -> bool:
+    """True when the installer-generated cert pair exists — the SAME check the
+    supervisor makes when writing mediamtx.yml, so the scheme we advertise in
+    live links always matches what MediaMTX actually serves. (An https link
+    pointing at a plaintext port is one of the ways links go dead.)"""
+    cert_dir = Path(settings.mediamtx_cert_dir)
+    cert_dir = cert_dir if cert_dir.is_absolute() else (_EDGE_ROOT / cert_dir)
+    return (cert_dir / "server.crt").is_file() and (cert_dir / "server.key").is_file()
+
+
+def stream_base(host: str) -> str:
+    """`scheme://host` for the live links sent to the cloud — THE one base
+    builder (used by the account camera-sync and tests/test_cloud.py).
+    DEVICE_STREAM_BASE (a reverse proxy) wins when set; otherwise the device
+    host with the scheme MediaMTX is really serving (https only when the
+    cert pair exists)."""
+    override = settings.device_stream_base.strip()
+    if override:
+        return (override.rstrip("/")
+                .replace("wss://", "https://").replace("ws://", "http://"))
+    host = (host or "localhost").rsplit(":", 1)[0]        # strip any port
+    return f"{'https' if tls_enabled() else 'http'}://{host}"
+
+
 def webrtc_url(camera_id: str, public_base: str) -> str:
-    """The WebRTC page for one camera — the HTTPS live link sent to the cloud.
-    `public_base` is scheme://host (no port); the WebRTC port is appended
-    unless the base already carries an explicit path (reverse proxy)."""
+    """The WebRTC page for one camera — the live link sent to the cloud.
+    `public_base` is scheme://host (no port, see stream_base); the WebRTC port
+    is appended unless the base already carries an explicit path (reverse
+    proxy)."""
     base = public_base.rstrip("/")
     name = path_name(camera_id)
     # A reverse-proxy base like https://edge.example.com/mtx keeps its path;

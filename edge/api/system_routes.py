@@ -23,8 +23,12 @@ def root():
 
 @router.get("/health")
 async def health():
+    from media.mediamtx_client import is_up
     return {"status": "ok", "version": settings.app_version,
-            "device_id": settings.device_id}
+            "device_id": settings.device_id,
+            # False = live links/recording are dead even though the app is up
+            # (mediamtx missing or crashed — see data/mediamtx.log).
+            "media_backbone": is_up()}
 
 
 @router.get("/api/v1/cloud/activity")
