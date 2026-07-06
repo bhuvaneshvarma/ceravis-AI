@@ -8,6 +8,7 @@ from pathlib import Path
 
 import cv2
 
+from common import event_snapshots
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -17,9 +18,6 @@ from schemas.event import Event
 
 
 logger = logging.getLogger("rules")
-
-# edge/ project root (this file is edge/events/event_enricher.py).
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # event_type -> (severity, human title)
 _ALERT_MAP: dict[str, tuple[str, str]] = {
@@ -56,8 +54,7 @@ class EventEnricher:
         self._cams = camera_config or CameraConfig()
         self._zones = zone_resolver or ZoneResolver()
         self._recipients = recipient_config or RecipientConfig()
-        edir = Path(settings.events_dir)
-        self._events_root = edir if edir.is_absolute() else (_EDGE_ROOT / edir)
+        self._events_root = event_snapshots.events_root()
         self._rest_kw = [k.strip().lower()
                          for k in settings.rest_zone_keywords.split(",") if k.strip()]
         self._name_cache: dict[str, str] = {}      # recipient_id -> full_name
@@ -153,10 +150,7 @@ class EventEnricher:
         except Exception:
             logger.exception("snapshot write failed event=%s", event.event_id)
 
-    # Resolve a stored snapshot_path back to an absolute file (for serving).
+    # Resolve a stored snapshot_path back to an absolute file (for serving) —
+    # delegates to the shared resolver (common.event_snapshots).
     def snapshot_file(self, snapshot_path: str) -> Path | None:
-        safe = Path(snapshot_path)
-        if safe.is_absolute() or ".." in safe.parts:
-            return None
-        f = self._events_root / safe
-        return f if f.exists() else None
+        return event_snapshots.snapshot_file(snapshot_path)

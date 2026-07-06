@@ -37,14 +37,11 @@ logger = logging.getLogger("ceravis")
 
 def lan_urls(port: int = 8000) -> list[str]:
     """Best-effort LAN addresses the API is reachable on, for logging."""
+    from common.net import lan_ip
     urls = []
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))          # no traffic sent; just resolves the route
-        urls.append(f"http://{s.getsockname()[0]}:{port}")
-        s.close()
-    except Exception:
-        pass
+    ip = lan_ip()
+    if ip:
+        urls.append(f"http://{ip}:{port}")
     try:
         urls.append(f"http://{socket.gethostname()}.local:{port}")
     except Exception:

@@ -19,9 +19,9 @@ import logging
 import queue
 import threading
 from datetime import datetime
-from pathlib import Path
 
 from alerts.alert_format import format_line
+from common.event_snapshots import snapshot_file
 from config.settings import settings
 from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
@@ -34,9 +34,6 @@ from integration.ceravis_api import (
 
 
 logger = logging.getLogger("alerts")
-
-# edge/ project root — to resolve event.snapshot_path (relative) to a file.
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CloudAlertPublisher:
@@ -152,16 +149,10 @@ class CloudAlertPublisher:
             except Exception:
                 logger.exception("saveSnapshot unexpected error")
 
-    @staticmethod
-    def _abs(rel_path: str):
-        """Resolve a stored snapshot path to an absolute file, or None."""
-        edir = Path(settings.events_dir)
-        root = edir if edir.is_absolute() else (_EDGE_ROOT / edir)
-        f = root / rel_path
-        return f if f.exists() else None
-
     def _b64(self, rel_path: str) -> str | None:
-        f = self._abs(rel_path)
+        # Shared resolver (common.event_snapshots) — same one the enricher
+        # writes through and the events API serves from.
+        f = snapshot_file(rel_path)
         if f is None:
             return None
         try:

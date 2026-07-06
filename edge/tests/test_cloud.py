@@ -31,7 +31,6 @@ import glob
 import json
 import logging
 import os
-import socket
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -44,6 +43,7 @@ os.chdir(_EDGE)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
 
 from alerts.alert_format import format_line                               # noqa: E402
+from common.net import lan_ip                                             # noqa: E402
 from config.settings import settings                                      # noqa: E402
 from configuration.account_config import AccountConfig                    # noqa: E402
 from configuration.camera_config import CameraConfig                      # noqa: E402
@@ -61,13 +61,7 @@ def _stream_base() -> str:
     """Base for the live links — the SAME stream_base account_routes uses
     (DEVICE_STREAM_BASE override, else this device's IP with the scheme
     MediaMTX actually serves), fed with the LAN IP."""
-    ip = "localhost"
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
-    except Exception:
-        pass
-    return stream_base(ip)
+    return stream_base(lan_ip() or "localhost")
 
 
 def _latest_snapshot() -> str | None:
