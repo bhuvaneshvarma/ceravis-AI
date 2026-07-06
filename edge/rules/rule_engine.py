@@ -7,10 +7,9 @@ import time
 from events.event_bus import EventBus
 from integration import call_log
 from rules.fall_rule import FallRule
+from rules.location_rule import LocationRule
 from rules.posture_rule import PostureRule
-from rules.room_rule import RoomTransitionRule
 from rules.rule_context import RuleContext
-from rules.spatial_rule import SpatialRule
 from rules.stillness_rule import StillnessRule
 
 
@@ -33,7 +32,7 @@ class RuleEngine:
         self._bus = bus
         self._enricher = enricher          # EventEnricher | None
         self._rules = [FallRule(), PostureRule(), StillnessRule(),
-                       SpatialRule(), RoomTransitionRule()]
+                       LocationRule()]
         self._running = False
         self._thread: threading.Thread | None = None
 

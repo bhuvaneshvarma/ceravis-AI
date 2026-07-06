@@ -34,7 +34,6 @@ _ALERT_MAP: dict[str, tuple[str, str]] = {
     "no_motion": ("critical", "No movement"),
     "no_motion_snapshot": ("info", "No movement"),
     "no_transition_snapshot": ("info", "No transition"),
-    "inactivity": ("warning", "Prolonged inactivity"),
     "area_transition": ("info", "Moved area"),
     "room_transition": ("info", "Changed room"),
 }

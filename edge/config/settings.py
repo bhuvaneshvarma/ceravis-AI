@@ -240,10 +240,7 @@ class Settings(BaseSettings):
     events_dir: str = "data/events"
     event_snapshot_quality: int = 80
     rest_zone_keywords: str = "bed,couch,sofa,recliner,chair,bench,lounge"
-    # Recipient alone + no area change for this long -> inactivity event (also
-    # the re-emit interval for the periodic activity snapshot). Default 30 min.
-    inactivity_secs: float = 1800.0
-    # Room-to-room moves (RoomTransitionRule): after the recipient leaves view,
+    # Room-to-room moves (LocationRule): after the recipient leaves view,
     # the previous room stays valid as the transition origin for this long (an
     # uncovered hallway between two cameras) — beyond it the trail is dropped
     # and the next sighting starts fresh with no transition event.
