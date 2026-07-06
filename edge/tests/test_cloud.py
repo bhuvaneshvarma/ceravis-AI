@@ -113,23 +113,6 @@ def _live_jpeg(camera_id: str) -> bytes | None:
         return None
 
 
-def _target_camera(cams):
-    """The camera the enrolled target is currently detected on (from live AI
-    state) — so a fall test snapshots the right room, not just camera #1."""
-    try:
-        with urllib.request.urlopen("http://localhost:8000/api/v1/ai/state", timeout=5) as r:
-            state = json.loads(r.read())
-    except Exception:
-        return None
-    for camid, s in (state or {}).items():
-        if s.get("target_track_id") is not None or \
-           any(t.get("is_target") for t in s.get("tracks", [])):
-            for c in cams:
-                if c.camera_id == camid:
-                    return c
-    return None
-
-
 def _label(acct: dict, cam, head: str, when: datetime | None = None) -> str:
     """Format-A line: '<head> · Camera N* Room · FirstName · time'. `when` sets
     the timestamp (defaults to now) so a replayed burst can advance it per snap."""

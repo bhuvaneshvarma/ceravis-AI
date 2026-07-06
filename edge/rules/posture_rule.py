@@ -22,12 +22,11 @@ from datetime import datetime, timezone
 from config.settings import settings
 from pose.posture_classifier import Posture
 from schemas.event import Event
-from rules.rule_context import RuleContext, is_fresh
+from rules.rule_context import RuleContext
 
 
 class PostureRule:
     NO_MOVE_SECS = 30.0
-    FRESH_SECS = 10.0    # ignore stale posture records (cameras pose stopped on)
 
     def __init__(self) -> None:
         # (camera_id, track_id) -> (current_posture, entered_at)
@@ -38,35 +37,30 @@ class PostureRule:
         events: list[Event] = []
         now = datetime.now(timezone.utc)
 
-        for camera_id, per_track in ctx.postures.get_all().items():
-            for track_id, rec in per_track.items():
-                # A camera the target left keeps its last posture record forever
-                # — a frozen record would false-fire the duration events.
-                if not is_fresh(rec.timestamp, now, self.FRESH_SECS):
-                    continue
-                # Only the enrolled recipient (the CR). Sets recipient_id so the
-                # cloud publisher's recipient gate passes.
-                identity = ctx.identities.get(camera_id, track_id)
-                if not (identity and identity.is_target):
-                    continue
-                rid = identity.recipient_id
-                key = (camera_id, track_id)
-                prev = self._state.get(key)
+        # The shared resolver answers "where is the recipient" — this rule
+        # only cares about the CR's posture stream (recipient_id set so the
+        # cloud publisher's recipient gate passes).
+        s = ctx.find_recipient(now)
+        if s is None:
+            return []
+        camera_id, track_id = s.camera_id, s.track.track_id
+        rid = s.identity.recipient_id
+        key = (camera_id, track_id)
+        prev = self._state.get(key)
 
-                # Transition
-                if prev is None or prev[0] != rec.posture:
-                    if prev is not None:
-                        self._on_transition(events, camera_id, track_id,
-                                            prev[0], rec.posture, now, rid)
-                    self._state[key] = (rec.posture, now)
-                    self._fired[key].clear()
-                    continue
+        # Transition
+        if prev is None or prev[0] != s.posture:
+            if prev is not None:
+                self._on_transition(events, camera_id, track_id,
+                                    prev[0], s.posture, now, rid)
+            self._state[key] = (s.posture, now)
+            self._fired[key].clear()
+            return events
 
-                # Same posture — check for duration thresholds
-                entered = prev[1]
-                in_state = (now - entered).total_seconds()
-                self._duration_events(events, camera_id, track_id, rec.posture,
-                                      in_state, now, key, rid)
+        # Same posture — check for duration thresholds
+        in_state = (now - prev[1]).total_seconds()
+        self._duration_events(events, camera_id, track_id, s.posture,
+                              in_state, now, key, rid)
         return events
 
     # ----------------------------------------------------------------

@@ -84,11 +84,13 @@ class StillnessRule:
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         now = datetime.now(timezone.utc)
-        tgt = self._find_target(ctx, now)
-        if tgt is None:
+        s = ctx.find_recipient(now, self.FRESH_SECS)
+        if s is None:
             self._reset()
             return []
-        cam, tid, h, rid, posture, kps = tgt
+        cam, tid = s.camera_id, s.track.track_id
+        h = max(s.track.bbox.height, 1.0)
+        rid, posture, kps = s.identity.recipient_id, s.posture, s.keypoints
 
         self._track_pose_motion(cam, kps, h, now)
         self._track_posture(posture, now)
@@ -206,52 +208,6 @@ class StillnessRule:
     @staticmethod
     def _elapsed(since: datetime | None, now: datetime) -> float:
         return (now - since).total_seconds() if since else 0.0
-
-    # ---- target + pose lookup ---------------------------------------
-    def _find_target(self, ctx: RuleContext, now: datetime):
-        """(camera_id, track_id, bbox_height, recipient_id, posture, keypoints) of
-        the locked recipient, or None. `keypoints` is the target's 17-pt pose (or
-        None if pose isn't available this frame).
-
-        FRESH tracks only, best ReID confidence on a tie: a camera the recipient
-        left keeps its last TrackResult + is_target identity forever, and acting
-        on that frozen snapshot would accumulate the no-motion clock into a false
-        CRITICAL alert an hour after a room change."""
-        best = None
-        best_conf = -1.0
-        for camera_id, result in ctx.fresh_tracks(now, self.FRESH_SECS).items():
-            for t in result.tracks:
-                ident = ctx.identities.get(camera_id, t.track_id)
-                if not (ident and ident.is_target):
-                    continue
-                if ident.confidence > best_conf:
-                    best_conf = ident.confidence
-                    best = (camera_id, t, ident)
-        if best is None:
-            return None
-        camera_id, t, ident = best
-        rec = ctx.postures.get(camera_id, t.track_id)
-        posture = rec.posture if rec is not None else Posture.UNKNOWN
-        kps = self._keypoints_for(ctx, camera_id, t.track_id)
-        return (camera_id, t.track_id, max(t.bbox.height, 1.0),
-                ident.recipient_id, posture, kps)
-
-    @staticmethod
-    def _keypoints_for(ctx: RuleContext, camera_id: str, track_id: int):
-        """The target's 17 COCO keypoints on this camera, or None.
-
-        Pose runs TARGET-ONLY once the recipient is locked (see PoseRunner), so
-        the buffer holds a single pose — the target's — which is exactly when
-        this rule is active. Poses aren't tagged with a track_id in this pipeline,
-        so prefer a track_id match if one ever appears, else take the most
-        confident pose."""
-        pr = ctx.poses.get(camera_id)
-        if pr is None or not pr.poses:
-            return None
-        tagged = [p for p in pr.poses if p.track_id == track_id]
-        pose = tagged[0] if tagged else max(
-            pr.poses, key=lambda p: sum(k.confidence for k in p.keypoints))
-        return pose.keypoints if len(pose.keypoints) >= 17 else None
 
     def _reset(self) -> None:
         self._cam = None

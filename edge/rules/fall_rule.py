@@ -21,15 +21,16 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from common.freshness import POSTURE_FRESH_SECS, is_fresh
 from schemas.event import Event
-from rules.rule_context import RuleContext, is_fresh
+from rules.rule_context import RuleContext
 
 
 logger = logging.getLogger("rules.fall")
 
 
 class FallRule:
-    FRESH_SECS = 10.0    # ignore stale posture records (cameras pose stopped on)
+    FRESH_SECS = POSTURE_FRESH_SECS   # ignore stale posture records (idle cameras)
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         events: list[Event] = []

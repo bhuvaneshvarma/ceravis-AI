@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
+
+from common.freshness import TRACK_FRESH_SECS, is_fresh
 
 
 router = APIRouter(prefix="/api/v1/ai", tags=["AI"])
@@ -27,6 +31,7 @@ def ai_state(request: Request, camera_id: str | None = None):
     # tell "detector sees N people but tracker has 0" (a tracking problem)
     # apart from "detector sees 0" (a detection problem).
     cams = set(tracks_by_cam) | set(detections)
+    now = datetime.now(timezone.utc)
     out: dict = {}
     for cam in cams:
         if camera_id and cam != camera_id:
@@ -35,8 +40,13 @@ def ai_state(request: Request, camera_id: str | None = None):
         det = detections.get(cam)
         cam_postures = postures.get(cam, {})
         cam_identities = identities.get(cam, {})
+        # Idle cameras keep their last TrackResult forever — a stale one
+        # would paint ghost boxes and let the monitor "follow" a target
+        # that already left this room. Same freshness rule as the rules.
+        live = result is not None and is_fresh(result.timestamp, now,
+                                               TRACK_FRESH_SECS)
         entries = []
-        for t in (result.tracks if result else []):
+        for t in (result.tracks if live else []):
             posture = cam_postures.get(t.track_id)
             identity = cam_identities.get(t.track_id)
             entries.append({
