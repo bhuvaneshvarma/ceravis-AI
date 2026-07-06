@@ -25,8 +25,6 @@ _EDGE_ROOT = Path(__file__).resolve().parents[1]
 _ALERT_MAP: dict[str, tuple[str, str]] = {
     "fall": ("critical", "Fall detected"),
     "lying_down": ("info", "Lying down"),
-    "no_movement": ("warning", "No movement"),
-    "prolonged_sitting": ("info", "Prolonged sitting"),
     "standing_up": ("info", "Stood up"),
     "sitting_down": ("info", "Sat down"),
     "walking_started": ("info", "Started walking"),

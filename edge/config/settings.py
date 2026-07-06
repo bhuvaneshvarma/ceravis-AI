@@ -194,8 +194,6 @@ class Settings(BaseSettings):
     # legs leaving the frame, from flipping the label. View-invariant.
     posture_transition_head_frac: float = 0.15      # head move (× body length) to corroborate
     posture_transition_confirm_frames: int = 3      # frames of corroboration to switch
-    sitting_min_secs: float = 5.0
-    standing_min_secs: float = 2.0
     fall_torso_angle_deg: float = 60.0              # > = horizontal
     fall_confirmation_frames: int = 3
     fall_cooldown_secs: float = 30.0
