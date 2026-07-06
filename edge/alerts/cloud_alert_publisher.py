@@ -21,6 +21,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from alerts.alert_format import format_line
 from config.settings import settings
 from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
@@ -201,28 +202,17 @@ class CloudAlertPublisher:
         return f"{sev} · {title}"
 
     def _format(self, event) -> str:
-        """Fixed-format line, e.g.
+        """Fixed-format line via the shared Format-A builder, e.g.
         'CRITICAL · Fall detected · Camera 1* Kitchen / fridge · Ravi · 11:45 AM, 23 Jun 2026'
         or 'Sitting → Standing · Camera 1 Kitchen · Ravi · 11:45 AM, 23 Jun 2026'."""
         who = self._account.get().get("firstName") or "recipient"
-        # Camera label with its * (bathroom) / & (egress) designation, per spec.
-        cam_label = ""
         try:
             cam = self._cameras.get_by_id(event.camera_id)
         except Exception:
             cam = None
-        if cam is not None and cam.camera_number:
-            sym = ("*" if cam.has_bathroom_entrance else "") \
-                + ("&" if cam.is_main_egress else "")
-            cam_label = f"Camera {cam.camera_number}{sym} "
-        loc = cam_label + " / ".join(p for p in (event.room_name, event.zone_name) if p)
         try:
-            ts = datetime.fromisoformat(event.timestamp).strftime("%I:%M %p, %d %b %Y")
-            ts = ts.lstrip("0")
+            when: datetime | str = datetime.fromisoformat(event.timestamp)
         except Exception:
-            ts = event.timestamp or ""
-        parts = [self._head(event)]
-        if loc:
-            parts.append(loc)
-        parts += [who, ts]
-        return " · ".join(parts)
+            when = event.timestamp or ""
+        return format_line(self._head(event), cam, event.room_name, who,
+                           when, zone_name=event.zone_name)

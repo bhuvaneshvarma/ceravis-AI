@@ -43,6 +43,7 @@ os.chdir(_EDGE)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
 
+from alerts.alert_format import format_line                               # noqa: E402
 from config.settings import settings                                      # noqa: E402
 from configuration.account_config import AccountConfig                    # noqa: E402
 from configuration.camera_config import CameraConfig                      # noqa: E402
@@ -114,13 +115,12 @@ def _live_jpeg(camera_id: str) -> bytes | None:
 
 
 def _label(acct: dict, cam, head: str, when: datetime | None = None) -> str:
-    """Format-A line: '<head> · Camera N* Room · FirstName · time'. `when` sets
-    the timestamp (defaults to now) so a replayed burst can advance it per snap."""
+    """Format-A line via the SAME builder production uses (alerts/alert_format),
+    so test labels are shape-identical to live ones. `when` sets the timestamp
+    (defaults to now) so a replayed burst can advance it per snap."""
     who = acct.get("firstName") or "recipient"
-    sym = ("*" if cam.has_bathroom_entrance else "") + ("&" if cam.is_main_egress else "")
-    camlbl = f"Camera {cam.camera_number}{sym} " if cam.camera_number else ""
-    ts = (when or datetime.now(timezone.utc)).strftime("%I:%M %p, %d %b %Y").lstrip("0")
-    return f"{head} · {camlbl}{cam.room_name} · {who} · {ts}"
+    return format_line(head, cam, cam.room_name, who,
+                       when or datetime.now(timezone.utc))
 
 
 def _fall_label(acct: dict, cam) -> str:
