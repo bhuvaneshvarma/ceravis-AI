@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 """
-Posture-based fall detection.
+Fall events — the rule-engine face of the ONE fall FSM in posture_classifier.
 
-Conditions for emitting a 'fall' event (all required):
-  1. Posture is FALLEN (torso ~horizontal) in the latest record.
-  2. The PostureTracker has confirmed FALLEN for
-     settings.fall_confirmation_frames consecutive frames.
-  3. We're outside the per-track cooldown window.
+The FSM owns the whole signal: its DOWN state is the FALLEN posture label,
+its CONFIRMED state (impact/floor evidence + immobility, or the slow-fall
+hold) is the alert. This rule just drains confirmations:
+  1. confirm_fall() returns True once per FSM-confirmed fall (one-shot),
+     and enforces the per-track cooldown window.
+  2. A confirmation is emitted even if the person has already gotten back
+     up by this 1 Hz tick — a fall the CR recovered from is still a fall
+     the caregiver should hear about.
 
-False positives are aggressively suppressed because:
-  - Confirmation across multiple pose frames means single-frame keypoint
-    noise can't trigger.
-  - Cooldown prevents the same fall being re-emitted while the person
-    is still on the floor.
+Scans ALL tracked persons deliberately (not just the recipient): visitor
+falls are detected and logged locally; the cloud publisher's recipient
+gate decides what is forwarded.
 """
 
 import logging
@@ -21,7 +22,6 @@ import uuid
 from datetime import datetime, timezone
 
 from schemas.event import Event
-from pose.posture_classifier import Posture
 from rules.rule_context import RuleContext, is_fresh
 
 
@@ -38,8 +38,6 @@ class FallRule:
         for camera_id, per_track in ctx.postures.get_all().items():
             for track_id, rec in per_track.items():
                 if not is_fresh(rec.timestamp, now, self.FRESH_SECS):
-                    continue
-                if rec.posture != Posture.FALLEN:
                     continue
                 if not ctx.posture_tracker.confirm_fall(camera_id, track_id):
                     continue

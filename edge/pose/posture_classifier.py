@@ -215,8 +215,9 @@ class _TrackState:
     walk_streak: int = 0
     stable: Posture = Posture.UNKNOWN   # last CONFIRMED sit/stand/fall posture
     sit_stand_streak: int = 0           # frames of corroborated sit<->stand transition
-    # ---- scene-aware fall FSM (0 upright, 1 down, 2 confirmed) ----
-    fall_phase: int = 0
+    # ---- the ONE fall FSM (coarse state = label, fine state = alert) ----
+    fall_down: bool = False              # DOWN: streak-confirmed horizontal (label)
+    fall_phase: int = 0                  # 0 upright, 1 down+scene-evidence, 2 confirmed
     fall_down_since: datetime | None = None
     fall_still_since: datetime | None = None
     fall_impact_since: datetime | None = None
@@ -260,7 +261,9 @@ class PostureTracker:
         st.last_centroids.append((pose.timestamp, *raw.centroid_xy, raw.body_ref_px))
         st.last_heads.append((pose.timestamp, raw.head_y, raw.body_ref_px))
 
-        # Scene-aware fall FSM (impact -> horizontal & near-floor -> immobility).
+        # The ONE fall machine: its coarse DOWN state is the FALLEN label the
+        # UI and rules read; its fine CONFIRMED state (consumed via
+        # confirm_fall) is what raises the alert. Same signal, two depths.
         self._update_fall_fsm(st, raw, pose.timestamp, floor_query)
 
         def out(posture: Posture) -> PostureResult:
@@ -268,15 +271,10 @@ class PostureTracker:
                                  raw.avg_knee_angle_deg, raw.centroid_xy,
                                  raw.body_ref_px, raw.head_y, raw.head_x)
 
-        # ---- N-frame fall confirmation (highest priority) ----------
-        if raw.posture == Posture.FALLEN:
-            st.fall_streak += 1
-            if st.fall_streak >= settings.fall_confirmation_frames:
-                st.stable = Posture.FALLEN
-                return out(Posture.FALLEN)
-            # not confirmed yet -> hold the last confirmed posture (below)
-        else:
-            st.fall_streak = 0
+        # ---- fall label from the FSM (highest priority) -------------
+        if st.fall_down:
+            st.stable = Posture.FALLEN
+            return out(Posture.FALLEN)
 
         # ---- sit/stand with transition evidence --------------------
         # A confident SITTING/STANDING only OVERRIDES the confirmed state when
@@ -346,13 +344,28 @@ class PostureTracker:
             return dy_frac >= thr                         # head moved DOWN
         return False
 
-    # ---- scene-aware fall FSM ---------------------------------------
+    # ---- the ONE fall FSM -------------------------------------------
     def _update_fall_fsm(self, st: _TrackState, raw: PostureResult,
                          ts: datetime, floor_query) -> None:
-        """Phase machine: a fall is a fast downward motion (impact) that ends
-        horizontal, near the floor, and then stays still — not just one
-        horizontal frame. This is what separates a real fall from bending over,
+        """Single owner of the fall signal, in two depths of the same machine:
+
+          DOWN      — N consecutive ~horizontal frames (fall_confirmation_frames).
+                      This IS the FALLEN posture label update() returns — what
+                      the monitor dot/chips and the rules read.
+          CONFIRMED — DOWN refined by scene evidence: an impact (fast downward
+                      head motion) or a floor/furniture reference, then
+                      immobility — or the long slow-fall hold when no reference
+                      exists. Consumed one-shot by FallRule via confirm_fall().
+
+        The scene evidence is what separates a real fall from bending over,
         sitting on the floor, exercising, or a steep camera angle."""
+        # ---- DOWN: the label-level state ----------------------------
+        if raw.posture == Posture.FALLEN:      # torso ~horizontal this frame
+            st.fall_streak += 1
+        else:
+            st.fall_streak = 0
+        st.fall_down = st.fall_streak >= settings.fall_confirmation_frames
+
         # impact — peak downward head speed in body-lengths / sec
         v_down = self._head_down_speed(st)
         if v_down >= settings.fall_velocity_body_frac:
@@ -362,7 +375,6 @@ class PostureTracker:
             and (ts - st.fall_impact_since).total_seconds()
             <= settings.fall_velocity_window_secs * 3.0)
 
-        horizontal = raw.torso_angle_deg >= settings.fall_torso_angle_deg
         near = floor_query(raw.head_x, raw.head_y) if floor_query is not None else None
         near_ok = (near is True) or (near is None and not settings.fall_require_near_floor)
 
@@ -374,7 +386,7 @@ class PostureTracker:
         else:
             st.fall_still_since = None
 
-        if horizontal and near_ok:
+        if st.fall_down and near_ok:
             if st.fall_down_since is None:
                 st.fall_down_since = ts
             if st.fall_phase == 0 and (impact_recent or near is True):
