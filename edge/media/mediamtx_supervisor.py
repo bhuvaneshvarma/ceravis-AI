@@ -24,6 +24,7 @@ import threading
 import time
 from pathlib import Path
 
+from common.net import lan_ip
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from integration import call_log
@@ -155,7 +156,10 @@ class MediaMTXSupervisor:
             "",
             "rtsp: yes",
             f"rtspAddress: :{settings.mediamtx_rtsp_port}",
-            "rtspTransports: [tcp]",
+            # MediaMTX's key for allowed RTSP transports is `protocols` — an
+            # unknown key (e.g. `rtspTransports`) makes MediaMTX exit on boot
+            # with "unknown field", so NOTHING binds and every live link dies.
+            "protocols: [tcp]",
             "",
             "hls: yes",
             f"hlsAddress: :{settings.mediamtx_hls_port}",
@@ -164,6 +168,14 @@ class MediaMTXSupervisor:
             "webrtc: yes",
             f"webrtcAddress: :{settings.mediamtx_webrtc_port}",
             f"webrtcEncryption: {'yes' if tls else 'no'}",
+        ]
+        # WebRTC must advertise a reachable ICE candidate. Accessed by IP on the
+        # LAN, the device's own LAN IP is that host — without it the page loads
+        # but the video peer connection never completes.
+        ip = lan_ip()
+        if ip:
+            lines.append(f"webrtcAdditionalHosts: [{ip}]")
+        lines += [
             "",
             "rtmp: no",
             "srt: no",
