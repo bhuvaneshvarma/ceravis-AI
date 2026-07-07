@@ -48,73 +48,89 @@ def _feed(tracker, cam, tid, coords, t0, n, dt=0.1, fq=floor_q):
     return fired, t
 
 
-def test_real_fall_fires():
+def test_fall_fires_immediately():
+    # A fall must alert the INSTANT it is detected — right after the label
+    # confirms (fall_confirmation_frames), with NO immobility wait.
+    from config.settings import settings
     tr = PostureTracker()
     t0 = datetime.now(timezone.utc)
-    # standing a moment
     _, t1 = _feed(tr, "c", 1, STANDING, t0, 10)
-    # sudden collapse to the floor, then lie still for ~4 s
-    fired, _ = _feed(tr, "c", 1, FALLEN, t1, 45)
-    print(f"[real fall] confirmed={fired}")
-    assert fired, "a genuine fall onto the floor should confirm"
-    print("[real fall] PASS")
+    # feed FALLEN frame-by-frame and record WHEN it fires
+    t = t1
+    fired_at = 0
+    for k in range(10):
+        pose = PoseEstimation(track_id=1, camera_id="c", frame_id=k,
+                              timestamp=t, keypoints=_kp(FALLEN))
+        tr.update("c", 1, pose, floor_query=floor_q)
+        if tr.confirm_fall("c", 1):
+            fired_at = k + 1
+            break
+        t = t + timedelta(seconds=0.1)
+    print(f"[immediate] fired after {fired_at} FALLEN frame(s)")
+    assert fired_at, "a fall onto the floor must confirm"
+    assert fired_at <= settings.fall_confirmation_frames + 1, \
+        "must fire as soon as the label confirms — no post-fall wait"
+    print("[immediate] PASS")
 
 
-def test_bending_does_not_fire():
+def test_recovered_fall_still_fires():
+    # Fell and immediately got back up (never lay still): still a fall.
     tr = PostureTracker()
     t0 = datetime.now(timezone.utc)
     _, t1 = _feed(tr, "c", 2, STANDING, t0, 10)
-    # bend over (horizontal torso) but head stays high, hold a while
-    fired, _ = _feed(tr, "c", 2, BENDING, t1, 45)
+    fired, t2 = _feed(tr, "c", 2, FALLEN, t1, 5)     # brief — then up
+    _feed(tr, "c", 2, STANDING, t2, 10)
+    print(f"[recovered] confirmed={fired}")
+    assert fired, "a fall the person recovered from must still alert"
+    print("[recovered] PASS")
+
+
+def test_bending_does_not_fire():
+    # Floor zone present; bending keeps the head HIGH (outside the floor) — the
+    # near-floor discriminator must keep it from firing.
+    tr = PostureTracker()
+    t0 = datetime.now(timezone.utc)
+    _, t1 = _feed(tr, "c", 3, STANDING, t0, 10)
+    fired, _ = _feed(tr, "c", 3, BENDING, t1, 45)
     print(f"[bending] confirmed={fired}")
     assert not fired, "bending over (head not near floor) must NOT confirm a fall"
     print("[bending] PASS")
 
 
-def test_slow_settle_on_floor_fires():
-    # an elderly faint: head ends near the floor even without a big impact spike
-    tr = PostureTracker()
-    t0 = datetime.now(timezone.utc)
-    _, t1 = _feed(tr, "c", 3, STANDING, t0, 10)
-    fired, _ = _feed(tr, "c", 3, FALLEN, t1, 45)
-    print(f"[slow settle] confirmed={fired}")
-    assert fired, "lying motionless on the floor should confirm (near-floor path)"
-    print("[slow settle] PASS")
-
-
-def test_found_down_no_references_fires():
-    # No floor/furniture zones drawn AND no impact in view (gentle test fall, a
-    # slow slump, or the camera came up with the person already on the ground):
-    # the slow-fall hold (fall_fallen_hold_secs) must still confirm.
-    from config.settings import settings
-    tr = PostureTracker()
-    t0 = datetime.now(timezone.utc)
-    no_ref = lambda x, y: None               # is_low() with nothing drawn
-    n = int((settings.fall_fallen_hold_secs + 3.0) / 0.1)
-    fired, _ = _feed(tr, "c", 4, FALLEN, t0, n, fq=no_ref)
-    print(f"[found down / no zones] confirmed={fired}")
-    assert fired, "horizontal + motionless past the hold must confirm without zones"
-    print("[found down / no zones] PASS")
-
-
-def test_short_horizontal_no_references_does_not_fire():
-    # Same no-zones setup but only briefly horizontal (picking something up off
-    # the floor): must NOT confirm before the hold elapses.
-    from config.settings import settings
+def test_no_zone_horizontal_fires():
+    # No floor zone drawn -> a confirmed horizontal is taken as a fall (fail
+    # loud), and it fires immediately (no hold).
     tr = PostureTracker()
     t0 = datetime.now(timezone.utc)
     no_ref = lambda x, y: None
-    n = int(max(settings.fall_fallen_hold_secs - 4.0, 1.0) / 0.1)
-    fired, _ = _feed(tr, "c", 5, FALLEN, t0, n, fq=no_ref)
-    print(f"[short horizontal / no zones] confirmed={fired}")
-    assert not fired, "briefly horizontal without zones must NOT confirm"
-    print("[short horizontal / no zones] PASS")
+    fired, _ = _feed(tr, "c", 4, FALLEN, t0, 6, fq=no_ref)
+    print(f"[no-zone] confirmed={fired}")
+    assert fired, "without a floor zone, a confirmed horizontal must alert"
+    print("[no-zone] PASS")
+
+
+def test_require_near_floor_suppresses_no_zone():
+    # With fall_require_near_floor=True and no zone, we can't prove near-floor,
+    # so it must NOT fire (the opt-in stricter mode).
+    from config.settings import settings
+    tr = PostureTracker()
+    t0 = datetime.now(timezone.utc)
+    old = settings.fall_require_near_floor
+    settings.fall_require_near_floor = True
+    try:
+        no_ref = lambda x, y: None
+        fired, _ = _feed(tr, "c", 5, FALLEN, t0, 20, fq=no_ref)
+    finally:
+        settings.fall_require_near_floor = old
+    print(f"[strict/no-zone] confirmed={fired}")
+    assert not fired, "strict mode without a floor zone must not confirm"
+    print("[strict/no-zone] PASS")
 
 
 if __name__ == "__main__":
-    test_real_fall_fires()
+    test_fall_fires_immediately()
+    test_recovered_fall_still_fires()
     test_bending_does_not_fire()
-    test_slow_settle_on_floor_fires()
-    test_found_down_no_references_fires()
-    test_short_horizontal_no_references_does_not_fire()
+    test_no_zone_horizontal_fires()
+    test_require_near_floor_suppresses_no_zone()
     print("ALL FALL-FSM TESTS PASSED")

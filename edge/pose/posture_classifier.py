@@ -215,13 +215,10 @@ class _TrackState:
     walk_streak: int = 0
     stable: Posture = Posture.UNKNOWN   # last CONFIRMED sit/stand/fall posture
     sit_stand_streak: int = 0           # frames of corroborated sit<->stand transition
-    # ---- the ONE fall FSM (coarse state = label, fine state = alert) ----
+    # ---- the ONE fall machine (label depth = alert depth, no wait) ----
     fall_down: bool = False              # DOWN: streak-confirmed horizontal (label)
-    fall_phase: int = 0                  # 0 upright, 1 down+scene-evidence, 2 confirmed
-    fall_down_since: datetime | None = None
-    fall_still_since: datetime | None = None
-    fall_impact_since: datetime | None = None
-    fall_confirmed_pending: bool = False
+    fall_alerted: bool = False           # latch: one alert per fall episode
+    fall_confirmed_pending: bool = False # a fall to emit (drained by confirm_fall)
 
 
 class PostureTracker:
@@ -261,9 +258,9 @@ class PostureTracker:
         st.last_centroids.append((pose.timestamp, *raw.centroid_xy, raw.body_ref_px))
         st.last_heads.append((pose.timestamp, raw.head_y, raw.body_ref_px))
 
-        # The ONE fall machine: its coarse DOWN state is the FALLEN label the
-        # UI and rules read; its fine CONFIRMED state (consumed via
-        # confirm_fall) is what raises the alert. Same signal, two depths.
+        # The ONE fall machine: the DOWN state is the FALLEN label the UI and
+        # rules read AND the alert trigger — the moment a fall is detected it is
+        # raised (confirm_fall), with no post-fall wait. Same signal, one depth.
         self._update_fall_fsm(st, raw, pose.timestamp, floor_query)
 
         def out(posture: Posture) -> PostureResult:
@@ -347,18 +344,21 @@ class PostureTracker:
     # ---- the ONE fall FSM -------------------------------------------
     def _update_fall_fsm(self, st: _TrackState, raw: PostureResult,
                          ts: datetime, floor_query) -> None:
-        """Single owner of the fall signal, in two depths of the same machine:
+        """Single owner of the fall signal — detection IS the alert, no wait:
 
-          DOWN      — N consecutive ~horizontal frames (fall_confirmation_frames).
-                      This IS the FALLEN posture label update() returns — what
-                      the monitor dot/chips and the rules read.
-          CONFIRMED — DOWN refined by scene evidence: an impact (fast downward
-                      head motion) or a floor/furniture reference, then
-                      immobility — or the long slow-fall hold when no reference
-                      exists. Consumed one-shot by FallRule via confirm_fall().
+          DOWN   — N consecutive ~horizontal frames (fall_confirmation_frames):
+                   the FALLEN posture label update() returns (monitor dot, rules).
+          ALERT  — the SAME DOWN, at/near the ground, raised the INSTANT it is
+                   seen (confirm_fall drains it). Falls are prioritised: a person
+                   who fell and is already moving or getting back up has still
+                   fallen, so we alert on detection and never wait for a post-fall
+                   immobility hold. Latched so one fall episode = one alert
+                   (confirm_fall's cooldown is the backstop).
 
-        The scene evidence is what separates a real fall from bending over,
-        sitting on the floor, exercising, or a steep camera angle."""
+        The near-floor check is the ONE discriminator kept, to separate a fall
+        (head drops to the ground) from bending over (torso horizontal but head
+        still high) — draw a floor zone so that check has teeth. With no floor
+        zone drawn a confirmed horizontal is taken as a fall (fail loud)."""
         # ---- DOWN: the label-level state ----------------------------
         if raw.posture == Posture.FALLEN:      # torso ~horizontal this frame
             st.fall_streak += 1
@@ -366,81 +366,16 @@ class PostureTracker:
             st.fall_streak = 0
         st.fall_down = st.fall_streak >= settings.fall_confirmation_frames
 
-        # impact — peak downward head speed in body-lengths / sec
-        v_down = self._head_down_speed(st)
-        if v_down >= settings.fall_velocity_body_frac:
-            st.fall_impact_since = ts
-        impact_recent = (
-            st.fall_impact_since is not None
-            and (ts - st.fall_impact_since).total_seconds()
-            <= settings.fall_velocity_window_secs * 3.0)
-
         near = floor_query(raw.head_x, raw.head_y) if floor_query is not None else None
         near_ok = (near is True) or (near is None and not settings.fall_require_near_floor)
 
-        # stillness — body barely drifting marks the post-fall settle
-        speed = self._centroid_speed(st)
-        if speed < settings.fall_immobility_body_frac:
-            if st.fall_still_since is None:
-                st.fall_still_since = ts
-        else:
-            st.fall_still_since = None
-
+        # ---- immediate, prioritised trigger -------------------------
         if st.fall_down and near_ok:
-            if st.fall_down_since is None:
-                st.fall_down_since = ts
-            if st.fall_phase == 0 and (impact_recent or near is True):
-                st.fall_phase = 1
-            still_long = (
-                st.fall_still_since is not None
-                and (ts - st.fall_still_since).total_seconds()
-                >= settings.fall_immobility_secs)
-            if st.fall_phase == 1 and still_long:
-                st.fall_phase = 2
-                st.fall_confirmed_pending = True
-            elif (st.fall_phase == 0 and still_long
-                  and (ts - st.fall_down_since).total_seconds()
-                  >= settings.fall_fallen_hold_secs):
-                # Slow-fall safety net: no impact spike and no floor/furniture
-                # reference for this spot (near is None here — near True enters
-                # phase 1 above, near False never reaches this branch). A body
-                # that stays horizontal AND motionless this long is down.
-                st.fall_phase = 2
-                st.fall_confirmed_pending = True
+            if not st.fall_alerted:            # rising edge of a fall episode…
+                st.fall_alerted = True
+                st.fall_confirmed_pending = True   # …alert NOW
         else:
-            # recovered / was only bending or sitting -> reset
-            st.fall_phase = 0
-            st.fall_down_since = None
-
-    def _head_down_speed(self, st: _TrackState) -> float:
-        """Downward head speed over the velocity window (body-lengths/sec, >=0)."""
-        if len(st.last_heads) < 2:
-            return 0.0
-        t_new, y_new, ref_new = st.last_heads[-1]
-        window = settings.fall_velocity_window_secs
-        t_old, y_old = t_new, y_new
-        for t, y, _ in reversed(st.last_heads):
-            if (t_new - t).total_seconds() <= window:
-                t_old, y_old = t, y
-            else:
-                break
-        dt = (t_new - t_old).total_seconds()
-        if dt <= 0:
-            return 0.0
-        dy = y_new - y_old                      # +ve = head moved DOWN
-        return max(0.0, (dy / dt) / max(ref_new, 1.0))
-
-    def _centroid_speed(self, st: _TrackState) -> float:
-        """Recent centroid speed (body-lengths/sec) — small => still."""
-        if len(st.last_centroids) < 2:
-            return 0.0
-        t_new, x_new, y_new, ref_new = st.last_centroids[-1]
-        t_old, x_old, y_old, _ = st.last_centroids[-2]
-        dt = (t_new - t_old).total_seconds()
-        if dt <= 0:
-            return 0.0
-        disp = math.hypot(x_new - x_old, y_new - y_old)
-        return (disp / dt) / max(ref_new, 1.0)
+            st.fall_alerted = False            # got up / only bending -> re-arm
 
     # Helpers for FallRule
     def confirm_fall(self, camera_id: str, track_id: int) -> bool:

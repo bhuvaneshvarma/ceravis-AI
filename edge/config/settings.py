@@ -197,29 +197,22 @@ class Settings(BaseSettings):
     fall_torso_angle_deg: float = 60.0              # > = horizontal
     fall_confirmation_frames: int = 3
     fall_cooldown_secs: float = 30.0
-    # ---- Scene-aware fall FSM ---------------------------------------
-    # A fall is an EVENT with phases, not a single horizontal frame:
-    #   upright -> rapid downward motion (impact) -> horizontal & near-floor
-    #   -> immobile for a few seconds.
-    # Requiring the impact velocity AND the post-fall stillness near the floor
-    # crushes the false positives that angle-alone produced (bending, sitting on
-    # the floor, exercising, a steep camera angle).
-    fall_velocity_body_frac: float = 1.2     # head drop speed (body-lengths/sec) = impact
-    fall_velocity_window_secs: float = 0.6   # window the drop speed is measured over
-    fall_immobility_secs: float = 3.0        # must lie still this long to confirm
-    fall_immobility_body_frac: float = 0.35  # max centroid drift (× body) to count as still
-    # Slow-fall safety net (no impact spike AND no floor/furniture reference for
-    # the spot): a gentle collapse, sliding off a chair, or a person already on
-    # the ground when the camera comes up never shows the impact velocity. If
-    # the body stays horizontal AND immobile this long, confirm the fall anyway.
-    fall_fallen_hold_secs: float = 12.0
+    # ---- Fall: detection IS the alert (prioritised, no wait) ---------
+    # A confirmed FALLEN label (fall_confirmation_frames of ~horizontal torso)
+    # whose head is at/near the ground raises the fall alert the instant it is
+    # seen — no post-fall immobility wait, because a person who fell is a fall
+    # to report whether or not they then lie still. The near-floor test is the
+    # one discriminator that separates a fall (head drops to the floor) from
+    # bending over (torso horizontal, head still high).
     # Floor reference: a zone whose name contains this keyword marks the ground
-    # plane. A standing person's head sits ABOVE (outside) it; a fallen person's
-    # head drops INTO it — a view-tolerant "near the floor" test. If no floor
-    # zone is drawn the FSM still works on velocity + immobility (just without
-    # the ground gate).
+    # plane. A standing/bending person's head sits ABOVE (outside) it; a fallen
+    # person's head drops INTO it — view-tolerant, no calibration.
     floor_zone_keyword: str = "floor"
-    fall_require_near_floor: bool = False    # if True, only confirm when head is near the floor
+    # With NO floor zone drawn we can't test "near the floor", so a confirmed
+    # horizontal is taken as a fall (fail loud). Set True to instead require a
+    # floor zone match before alerting (fewer false positives, but misses falls
+    # outside the drawn zone) — draw a floor zone and this stays a good default.
+    fall_require_near_floor: bool = False
     # Furniture zones give a height reference: a fall also counts when the body
     # drops BELOW the height of nearby furniture (table/chair/bed/counter) — the
     # "whole body lower than a table/chair/bed" rule. Draw these as named zones.

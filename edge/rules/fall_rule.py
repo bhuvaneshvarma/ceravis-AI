@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 """
-Fall events — the rule-engine face of the ONE fall FSM in posture_classifier.
-
-The FSM owns the whole signal: its DOWN state is the FALLEN posture label,
-its CONFIRMED state (impact/floor evidence + immobility, or the slow-fall
-hold) is the alert. This rule just drains confirmations:
-  1. confirm_fall() returns True once per FSM-confirmed fall (one-shot),
-     and enforces the per-track cooldown window.
-  2. A confirmation is emitted even if the person has already gotten back
-     up by this 1 Hz tick — a fall the CR recovered from is still a fall
-     the caregiver should hear about.
+Fall events — the rule-engine face of the ONE fall machine in
+posture_classifier. The machine owns the whole signal: its DOWN state is the
+FALLEN posture label AND, at/near the ground, the alert — raised the instant a
+fall is detected (falls are prioritised; there is no post-fall wait). This rule
+just drains confirmations:
+  1. confirm_fall() returns True once per fall (one-shot) and enforces the
+     per-track cooldown window.
+  2. A confirmation fires even if the person has already gotten back up by
+     this 1 Hz tick — a fall the CR recovered from is still a fall.
 
 Scans ALL tracked persons deliberately (not just the recipient): visitor
 falls are detected and logged locally; the cloud publisher's recipient
