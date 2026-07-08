@@ -1,0 +1,13 @@
+[Unit]
+Description=CERAVIS frp reverse-proxy SERVER (live-stream tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/frps -c /etc/frp/frps.toml
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

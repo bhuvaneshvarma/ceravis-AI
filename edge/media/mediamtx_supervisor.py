@@ -175,6 +175,12 @@ class MediaMTXSupervisor:
         ip = lan_ip()
         if ip:
             lines.append(f"webrtcAdditionalHosts: [{ip}]")
+        # Optional STUN (Option B remote access) — lets MediaMTX gather its
+        # public reflexive candidate so an off-LAN viewer can reach the media
+        # P2P. Absent by default: purely LAN behaviour, nothing to remove.
+        stun = settings.mediamtx_stun_server.strip()
+        if stun:
+            lines += ["webrtcICEServers2:", f"  - url: {stun}"]
         lines += [
             "",
             "rtmp: no",

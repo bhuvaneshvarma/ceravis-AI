@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     mediamtx_webrtc_port: int = 8889       # WebRTC over HTTPS (link sent to cloud)
     mediamtx_playback_port: int = 9996     # recordings playback API (localhost only)
     mediamtx_cert_dir: str = "data/certs"  # server.crt/server.key (installer generates)
+    # Optional STUN server so MediaMTX advertises the device's PUBLIC address in
+    # WebRTC ICE — needed for remote (off-LAN) live view via the cloud/ tunnel
+    # (Option B). Empty = LAN-only (default: remote access OFF, zero change). A
+    # public STUN is free and carries NO media (that stays P2P), e.g.
+    # stun:stun.l.google.com:19302. Removing remote access = clear this again.
+    mediamtx_stun_server: str = ""
     # Local jitter buffer for the AI's localhost RTSP pull (ms). Small: the
     # link is loopback TCP; MediaMTX absorbs the camera-side jitter itself.
     rtsp_latency_ms: int = 100

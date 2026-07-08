@@ -1,0 +1,15 @@
+[Unit]
+Description=CERAVIS frp reverse-proxy CLIENT (edge -> cloud live-stream tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml
+Restart=always
+RestartSec=5
+# Separate from ceravis.service on purpose: disabling this alone turns remote
+# access off and leaves the AI pipeline running.
+User=ceravis
+
+[Install]
+WantedBy=multi-user.target

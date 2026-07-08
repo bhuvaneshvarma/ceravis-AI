@@ -1,0 +1,21 @@
+# CERAVIS live-stream tunnel — frp SERVER (runs on the AWS EC2 box).
+#
+# frp (fast reverse proxy) lets the Jetson, which sits behind the home router
+# with no public address, expose its MediaMTX WebRTC signaling port through this
+# public server. Only the SIGNALING (a few KB per view) crosses this box — the
+# actual video goes peer-to-peer home <-> viewer (STUN-assisted), so EC2 data
+# transfer stays near-zero. TURN relay (for the strict-NAT minority) is a later,
+# optional add-on.
+#
+# EDIT auth.token below to a long random secret, and put the SAME value in the
+# edge's frpc.toml. Nothing else needs changing.
+
+bindPort = 7000                     # frpc (edge) connects here — open TCP 7000
+
+# Only an edge that knows this token may open a tunnel. Change it.
+auth.method = "token"
+auth.token = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+
+# Keep the admin dashboard off (nothing to expose). Logs to journald via systemd.
+log.to = "console"
+log.level = "info"

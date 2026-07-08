@@ -1,0 +1,25 @@
+# CERAVIS live-stream tunnel — frp CLIENT (runs on the Jetson edge).
+#
+# Copy to frpc.toml, fill in the two ALL-CAPS values, then install with
+# cloud/install_frpc.sh. This publishes the edge's local MediaMTX WebRTC port
+# (8889) at the EC2 box's public :8889, so the live links become reachable from
+# anywhere. Fully separate from ceravis.service — stop/disable this alone to
+# turn remote access off; the AI pipeline is untouched.
+
+serverAddr = "EC2_PUBLIC_IP_OR_DOMAIN"   # the AWS box's public IPv4 / domain
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"   # must match frps.toml
+
+log.to = "console"
+log.level = "info"
+
+# One tunnel: local MediaMTX WebRTC (127.0.0.1:8889) -> public EC2 :8889.
+# Signaling only; media is P2P. (HLS 8888 can be added the same way if wanted.)
+[[proxies]]
+name = "mediamtx-webrtc"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8889
+remotePort = 8889
