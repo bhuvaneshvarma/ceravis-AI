@@ -127,6 +127,9 @@
         <h2>Add a camera</h2>
         <label class="f">RTSP stream URL</label>
         <input type="text" id="c-url" placeholder="rtsp://user:pass@192.168.x.x:554/stream1" />
+        <div class="hint">If the password has special characters (<code>@ : /</code>) they must be
+          percent-encoded — <code>@</code> becomes <code>%40</code>. Test connection does this
+          for you; keep the encoded form. 4K (H.265) mains stream over TCP automatically.</div>
         <div class="row mt">
           <button class="btn btn-ghost" id="c-probe">Test connection</button>
           <span class="probe-result" id="c-probe-out"></span>
@@ -561,15 +564,21 @@ document.getElementById("d-probe").onclick = async () => {
 
 document.getElementById("c-probe").onclick = async () => {
   const out = document.getElementById("c-probe-out");
-  const url = document.getElementById("c-url").value.trim();
+  const field = document.getElementById("c-url");
+  const url = field.value.trim();
   if (!url) { out.innerHTML = `<span class="warn">Enter an RTSP URL first.</span>`; return; }
-  out.innerHTML = `<span class="muted">Probing stream…</span>`;
+  out.innerHTML = `<span class="muted">Probing stream (TCP)…</span>`;
   try {
     const r = await api("/api/v1/cameras/probe", {
       method: "POST", body: JSON.stringify({ rtsp_url: url }) });
+    // Adopt the server's credential-encoded URL so what gets saved is the exact
+    // working string (e.g. a '@' in the password comes back as %40).
+    if (r.url && r.url !== url) field.value = r.url;
+    const fixed = (r.url && r.url !== url)
+      ? ` <span class="faint">(credentials auto-encoded)</span>` : "";
     out.innerHTML = r.ok
-      ? `<span class="ok">✓ Connected — ${r.width}×${r.height}</span>`
-      : `<span class="bad">✗ ${r.reason}</span>`;
+      ? `<span class="ok">✓ Connected — ${r.width}×${r.height}</span>${fixed}`
+      : `<span class="bad">✗ ${r.reason}</span>${fixed}`;
   } catch (e) { out.innerHTML = `<span class="bad">✗ probe failed</span>`; }
 };
 

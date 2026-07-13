@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from dataclasses import asdict
 
 import cv2
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
+from common.rtsp import normalize_rtsp_url
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
 from media import mediamtx_client
@@ -57,10 +60,20 @@ def list_cameras():
     return camera_config.get_all()
 
 
+def _normalize_urls(camera: Camera) -> None:
+    """Credential-encode the camera's RTSP URLs before they're stored or handed
+    to MediaMTX, so a password with '@' (or an operator who un-encoded %40 by
+    hand) can't produce a URL that FFmpeg mis-parses. Idempotent."""
+    camera.rtsp_url = normalize_rtsp_url(camera.rtsp_url)
+    if camera.record_rtsp_url:
+        camera.record_rtsp_url = normalize_rtsp_url(camera.record_rtsp_url)
+
+
 @router.post("")
 def create_camera(camera: Camera, request: Request):
     if camera_config.get_by_id(camera.camera_id):
         raise HTTPException(409, f"Camera exists: {camera.camera_id}")
+    _normalize_urls(camera)
     camera_config.add(camera)
     _mtx_sync(request, camera)
     return {"status": "created", "camera_id": camera.camera_id}
@@ -88,6 +101,7 @@ def get_camera(camera_id: str):
 
 @router.put("/{camera_id}")
 def update_camera(camera_id: str, camera: Camera, request: Request):
+    _normalize_urls(camera)
     if not camera_config.update(camera_id, camera):
         raise HTTPException(404, "Camera not found")
     _mtx_sync(request, camera)
@@ -198,17 +212,38 @@ def probe_rtsp(body: dict):
     """
     Lightweight check: try to open an RTSP URL and grab one frame.
     Used by the 'Add camera' UI to confirm a URL works before saving.
+
+    Forces interleaved TCP (like the AI ingest does): a 4K / H.265 main stream
+    loses large fragmented packets over the default UDP transport and never
+    yields a frame, while a smaller H.264 sub-stream would — the classic "the
+    sub works but the main doesn't". The URL is credential-normalized first so a
+    password containing '@' (encoded as %40) is handled correctly. Returns the
+    normalized `url` so the UI can adopt the exact working string.
     """
-    url = (body or {}).get("rtsp_url", "").strip()
+    url = normalize_rtsp_url((body or {}).get("rtsp_url", ""))
     if not url:
         raise HTTPException(400, "rtsp_url required")
-    cap = cv2.VideoCapture(url)
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
     if not cap.isOpened():
         cap.release()
-        return {"ok": False, "reason": "could not open stream"}
-    ok, frame = cap.read()
+        return {"ok": False, "url": url,
+                "reason": "could not open stream — check the URL, credentials, "
+                          "and that the camera is reachable"}
+    # H.265 must reach a keyframe before the first frame decodes; give it a
+    # short window rather than failing on the first empty read.
+    frame = None
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        ok, f = cap.read()
+        if ok and f is not None:
+            frame = f
+            break
+        time.sleep(0.05)
     cap.release()
-    if not ok or frame is None:
-        return {"ok": False, "reason": "stream opened but no frame received"}
+    if frame is None:
+        return {"ok": False, "url": url,
+                "reason": "opened but no frame — a 4K/H.265 stream on a weak "
+                          "link, or the wrong stream path (try the sub-stream)"}
     h, w = frame.shape[:2]
-    return {"ok": True, "width": int(w), "height": int(h)}
+    return {"ok": True, "url": url, "width": int(w), "height": int(h)}

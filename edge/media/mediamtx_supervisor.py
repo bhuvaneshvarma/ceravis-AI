@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from common.net import lan_ip
+from common.rtsp import normalize_rtsp_url
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from integration import call_log
@@ -197,6 +198,9 @@ class MediaMTXSupervisor:
             ]
         lines += [
             "pathDefaults:",
+            # Pull every camera source over interleaved TCP — UDP-first drops the
+            # big fragmented packets of 4K/H.265 feeds (blank/no frames).
+            "  rtspTransport: tcp",
             f"  recordPath: {record_path}/%path/%Y-%m-%d_%H-%M-%S-%f",
             "  recordFormat: fmp4",
             f"  recordSegmentDuration: {settings.record_segment_secs}s",
@@ -209,7 +213,7 @@ class MediaMTXSupervisor:
             for cam in cameras:
                 lines += [
                     f"  {path_name(cam.camera_id)}:",
-                    f"    source: {cam.rtsp_url}",
+                    f"    source: {normalize_rtsp_url(cam.rtsp_url)}",
                     "    sourceOnDemand: no",
                     "    record: no",         # flipped at runtime on person detection
                 ]
@@ -218,7 +222,7 @@ class MediaMTXSupervisor:
                 if getattr(cam, "record_rtsp_url", None):
                     lines += [
                         f"  {path_name(cam.camera_id)}-rec:",
-                        f"    source: {cam.record_rtsp_url}",
+                        f"    source: {normalize_rtsp_url(cam.record_rtsp_url)}",
                         "    sourceOnDemand: no",
                         "    record: no",
                     ]

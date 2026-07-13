@@ -23,6 +23,7 @@ from pathlib import Path
 
 import requests
 
+from common.rtsp import normalize_rtsp_url
 from config.settings import settings
 
 
@@ -112,9 +113,14 @@ def is_up() -> bool:
 
 def _path_config(source_url: str) -> dict:
     return {
-        "source": source_url,
+        "source": normalize_rtsp_url(source_url),
         "sourceOnDemand": False,     # stay connected: AI + recorder always need it
         "record": False,             # recording is toggled at runtime per person
+        # Pull the camera over interleaved TCP. The default (UDP-first) drops the
+        # large fragmented packets of a 4K / H.265 stream, so the feed shows
+        # blank/no frames while a smaller sub-stream works. `rtspTransport` is
+        # the v1.9.3 per-path source key (verified against the reference config).
+        "rtspTransport": "tcp",
     }
 
 
