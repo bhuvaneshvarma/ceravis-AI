@@ -74,7 +74,11 @@ class Settings(BaseSettings):
     record_target_height: int = 1080
 
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
-    onvif_discovery_secs: float = 3.0      # WS-Discovery listen window
+    onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window
+    # When multicast finds nothing (common on WiFi with AP/client isolation),
+    # sweep the local /24 for ONVIF devices. Bounded + thread-pooled; safe to
+    # leave on. A "deep" scan (?deep=1) always sweeps and widens the port list.
+    onvif_unicast_fallback: bool = True
 
     # ---- Hotspot (Jetson as WiFi AP for the household cameras) --------
     hotspot_interface: str = ""            # "" = auto-pick the first wifi device

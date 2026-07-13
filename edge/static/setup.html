@@ -98,9 +98,10 @@
     <div class="split">
       <div class="card">
         <h2>Find cameras <span class="faint">(WiFi / ONVIF)</span></h2>
-        <div class="hint mb">Scans this network — including cameras joined to the
-          device hotspot — and fills the form below automatically. Manual RTSP
-          entry always works too.</div>
+        <div class="hint mb">Scans every network interface — WiFi, ethernet and the
+          device hotspot — and fills the form below automatically. If the WiFi
+          blocks discovery, it sweeps the subnet as a fallback. Manual RTSP entry
+          always works too.</div>
         <div class="row">
           <button class="btn btn-ghost" id="d-scan">Scan network</button>
           <span class="probe-result" id="d-scan-out"></span>
@@ -486,24 +487,34 @@ async function refreshCameras() {
 /* ---- ONVIF discovery (WiFi cameras on the LAN / device hotspot) ---- */
 const DISC = { cams: [], sel: null, probed: null };
 
-document.getElementById("d-scan").onclick = async () => {
+async function runScan(deep) {
   const out = document.getElementById("d-scan-out");
-  out.innerHTML = `<span class="muted">Scanning (~3 s)…</span>`;
+  out.innerHTML = `<span class="muted">${deep ? "Deep scan — sweeping the subnet" : "Scanning the network"}…</span>`;
   document.getElementById("d-list").innerHTML = "";
   document.getElementById("d-creds").hidden = true;
   DISC.sel = DISC.probed = null;
   try {
-    const r = await api("/api/v1/discovery/scan");
+    const r = await api(`/api/v1/discovery/scan${deep ? "?deep=1" : ""}`);
     DISC.cams = r.cameras || [];
-    out.innerHTML = DISC.cams.length
-      ? `<span class="ok">✓ ${DISC.cams.length} camera(s) found</span>`
-      : `<span class="warn">No ONVIF cameras answered.</span>`;
+    const where = (r.subnets || []).join(", ") || "this network";
+    if (DISC.cams.length) {
+      out.innerHTML = `<span class="ok">✓ ${DISC.cams.length} camera(s) found</span>
+        <span class="faint">on ${where}</span>`;
+    } else {
+      // Nothing answered — show WHERE we looked + offer a subnet sweep, so the
+      // operator can tell "wrong network" from "camera blocking multicast".
+      out.innerHTML = `<span class="warn">No ONVIF cameras answered on ${where}.</span>`
+        + (deep ? "" : ` <button class="btn btn-ghost" style="padding:2px 8px;font-size:12px"
+             id="d-deep">Deep scan</button>`);
+      const deepBtn = document.getElementById("d-deep");
+      if (deepBtn) deepBtn.onclick = () => runScan(true);
+    }
     document.getElementById("d-list").innerHTML = DISC.cams.map((c, i) => `
       <label style="display:flex;gap:8px;align-items:center;padding:6px 2px;
                     font-size:13px;cursor:pointer">
         <input type="radio" name="d-cam" value="${i}" style="width:auto">
-        <b>${c.name || c.hardware || "camera"}</b>
-        <span class="faint">${c.ip}${c.hardware ? " · " + c.hardware : ""}</span>
+        <b>${c.name || c.hardware || c.manufacturer || "camera"}</b>
+        <span class="faint">${c.ip}${c.hardware ? " · " + c.hardware : ""}${c.via === "unicast" ? " · sweep" : ""}</span>
       </label>`).join("");
     document.querySelectorAll('input[name="d-cam"]').forEach(el => {
       el.onchange = () => {
@@ -514,7 +525,8 @@ document.getElementById("d-scan").onclick = async () => {
       };
     });
   } catch (e) { out.innerHTML = `<span class="bad">✗ scan failed</span>`; }
-};
+}
+document.getElementById("d-scan").onclick = () => runScan(false);
 
 document.getElementById("d-probe").onclick = async () => {
   const out = document.getElementById("d-probe-out");

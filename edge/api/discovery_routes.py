@@ -4,11 +4,17 @@ from __future__ import annotations
 WiFi-camera onboarding: find ONVIF cameras on the network (household LAN or
 the Jetson's own hotspot) and interrogate one for its streams.
 
-    GET  /api/v1/discovery/scan     -> cameras answering WS-Discovery
-    POST /api/v1/discovery/probe    -> {xaddr, username, password} ->
+    GET  /api/v1/discovery/scan          -> cameras answering discovery
+         ?deep=1  also sweeps the local subnet on the ONVIF ports (use when the
+                  WiFi AP blocks multicast between clients — "AP isolation")
+    POST /api/v1/discovery/probe         -> {xaddr, username, password} ->
          device info + main stream URI (raw quality, untouched) + a dedicated
          recording URI (second profile standardized to ~1080p when supported)
          + PTZ capability. The wizard feeds this straight into the camera form.
+
+The scan response also reports the interfaces/subnets it searched and how each
+camera was found ("multicast" vs "unicast"), so a silent network is diagnosable
+instead of just "nothing found".
 """
 
 import logging
@@ -16,6 +22,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from common import net
 from config.settings import settings
 from onvif.client import probe
 from onvif.discovery import discover
@@ -33,9 +40,20 @@ class ProbeRequest(BaseModel):
 
 
 @router.get("/scan")
-def scan():
-    """WS-Discovery multicast probe — a few seconds' scan of the local subnet."""
-    return {"cameras": discover(timeout=settings.onvif_discovery_secs)}
+def scan(deep: bool = False):
+    """Find ONVIF cameras. Multicast WS-Discovery first; falls back to a bounded
+    subnet sweep when multicast is silent (or always, on a deep scan)."""
+    cameras = discover(
+        timeout=settings.onvif_discovery_secs,
+        deep=deep,
+        fallback=settings.onvif_unicast_fallback,
+    )
+    return {
+        "cameras": cameras,
+        "interfaces": net.local_ipv4s(),
+        "subnets": [str(n) for n in net.local_ipv4_networks()],
+        "deep": deep,
+    }
 
 
 @router.post("/probe")
