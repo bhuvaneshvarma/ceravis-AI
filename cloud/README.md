@@ -46,6 +46,10 @@ use egress — so we only ever relay the strict-NAT minority through it.)
    | SSH | TCP | 22 | *My IP* | you, to manage it |
    | Custom TCP | TCP | 7000 | 0.0.0.0/0 | edge frpc connects here (token-protected) |
    | Custom TCP | TCP | 8889 | 0.0.0.0/0 | viewers reach the tunneled WebRTC signaling |
+   | Custom TCP | TCP | 8080 | 0.0.0.0/0 | *(optional)* admin pages via Basic Auth — see §6 |
+
+   *Only add the 8080 row if you enable the optional admin tunnel below. For the
+   plain-TCP admin variant use port 8000 with source restricted to **My IP**.*
 7. **Launch.** Note the **Public IPv4 address** (e.g. `13.51.x.x`) — call it `EC2_IP`.
    - Optional: allocate an **Elastic IP** and associate it, so the address
      survives a reboot. Recommended (the link you send the cloud is this IP).
@@ -79,6 +83,8 @@ cd ~/ceravis-cloud
 #    edit auth.token in frps.toml — make it long and random:
 openssl rand -hex 24            # copy the output
 nano frps.toml                  # paste into auth.token
+
+
 
 # 2) install + start
 bash install_frps.sh
@@ -135,6 +141,33 @@ sudo systemctl restart ceravis
 
 If the page loads but video stalls, that home is behind strict NAT and needs the
 TURN fallback (Later) — alerts, snapshots and local playback still work meanwhile.
+
+---
+
+## 6. (Optional) Reach the admin pages from anywhere
+
+The same tunnel can publish the edge admin UI (uvicorn `:8000` — setup wizard,
+monitor, live wall). It's **off by default**, because the edge API has **no
+built-in authentication**: anyone who reaches port 8000 can view cameras and
+control the system. Enable it only with one of these protections.
+
+> **Recommended — Basic Auth (works from any browser):**
+> 1. In `frpc.toml`, uncomment the **Option 1** `ceravis-admin` block, set
+>    `customDomains` to your `EC2_IP`, and choose a strong `httpPassword`.
+> 2. In `frps.toml`, uncomment `vhostHTTPPort = 8080`.
+> 3. Open **TCP 8080** in the EC2 security group (0.0.0.0/0 is fine — the
+>    password guards it).
+> 4. `sudo systemctl restart frps` (EC2) and `sudo systemctl restart frpc` (edge).
+> 5. Browse **`http://EC2_IP:8080/ui/setup.html`** → the browser prompts for the
+>    user/password. Done.
+
+> **Quick but locked-down — plain TCP:** uncomment **Option 2** instead
+> (`remotePort = 8000`), and in the security group open **TCP 8000 with Source =
+> *My IP*** so only you can reach it. Browse `http://EC2_IP:8000/ui/setup.html`.
+
+Both are 3–4 small edits + a restart — no new software. (Password travels in
+cleartext until you add a domain + TLS — see *Later*. For a care product,
+prefer Basic Auth, rotate the password, and add TLS before real use.)
 
 ---
 

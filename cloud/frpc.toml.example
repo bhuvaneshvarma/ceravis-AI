@@ -23,3 +23,34 @@ type = "tcp"
 localIP = "127.0.0.1"
 localPort = 8889
 remotePort = 8889
+
+# ---------------------------------------------------------------------------
+# OPTIONAL: reach the edge admin pages (uvicorn :8000 — setup wizard, monitor,
+# live wall) from anywhere. DISABLED by default on purpose.
+#
+# ⚠ SECURITY: the edge API has NO built-in authentication. Anyone who can reach
+#   port 8000 can view cameras and control the whole system. Do NOT expose it
+#   wide open. Pick ONE of the two protected options below.
+#
+# Option 1 — HTTP Basic Auth at frp (works from any browser, recommended).
+#   Also uncomment `vhostHTTPPort = 8080` in frps.toml, set customDomains to
+#   your EC2 IP, and open TCP 8080 in the security group. Reach it at
+#   http://EC2_IP:8080/ui/setup.html (browser prompts for the user/password).
+# [[proxies]]
+# name = "ceravis-admin"
+# type = "http"
+# localIP = "127.0.0.1"
+# localPort = 8000
+# customDomains = ["EC2_PUBLIC_IP"]          # same IP/domain as serverAddr
+# httpUser = "admin"
+# httpPassword = "CHANGE_ME_TO_A_STRONG_PASSWORD"
+#
+# Option 2 — plain TCP tunnel (no frp auth). ONLY safe if you lock the EC2
+#   security-group source for port 8000 to *My IP*. Reach it at
+#   http://EC2_IP:8000/ui/setup.html.
+# [[proxies]]
+# name = "ceravis-admin"
+# type = "tcp"
+# localIP = "127.0.0.1"
+# localPort = 8000
+# remotePort = 8000

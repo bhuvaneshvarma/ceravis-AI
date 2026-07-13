@@ -12,6 +12,11 @@
 
 bindPort = 7000                     # frpc (edge) connects here — open TCP 7000
 
+# Only needed for the OPTIONAL Basic-Auth admin tunnel (frpc "ceravis-admin",
+# type = "http"). Uncomment, then open this TCP port in the security group and
+# reach the edge UI at http://EC2_IP:8080/ui/setup.html. Leave off otherwise.
+# vhostHTTPPort = 8080
+
 # Only an edge that knows this token may open a tunnel. Change it.
 auth.method = "token"
 auth.token = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
