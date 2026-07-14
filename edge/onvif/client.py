@@ -62,15 +62,21 @@ class OnvifCamera:
         self.password = password
         self._media_url: str | None = None
         self._ptz_url: str | None = None
+        self._ptz_advertised = False           # camera exposes a PTZ service
+        self._resolved = False
 
     def _call(self, url: str, body: str) -> ElementTree.Element:
         return call(url, body, self.username, self.password)
 
     # ---- service resolution -----------------------------------------
     def _services(self) -> None:
-        """Resolve the media/PTZ service URLs (GetServices, fallback default)."""
-        if self._media_url is not None:
+        """Resolve the media/PTZ service URLs. Tries GetServices, then the older
+        GetCapabilities, and finally defaults any still-missing service to the
+        device endpoint — many cheap cameras expose EVERY service on one URL
+        (e.g. .../onvif/service), so a single endpoint answers all calls."""
+        if self._resolved:
             return
+        self._resolved = True
         try:
             body = self._call(
                 self.xaddr,
@@ -79,15 +85,49 @@ class OnvifCamera:
             for svc in body.findall(".//Service"):
                 ns = svc.findtext("Namespace") or ""
                 url = svc.findtext("XAddr") or ""
+                if not url:
+                    continue
                 if _MEDIA_NS in ns:
                     self._media_url = url
                 elif _PTZ_NS in ns:
                     self._ptz_url = url
+                    self._ptz_advertised = True
         except OnvifError as exc:
-            logger.info("GetServices failed (%s) — using device xaddr", exc)
-        if not self._media_url:
-            self._media_url = self.xaddr        # many cameras accept media
-            self._ptz_url = self._ptz_url      # calls on the device endpoint
+            logger.info("GetServices failed (%s) — trying GetCapabilities", exc)
+        if not (self._media_url and self._ptz_advertised):
+            self._capabilities_fallback()
+        # Single-endpoint cameras: default whatever is still unset to the device
+        # xaddr so calls still go somewhere the camera answers.
+        self._media_url = self._media_url or self.xaddr
+        self._ptz_url = self._ptz_url or self._media_url
+
+    def _capabilities_fallback(self) -> None:
+        """Older cameras answer GetCapabilities but not GetServices. It reports
+        the Media/PTZ service addresses and — crucially — whether PTZ exists."""
+        try:
+            body = self._call(
+                self.xaddr,
+                '<GetCapabilities xmlns="http://www.onvif.org/ver10/device/wsdl">'
+                "<Category>All</Category></GetCapabilities>")
+        except OnvifError as exc:
+            logger.info("GetCapabilities failed: %s", exc)
+            return
+        media = body.find(".//Media/XAddr")
+        ptz = body.find(".//PTZ/XAddr")
+        if media is not None and media.text and not self._media_url:
+            self._media_url = media.text
+        if ptz is not None and ptz.text:
+            self._ptz_url = self._ptz_url or ptz.text
+            self._ptz_advertised = True
+        elif body.find(".//PTZ") is not None:
+            self._ptz_advertised = True
+
+    def has_ptz_service(self) -> bool:
+        """Whether the camera advertises a PTZ service. This is the reliable
+        'can this camera pan/tilt/zoom' signal — far more so than a profile's
+        embedded PTZConfiguration, which many PTZ cameras simply omit."""
+        self._services()
+        return self._ptz_advertised
 
     # ---- device ------------------------------------------------------
     def device_info(self) -> dict:
@@ -225,10 +265,11 @@ class OnvifCamera:
 
 def probe(xaddr: str, username: str, password: str,
           record_height: int = 1080) -> dict:
-    """Interrogate one discovered camera. Returns device info + the chosen
-    stream plan: main stream untouched (raw quality for AI + live links);
-    a second profile standardized to <=record_height for recording when the
-    camera has one, else recording falls back to the main stream."""
+    """Interrogate one discovered camera. Returns device info, EVERY media
+    profile with its own RTSP URI (so the operator can pick stream1/stream2
+    themselves), the highest-res profile as the default main stream, a
+    standardized recording stream, and PTZ capability + the profile token to
+    drive it."""
     cam = OnvifCamera(xaddr, username, password)
     info = cam.device_info()                    # also proves the credentials
     profs = cam.profiles()
@@ -237,6 +278,16 @@ def probe(xaddr: str, username: str, password: str,
 
     profs.sort(key=lambda p: p.width * p.height, reverse=True)
     main, subs = profs[0], profs[1:]
+
+    # Every profile with its own stream URI — the wizard renders these as a
+    # picker. One SOAP call each; a camera has only a handful of profiles.
+    profiles_out: list[dict] = []
+    for p in profs:
+        try:
+            uri = cam.stream_uri(p.token)
+        except OnvifError:
+            uri = ""
+        profiles_out.append({**vars(p), "uri": uri})
 
     record_uri = None
     record_profile = None
@@ -253,11 +304,19 @@ def probe(xaddr: str, username: str, password: str,
     if record_profile is not None:
         record_uri = cam.stream_uri(record_profile.token)
 
+    # PTZ is supported if the camera exposes a PTZ service (reliable) OR a
+    # profile embeds a PTZConfiguration. Drive it with a PTZ-bound profile when
+    # one exists, else the main profile (single-config cameras accept any).
+    ptz = cam.has_ptz_service() or any(p.has_ptz for p in profs)
+    ptz_token = next((p.token for p in profs if p.has_ptz), main.token)
+
+    main_out = next((p for p in profiles_out if p["token"] == main.token), None)
     return {
         "device": info,
-        "profiles": [vars(p) for p in profs],
-        "main_uri": cam.stream_uri(main.token),
+        "profiles": profiles_out,               # [{token,name,encoding,w,h,fps,has_ptz,uri}]
+        "main_uri": main_out["uri"] if main_out else "",
         "main_profile_token": main.token,
         "record_uri": record_uri,               # None -> record the main stream
-        "ptz": any(p.has_ptz for p in profs),
+        "ptz": ptz,
+        "ptz_token": ptz_token,
     }

@@ -22,7 +22,8 @@ class Camera(BaseModel):
     onvif_xaddr: str | None = None
     onvif_username: str | None = None
     onvif_password: str | None = None
-    onvif_profile_token: str | None = None     # main profile (PTZ target)
+    onvif_profile_token: str | None = None     # the profile whose stream feeds AI
+    onvif_ptz_token: str | None = None         # profile bound to PTZ (may differ)
     ptz_supported: bool = False
 
     is_enabled: bool = True
