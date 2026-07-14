@@ -23,10 +23,14 @@ class Settings(BaseSettings):
     # ---- Ingestion (RTSP) -------------------------------------------
     # Capture rate decoupled from inference. The frame buffer keeps only the
     # latest frame, so each consumer (detection/pose/stream) samples the
-    # newest frame at ITS own rate — raising capture just removes the
-    # 5 fps ceiling without queueing or extra GPU work (decode is on NVDEC,
-    # dedicated hardware, not the GPU compute cores).
-    target_camera_fps: float = 15.0
+    # newest frame at ITS own rate. 0 = UNCAPPED (default): drain the decoder at
+    # the camera's native rate and publish every frame, so movement stays smooth
+    # and consumers always get the freshest frame. Decimating capture below
+    # native never lowers latency (the decode backend already yields only the
+    # newest frame) — it just makes motion choppy. Set a positive value ONLY as
+    # a soft ceiling on weak / many-camera boxes. Decode is on NVDEC (dedicated
+    # hardware), so uncapped adds no GPU-compute cost.
+    target_camera_fps: float = 0.0
     stream_fps: float = 15.0           # WebSocket live view smoothness (CPU JPEG)
     read_timeout_secs: float = 3.0
     reconnect_delay_secs: float = 5.0
@@ -53,9 +57,13 @@ class Settings(BaseSettings):
     # public STUN is free and carries NO media (that stays P2P), e.g.
     # stun:stun.l.google.com:19302. Removing remote access = clear this again.
     mediamtx_stun_server: str = ""
-    # Local jitter buffer for the AI's localhost RTSP pull (ms). Small: the
-    # link is loopback TCP; MediaMTX absorbs the camera-side jitter itself.
-    rtsp_latency_ms: int = 100
+    # Reassembly headroom for the AI's localhost RTSP pull (ms). The link is
+    # loopback TCP (no jitter to absorb — MediaMTX already handles the camera
+    # side), so this is NOT playout latency: the reader never drops on it
+    # (drop-on-latency is off) and the appsink still hands over only the newest
+    # complete frame. It just gives the jitterbuffer room to reassemble the big
+    # P-frame bursts that movement produces without corrupting the frame.
+    rtsp_latency_ms: int = 200
 
     # ---- Recording (person-triggered, native quality) ----------------
     # Records ONLY while YOLO sees a person on that camera (+ post-roll).

@@ -126,9 +126,18 @@ class RTSPReader:
         decode = ("nvv4l2decoder ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert"
                   if hw else
                   ("avdec_h265" if codec == "h265" else "avdec_h264") + " ! videoconvert")
+        # NO drop-on-latency. On a lossless loopback pull there is no network
+        # jitter to bound — the flag only DROPS packets when reassembly briefly
+        # exceeds the latency budget, which is exactly what happens on movement
+        # (big P-frames): incomplete frames -> decode smearing the AI reads as
+        # noise. Let the jitterbuffer keep every packet and emit only COMPLETE
+        # frames. Freshness is owned downstream by the appsink (drop=true
+        # max-buffers=1), which always yields the newest complete frame and
+        # discards the backlog — so we get integrity AND low latency, not a
+        # trade-off. latency= is just reassembly headroom now (see settings).
         return (
             f"rtspsrc location={self._source_url} protocols=tcp "
-            f"latency={int(settings.rtsp_latency_ms)} drop-on-latency=true ! "
+            f"latency={int(settings.rtsp_latency_ms)} ! "
             f"{depay} ! {decode} ! "
             f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
         )
@@ -163,6 +172,10 @@ class RTSPReader:
             try:
                 if pipeline is None:
                     cap = cv2.VideoCapture(self._source_url)
+                    # FFmpeg has no appsink to drop old frames: cap its internal
+                    # queue to 1 so an uncapped reader can't build a latency
+                    # backlog (the GStreamer paths bound this at the appsink).
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 else:
                     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
             except (RuntimeError, ValueError, OSError, cv2.error):
@@ -182,7 +195,14 @@ class RTSPReader:
     # ---- main loop ---------------------------------------------------------
     def _run(self) -> None:
         reconnect_delay = settings.reconnect_delay_secs
-        frame_interval = 1.0 / self._target_fps
+        # target_fps <= 0 => UNCAPPED: drain the decoder at the camera's native
+        # rate and publish every frame to the latest-frame buffer, so consumers
+        # (detection/pose/reid) always see the freshest frame and motion is
+        # smooth. Decimating capture below native never helps latency — both
+        # backends already hand back only the newest frame (GStreamer appsink
+        # drop / FFmpeg BUFFERSIZE=1) — it only makes movement choppy. A positive
+        # value re-imposes a soft ceiling for weak / many-camera boxes.
+        frame_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.0
 
         while self._running:
             if not self._connect():
@@ -199,10 +219,11 @@ class RTSPReader:
             next_frame_time = time.perf_counter()
 
             while self._running and self._capture is not None:
-                now = time.perf_counter()
-                if now < next_frame_time:
-                    time.sleep(next_frame_time - now)
-                next_frame_time += frame_interval
+                if frame_interval:                       # 0 => uncapped, no pacing
+                    now = time.perf_counter()
+                    if now < next_frame_time:
+                        time.sleep(next_frame_time - now)
+                    next_frame_time += frame_interval
 
                 read_started = time.perf_counter()
                 success, frame = self._capture.read()
