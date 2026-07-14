@@ -87,6 +87,15 @@ class Settings(BaseSettings):
     # sweep the local /24 for ONVIF devices. Bounded + thread-pooled; safe to
     # leave on. A "deep" scan (?deep=1) always sweeps and widens the port list.
     onvif_unicast_fallback: bool = True
+    # Shared secret guarding the cloud-facing PTZ endpoint (POST /cameras/ptz).
+    # The ceravishealth backend must send it as X-Ceravis-Control-Token. MUST be
+    # set before exposing the edge through the frp tunnel — the edge API has no
+    # other auth. Empty = accept unauthenticated (LAN dev only).
+    edge_control_token: str = ""
+    # Hard ceiling on a single PTZ move (ms). The edge always auto-stops after
+    # this even if no stop/duration arrives, so a lost command can never leave a
+    # motor spinning. duration_ms in the request is clamped to this.
+    ptz_max_move_ms: int = 2000
 
     # ---- Hotspot (Jetson as WiFi AP for the household cameras) --------
     hotspot_interface: str = ""            # "" = auto-pick the first wifi device

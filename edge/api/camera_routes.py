@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict
 
 import cv2
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import Response
 
 from common.rtsp import normalize_rtsp_url
+from config.settings import settings
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
 from media import mediamtx_client
@@ -85,6 +87,112 @@ def all_camera_status(request: Request):
         cid: asdict(s)
         for cid, s in _mgr(request).get_status().items()
     }
+
+
+# =====================================================================
+# CLOUD PTZ — label-based control from the ceravishealth backend.
+# Flow: frontend -> backend REST -> frp tunnel -> THIS endpoint -> ONVIF camera.
+# The command is self-terminating: we start a ContinuousMove and auto-stop after
+# duration_ms (clamped to ptz_max_move_ms), so a lost stop can never leave a
+# motor spinning. Zoom is intentionally NOT handled here — it's client-side
+# digital zoom in the browser; the edge only drives pan/tilt.
+# =====================================================================
+
+_ptz_stop_timers: dict[str, threading.Timer] = {}
+_ptz_lock = threading.Lock()
+
+
+def _canon(text: str) -> str:
+    return (text or "").strip().upper().replace(" ", "_")
+
+
+def _camera_by_label(label: str) -> Camera | None:
+    """Resolve a CameraName label (KITCHEN, LIVING_ROOM, …) to a camera by its
+    name, room, or id — matched case-insensitively, spaces as underscores."""
+    key = _canon(label)
+    if not key:
+        return None
+    for cam in camera_config.get_all():
+        if key in (_canon(cam.camera_name), _canon(cam.room_name),
+                   _canon(cam.camera_id)):
+            return cam
+    return None
+
+
+def _arm_auto_stop(camera_id: str, onvif_cam, token: str, ms: int) -> int:
+    """(Re)arm a single pending auto-stop for this camera. Cancels any previous
+    one so a new move supersedes it. Returns the clamped duration used."""
+    from onvif.soap import OnvifError
+    ms = max(1, min(ms, settings.ptz_max_move_ms))
+
+    def _stop():
+        try:
+            onvif_cam.ptz_stop(token)
+        except OnvifError:
+            pass
+        with _ptz_lock:
+            _ptz_stop_timers.pop(camera_id, None)
+
+    with _ptz_lock:
+        old = _ptz_stop_timers.pop(camera_id, None)
+        if old is not None:
+            old.cancel()
+        timer = threading.Timer(ms / 1000.0, _stop)
+        timer.daemon = True
+        _ptz_stop_timers[camera_id] = timer
+        timer.start()
+    return ms
+
+
+@router.post("/ptz")
+def ptz_by_label(body: dict,
+                 x_ceravis_control_token: str | None = Header(default=None)):
+    """
+    Pan/tilt one camera by its CameraName label. Body:
+        { "camera_label":"KITCHEN", "action":"move",
+          "pan":-0.4, "tilt":0, "duration_ms":300 }
+    action "move" (or a non-zero pan/tilt) starts motion and auto-stops after
+    duration_ms; "stop" (or all-zero) halts immediately.
+    """
+    secret = settings.edge_control_token.strip()
+    if secret and (x_ceravis_control_token or "").strip() != secret:
+        raise HTTPException(401, "invalid or missing control token")
+
+    label = (body or {}).get("camera_label", "")
+    cam = _camera_by_label(label)
+    if cam is None:
+        raise HTTPException(404, f"no camera for label '{label}'")
+    if not (cam.ptz_supported and cam.onvif_xaddr):
+        raise HTTPException(400, f"camera '{label}' has no PTZ")
+
+    from onvif.client import OnvifCamera
+    from onvif.soap import OnvifError
+    pan = float((body or {}).get("pan", 0) or 0)
+    tilt = float((body or {}).get("tilt", 0) or 0)
+    # zoom is deliberately ignored here (client-side digital zoom).
+    duration_ms = int((body or {}).get("duration_ms", 0) or 0)
+    stop = (body or {}).get("action") == "stop" or not (pan or tilt)
+
+    onvif_cam = OnvifCamera(cam.onvif_xaddr, cam.onvif_username or "",
+                            cam.onvif_password or "")
+    token = cam.onvif_ptz_token or cam.onvif_profile_token or ""
+    try:
+        if stop:
+            with _ptz_lock:
+                t = _ptz_stop_timers.pop(cam.camera_id, None)
+            if t is not None:
+                t.cancel()
+            onvif_cam.ptz_stop(token)
+            return {"status": "stopped", "camera_id": cam.camera_id,
+                    "label": _canon(label)}
+        onvif_cam.ptz_move(token, pan, tilt, 0.0)
+    except OnvifError as exc:
+        raise HTTPException(502, f"PTZ failed: {exc}")
+    # Default a missing/zero duration to the safety ceiling so it always stops.
+    used_ms = _arm_auto_stop(cam.camera_id, onvif_cam, token,
+                             duration_ms or settings.ptz_max_move_ms)
+    return {"status": "moving", "camera_id": cam.camera_id,
+            "label": _canon(label), "auto_stop_ms": used_ms}
 
 
 # =====================================================================
