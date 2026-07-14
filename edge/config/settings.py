@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     # set before exposing the edge through the frp tunnel — the edge API has no
     # other auth. Empty = accept unauthenticated (LAN dev only).
     edge_control_token: str = ""
+    # This device's stable identity (e.g. "home_1234"). Fleet routing: with many
+    # edge devices, the backend maps patient/email -> edge_id -> the right tunnel.
+    # When set, the PTZ endpoint OBEYS ONLY commands whose edgeId matches this —
+    # a misrouted command can never move the wrong home's camera. Empty = single
+    # device, no check.
+    edge_id: str = ""
     # Hard ceiling on a single PTZ move (ms). The edge always auto-stops after
     # this even if no stop/duration arrives, so a lost command can never leave a
     # motor spinning. duration_ms in the request is clamped to this.

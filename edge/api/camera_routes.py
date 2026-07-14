@@ -106,6 +106,15 @@ def _canon(text: str) -> str:
     return (text or "").strip().upper().replace(" ", "_")
 
 
+def _field(body: dict, *keys, default=None):
+    """First present, non-null key — so the same endpoint takes the backend's
+    camelCase (cameraLabel, durationMs) and snake_case interchangeably."""
+    for k in keys:
+        if body.get(k) is not None:
+            return body[k]
+    return default
+
+
 def _camera_by_label(label: str) -> Camera | None:
     """Resolve a CameraName label (KITCHEN, LIVING_ROOM, …) to a camera by its
     name, room, or id — matched case-insensitively, spaces as underscores."""
@@ -148,17 +157,27 @@ def _arm_auto_stop(camera_id: str, onvif_cam, token: str, ms: int) -> int:
 def ptz_by_label(body: dict,
                  x_ceravis_control_token: str | None = Header(default=None)):
     """
-    Pan/tilt one camera by its CameraName label. Body:
-        { "camera_label":"KITCHEN", "action":"move",
-          "pan":-0.4, "tilt":0, "duration_ms":300 }
+    Pan/tilt one camera by its CameraName label. Body (camelCase or snake_case):
+        { "edgeId":"home_1234", "cameraLabel":"KITCHEN", "action":"move",
+          "pan":-0.4, "tilt":0, "durationMs":300 }
     action "move" (or a non-zero pan/tilt) starts motion and auto-stops after
-    duration_ms; "stop" (or all-zero) halts immediately.
+    durationMs; "stop" (or all-zero) halts immediately.
     """
+    body = body or {}
     secret = settings.edge_control_token.strip()
     if secret and (x_ceravis_control_token or "").strip() != secret:
         raise HTTPException(401, "invalid or missing control token")
 
-    label = (body or {}).get("camera_label", "")
+    # Fleet guard: obey only commands addressed to THIS device, so a misrouted
+    # request never moves the wrong home's camera. Skipped if edge_id is unset.
+    my_id = settings.edge_id.strip()
+    req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
+    if my_id and req_id and req_id != my_id:
+        raise HTTPException(409, f"edge_id mismatch: command for '{req_id}', "
+                                 f"this device is '{my_id}'")
+
+    label = str(_field(body, "cameraLabel", "camera_label", "cameraNumber",
+                       default=""))
     cam = _camera_by_label(label)
     if cam is None:
         raise HTTPException(404, f"no camera for label '{label}'")
@@ -167,11 +186,11 @@ def ptz_by_label(body: dict,
 
     from onvif.client import OnvifCamera
     from onvif.soap import OnvifError
-    pan = float((body or {}).get("pan", 0) or 0)
-    tilt = float((body or {}).get("tilt", 0) or 0)
+    pan = float(_field(body, "pan", default=0) or 0)
+    tilt = float(_field(body, "tilt", default=0) or 0)
     # zoom is deliberately ignored here (client-side digital zoom).
-    duration_ms = int((body or {}).get("duration_ms", 0) or 0)
-    stop = (body or {}).get("action") == "stop" or not (pan or tilt)
+    duration_ms = int(_field(body, "durationMs", "duration_ms", default=0) or 0)
+    stop = _field(body, "action", default="move") == "stop" or not (pan or tilt)
 
     onvif_cam = OnvifCamera(cam.onvif_xaddr, cam.onvif_username or "",
                             cam.onvif_password or "")
