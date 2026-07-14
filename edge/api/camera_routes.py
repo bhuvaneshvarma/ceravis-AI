@@ -14,6 +14,7 @@ from common.rtsp import normalize_rtsp_url
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
+from integration import call_log
 from media import mediamtx_client
 from media.mediamtx_client import MediaMTXError
 from schemas.cameras import Camera
@@ -128,6 +129,15 @@ def _camera_by_label(label: str) -> Camera | None:
     return None
 
 
+def _ptz_log(ok: bool, label: str, detail: str, status: int) -> None:
+    """Make every PTZ hit visible in BOTH places: the app log (journalctl) and
+    the monitor's Cloud Sync Console (call_log). So you can see who moved what,
+    and rejected/failed attempts, without guessing."""
+    (logger.info if ok else logger.warning)("PTZ %s — %s", label or "?", detail)
+    call_log.record("ptz", ok, status=status,
+                    label=f"{_canon(label)} {detail}".strip()[:300])
+
+
 def _arm_auto_stop(camera_id: str, onvif_cam, token: str, ms: int) -> int:
     """(Re)arm a single pending auto-stop for this camera. Cancels any previous
     one so a new move supersedes it. Returns the clamped duration used."""
@@ -166,6 +176,7 @@ def ptz_by_label(body: dict,
     body = body or {}
     secret = settings.edge_control_token.strip()
     if secret and (x_ceravis_control_token or "").strip() != secret:
+        _ptz_log(False, "", "rejected: bad/missing control token", 401)
         raise HTTPException(401, "invalid or missing control token")
 
     # Fleet guard: obey only commands addressed to THIS device, so a misrouted
@@ -173,6 +184,7 @@ def ptz_by_label(body: dict,
     my_id = settings.edge_id.strip()
     req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
     if my_id and req_id and req_id != my_id:
+        _ptz_log(False, req_id, f"rejected: edge_id mismatch (I am '{my_id}')", 409)
         raise HTTPException(409, f"edge_id mismatch: command for '{req_id}', "
                                  f"this device is '{my_id}'")
 
@@ -180,8 +192,10 @@ def ptz_by_label(body: dict,
                        default=""))
     cam = _camera_by_label(label)
     if cam is None:
+        _ptz_log(False, label, "rejected: no camera for label", 404)
         raise HTTPException(404, f"no camera for label '{label}'")
     if not (cam.ptz_supported and cam.onvif_xaddr):
+        _ptz_log(False, label, "rejected: camera has no PTZ", 400)
         raise HTTPException(400, f"camera '{label}' has no PTZ")
 
     from onvif.client import OnvifCamera
@@ -202,14 +216,17 @@ def ptz_by_label(body: dict,
             if t is not None:
                 t.cancel()
             onvif_cam.ptz_stop(token)
+            _ptz_log(True, label, "stop", 200)
             return {"status": "stopped", "camera_id": cam.camera_id,
                     "label": _canon(label)}
         onvif_cam.ptz_move(token, pan, tilt, 0.0)
     except OnvifError as exc:
+        _ptz_log(False, label, f"camera error: {exc}", 502)
         raise HTTPException(502, f"PTZ failed: {exc}")
     # Default a missing/zero duration to the safety ceiling so it always stops.
     used_ms = _arm_auto_stop(cam.camera_id, onvif_cam, token,
                              duration_ms or settings.ptz_max_move_ms)
+    _ptz_log(True, label, f"move pan={pan:+.2f} tilt={tilt:+.2f} {used_ms}ms", 200)
     return {"status": "moving", "camera_id": cam.camera_id,
             "label": _canon(label), "auto_stop_ms": used_ms}
 
