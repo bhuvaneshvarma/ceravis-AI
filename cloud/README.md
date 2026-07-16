@@ -173,6 +173,24 @@ prefer Basic Auth, rotate the password, and add TLS before real use.)
 
 ---
 
+## 7. (Optional) SSH into the edge from anywhere
+
+For remote maintenance (git pull, setup scripts, logs) when you're off-LAN.
+Uses the same tunnel — no new software.
+
+1. Make Jetson SSH **key-only** first: `ssh-copy-id <user>@<jetson-lan-ip>` from
+   your laptop, then on the Jetson set `PasswordAuthentication no` in
+   `/etc/ssh/sshd_config` and `sudo systemctl restart ssh`.
+2. In `frpc.toml`, uncomment the `ceravis-ssh` block (local 22 → remote 7022).
+3. Open **TCP 7022** in the EC2 security group (0.0.0.0/0 is OK once key-only;
+   otherwise Source = *My IP*).
+4. `sudo systemctl restart frpc`, then from anywhere:
+   ```bash
+   ssh -p 7022 <jetson-user>@EC2_IP
+   ```
+
+---
+
 ## Removing it completely (nothing left behind)
 
 Edge:

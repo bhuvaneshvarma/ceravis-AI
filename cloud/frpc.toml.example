@@ -54,3 +54,18 @@ remotePort = 8889
 # localIP = "127.0.0.1"
 # localPort = 8000
 # remotePort = 8000
+
+# ---------------------------------------------------------------------------
+# OPTIONAL: SSH into the Jetson from anywhere (remote maintenance / setup).
+#   ssh -p 7022 <jetson-user>@EC2_IP
+# ⚠ Before opening this to the world, make Jetson SSH key-only:
+#   ssh-copy-id from your laptop, then on the Jetson set
+#   PasswordAuthentication no  in /etc/ssh/sshd_config + restart sshd.
+#   Then open TCP 7022 in the EC2 security group (0.0.0.0/0 is OK once
+#   key-only; otherwise restrict Source to *My IP*).
+# [[proxies]]
+# name = "ceravis-ssh"
+# type = "tcp"
+# localIP = "127.0.0.1"
+# localPort = 22
+# remotePort = 7022
