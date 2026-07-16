@@ -18,6 +18,11 @@ Footage is kept for a **rolling 12 hours** per camera (only the parts where
 someone was present). Older footage is gone, so “Play footage” only works for
 events inside that window.
 
+Clips are **video-only by design**: the cameras’ G.711/PCM audio can’t be stored
+in MP4 in a way every player understands (it lands as the 2023-era `ipcm` box,
+which older players and some browsers reject outright), so the recording stream
+carries no audio. Live view keeps its audio — this affects recordings only.
+
 ---
 
 ## 2. The call flow (identical to PTZ)

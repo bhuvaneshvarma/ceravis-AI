@@ -255,6 +255,30 @@ class OnvifCamera:
             logger.info("record-profile standardization skipped: %s", exc)
             return False
 
+    def remove_profile_audio(self, profile_token: str) -> bool:
+        """Best-effort: detach the audio encoder (and source) from ONE profile so
+        its RTSP stream is VIDEO-ONLY. Used on the RECORD profile: these cameras
+        speak G.711/PCM audio, which fMP4 can only store as LPCM in the 'ipcm'
+        box — a 2023 spec that GStreamer/Totem, pre-6.0 FFmpeg and several
+        browsers don't read, so ONE audio track makes the whole clip
+        "unplayable". Never called on the main profile — live view keeps audio."""
+        self._services()
+        ok = False
+        for op in ("RemoveAudioEncoderConfiguration",
+                   "RemoveAudioSourceConfiguration"):
+            try:
+                self._call(self._media_url,
+                           f'<{op} xmlns="{_MEDIA_NS}">'
+                           f'<ProfileToken>{profile_token}</ProfileToken></{op}>')
+                ok = True
+            except OnvifError as exc:
+                # normal on cameras whose profile carries no audio to begin with
+                logger.info("%s skipped: %s", op, exc)
+        if ok:
+            logger.info("record profile %s: audio detached (video-only recording)",
+                        profile_token)
+        return ok
+
     # ---- PTZ -------------------------------------------------------------
     def ptz_move(self, profile_token: str,
                  pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0) -> None:
@@ -287,12 +311,13 @@ class OnvifCamera:
 
 def probe(xaddr: str, username: str, password: str,
           record_height: int = 1080, record_bitrate_kbps: int = 2048,
-          record_fps: int = 15, prefer_h264: bool = True) -> dict:
+          record_fps: int = 15, prefer_h264: bool = True,
+          record_audio: bool = False) -> dict:
     """Interrogate one discovered camera. Returns device info, EVERY media
     profile with its own RTSP URI (so the operator can pick stream1/stream2
     themselves), the highest-res profile as the default main stream, a
-    standardized recording stream (compact 1080p H.264), and PTZ capability +
-    the profile token to drive it."""
+    standardized recording stream (compact 1080p H.264, video-only unless
+    record_audio), and PTZ capability + the profile token to drive it."""
     cam = OnvifCamera(xaddr, username, password)
     info = cam.device_info()                    # also proves the credentials
     profs = cam.profiles()
@@ -327,6 +352,10 @@ def probe(xaddr: str, username: str, password: str,
         if best_sub.height >= 720:
             record_profile = best_sub
     if record_profile is not None:
+        # Video-only recording (default): detach audio from the RECORD profile
+        # only — the main/live stream is never touched. See settings.record_audio.
+        if not record_audio:
+            cam.remove_profile_audio(record_profile.token)
         record_uri = cam.stream_uri(record_profile.token)
 
     # PTZ is supported if the camera exposes a PTZ service (reliable) OR a

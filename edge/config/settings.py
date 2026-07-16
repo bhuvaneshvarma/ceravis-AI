@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     record_target_bitrate_kbps: int = 2048  # ~0.9 GB/hour at 1080p — the real disk lever
     record_target_fps: int = 15             # surveillance-standard; smooth enough, ~half the bytes of 30
     record_prefer_h264: bool = True         # force H.264 on the record profile for in-browser playback
+    # Recordings are VIDEO-ONLY by default. These cameras speak G.711/PCM audio,
+    # which can only land in fMP4 as LPCM under the 'ipcm' box (ISO 23003-5,
+    # 2023) — so new that GStreamer/Totem, pre-6.0 FFmpeg and several browsers
+    # refuse the whole clip over it. Discovery detaches the audio encoder from
+    # the RECORD profile (the main/live stream keeps its audio untouched), so
+    # every clip plays everywhere. Enable only for cameras that emit AAC.
+    record_audio: bool = False
 
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
     onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window

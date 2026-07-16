@@ -64,7 +64,8 @@ def probe_camera(req: ProbeRequest):
                        record_height=settings.record_target_height,
                        record_bitrate_kbps=settings.record_target_bitrate_kbps,
                        record_fps=settings.record_target_fps,
-                       prefer_h264=settings.record_prefer_h264)
+                       prefer_h264=settings.record_prefer_h264,
+                       record_audio=settings.record_audio)
     except OnvifError as exc:
         raise HTTPException(400, str(exc))
     return result
