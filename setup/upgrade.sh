@@ -37,14 +37,13 @@ sleep 6
 
 echo "== [6/6] verify =="
 bash "$SETUP_DIR/check_jetson.sh" || true
-echo "-- ReID engine self-test --"
-PYTHONPATH="$EDGE_DIR" python3 "$EDGE_DIR/tests/test_reid.py" || echo "  (ReID self-test reported an issue — see above)"
+echo "-- live service status --"
+(cd "$EDGE_DIR" && python3 -m tools.status) || echo "  (service status reported an issue — see above)"
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "============================================================"
 echo "  Upgrade complete."
 echo "  UI:     http://${IP:-<jetson-ip>}:8000/ui/setup.html"
-echo "  Detect test:  PYTHONPATH="$EDGE_DIR" python3 "$EDGE_DIR/tests/test_detect.py""
-echo "  ReID test:    PYTHONPATH="$EDGE_DIR" python3 "$EDGE_DIR/tests/test_reid.py""
+echo "  Status:  cd $EDGE_DIR && python3 -m tools.status"
 echo "  Logs:   journalctl -u ceravis -f"
 echo "============================================================"

@@ -10,6 +10,7 @@ import cv2
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import Response
 
+from api.control_auth import check_control_token, check_edge_id
 from common.rtsp import normalize_rtsp_url
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -174,19 +175,20 @@ def ptz_by_label(body: dict,
     durationMs; "stop" (or all-zero) halts immediately.
     """
     body = body or {}
-    secret = settings.edge_control_token.strip()
-    if secret and (x_ceravis_control_token or "").strip() != secret:
+    # Same guards as every control endpoint (api/control_auth) — the token and
+    # the fleet edge-id check — but logged to the Cloud Sync Console on rejection.
+    try:
+        check_control_token(x_ceravis_control_token)
+    except HTTPException:
         _ptz_log(False, "", "rejected: bad/missing control token", 401)
-        raise HTTPException(401, "invalid or missing control token")
-
-    # Fleet guard: obey only commands addressed to THIS device, so a misrouted
-    # request never moves the wrong home's camera. Skipped if edge_id is unset.
-    my_id = settings.edge_id.strip()
+        raise
     req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
-    if my_id and req_id and req_id != my_id:
-        _ptz_log(False, req_id, f"rejected: edge_id mismatch (I am '{my_id}')", 409)
-        raise HTTPException(409, f"edge_id mismatch: command for '{req_id}', "
-                                 f"this device is '{my_id}'")
+    try:
+        check_edge_id(req_id)
+    except HTTPException:
+        _ptz_log(False, req_id,
+                 f"rejected: edge_id mismatch (I am '{settings.edge_id.strip()}')", 409)
+        raise
 
     label = str(_field(body, "cameraLabel", "camera_label", "cameraNumber",
                        default=""))

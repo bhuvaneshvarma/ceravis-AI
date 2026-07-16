@@ -65,21 +65,38 @@ class Settings(BaseSettings):
     # P-frame bursts that movement produces without corrupting the frame.
     rtsp_latency_ms: int = 200
 
-    # ---- Recording (person-triggered, native quality) ----------------
-    # Records ONLY while YOLO sees a person on that camera (+ post-roll).
-    # Segments are remuxed fMP4 — the camera's own H.264/H.265 untouched, so
-    # recording costs ~zero CPU (the Orin Nano has no hardware encoder).
+    # ---- Recording (person-triggered, compact 1080p H.264) -----------
+    # Records ONLY while YOLO sees a person on that camera (+ post-roll). The
+    # disk footprint is driven by the SOURCE bitrate, NOT the container: MediaMTX
+    # only ever remuxes (the Orin Nano has no hardware encoder, so re-encoding on
+    # the device is off the table), so the way to save disk is to make the CAMERA
+    # emit a small stream. Discovery shapes the camera's second ONVIF profile to
+    # compact 1080p H.264 (see the standardization targets below) and we record
+    # THAT, remux-only. The main stream feeding the AI + live links is untouched.
     record_enabled: bool = True
     record_dir: str = "data/recordings"
     record_segment_secs: int = 15
-    record_retention_days: int = 7         # MediaMTX auto-deletes older segments
-    record_post_roll_secs: float = 10.0    # keep recording this long after the last person
+    # Rolling retention: keep only the last N hours of person-clips. Because we
+    # record ONLY on person detection, self-expiring each segment N hours after
+    # it was written yields exactly a rolling N-hour window of "who was in frame"
+    # per camera — a camera that saw nobody stores nothing. MediaMTX does the
+    # deletion (recordDeleteAfter).
+    record_retention_hours: int = 12
+    record_post_roll_secs: float = 15.0    # keep recording this long after the last person
     record_poll_secs: float = 0.5          # detection-buffer poll cadence
-    # Recording standardization target (RECORDING ONLY — the main stream that
-    # feeds the AI and the WebRTC/HLS live links is NEVER modified). Discovery
-    # sets the camera's SECOND ONVIF profile to <= this height when supported;
-    # cameras without a usable second profile record their main stream as-is.
+    # Recording-profile standardization (RECORDING ONLY — the main stream that
+    # feeds the AI and the WebRTC/HLS live links is NEVER touched). At discovery
+    # the camera's SECOND ONVIF profile is shaped to <= this height, H.264, and a
+    # capped bitrate/frame-rate so the camera itself produces the small stream we
+    # remux — the same trick professional NVRs use to keep footage small without
+    # spending device CPU. H.264 (not the smaller H.265) is deliberate: browsers
+    # play H.264 MP4 natively, so the frontend scrubs recordings with NO
+    # server-side transcode. Cameras with no usable second profile record their
+    # main stream as-is.
     record_target_height: int = 1080
+    record_target_bitrate_kbps: int = 2048  # ~0.9 GB/hour at 1080p — the real disk lever
+    record_target_fps: int = 15             # surveillance-standard; smooth enough, ~half the bytes of 30
+    record_prefer_h264: bool = True         # force H.264 on the record profile for in-browser playback
 
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
     onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window

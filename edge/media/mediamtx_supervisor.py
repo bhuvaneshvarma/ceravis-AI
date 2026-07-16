@@ -204,7 +204,10 @@ class MediaMTXSupervisor:
             f"  recordPath: {record_path}/%path/%Y-%m-%d_%H-%M-%S-%f",
             "  recordFormat: fmp4",
             f"  recordSegmentDuration: {settings.record_segment_secs}s",
-            f"  recordDeleteAfter: {settings.record_retention_days * 24}h",
+            # Rolling window: each person-clip self-deletes this many hours after
+            # it was written, so the disk holds only the latest N hours of "who
+            # was in frame" — never a full N hours of continuous footage.
+            f"  recordDeleteAfter: {settings.record_retention_hours}h",
             "",
         ]
         cameras = [c for c in CameraConfig().get_all() if c.is_enabled]

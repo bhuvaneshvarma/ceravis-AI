@@ -17,8 +17,9 @@ LocationRule's, and falls belong to the fall FSM via FallRule.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
+from common import clock
 from pose.posture_classifier import Posture
 from schemas.event import Event
 from rules.rule_context import RuleContext
@@ -31,7 +32,7 @@ class PostureRule:
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         events: list[Event] = []
-        now = datetime.now(timezone.utc)
+        now = clock.now()
 
         # The shared resolver answers "where is the recipient" — recipient_id
         # is set on each event so the cloud publisher's recipient gate passes.

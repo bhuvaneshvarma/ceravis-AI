@@ -28,9 +28,10 @@ Definitions (kept deliberately simple + cheap for the 1 Hz rule tick):
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from math import hypot
 
+from common import clock
 from config.settings import settings
 from pose.posture_classifier import (
     Posture, LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP)
@@ -83,7 +84,7 @@ class StillnessRule:
         self._nt = _Burst()                                      # no-transition burst
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
-        now = datetime.now(timezone.utc)
+        now = clock.now()
         s = ctx.find_recipient(now, self.FRESH_SECS)
         if s is None:
             self._reset()

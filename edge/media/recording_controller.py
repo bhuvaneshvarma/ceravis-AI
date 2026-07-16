@@ -82,14 +82,68 @@ class RecordingController:
     def recording_now(self) -> list[str]:
         return [cam for cam, on in self._recording.items() if on]
 
+    # ---- live health (status tooling) --------------------------------
+    def health(self) -> list[dict]:
+        """Per-camera recording health for the status tools. Verifies that a
+        camera which SHOULD be recording is actually landing segments on disk —
+        a camera flagged recording but producing no fresh file is a write fault
+        (bad path, disk full, MediaMTX hiccup), the kind of silent failure an
+        NVR alarms on."""
+        out: list[dict] = []
+        root = Path(settings.record_dir)
+        root = root if root.is_absolute() else (_EDGE_ROOT / root)
+        for cam in self._cameras.get_all():
+            path = record_path_name(cam)
+            recording = self._recording.get(cam.camera_id, False)
+            newest, count_1h, bytes_1h = self._segment_stats(root / path)
+            age = (time.time() - newest) if newest else None
+            # recording but no fresh segment within ~3 segment durations = fault
+            gap_limit = max(30.0, settings.record_segment_secs * 3)
+            writing_ok = (not recording) or (age is not None and age <= gap_limit)
+            out.append({
+                "camera_id": cam.camera_id,
+                "path": path,
+                "recording": recording,
+                "newest_segment_age_secs": round(age, 1) if age is not None else None,
+                "segments_last_hour": count_1h,
+                "megabytes_last_hour": round(bytes_1h / 1e6, 1),
+                "writing_ok": writing_ok,
+            })
+        return out
+
+    @staticmethod
+    def _segment_stats(folder: Path) -> tuple[float | None, int, int]:
+        """(newest_mtime_epoch|None, count_last_hour, bytes_last_hour) for a
+        recorded path's segment files."""
+        try:
+            files = list(folder.glob("*.mp4")) + list(folder.glob("*.ts"))
+        except OSError:
+            return None, 0, 0
+        if not files:
+            return None, 0, 0
+        hour_ago = time.time() - 3600
+        newest = 0.0
+        count = 0
+        total = 0
+        for f in files:
+            try:
+                stat = f.stat()
+            except OSError:
+                continue
+            newest = max(newest, stat.st_mtime)
+            if stat.st_mtime >= hour_ago:
+                count += 1
+                total += stat.st_size
+        return (newest or None), count, total
+
     def start(self) -> None:
         self._running = True
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="recording-controller")
         self._thread.start()
         logger.info("Recording on person detection — %ds segments, %.0fs post-roll, "
-                    "keep %dd, enabled=%s", settings.record_segment_secs,
-                    settings.record_post_roll_secs, settings.record_retention_days,
+                    "keep %dh, enabled=%s", settings.record_segment_secs,
+                    settings.record_post_roll_secs, settings.record_retention_hours,
                     self.is_enabled())
 
     def stop(self) -> None:

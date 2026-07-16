@@ -7,9 +7,9 @@ Console displays. The pipeline also logs each DETECTION here (endpoint
 gate dropped it), so a physical test reads on screen as
     EVENT detected -> saveAlert / saveSnapshot hit (or the drop reason).
 
-File-backed (data/cloud_calls.jsonl) rather than in-memory on purpose: the
-service AND tests/test_cloud.py are separate processes, and both must show up
-on the console. Each line is one JSON record:
+File-backed (data/cloud_calls.jsonl) rather than in-memory on purpose, so a
+separate diagnostic process can append to the same console the service reads.
+Each line is one JSON record:
 
     {ts, endpoint, ok, status, latency_ms, label, alert_id, link, error}
 
@@ -36,9 +36,9 @@ _MAX_BYTES = 512 * 1024      # rotate past this…
 _KEEP_LINES = 300            # …down to the newest N records
 
 # Who is making the calls in THIS process: "live" = the service's real
-# pipeline (actual falls/transitions/stillness); "test" = tests/test_cloud.py
-# (it overrides this at startup). The console renders a TEST chip on the
-# latter so real events are unmistakable during end-to-end testing.
+# pipeline (actual falls/transitions/stillness). A separate diagnostic process
+# may override this to "test", and the console renders a TEST chip on those so
+# real events stay unmistakable during end-to-end checks.
 SOURCE = "live"
 
 

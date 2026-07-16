@@ -3,12 +3,11 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
 
-from common import event_snapshots
+from common import clock, event_snapshots
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -138,7 +137,7 @@ class EventEnricher:
             fd = ctx.frames.get(event.camera_id)
             if fd is None:
                 return
-            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            day = clock.now().strftime("%Y-%m-%d")
             rel = Path(settings.device_id) / day / f"{event.event_id}.jpg"
             out = self._events_root / rel
             out.parent.mkdir(parents=True, exist_ok=True)

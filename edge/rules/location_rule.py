@@ -18,8 +18,9 @@ Long-dwell welfare checks live in StillnessRule alone.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
+from common import clock
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -47,7 +48,7 @@ class LocationRule:
         self._cur_area: str | None = None
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
-        now = datetime.now(timezone.utc)
+        now = clock.now()
         s = ctx.find_recipient(now, self.FRESH_SECS)
         if s is None:
             self._cam_cand, self._cam_ticks = None, 0

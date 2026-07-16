@@ -61,7 +61,10 @@ def probe_camera(req: ProbeRequest):
     """Full interrogation of one discovered camera (proves the credentials)."""
     try:
         result = probe(req.xaddr, req.username, req.password,
-                       record_height=settings.record_target_height)
+                       record_height=settings.record_target_height,
+                       record_bitrate_kbps=settings.record_target_bitrate_kbps,
+                       record_fps=settings.record_target_fps,
+                       prefer_h264=settings.record_prefer_h264)
     except OnvifError as exc:
         raise HTTPException(400, str(exc))
     return result

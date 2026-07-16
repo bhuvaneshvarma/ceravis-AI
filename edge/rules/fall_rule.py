@@ -18,8 +18,7 @@ gate decides what is forwarded.
 
 import logging
 import uuid
-from datetime import datetime, timezone
-
+from common import clock
 from common.freshness import POSTURE_FRESH_SECS, is_fresh
 from schemas.event import Event
 from rules.rule_context import RuleContext
@@ -33,7 +32,7 @@ class FallRule:
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         events: list[Event] = []
-        now = datetime.now(timezone.utc)
+        now = clock.now()
 
         for camera_id, per_track in ctx.postures.get_all().items():
             for track_id, rec in per_track.items():

@@ -183,11 +183,15 @@ class OnvifCamera:
 
     # ---- recording-profile standardization ------------------------------
     def standardize_record_profile(self, profile: Profile,
-                                   width: int = 1920, height: int = 1080) -> bool:
-        """Best-effort: set a SUB profile's encoder to ~1080p for recording.
-        Only ever called on a non-main profile; checks the camera's advertised
-        options first and picks the closest supported resolution <= target.
-        Returns True if the encoder now sits at the chosen resolution."""
+                                   width: int = 1920, height: int = 1080,
+                                   bitrate_kbps: int = 2048, fps: int = 15,
+                                   prefer_h264: bool = True) -> bool:
+        """Best-effort: shape a SUB profile into a compact recording stream —
+        <=1080p, H.264, a capped bitrate and frame-rate — so the CAMERA emits a
+        small stream MediaMTX only has to remux (no device re-encode). Only ever
+        called on a non-main profile; picks the closest supported resolution <=
+        target. Returns True when the encoder was updated (best-effort: a camera
+        that rejects any field falls back to recording the stream as-is)."""
         self._services()
         try:
             opts = self._call(self._media_url, f"""
@@ -203,8 +207,6 @@ class OnvifCamera:
             if not resolutions:
                 return False
             best_w, best_h = max(resolutions, key=lambda wh: wh[0] * wh[1])
-            if (best_w, best_h) == (profile.width, profile.height):
-                return True                       # already there
 
             cfg = self._call(self._media_url, f"""
 <GetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
@@ -212,22 +214,42 @@ class OnvifCamera:
 </GetVideoEncoderConfiguration>""").find(".//Configuration")
             if cfg is None:
                 return False
+            # Force H.264 for in-browser playback; keep the camera's codec only if
+            # the operator opted out of the H.264 preference.
+            encoding = "H264" if prefer_h264 else (cfg.findtext("Encoding") or "H264")
+            # Codec block only when we're actually writing H.264 (the ver10 schema
+            # has no H.265 element — an H.265 camera keeps its codec via <Encoding>).
+            gov = max(1, int(fps) * 2)            # ~2-second GOP
+            codec_block = (f"""
+    <H264 xmlns="{_SCHEMA_NS}">
+      <GovLength>{gov}</GovLength>
+      <H264Profile>Main</H264Profile>
+    </H264>""" if encoding == "H264" else "")
+            # Element order follows the ONVIF VideoEncoderConfiguration schema:
+            # Name, UseCount, Encoding, Resolution, Quality, RateControl, H264,
+            # SessionTimeout. RateControl (frame-rate + bitrate) is the disk lever.
             self._call(self._media_url, f"""
 <SetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
   <Configuration token="{profile.encoder_token}">
     <Name xmlns="{_SCHEMA_NS}">{cfg.findtext("Name") or "record"}</Name>
     <UseCount xmlns="{_SCHEMA_NS}">{cfg.findtext("UseCount") or 1}</UseCount>
-    <Encoding xmlns="{_SCHEMA_NS}">{cfg.findtext("Encoding") or "H264"}</Encoding>
+    <Encoding xmlns="{_SCHEMA_NS}">{encoding}</Encoding>
     <Resolution xmlns="{_SCHEMA_NS}">
       <Width>{best_w}</Width><Height>{best_h}</Height>
     </Resolution>
     <Quality xmlns="{_SCHEMA_NS}">{cfg.findtext("Quality") or 4}</Quality>
+    <RateControl xmlns="{_SCHEMA_NS}">
+      <FrameRateLimit>{int(fps)}</FrameRateLimit>
+      <EncodingInterval>1</EncodingInterval>
+      <BitrateLimit>{int(bitrate_kbps)}</BitrateLimit>
+    </RateControl>{codec_block}
     <SessionTimeout xmlns="{_SCHEMA_NS}">{cfg.findtext("SessionTimeout") or "PT60S"}</SessionTimeout>
   </Configuration>
   <ForcePersistence>true</ForcePersistence>
 </SetVideoEncoderConfiguration>""")
-            logger.info("record profile %s standardized to %dx%d",
-                        profile.token, best_w, best_h)
+            logger.info("record profile %s standardized: %dx%d %s @ %d fps, %d kbps",
+                        profile.token, best_w, best_h, encoding, int(fps),
+                        int(bitrate_kbps))
             return True
         except OnvifError as exc:
             logger.info("record-profile standardization skipped: %s", exc)
@@ -264,12 +286,13 @@ class OnvifCamera:
 # ---- probe: everything the wizard needs in one call ----------------------
 
 def probe(xaddr: str, username: str, password: str,
-          record_height: int = 1080) -> dict:
+          record_height: int = 1080, record_bitrate_kbps: int = 2048,
+          record_fps: int = 15, prefer_h264: bool = True) -> dict:
     """Interrogate one discovered camera. Returns device info, EVERY media
     profile with its own RTSP URI (so the operator can pick stream1/stream2
     themselves), the highest-res profile as the default main stream, a
-    standardized recording stream, and PTZ capability + the profile token to
-    drive it."""
+    standardized recording stream (compact 1080p H.264), and PTZ capability +
+    the profile token to drive it."""
     cam = OnvifCamera(xaddr, username, password)
     info = cam.device_info()                    # also proves the credentials
     profs = cam.profiles()
@@ -292,7 +315,9 @@ def probe(xaddr: str, username: str, password: str,
     record_uri = None
     record_profile = None
     for sub in subs:                            # best sub-profile for recording
-        if cam.standardize_record_profile(sub, height=record_height):
+        if cam.standardize_record_profile(
+                sub, height=record_height, bitrate_kbps=record_bitrate_kbps,
+                fps=record_fps, prefer_h264=prefer_h264):
             record_profile = sub
             break
     if record_profile is None and subs:
