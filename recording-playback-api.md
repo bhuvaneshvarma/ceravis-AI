@@ -18,10 +18,11 @@ Footage is kept for a **rolling 12 hours** per camera (only the parts where
 someone was present). Older footage is gone, so “Play footage” only works for
 events inside that window.
 
-Clips are **video-only by design**: the cameras’ G.711/PCM audio can’t be stored
-in MP4 in a way every player understands (it lands as the 2023-era `ipcm` box,
-which older players and some browsers reject outright), so the recording stream
-carries no audio. Live view keeps its audio — this affects recordings only.
+Clips carry **video + AAC audio**. The cameras themselves speak G.711/PCM audio
+(fine for live WebRTC, unplayable-in-MP4 for many players), so the edge
+re-encodes **just the audio** to AAC while copying the video untouched —
+H.264 + AAC is the one MP4 combo every player and browser accepts. Nothing for
+your side to do: the clip you receive simply has sound.
 
 ---
 

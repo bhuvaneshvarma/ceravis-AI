@@ -29,7 +29,9 @@ from common.rtsp import normalize_rtsp_url
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from integration import call_log
-from media.mediamtx_client import is_up, path_name, tls_enabled
+from media.mediamtx_client import (
+    aac_republish_cmd, audio_transcode_active, is_up, path_name, tls_enabled,
+)
 
 
 logger = logging.getLogger("media")
@@ -211,25 +213,40 @@ class MediaMTXSupervisor:
             "",
         ]
         cameras = [c for c in CameraConfig().get_all() if c.is_enabled]
+        audio = audio_transcode_active()
         if cameras:
             lines.append("paths:")
             for cam in cameras:
+                base = path_name(cam.camera_id)
                 lines += [
-                    f"  {path_name(cam.camera_id)}:",
+                    f"  {base}:",
                     f"    source: {normalize_rtsp_url(cam.rtsp_url)}",
                     "    sourceOnDemand: no",
                     "    record: no",         # flipped at runtime on person detection
                 ]
                 # Dedicated recording stream (second ONVIF profile @ ~1080p).
                 # The main path above stays untouched at native quality.
-                if getattr(cam, "record_rtsp_url", None):
+                rec = getattr(cam, "record_rtsp_url", None)
+                if rec:
                     lines += [
-                        f"  {path_name(cam.camera_id)}-rec:",
-                        f"    source: {normalize_rtsp_url(cam.record_rtsp_url)}",
+                        f"  {base}-rec:",
+                        f"    source: {normalize_rtsp_url(rec)}",
                         "    sourceOnDemand: no",
+                        "    record: no",
+                    ]
+                # AAC republish — the path that actually gets recorded. MediaMTX
+                # spawns + auto-restarts the FFmpeg (runOnInit); it copies the
+                # video and re-encodes only the G.711 audio to AAC so clips are
+                # H.264+AAC, the combo every player and browser accepts.
+                if audio:
+                    src = f"{base}-rec" if rec else base
+                    lines += [
+                        f"  {src}-aac:",
+                        f"    runOnInit: {aac_republish_cmd(src)}",
+                        "    runOnInitRestart: yes",
                         "    record: no",
                     ]
         self._config_file.parent.mkdir(parents=True, exist_ok=True)
         self._config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info("MediaMTX config written (%d camera path(s), tls=%s)",
-                    len(cameras), tls)
+        logger.info("MediaMTX config written (%d camera path(s), tls=%s, "
+                    "aac_audio=%s)", len(cameras), tls, audio)

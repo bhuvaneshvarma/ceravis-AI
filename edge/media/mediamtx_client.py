@@ -19,6 +19,7 @@ MediaMTXError on failure so callers can degrade gracefully.
 
 import logging
 import re
+import shutil
 from pathlib import Path
 
 import requests
@@ -42,12 +43,57 @@ def path_name(camera_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_\-]+", "-", (camera_id or "").strip()) or "cam"
 
 
-def record_path_name(camera) -> str:
-    """The path that gets RECORDED for this camera: the dedicated -rec path
-    (the camera's second ONVIF profile, standardized to ~1080p) when one is
-    configured, else the main path (native quality, remuxed as-is)."""
+# ---- AAC-audio recording (per-camera FFmpeg republish) ----------------
+
+_FFMPEG_OK: bool | None = None
+
+
+def ffmpeg_available() -> bool:
+    """Is the ffmpeg binary present? Checked once per process, loud when not."""
+    global _FFMPEG_OK
+    if _FFMPEG_OK is None:
+        _FFMPEG_OK = shutil.which(settings.ffmpeg_binary) is not None
+        if not _FFMPEG_OK:
+            logger.warning(
+                "ffmpeg not found ('%s') — recordings fall back to VIDEO-ONLY "
+                "(no AAC audio). Install ffmpeg on the device.",
+                settings.ffmpeg_binary)
+    return _FFMPEG_OK
+
+
+def audio_transcode_active() -> bool:
+    """AAC-audio recordings are enabled AND ffmpeg exists to do the work."""
+    return bool(settings.record_audio) and ffmpeg_available()
+
+
+def aac_republish_cmd(src_path: str) -> str:
+    """The per-camera FFmpeg command MediaMTX supervises (runOnInit): pull the
+    record stream over loopback TCP, COPY the video untouched, re-encode only
+    the camera's G.711/PCM audio to AAC (16 kHz mono, 32 kbps), and publish it
+    back as <src>-aac — the path that actually gets recorded. The '?' on the
+    audio map keeps mic-less cameras publishing video-only instead of dying."""
+    port = settings.mediamtx_rtsp_port
+    return (f"{settings.ffmpeg_binary} -hide_banner -loglevel warning "
+            f"-rtsp_transport tcp -i rtsp://127.0.0.1:{port}/{src_path} "
+            f"-map 0:v:0 -map 0:a:0? -c:v copy "
+            f"-c:a aac -ar 16000 -ac 1 -b:a 32k "
+            f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:{port}/{src_path}-aac")
+
+
+def record_source_name(camera) -> str:
+    """The path whose stream feeds recording, BEFORE the audio step: the
+    dedicated -rec path (the camera's second ONVIF profile, compact 1080p
+    H.264) when configured, else the main path (recorded as-is)."""
     base = path_name(camera.camera_id)
     return f"{base}-rec" if getattr(camera, "record_rtsp_url", None) else base
+
+
+def record_path_name(camera) -> str:
+    """The path that actually gets RECORDED for this camera: the -aac republish
+    (video copied, audio AAC — plays everywhere) when AAC audio is active, else
+    the record source itself (video-only clips)."""
+    src = record_source_name(camera)
+    return f"{src}-aac" if audio_transcode_active() else src
 
 
 # ---- URLs handed to consumers ---------------------------------------
@@ -124,8 +170,7 @@ def _path_config(source_url: str) -> dict:
     }
 
 
-def _sync_named_path(name: str, source_url: str) -> None:
-    cfg = _path_config(source_url)
+def _sync_path_config(name: str, cfg: dict, desc: str = "") -> None:
     try:
         r = requests.post(_api(f"/config/paths/add/{name}"), json=cfg,
                           timeout=_TIMEOUT)
@@ -136,7 +181,21 @@ def _sync_named_path(name: str, source_url: str) -> None:
             raise MediaMTXError(f"sync path {name}: HTTP {r.status_code} {r.text[:200]}")
     except requests.RequestException as exc:
         raise MediaMTXError(f"sync path {name}: {exc}") from exc
-    logger.info("MediaMTX path synced: %s <- %s", name, source_url)
+    logger.info("MediaMTX path synced: %s %s", name, desc)
+
+
+def _sync_named_path(name: str, source_url: str) -> None:
+    _sync_path_config(name, _path_config(source_url), f"<- {source_url}")
+
+
+def _aac_path_config(src_path: str) -> dict:
+    """Publisher path fed by the MediaMTX-supervised FFmpeg republish — no
+    `source` key: FFmpeg ANNOUNCEs into it; runOnInitRestart respawns it."""
+    return {
+        "runOnInit": aac_republish_cmd(src_path),
+        "runOnInitRestart": True,
+        "record": False,             # flipped at runtime on person detection
+    }
 
 
 def _remove_named_path(name: str) -> None:
@@ -151,7 +210,9 @@ def _remove_named_path(name: str) -> None:
 
 def sync_camera(camera) -> None:
     """Mirror one camera into MediaMTX: main path always; a -rec path when a
-    dedicated recording stream is configured (removed again if it no longer is)."""
+    dedicated recording stream is configured (removed again if it no longer
+    is); and the -aac republish path that actually gets recorded when AAC
+    audio is active (stale variants cleaned up on every sync)."""
     base = path_name(camera.camera_id)
     _sync_named_path(base, camera.rtsp_url)
     rec = getattr(camera, "record_rtsp_url", None)
@@ -162,15 +223,26 @@ def sync_camera(camera) -> None:
             _remove_named_path(f"{base}-rec")
         except MediaMTXError:
             pass                                 # never existed — fine
+    current = f"{record_source_name(camera)}-aac" if audio_transcode_active() else None
+    for cand in (f"{base}-aac", f"{base}-rec-aac"):
+        if cand == current:
+            _sync_path_config(cand, _aac_path_config(record_source_name(camera)),
+                              "(AAC republish)")
+        else:
+            try:
+                _remove_named_path(cand)
+            except MediaMTXError:
+                pass
 
 
 def remove_camera(camera_id: str) -> None:
     base = path_name(camera_id)
     _remove_named_path(base)
-    try:
-        _remove_named_path(f"{base}-rec")
-    except MediaMTXError:
-        pass
+    for extra in (f"{base}-rec", f"{base}-aac", f"{base}-rec-aac"):
+        try:
+            _remove_named_path(extra)
+        except MediaMTXError:
+            pass
 
 
 def set_record(path: str, on: bool) -> None:

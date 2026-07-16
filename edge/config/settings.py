@@ -97,13 +97,17 @@ class Settings(BaseSettings):
     record_target_bitrate_kbps: int = 2048  # ~0.9 GB/hour at 1080p — the real disk lever
     record_target_fps: int = 15             # surveillance-standard; smooth enough, ~half the bytes of 30
     record_prefer_h264: bool = True         # force H.264 on the record profile for in-browser playback
-    # Recordings are VIDEO-ONLY by default. These cameras speak G.711/PCM audio,
-    # which can only land in fMP4 as LPCM under the 'ipcm' box (ISO 23003-5,
-    # 2023) — so new that GStreamer/Totem, pre-6.0 FFmpeg and several browsers
-    # refuse the whole clip over it. Discovery detaches the audio encoder from
-    # the RECORD profile (the main/live stream keeps its audio untouched), so
-    # every clip plays everywhere. Enable only for cameras that emit AAC.
-    record_audio: bool = False
+    # Recordings carry AAC AUDIO (video + AAC = the one MP4 combo every player
+    # and browser accepts). The cameras speak G.711/PCM, which MP4 can only
+    # hold as the 2023 'ipcm' box many players reject — so a tiny per-camera
+    # FFmpeg (supervised by MediaMTX via runOnInit) republishes the record
+    # stream with the VIDEO COPIED untouched and only the ~8 kHz mono audio
+    # re-encoded to AAC (~32 kbps — negligible CPU and disk). Live view is
+    # untouched: WebRTC speaks G.711 natively, which is why live audio always
+    # worked. False = video-only clips (also the automatic fallback when
+    # ffmpeg is missing on the device).
+    record_audio: bool = True
+    ffmpeg_binary: str = "ffmpeg"           # audio-only transcode for recordings
 
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
     onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window

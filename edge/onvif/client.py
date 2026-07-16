@@ -279,6 +279,37 @@ class OnvifCamera:
                         profile_token)
         return ok
 
+    def restore_profile_audio(self, profile_token: str) -> bool:
+        """Best-effort inverse of remove_profile_audio: attach the camera's
+        first audio source + encoder configuration to a profile so its stream
+        carries audio again. Used on the RECORD profile when recordings should
+        include audio (the edge transcodes it to AAC) — converges a profile a
+        previous video-only probe stripped. Harmless when already attached."""
+        self._services()
+        ok = False
+        for get_op, add_op in (
+                ("GetAudioSourceConfigurations", "AddAudioSourceConfiguration"),
+                ("GetAudioEncoderConfigurations", "AddAudioEncoderConfiguration")):
+            try:
+                body = self._call(self._media_url,
+                                  f'<{get_op} xmlns="{_MEDIA_NS}"/>')
+                cfg = body.find(".//Configurations")
+                token = cfg.get("token") if cfg is not None else None
+                if not token:
+                    continue                      # camera has no audio at all
+                self._call(self._media_url, f"""
+<{add_op} xmlns="{_MEDIA_NS}">
+  <ProfileToken>{profile_token}</ProfileToken>
+  <ConfigurationToken>{token}</ConfigurationToken>
+</{add_op}>""")
+                ok = True
+            except OnvifError as exc:
+                logger.info("%s skipped: %s", add_op, exc)
+        if ok:
+            logger.info("record profile %s: audio attached (AAC recordings)",
+                        profile_token)
+        return ok
+
     # ---- PTZ -------------------------------------------------------------
     def ptz_move(self, profile_token: str,
                  pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0) -> None:
@@ -352,9 +383,13 @@ def probe(xaddr: str, username: str, password: str,
         if best_sub.height >= 720:
             record_profile = best_sub
     if record_profile is not None:
-        # Video-only recording (default): detach audio from the RECORD profile
-        # only — the main/live stream is never touched. See settings.record_audio.
-        if not record_audio:
+        # Audio policy on the RECORD profile only (main/live never touched).
+        # record_audio=True (default): make sure the camera audio is present —
+        # the media backbone transcodes it to AAC for the clips. False: detach
+        # it, so no MP4-hostile PCM ('ipcm') track poisons video-only clips.
+        if record_audio:
+            cam.restore_profile_audio(record_profile.token)
+        else:
             cam.remove_profile_audio(record_profile.token)
         record_uri = cam.stream_uri(record_profile.token)
 
