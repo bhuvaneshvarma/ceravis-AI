@@ -39,6 +39,35 @@ class CameraConfig:
 
         return None
 
+    @staticmethod
+    def _canon(text: str) -> str:
+        return (text or "").strip().upper().replace(" ", "_")
+
+    def get_by_label(
+        self,
+        label: str
+    ) -> Camera | None:
+        """Resolve a CameraName label (KITCHEN, LIVING_ROOM, …) — or a plain
+        camera_id — by camera name, room name or id, matched case-insensitively
+        with spaces as underscores. THE one cloud-facing camera addressing rule:
+        PTZ and recording playback both resolve through here."""
+
+        key = self._canon(label)
+
+        if not key:
+            return None
+
+        for camera in self.get_all():
+
+            if key in (
+                self._canon(camera.camera_name),
+                self._canon(camera.room_name),
+                self._canon(camera.camera_id),
+            ):
+                return camera
+
+        return None
+
     def add(
         self,
         camera: Camera

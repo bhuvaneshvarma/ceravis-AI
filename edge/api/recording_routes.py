@@ -20,6 +20,10 @@ The /at and /window endpoints accept the timestamp exactly as it appears on the
 alert/snapshot; a naive value is read as edge-local time (the system's single
 clock — see common.clock). They honour the same control token + edge-id guard as
 the PTZ endpoint, so they're safe to expose through the frp tunnel.
+
+The {camera} slot accepts EITHER the camera_id OR the same CameraName label the
+PTZ endpoint takes (KITCHEN, LIVING_ROOM, …) — one addressing rule for every
+cloud-facing endpoint, resolved by CameraConfig.get_by_label.
 """
 
 from datetime import timedelta
@@ -42,6 +46,15 @@ def _controller(request: Request):
     if rc is None:
         raise HTTPException(503, "recording not available (MediaMTX not running)")
     return rc
+
+
+def _resolve_camera(camera: str):
+    """camera_id first (exact), then the PTZ-style label (KITCHEN, …)."""
+    cfg = CameraConfig()
+    cam = cfg.get_by_id(camera) or cfg.get_by_label(camera)
+    if cam is None:
+        raise HTTPException(404, f"no camera for '{camera}'")
+    return cam
 
 
 @router.get("/state")
@@ -75,24 +88,20 @@ def all_recordings():
     return out
 
 
-@router.get("/{camera_id}")
-def camera_recordings(camera_id: str):
-    cam = CameraConfig().get_by_id(camera_id)
-    if cam is None:
-        raise HTTPException(404, "Camera not found")
+@router.get("/{camera}")
+def camera_recordings(camera: str):
+    cam = _resolve_camera(camera)
     try:
         return mediamtx_client.list_recordings(record_path_name(cam))
     except MediaMTXError as exc:
         raise HTTPException(503, f"recordings unavailable: {exc}")
 
 
-def _stream_clip(camera_id: str, start_iso: str, duration: float):
+def _stream_clip(camera: str, start_iso: str, duration: float):
     """Shared MP4-slice responder for /clip and /at. `start_iso` is normalized to
     an absolute instant first (naive = edge-local), so the timestamp the frontend
     sends always maps to the right footage regardless of its timezone."""
-    cam = CameraConfig().get_by_id(camera_id)
-    if cam is None:
-        raise HTTPException(404, "Camera not found")
+    cam = _resolve_camera(camera)
     try:
         start = clock.to_rfc3339(start_iso)
     except ValueError:
@@ -105,23 +114,23 @@ def _stream_clip(camera_id: str, start_iso: str, duration: float):
         upstream.iter_content(chunk_size=64 * 1024),
         media_type="video/mp4",
         headers={"Content-Disposition":
-                 f'inline; filename="{camera_id}_{start}.mp4"',
+                 f'inline; filename="{cam.camera_id}_{start}.mp4"',
                  "X-Clip-Start": start, "X-Clip-Duration": str(duration)},
     )
 
 
-@router.get("/{camera_id}/clip")
-def recording_clip(camera_id: str, start: str, duration: float = 15.0,
+@router.get("/{camera}/clip")
+def recording_clip(camera: str, start: str, duration: float = 15.0,
                    edge_id: str | None = None,
                    x_ceravis_control_token: str | None = Header(default=None)):
     """One recorded slice as a standard MP4 (starts at `start`, ISO-8601)."""
     check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
-    return _stream_clip(camera_id, start, duration)
+    return _stream_clip(camera, start, duration)
 
 
-@router.get("/{camera_id}/at")
-def recording_at(camera_id: str, ts: str, pre: float = 15.0, duration: float = 15.0,
+@router.get("/{camera}/at")
+def recording_at(camera: str, ts: str, pre: float = 15.0, duration: float = 15.0,
                  edge_id: str | None = None,
                  x_ceravis_control_token: str | None = Header(default=None)):
     """EVENT -> FOOTAGE. Given the timestamp shown on an alert/snapshot, stream
@@ -135,20 +144,18 @@ def recording_at(camera_id: str, ts: str, pre: float = 15.0, duration: float = 1
         start_iso = clock.shift_iso(ts, -max(0.0, pre))
     except ValueError:
         raise HTTPException(400, f"bad timestamp: {ts!r} (want ISO-8601)")
-    return _stream_clip(camera_id, start_iso, duration)
+    return _stream_clip(camera, start_iso, duration)
 
 
-@router.get("/{camera_id}/window")
-def recording_window(camera_id: str, ts: str, edge_id: str | None = None,
+@router.get("/{camera}/window")
+def recording_window(camera: str, ts: str, edge_id: str | None = None,
                      x_ceravis_control_token: str | None = Header(default=None)):
     """Whether footage exists around an event instant, plus this camera's
     recorded ranges — so the player knows if the 'play footage' button has
     anything to show and how far the continuation can run before it runs out."""
     check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
-    cam = CameraConfig().get_by_id(camera_id)
-    if cam is None:
-        raise HTTPException(404, "Camera not found")
+    cam = _resolve_camera(camera)
     try:
         instant = clock.to_aware(ts)
     except ValueError:
@@ -167,5 +174,5 @@ def recording_window(camera_id: str, ts: str, edge_id: str | None = None,
         if s <= instant <= e:
             covered = True
             break
-    return {"camera_id": camera_id, "instant": instant.isoformat(),
+    return {"camera_id": cam.camera_id, "instant": instant.isoformat(),
             "covered": covered, "ranges": ranges}

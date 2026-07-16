@@ -119,15 +119,9 @@ def _field(body: dict, *keys, default=None):
 
 def _camera_by_label(label: str) -> Camera | None:
     """Resolve a CameraName label (KITCHEN, LIVING_ROOM, …) to a camera by its
-    name, room, or id — matched case-insensitively, spaces as underscores."""
-    key = _canon(label)
-    if not key:
-        return None
-    for cam in camera_config.get_all():
-        if key in (_canon(cam.camera_name), _canon(cam.room_name),
-                   _canon(cam.camera_id)):
-            return cam
-    return None
+    name, room, or id — the shared resolver in CameraConfig (recording playback
+    resolves through the same one)."""
+    return camera_config.get_by_label(label)
 
 
 def _ptz_log(ok: bool, label: str, detail: str, status: int) -> None:
