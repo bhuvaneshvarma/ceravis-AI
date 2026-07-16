@@ -61,27 +61,24 @@ export default {
 };
 ```
 
-The playback “request body” (it’s a GET, so these travel as query parameters —
-same fields as the PTZ request, plus the time):
+The playback “request” — it’s a GET that returns video, so the fields ride in
+the URL. **Only two fields are ever needed: the camera label and the
+timestamp.** The 15 s lead-up (`pre`) and the 15 s chunk length (`duration`)
+are edge-side defaults — don’t send them.
 
 ```js
 const req = {
-  camera:   "KITCHEN",          // same label as PTZ cameraLabel (or camera_id)
-  ts:       alert.timestamp,    // the alert/snapshot time — send it UNCHANGED
-  pre:      15,                 // seconds of lead-up (first chunk only)
-  duration: 15,                 // chunk length in seconds
-  edge_id:  "home_1234",        // same as PTZ edgeId
+  camera: "KITCHEN",          // same label as PTZ cameraLabel (or camera_id)
+  ts:     alert.timestamp,    // the alert/snapshot time — send it RAW, unchanged
+  edgeId: "home_1234",        // same as PTZ edgeId
 };
 
-const url = `/api/v1/recordings/${req.camera}/at`
-          + `?ts=${encodeURIComponent(req.ts)}`
-          + `&pre=${req.pre}&duration=${req.duration}&edge_id=${req.edge_id}`;
-
-videoEl.src = url;              // the proxy adds the headers; MP4 streams in
+// no encoding needed — send the timestamp raw; the edge repairs the '+' itself
+videoEl.src = `/api/v1/recordings/${req.camera}/at?ts=${req.ts}&edge_id=${req.edgeId}`;
 ```
 
-Continuation (“queue the next 15 s”): same URL with `ts` advanced by `duration`
-and `pre=0`. Stop on 404 — the footage ran out.
+Queueing the next chunk is one rule: **add 15 seconds to `ts` and call again**;
+play the clips back-to-back. Stop on 404 — the footage ran out.
 
 > ⚠ Dev-only: this works because the vite dev server is there to inject the
 > headers. A production build has no dev server — that’s when the backend proxy
@@ -110,10 +107,10 @@ like the PTZ `cameraLabel`.
 
 | Name | Example | Meaning |
 |---|---|---|
-| `ts` | `2026-07-16T20:00:05+05:30` | **The alert/snapshot timestamp**, exactly as you received it. |
-| `pre` | `15` | Seconds of lead-up before `ts`. Default `15`. |
-| `duration` | `15` | Length of this chunk in seconds. Default `15`. |
+| `ts` | `2026-07-16T20:00:05+05:30` | **The alert/snapshot timestamp**, exactly as you received it — raw, no URL-encoding needed. |
 | `edge_id` | `home_1234` | Which home this is for (safety guard, same as PTZ). |
+| `pre` | *(omit)* | Optional. Lead-up seconds before `ts`. **Defaults to 15 on the edge.** |
+| `duration` | *(omit)* | Optional. Chunk length in seconds. **Defaults to 15.** |
 
 **What comes back:** a normal `video/mp4` stream you can drop into a `<video>`
 element (via a blob) or a MediaSource buffer. Two response headers tell you what
@@ -128,28 +125,35 @@ you got:
 
 ```bash
 curl -H "X-Ceravis-Control-Token: THE_SECRET" \
-  "https://EDGE_THROUGH_TUNNEL/api/v1/recordings/KITCHEN/at?ts=2026-07-16T20:00:05%2B05:30&pre=15&duration=15&edge_id=home_1234" \
+  "https://EDGE_THROUGH_TUNNEL/api/v1/recordings/KITCHEN/at?ts=2026-07-16T20:00:05+05:30&edge_id=home_1234" \
   --output clip.mp4
 ```
 
-> `%2B` is just `+` URL-encoded. Always URL-encode the `ts` value.
+> Send the timestamp **raw** — the edge knows URL decoding turns the offset’s
+> `+` into a space and repairs it itself. (An encoded `%2B` works too.)
 
 ---
 
 ## 4. Continuing playback (“queue the next”)
 
-To keep playing past the first 15 seconds, call the **same endpoint** with `ts`
-moved **forward** by the duration you already played. Use `pre=0` for the
-follow-on chunks (you only want the lead-up once, at the start):
+One rule: **next `ts` = previous `ts` + 15 seconds.** Nothing else changes — you
+never touch `pre` or `duration`. Because every call starts 15 s before its own
+`ts`, the chunks tile perfectly, no gaps and no overlaps:
 
 ```
-1st chunk:  ts = 2026-07-16T20:00:05+05:30 , pre = 15    → plays 19:59:50 … 20:00:05
-2nd chunk:  ts = 2026-07-16T20:00:05+05:30 , pre = 0     → plays 20:00:05 … 20:00:20
-3rd chunk:  ts = 2026-07-16T20:00:20+05:30 , pre = 0     → plays 20:00:20 … 20:00:35
+call 1:  ts = 20:00:05   → plays 19:59:50 … 20:00:05   (the lead-up to the event)
+call 2:  ts = 20:00:20   → plays 20:00:05 … 20:00:20
+call 3:  ts = 20:00:35   → plays 20:00:20 … 20:00:35
 ```
 
-Simple rule: **next `ts` = previous `X-Clip-Start` + `X-Clip-Duration`.**
-Fetch the next chunk slightly before the current one ends so playback is smooth.
+Fetch the next chunk a couple of seconds before the current one ends so playback
+feels seamless. Stop when a call returns **404** — the footage ran out (nobody
+was recorded after that, or it aged past the 12-hour window).
+
+The `X-Clip-Start` / `X-Clip-Duration` response headers still say exactly what
+each chunk covers if you want a timeline. And if you ever want fewer
+round-trips, ask for bigger chunks (`duration=60`) and advance `ts` by that —
+the playback server stitches the stored 15 s segments together for you.
 
 ---
 
@@ -193,6 +197,27 @@ snapshots and recordings are all stamped on it. So:
 
 ---
 
+## 6b. Where the video actually lives, and what it costs
+
+There are **no pre-made clip files and no pre-made URLs.** The URL is just a
+question — “this camera, this time”. Nothing exists until someone asks:
+
+1. Recordings live ONLY on the edge device’s own disk (`data/recordings/…`),
+   as rolling 15 s segments. Nothing is ever uploaded to the cloud.
+2. When a playback URL is hit, the edge cuts the requested time-slice out of
+   those on-disk segments **at that moment** (a remux — no re-encoding, near
+   zero CPU) and streams it out. When the response ends, nothing is left
+   behind — no temp files, no clip library to manage.
+3. Segments older than 12 hours delete themselves, so the disk never grows.
+
+**Cost:** the cloud stores nothing (no S3, no uploads, no per-clip storage).
+The only cloud cost is the EC2 tunnel relaying bytes WHILE someone is actually
+watching: a 15 s chunk at ~2 Mbps ≈ 4 MB, so ~1 GB per hour of continuous
+remote viewing (≈ $0.09 of AWS egress). Watching from inside the home LAN
+(device IP directly) touches the cloud zero.
+
+---
+
 ## 7. Responses & errors
 
 | Status | Meaning | What to do |
@@ -212,20 +237,21 @@ snapshots and recordings are all stamped on it. So:
 > Add a “play recording” proxy endpoint. It takes a `cameraLabel` (same values
 > as PTZ: KITCHEN, BEDROOM, …), the alert `timestamp`, and the `home/edge_id`,
 > then calls the edge at
-> `GET /api/v1/recordings/{cameraLabel}/at?ts=<timestamp>&pre=15&duration=15&edge_id=<id>`
+> `GET /api/v1/recordings/{cameraLabel}/at?ts=<timestamp>&edge_id=<id>`
 > through the existing frp tunnel, adding the header
-> `X-Ceravis-Control-Token: <the same secret we use for PTZ>`. Stream the
+> `X-Ceravis-Control-Token: <the same secret we use for PTZ>`. That’s the whole
+> request — the 15 s lead-up and 15 s length are edge defaults. Stream the
 > `video/mp4` response straight back to the app, and pass through the
-> `X-Clip-Start` / `X-Clip-Duration` headers. For continuation, the app will
-> call again with `ts` advanced; just forward it. Never expose the token to the
-> browser.
+> `X-Clip-Start` / `X-Clip-Duration` headers. For continuation, the app calls
+> again with `ts` moved 15 s forward; just forward it. Never expose the token to
+> the browser.
 
 **Frontend team**
 > On an alert/snapshot, add a “Play footage” button. On tap, call the backend
-> proxy with the alert’s camera label (KITCHEN, …) and its `timestamp` (send it
-> unchanged).
-> You’ll get an MP4 — play it in a `<video>` (from a blob) or via MediaSource.
-> When it’s ~2 s from the end, request the next chunk: same call, but `ts` =
-> previous `X-Clip-Start` + `X-Clip-Duration`, and `pre=0`. Stop when the backend
-> returns 404 (footage ran out). Optionally call `/window?ts=…` first to decide
+> proxy (or, for now, the vite-proxied URL in §2b) with the alert’s camera label
+> (KITCHEN, …) and its `timestamp` — send the timestamp raw and unchanged, no
+> encoding.
+> You’ll get an MP4 — set it straight as a `<video>` src. When it’s ~2 s from
+> the end, queue the next chunk: **same call with `ts` + 15 seconds**. Stop when
+> you get 404 (footage ran out). Optionally call `/window?ts=…` first to decide
 > whether to show the button at all.

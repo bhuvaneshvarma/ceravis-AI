@@ -46,6 +46,13 @@ def to_aware(ts) -> datetime:
         dt = ts
     else:
         s = str(ts).strip().replace("Z", "+00:00")
+        # Frontends send the timestamp RAW in the query string, where standard
+        # URL decoding turns the offset's '+' into a space ("…T20:00:05 05:30").
+        # A real ISO string with a 'T' separator never contains a space, so a
+        # space here can only be that eaten '+' — repair it instead of making
+        # every caller URL-encode.
+        if "T" in s and " " in s:
+            s = s.replace(" ", "+")
         dt = datetime.fromisoformat(s)          # raises ValueError if malformed
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=local_tz())
