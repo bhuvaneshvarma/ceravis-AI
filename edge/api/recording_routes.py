@@ -97,11 +97,10 @@ def camera_recordings(camera: str):
         raise HTTPException(503, f"recordings unavailable: {exc}")
 
 
-def _stream_clip(camera: str, start_iso: str, duration: float):
-    """Shared MP4-slice responder for /clip and /at. `start_iso` is normalized to
+def _stream_from_cam(cam, start_iso: str, duration: float):
+    """Stream one MP4 slice from a resolved camera. `start_iso` is normalized to
     an absolute instant first (naive = edge-local), so the timestamp the frontend
     sends always maps to the right footage regardless of its timezone."""
-    cam = _resolve_camera(camera)
     try:
         start = clock.to_rfc3339(start_iso)
     except ValueError:
@@ -119,6 +118,27 @@ def _stream_clip(camera: str, start_iso: str, duration: float):
     )
 
 
+def _latest_start(cam, duration: float) -> str:
+    """Start instant for 'no timestamp given' — the tail of this camera's NEWEST
+    recorded range, so an unqualified /at plays the most recent footage."""
+    try:
+        ranges = mediamtx_client.list_recordings(record_path_name(cam))
+    except MediaMTXError as exc:
+        raise HTTPException(404, f"no footage: {exc}")
+    newest = None
+    for r in ranges:
+        try:
+            s = clock.to_aware(r["start"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        end = s + timedelta(seconds=float(r.get("duration") or 0))
+        if newest is None or end > newest:
+            newest = end
+    if newest is None:
+        raise HTTPException(404, "no footage recorded for this camera yet")
+    return (newest - timedelta(seconds=max(1.0, duration))).isoformat()
+
+
 @router.get("/{camera}/clip")
 def recording_clip(camera: str, start: str, duration: float = 15.0,
                    edge_id: str | None = None,
@@ -126,25 +146,31 @@ def recording_clip(camera: str, start: str, duration: float = 15.0,
     """One recorded slice as a standard MP4 (starts at `start`, ISO-8601)."""
     check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
-    return _stream_clip(camera, start, duration)
+    return _stream_from_cam(_resolve_camera(camera), start, duration)
 
 
 @router.get("/{camera}/at")
-def recording_at(camera: str, ts: str, pre: float = 15.0, duration: float = 15.0,
+def recording_at(camera: str, ts: str | None = None,
+                 pre: float = 15.0, duration: float = 15.0,
                  edge_id: str | None = None,
                  x_ceravis_control_token: str | None = Header(default=None)):
     """EVENT -> FOOTAGE. Given the timestamp shown on an alert/snapshot, stream
     the recorded clip that STARTS `pre` seconds before it (default 15s) so the
-    caregiver sees the lead-up to the event, not just the aftermath. The frontend
-    continues playback by calling again with `ts` advanced by `duration`
-    (`X-Clip-Start` in the response echoes the exact instant served)."""
+    caregiver sees the lead-up, not just the aftermath. Continue playback by
+    calling again with `ts` advanced by `duration` (`X-Clip-Start` echoes the
+    exact instant served). With NO `ts`, streams this camera's most recent
+    footage instead."""
     check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
-    try:
-        start_iso = clock.shift_iso(ts, -max(0.0, pre))
-    except ValueError:
-        raise HTTPException(400, f"bad timestamp: {ts!r} (want ISO-8601)")
-    return _stream_clip(camera, start_iso, duration)
+    cam = _resolve_camera(camera)
+    if ts and ts.strip():
+        try:
+            start_iso = clock.shift_iso(ts, -max(0.0, pre))
+        except ValueError:
+            raise HTTPException(400, f"bad timestamp: {ts!r} (want ISO-8601)")
+    else:
+        start_iso = _latest_start(cam, duration)
+    return _stream_from_cam(cam, start_iso, duration)
 
 
 @router.get("/{camera}/window")
