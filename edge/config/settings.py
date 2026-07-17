@@ -109,6 +109,16 @@ class Settings(BaseSettings):
     record_audio: bool = True
     ffmpeg_binary: str = "ffmpeg"           # audio-only transcode for recordings
 
+    # ---- HLS VOD playback (recordings scrubbing) ---------------------
+    # A "play from this time" request builds a SEEKABLE HLS-VOD playlist from the
+    # on-disk footage with a copy-only FFmpeg (no re-encode) — the frontend gets
+    # ONE .m3u8 link with native pause/seek/scrub, served over the same tunnel.
+    # An 'event' playlist so playback starts fast and grows to fully seekable
+    # within seconds. Sparse recording means gaps are simply skipped.
+    hls_segment_secs: int = 6               # target HLS segment length
+    hls_footage_cap_secs: int = 3600        # max footage (gaps skipped) per playlist
+    hls_session_ttl_secs: int = 1200        # idle playback dirs swept after this (20 min)
+
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
     onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window
     # When multicast finds nothing (common on WiFi with AP/client isolation),

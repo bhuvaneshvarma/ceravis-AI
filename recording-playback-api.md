@@ -92,6 +92,65 @@ play the clips back-to-back. Stop on 404 — the footage ran out.
 
 ---
 
+## 2c. RECOMMENDED — one seekable link + a timeline (HLS)
+
+The `/at` clip above is fine for a quick peek, but for a real **review player
+with pause + a drag/scrub bar**, use these two calls. There's **no 15-second
+queue to manage** — one link plays continuously and the player handles seeking.
+
+**Step 1 — draw the timeline (where footage exists).** Recordings are
+person-triggered, so most of the 12 h is empty. This call tells you which
+stretches have video, so you can shade a CCTV-style bar:
+
+```js
+// GET the availability data whenever the player opens (poll every ~30s to refresh)
+const t = await api(`/api/v1/recordings/KITCHEN/timeline?edge_id=home_1234`);
+// →
+// {
+//   "window_start": "2026-07-16T08:00:00+05:30",   // now − 12h  (left edge of bar)
+//   "now":          "2026-07-16T20:00:00+05:30",   // right edge of bar
+//   "segments": [
+//     { "start": "2026-07-16T09:15:00+05:30", "end": "2026-07-16T09:47:00+05:30" },
+//     { "start": "2026-07-16T14:30:00+05:30", "end": "2026-07-16T15:30:00+05:30" }
+//   ]
+// }
+```
+
+Draw a bar from `window_start` → `now`; shade each `segments[i]`. Those shaded
+blocks are the only clickable spots.
+
+**Step 2 — play from a clicked point (one link, auto-continues, seekable).**
+When the user clicks a shaded spot (a timestamp), hand that time to the playback
+link and load it in an HLS player:
+
+```js
+import Hls from "hls.js";                    // ~100 KB; Safari/iOS need nothing
+
+const url = `/api/v1/recordings/KITCHEN/playback.m3u8?ts=${clickedTs}&edge_id=home_1234`;
+
+if (video.canPlayType("application/vnd.apple.mpegurl")) {
+  video.src = url;                           // Safari / iOS — native
+} else {
+  const hls = new Hls();                     // Chrome / Firefox / Android
+  hls.loadSource(url);
+  hls.attachMedia(video);
+}
+// the player now has pause, a scrub bar, and seek — for free.
+// It fetches every segment itself. You make NO further calls.
+```
+
+That's the whole thing. `ts` is sent raw (no encoding). Omit `ts` to play the
+camera's most recent stretch. The player's own progress bar scrubs *within* the
+recorded footage; your timeline bar (step 1) shows *where* footage sits in the
+full 12 h. Two different bars, both useful.
+
+> Note: the first `/playback.m3u8` for a given time takes ~1 second (the edge is
+> packaging the footage); replays/reloads are instant. Gaps between recorded
+> stretches are simply skipped — the video jump-cuts to the next time someone
+> was present, which is what you want.
+
+---
+
 ## 3. The main endpoint — “give me the footage at this time”
 
 ```
