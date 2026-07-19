@@ -295,20 +295,3 @@ def list_recordings(path: str) -> list[dict]:
         return r.json() or []
     except (requests.RequestException, ValueError) as exc:
         raise MediaMTXError(f"list recordings: {exc}") from exc
-
-
-def open_clip(path: str, start: str, duration: float):
-    """Stream a recorded slice as MP4. Returns the live requests.Response
-    (stream=True) — the API layer forwards its chunks to the client."""
-    try:
-        r = requests.get(
-            _playback("/get"),
-            params={"path": path, "start": start,
-                    "duration": duration, "format": "mp4"},
-            stream=True, timeout=_TIMEOUT)
-        if not r.ok:
-            r.close()
-            raise MediaMTXError(f"clip: HTTP {r.status_code}")
-        return r
-    except requests.RequestException as exc:
-        raise MediaMTXError(f"clip: {exc}") from exc

@@ -1,50 +1,34 @@
-# Recording playback — integration guide (event → footage)
+# Recording playback — integration guide
 
-How the ceravishealth frontend/backend connects an **alert or snapshot** to the
-**recorded video** of that moment. Same shape and same authentication as the
-Cloud PTZ controls, so if you have PTZ working this is a five-minute add.
+How the ceravishealth app plays back **recorded footage** with a real review
+player (pause, scrub, seek) and a CCTV-style timeline. Same authentication as the
+Cloud PTZ controls, so if PTZ works this is a short add.
+
+There are exactly **two endpoints** and one recording rule to know.
 
 ---
 
 ## 1. What it does, in one line
 
-Every time YOLO sees a person, the edge records that camera (compact 1080p
-H.264, remux-only). When a caregiver taps **“Play footage”** next to an alert,
-you send us the alert’s **timestamp** and we stream back the clip that **starts
-15 seconds before** that moment — so they see the lead-up, not just the
-aftermath. You keep asking for the next 15 seconds to continue playing.
+Every time YOLO sees a person, the edge records that camera as **1080p H.264 +
+AAC audio**, kept for a **rolling 12 hours**. To review it, the app asks the edge
+**“where is there footage?”** (draws a timeline bar) and **“play from this
+moment”** (gets a seekable video link). That's it.
 
-Footage is kept for a **rolling 12 hours** per camera (only the parts where
-someone was present). Older footage is gone, so “Play footage” only works for
-events inside that window.
-
-Clips carry **video + AAC audio**. The cameras themselves speak G.711/PCM audio
-(fine for live WebRTC, unplayable-in-MP4 for many players), so the edge
-re-encodes **just the audio** to AAC while copying the video untouched —
-H.264 + AAC is the one MP4 combo every player and browser accepts. Nothing for
-your side to do: the clip you receive simply has sound.
+Because recording is person-triggered, most of the 12 h is empty — you only ever
+store and see the stretches where someone was actually present.
 
 ---
 
-## 2. The call flow (identical to PTZ)
+## 2. The connection (identical to PTZ)
 
 ```
-   Browser  ──►  ceravishealth backend  ──►  frp tunnel  ──►  edge device
- (taps Play)     (adds the secret token)     (secure)        (streams MP4 back)
+   Browser  ──►  vite proxy / backend  ──►  frp tunnel  ──►  edge device
+                 (adds the 2 secrets)       (secure)         (answers)
 ```
 
-- The **browser never holds the secret token.** It calls your backend.
-- Your **backend** adds the `X-Ceravis-Control-Token` header and forwards the
-  request to the edge through the same frp tunnel PTZ already uses.
-- The **edge** streams the MP4 back.
-
----
-
-## 2b. Quick start for NOW — frontend-only (vite dev proxy)
-
-While the backend proxy isn’t built yet, the frontend can talk to the edge
-directly: the **vite dev server** injects both secrets on every `/api` call, so
-browser code never touches them and a plain `<video src="/api/…">` just works.
+The browser never holds the secrets. For **now**, the vite dev server injects
+them on every `/api` call, so app code stays clean:
 
 ```js
 // vite.config.js
@@ -56,8 +40,7 @@ export default {
         changeOrigin: true,
         headers: {
           // frp tunnel Basic-Auth (httpUser/httpPassword from frpc.toml)
-          Authorization:
-            "Basic " + Buffer.from("admin:YOUR_FRP_PASSWORD").toString("base64"),
+          Authorization: "Basic " + Buffer.from("admin:YOUR_FRP_PASSWORD").toString("base64"),
           // edge control token — the SAME secret PTZ uses (edge_control_token)
           "X-Ceravis-Control-Token": "YOUR_EDGE_TOKEN",
         },
@@ -67,219 +50,119 @@ export default {
 };
 ```
 
-The playback “request” — it’s a GET that returns video, so the fields ride in
-the URL. **Only two fields are ever needed: the camera label and the
-timestamp.** The 15 s lead-up (`pre`) and the 15 s chunk length (`duration`)
-are edge-side defaults — don’t send them.
+> Dev-only: the proxy exists only while `npm run dev` runs. In production the
+> backend adds the same two headers instead. **The URLs never change.**
 
-```js
-const req = {
-  camera: "KITCHEN",          // same label as PTZ cameraLabel (or camera_id)
-  ts:     alert.timestamp,    // the alert/snapshot time — send it RAW, unchanged
-  edgeId: "home_1234",        // same as PTZ edgeId
-};
-
-// no encoding needed — send the timestamp raw; the edge repairs the '+' itself
-videoEl.src = `/api/v1/recordings/${req.camera}/at?ts=${req.ts}&edge_id=${req.edgeId}`;
-```
-
-Queueing the next chunk is one rule: **add 15 seconds to `ts` and call again**;
-play the clips back-to-back. Stop on 404 — the footage ran out.
-
-> ⚠ Dev-only: this works because the vite dev server is there to inject the
-> headers. A production build has no dev server — that’s when the backend proxy
-> (section 2) takes over. The URLs stay identical; app code doesn’t change.
+**Addressing a camera:** the `{camera}` slot takes the SAME label as PTZ —
+`KITCHEN`, `BEDROOM`, `LIVING_ROOM`, `LOUNGE`, … (case-insensitive) — or the raw
+`camera_id`. `edge_id` (the home, e.g. `home_1234`) is the same value PTZ uses.
 
 ---
 
-## 2c. RECOMMENDED — one seekable link + a timeline (HLS)
+## 3. Endpoint A — the timeline (where footage exists)
 
-The `/at` clip above is fine for a quick peek, but for a real **review player
-with pause + a drag/scrub bar**, use these two calls. There's **no 15-second
-queue to manage** — one link plays continuously and the player handles seeking.
-
-**Step 1 — draw the timeline (where footage exists).** Recordings are
-person-triggered, so most of the 12 h is empty. This call tells you which
-stretches have video, so you can shade a CCTV-style bar:
-
-```js
-// GET the availability data whenever the player opens (poll every ~30s to refresh)
-const t = await api(`/api/v1/recordings/KITCHEN/timeline?edge_id=home_1234`);
-// →
-// {
-//   "window_start": "2026-07-16T08:00:00+05:30",   // now − 12h  (left edge of bar)
-//   "now":          "2026-07-16T20:00:00+05:30",   // right edge of bar
-//   "segments": [
-//     { "start": "2026-07-16T09:15:00+05:30", "end": "2026-07-16T09:47:00+05:30" },
-//     { "start": "2026-07-16T14:30:00+05:30", "end": "2026-07-16T15:30:00+05:30" }
-//   ]
-// }
+```
+GET  /api/v1/recordings/{camera}/timeline?edge_id={homeId}
 ```
 
-Draw a bar from `window_start` → `now`; shade each `segments[i]`. Those shaded
-blocks are the only clickable spots.
+**Sample call**
+```
+GET /api/v1/recordings/KITCHEN/timeline?edge_id=home_1234
+```
 
-**Step 2 — play from a clicked point (one link, auto-continues, seekable).**
-When the user clicks a shaded spot (a timestamp), hand that time to the playback
-link and load it in an HLS player:
+**Sample response**
+```json
+{
+  "camera_id": "cam_001",
+  "now":            "2026-07-16T20:00:00+05:30",
+  "window_start":   "2026-07-16T08:00:00+05:30",
+  "retention_hours": 12,
+  "recorded_seconds": 5520.0,
+  "segments": [
+    { "start": "2026-07-16T09:15:00+05:30", "end": "2026-07-16T09:47:00+05:30", "seconds": 1920.0 },
+    { "start": "2026-07-16T14:30:00+05:30", "end": "2026-07-16T15:30:00+05:30", "seconds": 3600.0 }
+  ]
+}
+```
 
+**How to use it:** draw a bar spanning `window_start` → `now`. Shade each
+`segments[i]` block. Those shaded blocks are the only places with video and the
+only clickable spots. Re-fetch it when the player opens (and poll every ~30 s) so
+it always reflects the rolling window — the oldest ages out, the newest appears.
+
+---
+
+## 4. Endpoint B — the playback link (seekable, auto-continuing)
+
+```
+GET  /api/v1/recordings/{camera}/playback.m3u8?ts={ISO8601}&edge_id={homeId}
+```
+
+**Sample call**
+```
+GET /api/v1/recordings/KITCHEN/playback.m3u8?ts=2026-07-16T14:30:00+05:30&edge_id=home_1234
+```
+
+**Sample response** — a `307` redirect to the generated playlist:
+```http
+HTTP/1.1 307 Temporary Redirect
+Location: /api/v1/recordings/hls/9f3a1c7b2e5d4a80/index.m3u8
+```
+Your HLS player follows that automatically and streams the video. You never
+touch the `hls/...` URL yourself.
+
+**How to use it** — hand the clicked time to an HLS player:
 ```js
-import Hls from "hls.js";                    // ~100 KB; Safari/iOS need nothing
+import Hls from "hls.js";                     // ~100 KB; Safari/iOS need nothing
 
 const url = `/api/v1/recordings/KITCHEN/playback.m3u8?ts=${clickedTs}&edge_id=home_1234`;
 
 if (video.canPlayType("application/vnd.apple.mpegurl")) {
-  video.src = url;                           // Safari / iOS — native
+  video.src = url;                            // Safari / iOS — native HLS
 } else {
-  const hls = new Hls();                     // Chrome / Firefox / Android
+  const hls = new Hls();                      // Chrome / Firefox / Android
   hls.loadSource(url);
   hls.attachMedia(video);
 }
-// the player now has pause, a scrub bar, and seek — for free.
-// It fetches every segment itself. You make NO further calls.
+// The player now has pause + a scrub bar + seek. It fetches every segment
+// ITSELF — you make NO further calls. One link plays continuously.
 ```
 
-That's the whole thing. `ts` is sent raw (no encoding). Omit `ts` to play the
-camera's most recent stretch. The player's own progress bar scrubs *within* the
-recorded footage; your timeline bar (step 1) shows *where* footage sits in the
-full 12 h. Two different bars, both useful.
+- `ts` is sent **raw** — no `encodeURIComponent`; the edge repairs the offset’s
+  `+` itself.
+- Omit `ts` to play the camera’s **most recent** stretch.
+- Optional `duration=<seconds>` caps how much footage the link spans (default
+  covers everything from `ts` onward).
 
-> Note: the first `/playback.m3u8` for a given time takes ~1 second (the edge is
-> packaging the footage); replays/reloads are instant. Gaps between recorded
-> stretches are simply skipped — the video jump-cuts to the next time someone
-> was present, which is what you want.
+**Two different bars, don’t confuse them:** the *timeline bar* (Endpoint A) shows
+**where** footage is across the whole 12 h. The *player’s own scrubber* seeks
+**within** the footage currently playing. Both are useful; they’re different axes.
+
+> First `playback.m3u8` for a given time takes ~1 s (the edge is packaging the
+> footage); reloads are instant. Gaps between recorded stretches are skipped —
+> the video jump-cuts to the next time someone was present.
 
 ---
 
-## 3. The main endpoint — “give me the footage at this time”
+## 5. Where the video lives, and what it costs
 
-```
-GET  /api/v1/recordings/{camera}/at
-```
-
-**`{camera}` takes the SAME label as PTZ** — `KITCHEN`, `BEDROOM`,
-`LIVING_ROOM`, `LOUNGE`, … (case-insensitive, spaces or underscores work) — or
-the raw `camera_id`. It matches the camera’s name, its room, or its id, exactly
-like the PTZ `cameraLabel`.
-
-**Headers**
-
-| Header | Value | Notes |
-|---|---|---|
-| `X-Ceravis-Control-Token` | the shared secret | Same secret as PTZ (`edge_control_token`). Required only when the edge has it set (it is, in production). |
-
-**Query parameters**
-
-| Name | Example | Meaning |
-|---|---|---|
-| `ts` | `2026-07-16T20:00:05+05:30` | **The alert/snapshot timestamp**, exactly as you received it — raw, no URL-encoding needed. |
-| `edge_id` | `home_1234` | Which home this is for (safety guard, same as PTZ). |
-| `pre` | *(omit)* | Optional. Lead-up seconds before `ts`. **Defaults to 15 on the edge.** |
-| `duration` | *(omit)* | Optional. Chunk length in seconds. **Defaults to 15.** |
-
-**What comes back:** a normal `video/mp4` stream you can drop into a `<video>`
-element (via a blob) or a MediaSource buffer. Two response headers tell you what
-you got:
-
-| Response header | Meaning |
-|---|---|
-| `X-Clip-Start` | The exact instant this chunk starts (i.e. `ts − pre`). |
-| `X-Clip-Duration` | The chunk length in seconds. |
-
-**Example (what your backend sends to the edge):**
-
-```bash
-curl -H "X-Ceravis-Control-Token: THE_SECRET" \
-  "https://EDGE_THROUGH_TUNNEL/api/v1/recordings/KITCHEN/at?ts=2026-07-16T20:00:05+05:30&edge_id=home_1234" \
-  --output clip.mp4
-```
-
-> Send the timestamp **raw** — the edge knows URL decoding turns the offset’s
-> `+` into a space and repairs it itself. (An encoded `%2B` works too.)
+- Recordings live **only on the edge device’s disk** — never uploaded to the
+  cloud, S3, or the app server.
+- A playback link isn’t a stored file; it’s a **question** (“this camera, this
+  time”). The edge packages the footage on demand with a **copy-only** step (no
+  re-encoding — near-zero CPU), caches it briefly, and auto-cleans it.
+- **Cloud cost:** storage = zero. The only cost is the EC2 tunnel relaying bytes
+  **while someone is watching** (~2 Mbps ≈ 1 GB/hour ≈ $0.09 egress). Watching
+  from inside the home LAN touches the cloud not at all.
 
 ---
 
-## 4. Continuing playback (“queue the next”)
+## 6. The timestamp rule (prevents every “wrong footage” bug)
 
-One rule: **next `ts` = previous `ts` + 15 seconds.** Nothing else changes — you
-never touch `pre` or `duration`. Because every call starts 15 s before its own
-`ts`, the chunks tile perfectly, no gaps and no overlaps:
-
-```
-call 1:  ts = 20:00:05   → plays 19:59:50 … 20:00:05   (the lead-up to the event)
-call 2:  ts = 20:00:20   → plays 20:00:05 … 20:00:20
-call 3:  ts = 20:00:35   → plays 20:00:20 … 20:00:35
-```
-
-Fetch the next chunk a couple of seconds before the current one ends so playback
-feels seamless. Stop when a call returns **404** — the footage ran out (nobody
-was recorded after that, or it aged past the 12-hour window).
-
-The `X-Clip-Start` / `X-Clip-Duration` response headers still say exactly what
-each chunk covers if you want a timeline. And if you ever want fewer
-round-trips, ask for bigger chunks (`duration=60`) and advance `ts` by that —
-the playback server stitches the stored 15 s segments together for you.
-
----
-
-## 5. “Is there footage to show?” (optional, recommended)
-
-Before showing the Play button — or when a chunk returns empty — ask whether
-footage exists around that instant:
-
-```
-GET  /api/v1/recordings/{camera}/window?ts=<ISO8601>&edge_id=home_1234
-```
-
-Returns:
-
-```json
-{
-  "camera_id": "cam_001",
-  "instant": "2026-07-16T20:00:05+05:30",
-  "covered": true,
-  "ranges": [ { "start": "…", "duration": 42.0 }, … ]
-}
-```
-
-- `covered: true` → we have video at that moment; show/enable Play.
-- `covered: false` → nobody was recorded then, or it’s older than 12 hours;
-  grey out Play.
-- `ranges` → every recorded stretch for this camera, so you can build a scrubber
-  and know when the continuation will run out.
-
----
-
-## 6. About the timestamp (important, and simple)
-
-The **whole edge runs on one clock: the device’s local time.** Alerts,
-snapshots and recordings are all stamped on it. So:
-
-- **Send `ts` back exactly as you received it on the alert/snapshot.** Don’t
-  convert it. If it has a timezone offset (e.g. `+05:30` or `Z`), we honour it;
-  if it has none, we read it as the device’s local time. Either way it lands on
-  the right footage.
-
----
-
-## 6b. Where the video actually lives, and what it costs
-
-There are **no pre-made clip files and no pre-made URLs.** The URL is just a
-question — “this camera, this time”. Nothing exists until someone asks:
-
-1. Recordings live ONLY on the edge device’s own disk (`data/recordings/…`),
-   as rolling 15 s segments. Nothing is ever uploaded to the cloud.
-2. When a playback URL is hit, the edge cuts the requested time-slice out of
-   those on-disk segments **at that moment** (a remux — no re-encoding, near
-   zero CPU) and streams it out. When the response ends, nothing is left
-   behind — no temp files, no clip library to manage.
-3. Segments older than 12 hours delete themselves, so the disk never grows.
-
-**Cost:** the cloud stores nothing (no S3, no uploads, no per-clip storage).
-The only cloud cost is the EC2 tunnel relaying bytes WHILE someone is actually
-watching: a 15 s chunk at ~2 Mbps ≈ 4 MB, so ~1 GB per hour of continuous
-remote viewing (≈ $0.09 of AWS egress). Watching from inside the home LAN
-(device IP directly) touches the cloud zero.
+The whole edge runs on **one clock: the device’s local time** — alerts,
+snapshots and recordings all share it. So **send `ts` back exactly as you got it**
+on the alert/snapshot. Don’t convert it. With an offset (`+05:30` or `Z`) we
+honour it; with none we read it as device-local. Either way it lands right.
 
 ---
 
@@ -287,36 +170,30 @@ remote viewing (≈ $0.09 of AWS egress). Watching from inside the home LAN
 
 | Status | Meaning | What to do |
 |---|---|---|
-| `200` + `video/mp4` | Here’s the clip. | Play it. |
-| `400` | `ts` wasn’t a valid date. | Fix the timestamp format. |
-| `401` | Missing/wrong control token. | Backend must send `X-Ceravis-Control-Token`. |
-| `404` | No footage at that time. | Older than 12 h, or nobody was recorded — show “no footage”. |
-| `409` | `edge_id` didn’t match this home. | You addressed the wrong device. |
-| `503` | Recording backbone is down. | Transient — retry; alert ops if it persists. |
+| `200` / `307` | Timeline JSON / redirect to the playlist. | Normal. |
+| `400` | `ts` wasn’t a valid date. | Fix the timestamp string. |
+| `401` | Missing/wrong control token. | The proxy/backend must send `X-Ceravis-Control-Token`. |
+| `404` | No footage there (older than 12 h, or nobody present). | Show “no footage”. |
+| `409` | `edge_id` didn’t match this home. | Wrong device addressed. |
+| `503` | Recording backbone / ffmpeg down. | Transient — retry; alert ops if it persists. |
 
 ---
 
 ## 8. What to tell each team (copy-paste)
 
 **Backend team**
-> Add a “play recording” proxy endpoint. It takes a `cameraLabel` (same values
-> as PTZ: KITCHEN, BEDROOM, …), the alert `timestamp`, and the `home/edge_id`,
-> then calls the edge at
-> `GET /api/v1/recordings/{cameraLabel}/at?ts=<timestamp>&edge_id=<id>`
-> through the existing frp tunnel, adding the header
-> `X-Ceravis-Control-Token: <the same secret we use for PTZ>`. That’s the whole
-> request — the 15 s lead-up and 15 s length are edge defaults. Stream the
-> `video/mp4` response straight back to the app, and pass through the
-> `X-Clip-Start` / `X-Clip-Duration` headers. For continuation, the app calls
-> again with `ts` moved 15 s forward; just forward it. Never expose the token to
-> the browser.
+> Add two proxy endpoints that forward to the edge through the existing frp
+> tunnel, adding the header `X-Ceravis-Control-Token: <same secret as PTZ>`:
+> (1) `GET /api/v1/recordings/{cameraLabel}/timeline?edge_id=<id>` → return the
+> JSON as-is. (2) `GET /api/v1/recordings/{cameraLabel}/playback.m3u8?ts=<t>&edge_id=<id>`
+> → this returns a 307 redirect and then playlist + `.ts` segments under
+> `/api/v1/recordings/hls/...`; just proxy that whole path through (follow
+> redirects, stream bytes). Never expose the token to the browser.
 
 **Frontend team**
-> On an alert/snapshot, add a “Play footage” button. On tap, call the backend
-> proxy (or, for now, the vite-proxied URL in §2b) with the alert’s camera label
-> (KITCHEN, …) and its `timestamp` — send the timestamp raw and unchanged, no
-> encoding.
-> You’ll get an MP4 — set it straight as a `<video>` src. When it’s ~2 s from
-> the end, queue the next chunk: **same call with `ts` + 15 seconds**. Stop when
-> you get 404 (footage ran out). Optionally call `/window?ts=…` first to decide
-> whether to show the button at all.
+> Build a review panel with two pieces. (1) Call `…/timeline` and draw a bar from
+> `window_start`→`now`, shading each `segments[i]`. (2) When the user clicks a
+> shaded spot, load `…/playback.m3u8?ts=<that time>&edge_id=<home>` into an HLS
+> player (`<video>` src on Safari/iOS, else `hls.js`). You get pause + scrub +
+> seek for free and the player streams continuously — no per-segment calls. Send
+> the timestamp raw (no encoding). That’s the whole feature.

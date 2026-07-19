@@ -3,39 +3,32 @@ from __future__ import annotations
 """
 Playback API for the person-triggered recordings.
 
-Thin proxy over MediaMTX's localhost playback server, so the ceravishealth
-frontend talks only to this device API:
+The frontend talks only to this device API (over the frp tunnel), never to
+MediaMTX directly. Two calls drive the whole review UI:
 
-    GET /api/v1/recordings                      -> per-camera recorded ranges
-    GET /api/v1/recordings/{camera_id}          -> one camera's recorded ranges
-    GET /api/v1/recordings/{camera_id}/clip     -> playable MP4 slice
-        ?start=<ISO8601>&duration=<secs>
-    GET /api/v1/recordings/{camera_id}/at        -> EVENT -> FOOTAGE: the clip
-        ?ts=<ISO8601>&pre=15&duration=15            starting `pre` secs BEFORE
-                                                    an alert/snapshot timestamp
-    GET /api/v1/recordings/{camera_id}/window    -> is there footage around ts?
-        ?ts=<ISO8601>
-    GET /api/v1/recordings/{camera_id}/timeline  -> recorded ranges over the 12h
-                                                    window, for the scrub bar
-    GET /api/v1/recordings/{camera_id}/playback.m3u8  -> SEEKABLE HLS-VOD link
-        ?ts=<ISO8601>                                    (pause/scrub); redirects
-                                                         to the generated playlist
-    GET /api/v1/recordings/hls/{key}/{file}      -> the playlist + .ts segments
+    GET /api/v1/recordings/{camera}/timeline      -> where footage exists over the
+                                                     12h window (draw the scrub bar)
+    GET /api/v1/recordings/{camera}/playback.m3u8 -> a SEEKABLE HLS-VOD link
+        ?ts=<ISO8601>                                (pause/scrub/seek); 307-redirects
+                                                     to the generated playlist
+    GET /api/v1/recordings/hls/{key}/{file}       -> the playlist + .ts segments
 
-The /at and /window endpoints accept the timestamp exactly as it appears on the
-alert/snapshot; a naive value is read as edge-local time (the system's single
-clock — see common.clock). They honour the same control token + edge-id guard as
-the PTZ endpoint, so they're safe to expose through the frp tunnel.
+Plus the monitor's recording on/off switch:
 
-The {camera} slot accepts EITHER the camera_id OR the same CameraName label the
-PTZ endpoint takes (KITCHEN, LIVING_ROOM, …) — one addressing rule for every
-cloud-facing endpoint, resolved by CameraConfig.get_by_label.
+    GET  /api/v1/recordings/state
+    POST /api/v1/recordings/toggle
+
+timeline + playback honour the same control token + edge-id guard as the PTZ
+endpoint, so they're safe through the tunnel. The {camera} slot accepts EITHER
+the camera_id OR the same CameraName label PTZ takes (KITCHEN, LIVING_ROOM, …) —
+one addressing rule everywhere, resolved by CameraConfig.get_by_label. A
+timestamp is read exactly as sent; a naive value is edge-local time (common.clock).
 """
 
 from datetime import timedelta
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from api.control_auth import check_control_token, check_edge_id
 from common import clock
@@ -65,6 +58,8 @@ def _resolve_camera(camera: str):
     return cam
 
 
+# ---- recording on/off (monitor button) ------------------------------
+
 @router.get("/state")
 def recording_state(request: Request):
     """Runtime recording switch + which cameras are recording right now."""
@@ -83,138 +78,7 @@ def recording_toggle(request: Request):
     return {"enabled": rc.set_enabled(not rc.is_enabled())}
 
 
-@router.get("")
-def all_recordings():
-    """Recorded time-ranges for every camera, newest camera list first."""
-    out = {}
-    for cam in CameraConfig().get_all():
-        try:
-            out[cam.camera_id] = mediamtx_client.list_recordings(
-                record_path_name(cam))
-        except MediaMTXError:
-            out[cam.camera_id] = []
-    return out
-
-
-@router.get("/{camera}")
-def camera_recordings(camera: str):
-    cam = _resolve_camera(camera)
-    try:
-        return mediamtx_client.list_recordings(record_path_name(cam))
-    except MediaMTXError as exc:
-        raise HTTPException(503, f"recordings unavailable: {exc}")
-
-
-def _stream_from_cam(cam, start_iso: str, duration: float):
-    """Stream one MP4 slice from a resolved camera. `start_iso` is normalized to
-    an absolute instant first (naive = edge-local), so the timestamp the frontend
-    sends always maps to the right footage regardless of its timezone."""
-    try:
-        start = clock.to_rfc3339(start_iso)
-    except ValueError:
-        raise HTTPException(400, f"bad timestamp: {start_iso!r} (want ISO-8601)")
-    try:
-        upstream = mediamtx_client.open_clip(record_path_name(cam), start, duration)
-    except MediaMTXError as exc:
-        raise HTTPException(404, f"no footage at that time: {exc}")
-    return StreamingResponse(
-        upstream.iter_content(chunk_size=64 * 1024),
-        media_type="video/mp4",
-        headers={"Content-Disposition":
-                 f'inline; filename="{cam.camera_id}_{start}.mp4"',
-                 "X-Clip-Start": start, "X-Clip-Duration": str(duration)},
-    )
-
-
-def _latest_start(cam, duration: float) -> str:
-    """Start instant for 'no timestamp given' — the tail of this camera's NEWEST
-    recorded range, so an unqualified /at plays the most recent footage."""
-    try:
-        ranges = mediamtx_client.list_recordings(record_path_name(cam))
-    except MediaMTXError as exc:
-        raise HTTPException(404, f"no footage: {exc}")
-    newest = None
-    for r in ranges:
-        try:
-            s = clock.to_aware(r["start"])
-        except (ValueError, KeyError, TypeError):
-            continue
-        end = s + timedelta(seconds=float(r.get("duration") or 0))
-        if newest is None or end > newest:
-            newest = end
-    if newest is None:
-        raise HTTPException(404, "no footage recorded for this camera yet")
-    return (newest - timedelta(seconds=max(1.0, duration))).isoformat()
-
-
-@router.get("/{camera}/clip")
-def recording_clip(camera: str, start: str, duration: float = 15.0,
-                   edge_id: str | None = None,
-                   x_ceravis_control_token: str | None = Header(default=None)):
-    """One recorded slice as a standard MP4 (starts at `start`, ISO-8601)."""
-    check_control_token(x_ceravis_control_token)
-    check_edge_id(edge_id)
-    return _stream_from_cam(_resolve_camera(camera), start, duration)
-
-
-@router.get("/{camera}/at")
-def recording_at(camera: str, ts: str | None = None,
-                 pre: float = 15.0, duration: float = 15.0,
-                 edge_id: str | None = None,
-                 x_ceravis_control_token: str | None = Header(default=None)):
-    """EVENT -> FOOTAGE. Given the timestamp shown on an alert/snapshot, stream
-    the recorded clip that STARTS `pre` seconds before it (default 15s) so the
-    caregiver sees the lead-up, not just the aftermath. Continue playback by
-    calling again with `ts` advanced by `duration` (`X-Clip-Start` echoes the
-    exact instant served). With NO `ts`, streams this camera's most recent
-    footage instead."""
-    check_control_token(x_ceravis_control_token)
-    check_edge_id(edge_id)
-    cam = _resolve_camera(camera)
-    if ts and ts.strip():
-        try:
-            start_iso = clock.shift_iso(ts, -max(0.0, pre))
-        except ValueError:
-            raise HTTPException(400, f"bad timestamp: {ts!r} (want ISO-8601)")
-    else:
-        start_iso = _latest_start(cam, duration)
-    return _stream_from_cam(cam, start_iso, duration)
-
-
-@router.get("/{camera}/window")
-def recording_window(camera: str, ts: str, edge_id: str | None = None,
-                     x_ceravis_control_token: str | None = Header(default=None)):
-    """Whether footage exists around an event instant, plus this camera's
-    recorded ranges — so the player knows if the 'play footage' button has
-    anything to show and how far the continuation can run before it runs out."""
-    check_control_token(x_ceravis_control_token)
-    check_edge_id(edge_id)
-    cam = _resolve_camera(camera)
-    try:
-        instant = clock.to_aware(ts)
-    except ValueError:
-        raise HTTPException(400, f"bad timestamp: {ts!r} (want ISO-8601)")
-    try:
-        ranges = mediamtx_client.list_recordings(record_path_name(cam))
-    except MediaMTXError as exc:
-        raise HTTPException(503, f"recordings unavailable: {exc}")
-    covered = False
-    for r in ranges:
-        try:
-            s = clock.to_aware(r["start"])
-            e = s + timedelta(seconds=float(r.get("duration") or 0))
-        except (ValueError, KeyError, TypeError):
-            continue
-        if s <= instant <= e:
-            covered = True
-            break
-    return {"camera_id": cam.camera_id, "instant": instant.isoformat(),
-            "covered": covered, "ranges": ranges}
-
-
-# =====================================================================
-# TIMELINE + HLS-VOD PLAYBACK (the scrubbable "play from this time" link)
-# =====================================================================
+# ---- timeline (availability for the scrub bar) ----------------------
 
 def _parsed_ranges(cam):
     """[(start_dt, end_dt), …] of this camera's recorded stretches, chronological."""
@@ -264,6 +128,8 @@ def recording_timeline(camera: str, edge_id: str | None = None,
         "segments": segments,
     }
 
+
+# ---- HLS-VOD playback (the seekable "play from this time" link) -----
 
 def _newest_range_start(cam) -> str:
     """Start of this camera's most recent recorded stretch — the default point
