@@ -103,13 +103,26 @@ GET  /api/v1/recordings/{camera}/playback.m3u8?ts={ISO8601}&edge_id={homeId}
 GET /api/v1/recordings/KITCHEN/playback.m3u8?ts=2026-07-16T14:30:00+05:30&edge_id=home_1234
 ```
 
-**Sample response** — a `307` redirect to the generated playlist:
-```http
-HTTP/1.1 307 Temporary Redirect
-Location: /api/v1/recordings/hls/9f3a1c7b2e5d4a80/index.m3u8
+**Sample response** — the playlist itself (`application/vnd.apple.mpegurl`),
+listing the recorded segments by their real timestamps:
 ```
-Your HLS player follows that automatically and streams the video. You never
-touch the `hls/...` URL yourself.
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-TARGETDURATION:15
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:15.000,
+segment/2026-07-16_14-30-15-000000.ts
+#EXTINF:15.000,
+segment/2026-07-16_14-30-30-000000.ts
+#EXT-X-DISCONTINUITY                     ← a gap: nobody was present here
+#EXTINF:15.000,
+segment/2026-07-16_15-10-00-000000.ts
+#EXT-X-ENDLIST
+```
+Your HLS player reads this and fetches each `segment/...` file itself (they
+resolve to `/api/v1/recordings/{camera}/segment/<file>`). Those **are the
+recorded files** — nothing is generated, so the playlist returns instantly.
 
 **How to use it** — hand the clicked time to an HLS player:
 ```js
@@ -138,9 +151,10 @@ if (video.canPlayType("application/vnd.apple.mpegurl")) {
 **where** footage is across the whole 12 h. The *player’s own scrubber* seeks
 **within** the footage currently playing. Both are useful; they’re different axes.
 
-> First `playback.m3u8` for a given time takes ~1 s (the edge is packaging the
-> footage); reloads are instant. Gaps between recorded stretches are skipped —
-> the video jump-cuts to the next time someone was present.
+> Playback starts at the beginning of the 15 s segment containing your `ts`, so
+> you naturally get a few seconds of lead-up before the moment you asked for.
+> Gaps between recorded stretches are marked and skipped — the video jump-cuts
+> to the next time someone was present.
 
 ---
 
@@ -148,9 +162,11 @@ if (video.canPlayType("application/vnd.apple.mpegurl")) {
 
 - Recordings live **only on the edge device’s disk** — never uploaded to the
   cloud, S3, or the app server.
-- A playback link isn’t a stored file; it’s a **question** (“this camera, this
-  time”). The edge packages the footage on demand with a **copy-only** step (no
-  re-encoding — near-zero CPU), caches it briefly, and auto-cleans it.
+- The recorder writes 15-second MPEG-TS segments named with their own start time
+  (`2026-07-16_14-30-15-000000.ts`). **Those exact files are what playback
+  serves** — the playlist just lists them. Nothing is re-cut, re-encoded or
+  copied, so playback costs no CPU and no extra disk.
+- Segments older than the retention window delete themselves.
 - **Cloud cost:** storage = zero. The only cost is the EC2 tunnel relaying bytes
   **while someone is watching** (~2 Mbps ≈ 1 GB/hour ≈ $0.09 egress). Watching
   from inside the home LAN touches the cloud not at all.

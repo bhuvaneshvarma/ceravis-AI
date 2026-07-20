@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 """
-Thin client for the local MediaMTX control + playback APIs.
+Thin client for the local MediaMTX control API.
 
 MediaMTX is the media backbone: it connects to each camera once and re-serves
 the compressed stream to every consumer (AI, WebRTC/HLS live view, recorder)
 without re-encoding. This client is how the Python side talks to it:
 
-  control API (127.0.0.1:{api_port}/v3)   — add/patch/remove paths, toggle
-                                            per-path recording, read path state
-  playback API (127.0.0.1:{playback_port}) — list recorded segments, fetch any
-                                            time-slice as a playable MP4
+  control API (127.0.0.1:{api_port}/v3) — add/patch/remove paths, toggle
+                                          per-path recording, read path state
 
-Both APIs are bound to localhost by the generated config — nothing here is
-reachable from the network. All calls are short-timeout and raise
-MediaMTXError on failure so callers can degrade gracefully.
+Recorded footage is NOT read back through MediaMTX: the recorded segments are
+served straight off disk (see media/recording_index), so there is no playback
+server here. The control API is bound to localhost by the generated config —
+nothing here is reachable from the network. All calls are short-timeout and
+raise MediaMTXError on failure so callers can degrade gracefully.
 """
 
 import logging
@@ -275,23 +275,3 @@ def path_codec(camera_id: str) -> str | None:
         if "264" in tl:
             return "h264"
     return None
-
-
-# ---- playback API (recordings) ---------------------------------------
-
-def _playback(path: str) -> str:
-    return f"http://127.0.0.1:{settings.mediamtx_playback_port}{path}"
-
-
-def list_recordings(path: str) -> list[dict]:
-    """Recorded time-ranges for one path: [{start, duration}, ...]."""
-    try:
-        r = requests.get(_playback("/list"), params={"path": path},
-                         timeout=_TIMEOUT)
-        if r.status_code == 404:
-            return []
-        if not r.ok:
-            raise MediaMTXError(f"list recordings: HTTP {r.status_code}")
-        return r.json() or []
-    except (requests.RequestException, ValueError) as exc:
-        raise MediaMTXError(f"list recordings: {exc}") from exc

@@ -154,8 +154,8 @@ class MediaMTXSupervisor:
             "api: yes",
             f"apiAddress: 127.0.0.1:{settings.mediamtx_api_port}",
             "",
-            "playback: yes",
-            f"playbackAddress: 127.0.0.1:{settings.mediamtx_playback_port}",
+            # No playback server: playback reads the recorded segments straight
+            # off disk (media/recording_index), so MediaMTX never re-serves them.
             "",
             "rtsp: yes",
             f"rtspAddress: :{settings.mediamtx_rtsp_port}",
@@ -204,7 +204,11 @@ class MediaMTXSupervisor:
             # big fragmented packets of 4K/H.265 feeds (blank/no frames).
             "  rtspTransport: tcp",
             f"  recordPath: {record_path}/%path/%Y-%m-%d_%H-%M-%S-%f",
-            "  recordFormat: fmp4",
+            # MPEG-TS, not fmp4, on purpose: a TS segment is self-contained (no
+            # separate init header), which makes each recorded file a VALID HLS
+            # SEGMENT as-is. Playback therefore lists the stored files directly
+            # instead of re-cutting a duplicate copy. See media/recording_index.
+            "  recordFormat: mpegts",
             f"  recordSegmentDuration: {settings.record_segment_secs}s",
             # Rolling window: each person-clip self-deletes this many hours after
             # it was written, so the disk holds only the latest N hours of "who

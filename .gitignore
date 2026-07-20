@@ -26,7 +26,6 @@ edge/data/recipients/*/videos/*
 edge/data/mediamtx.yml
 edge/data/certs/
 edge/data/recordings/
-edge/data/hls_cache/
 
 # Cloud call log (monitor sync console runtime state)
 edge/data/cloud_calls.jsonl

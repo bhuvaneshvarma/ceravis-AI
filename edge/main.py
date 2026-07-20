@@ -38,12 +38,6 @@ async def lifespan(app: FastAPI):
     logger.info("CERAVIS edge ready")
     yield
     pipeline.stop()
-    # Kill any lingering HLS-playback ffmpeg sessions on shutdown.
-    try:
-        from media.hls_playback import manager as hls_manager
-        hls_manager.shutdown()
-    except Exception:
-        logger.exception("HLS playback shutdown failed")
 
 
 app = FastAPI(title="CERAVIS Edge API", version=settings.app_version, lifespan=lifespan)
