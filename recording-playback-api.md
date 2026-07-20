@@ -108,7 +108,7 @@ listing the recorded segments by their real timestamps:
 ```
 #EXTM3U
 #EXT-X-VERSION:3
-#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-PLAYLIST-TYPE:EVENT
 #EXT-X-TARGETDURATION:15
 #EXT-X-MEDIA-SEQUENCE:0
 #EXTINF:15.000,
@@ -118,11 +118,19 @@ segment/2026-07-16_14-30-30-000000.ts
 #EXT-X-DISCONTINUITY                     ← a gap: nobody was present here
 #EXTINF:15.000,
 segment/2026-07-16_15-10-00-000000.ts
-#EXT-X-ENDLIST
+#EXT-X-ENDLIST                           ← only when recording has stopped
 ```
 Your HLS player reads this and fetches each `segment/...` file itself (they
 resolve to `/api/v1/recordings/{camera}/segment/<file>`). Those **are the
 recorded files** — nothing is generated, so the playlist returns instantly.
+
+**It keeps up with live recording.** If the camera is still recording when you
+open the link, the playlist is left **open** (no `#EXT-X-ENDLIST`). Your player
+re-fetches it every few seconds on its own and plays newly recorded segments as
+they appear — so opening “from 15:00” at 15:22 keeps rolling past 15:22 with no
+extra work from you. Once the person leaves and recording stops, a later refresh
+carries `#EXT-X-ENDLIST`, telling the player the range is final so it stops
+polling. Nothing to handle on your side either way.
 
 **How to use it** — hand the clicked time to an HLS player:
 ```js

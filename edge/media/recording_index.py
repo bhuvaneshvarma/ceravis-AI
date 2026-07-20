@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from common import clock
 from config.settings import settings
 
 
@@ -138,20 +139,42 @@ def ranges(rec_path: str) -> list[tuple[datetime, datetime]]:
 
 
 def playlist(rec_path: str, since: datetime, uri_prefix: str = "segment/") -> str:
-    """An HLS-VOD playlist over the STORED segments from `since` onward — the
-    files themselves, never a copy. Empty string when there's no footage.
+    """An HLS playlist over the STORED segments from `since` onward — the files
+    themselves, never a copy. Empty string when there's no footage.
 
     Playback begins at the start of the segment CONTAINING `since`, so the
     viewer naturally gets up to one segment of lead-up before the moment they
-    asked for (the behaviour we want for an alert)."""
-    segs = [s for s in segments(rec_path) if s.end > since]
+    asked for (the behaviour we want for an alert).
+
+    The list is EVENT type (append-only, always seekable back to the start) and
+    is left OPEN — no EXT-X-ENDLIST — while the recorder is still writing, so
+    the player keeps reloading it and picks up footage recorded AFTER the link
+    was opened. ENDLIST is added only once recording has clearly stopped, which
+    tells the player the range is final and it can stop polling. The segment
+    currently being written is never advertised: it is still open on disk, so
+    handing it over would give the player a truncated file."""
+    nominal = float(settings.record_segment_secs)
+    now = clock.now()
+    known = segments(rec_path)
+    segs = [s for s in known if s.end > since]
     if not segs:
         return ""
+    # Hold back the newest file while it may still be open for writing.
+    if (now - segs[-1].start).total_seconds() < nominal + 1.0:
+        segs = segs[:-1]
+        if not segs:
+            return ""
+    # Still recording? Then more segments are coming and the list stays open.
+    # (`known[-1].end` sits in the future while a segment is being written.)
+    ongoing = (now - known[-1].end).total_seconds() < nominal * 2
+
     target = max(1, math.ceil(max(s.duration for s in segs)))
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
-        "#EXT-X-PLAYLIST-TYPE:VOD",
+        # EVENT, never VOD: segments are only ever appended, and the type must
+        # not change between reloads when recording later stops.
+        "#EXT-X-PLAYLIST-TYPE:EVENT",
         f"#EXT-X-TARGETDURATION:{target}",
         "#EXT-X-MEDIA-SEQUENCE:0",
     ]
@@ -160,5 +183,6 @@ def playlist(rec_path: str, since: datetime, uri_prefix: str = "segment/") -> st
             lines.append("#EXT-X-DISCONTINUITY")
         lines.append(f"#EXTINF:{seg.duration:.3f},")
         lines.append(f"{uri_prefix}{seg.file.name}")
-    lines.append("#EXT-X-ENDLIST")
+    if not ongoing:
+        lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"
