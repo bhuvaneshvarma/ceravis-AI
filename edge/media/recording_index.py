@@ -17,7 +17,11 @@ turns the filenames back into timestamps, and hands out
     segments() -> every stored segment, chronological, with its duration
     ranges()   -> the contiguous stretches (a person-present period) for the
                   timeline bar
-    playlist() -> an HLS-VOD playlist that POINTS AT THOSE SAME FILES
+    playlist() -> ONE seekable HLS playlist over the whole retention window that
+                  POINTS AT THOSE SAME FILES, tags each run with its real
+                  wall-clock start (EXT-X-PROGRAM-DATE-TIME) and joins runs
+                  across the empty gaps (EXT-X-DISCONTINUITY). The client loads
+                  it once and seeks to any instant by date.
 
 Durations come from the next segment's start, which is exact inside a recording
 run; the last segment of a run falls back to the nominal segment length (the
@@ -139,12 +143,15 @@ def ranges(rec_path: str) -> list[tuple[datetime, datetime]]:
 
 
 def playlist(rec_path: str, since: datetime, uri_prefix: str = "segment/") -> str:
-    """An HLS playlist over the STORED segments from `since` onward — the files
-    themselves, never a copy. Empty string when there's no footage.
+    """The one seekable HLS playlist over the STORED segments from `since`
+    onward — the files themselves, never a copy. Empty string when there's no
+    footage. Callers pass `since = now - retention` to get the WHOLE window as a
+    single time-addressable timeline; the client then seeks to any moment by
+    date rather than re-requesting per moment.
 
-    Playback begins at the start of the segment CONTAINING `since`, so the
-    viewer naturally gets up to one segment of lead-up before the moment they
-    asked for (the behaviour we want for an alert).
+    Each run carries an EXT-X-PROGRAM-DATE-TIME wall-clock anchor and runs are
+    separated by EXT-X-DISCONTINUITY, so seeking by date lands on the exact
+    instant and playback rolls across the empty gaps on its own.
 
     The list is EVENT type (append-only, always seekable back to the start) and
     is left OPEN — no EXT-X-ENDLIST — while the recorder is still writing, so
@@ -179,8 +186,17 @@ def playlist(rec_path: str, since: datetime, uri_prefix: str = "segment/") -> st
         "#EXT-X-MEDIA-SEQUENCE:0",
     ]
     for i, seg in enumerate(segs):
-        if seg.starts_run and i > 0:
+        new_run = seg.starts_run and i > 0
+        if new_run:
             lines.append("#EXT-X-DISCONTINUITY")
+        # A real wall-clock anchor at the first segment and at the start of every
+        # run (right after a gap). Players interpolate the exact time of every
+        # segment in between from the EXTINF durations, so the client can seek to
+        # ANY instant BY DATE (hls.js `playingDate`, iOS `seekToDate:`) and paint
+        # true wall-clock time on the scrubber. This one tag is what turns a plain
+        # HLS stream into a time-addressable NVR timeline.
+        if i == 0 or new_run:
+            lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{seg.start.isoformat()}")
         lines.append(f"#EXTINF:{seg.duration:.3f},")
         lines.append(f"{uri_prefix}{seg.file.name}")
     if not ongoing:

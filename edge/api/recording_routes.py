@@ -114,30 +114,27 @@ def recording_timeline(camera: str, edge_id: str | None = None,
 # ---- HLS-VOD playback over the STORED segments ----------------------
 
 @router.get("/{camera}/playback.m3u8")
-def recording_playlist(camera: str, ts: str | None = None,
-                       edge_id: str | None = None,
+def recording_playlist(camera: str, edge_id: str | None = None,
                        x_ceravis_control_token: str | None = Header(default=None)):
-    """SEEKABLE playback: an HLS-VOD playlist listing the recorded segments from
-    `ts` onward. The segments are the files already on disk — nothing is built,
-    so this answers instantly. The player fetches them itself and gets pause +
-    scrub + seek for free. No `ts` = this camera's most recent stretch."""
+    """The WHOLE retention window as ONE seekable HLS playlist: every recorded
+    stretch of the last `record_retention_hours`, each tagged with its real
+    wall-clock time (EXT-X-PROGRAM-DATE-TIME) and joined across the empty gaps
+    (EXT-X-DISCONTINUITY). The client loads this ONCE and seeks to any instant
+    by date — no per-moment request. The playlist is left open (no ENDLIST)
+    while the camera is still recording, so it also follows live; ENDLIST
+    appears once recording has stopped.
+
+    There is deliberately no `ts` parameter: seeking is a client concern (the
+    player already knows every segment's wall-clock time), which keeps this one
+    URL the single, cacheable source of a camera's whole timeline."""
     check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
     cam = _resolve_camera(camera)
-    rec_path = record_path_name(cam)
-    if ts and ts.strip():
-        try:
-            since = clock.to_aware(ts)
-        except ValueError:
-            raise HTTPException(400, f"bad timestamp: {ts!r} (want ISO-8601)")
-    else:
-        runs = recording_index.ranges(rec_path)
-        if not runs:
-            raise HTTPException(404, "no footage recorded for this camera yet")
-        since = runs[-1][0]
-    body = recording_index.playlist(rec_path, since)
+    window_start = clock.now() - timedelta(hours=settings.record_retention_hours)
+    body = recording_index.playlist(record_path_name(cam), window_start)
     if not body:
-        raise HTTPException(404, "no footage at or after that time")
+        raise HTTPException(404, "no footage recorded for this camera in the "
+                                 "retention window yet")
     # Relative segment URIs resolve against this playlist's directory, i.e.
     # /api/v1/recordings/{camera}/segment/<file> — same tunnel, same auth.
     return Response(content=body, media_type="application/vnd.apple.mpegurl")

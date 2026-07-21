@@ -485,7 +485,8 @@ let MODE = "live";          // "live" | "play"
 let hls = null;             // hls.js instance (playback OR hls-live fallback)
 let pc  = null;             // WebRTC peer connection (live)
 let TL  = null;             // last timeline payload {winStart,winEnd,segments}
-let anchor = null;          // {wallMs, ct} — maps video time -> wall clock for the playhead
+let pendingSeekMs = null;   // a seek-by-date requested before the playlist loaded
+let playbackReady = false;  // the whole-window playlist has parsed at least once
 
 /* ===================================================================== */
 /* 4. CAMERAS + HEALTH                                                    */
@@ -577,7 +578,7 @@ function teardown(){
   if (pc){ try{pc.close();}catch(_){} pc=null; }
   const v=$("video"); try{ v.pause(); }catch(_){}
   v.removeAttribute("src"); v.srcObject=null; try{ v.load(); }catch(_){}
-  anchor=null; $("playhead").classList.add("hidden");
+  pendingSeekMs=null; playbackReady=false; $("playhead").classList.add("hidden");
   $("vpChip").classList.add("hidden");
 }
 
@@ -685,14 +686,19 @@ function liveFailed(cam, path, secure){
 }
 
 /* ===================================================================== */
-/* 7. PLAYBACK  (recorded footage over HLS, from the /recordings API)     */
+/* 7. PLAYBACK  (ONE whole-window HLS timeline, seek by wall-clock date)  */
+/*                                                                        */
+/* The edge serves the WHOLE retention window as a single HLS playlist    */
+/* tagged with real time (EXT-X-PROGRAM-DATE-TIME) and joined across gaps */
+/* (EXT-X-DISCONTINUITY). We load it ONCE per camera; every timeline      */
+/* click is a client-side SEEK BY DATE — no new request — and playback    */
+/* rolls across the empty gaps by itself, exactly like a pro NVR/VMS.     */
 /* ===================================================================== */
 async function startPlayback(cam){
-  showSpinner("Loading recorded footage…", "Reading where footage exists for this camera.");
+  showSpinner("Loading recorded footage…", "Reading this camera's timeline.");
   await refreshTimeline(cam);
   if (TL && TL.segments.length){
-    // Auto-play the most recent recorded stretch so the screen is never blank.
-    playFrom(null, TL.segments[TL.segments.length-1]);
+    loadPlayback(cam);               // one whole-window playlist; default view = latest
   } else {
     showOverlay("No footage recorded yet",
       "This camera has not recorded anyone in the last 12 hours. Footage appears here automatically whenever a person is seen.");
@@ -743,92 +749,137 @@ function drawTimeline(){
     const b=document.createElement("div"); b.className="seg";
     b.style.left=l+"%"; b.style.width=w+"%";
     b.title=`${fmtClock(s.start)} – ${fmtClock(s.end)} (${Math.round(s.seconds)}s)`;
-    b.onclick=(ev)=>{ ev.stopPropagation(); playFrom(s.start, s); };
+    // Seek to the EXACT instant under the cursor (not the block's start).
+    b.onclick=(ev)=>{ ev.stopPropagation(); seekToDate(dateAtX(ev.clientX)); };
     track.appendChild(b);
   });
   positionPlayhead();
 }
 
-/* Build the playback URL for a wall-clock time and hand it to hls.js.
-   `tsDate` null = newest footage. `seg` is the segment we anchor the playhead to. */
-function playFrom(tsDate, seg){
-  if (!CURRENT) return;
-  teardownPlayer();
-  showSpinner("Opening recording…", "");
-  const base = `/api/v1/recordings/${encodeURIComponent(CURRENT.camera_id)}/playback.m3u8`;
-  const url = new URL(base, location.origin);
-  // Send the timestamp in UTC 'Z' form: unambiguous, and the edge accepts it.
-  if (tsDate) url.searchParams.set("ts", tsDate.toISOString());
-  if (CFG.edge) url.searchParams.set("edge_id", CFG.edge);
-
-  // Anchor the moving playhead: wall-clock at the start of playback. `ct` is
-  // baselined to the video's real start time on the first frame (a live HLS
-  // timeline does not necessarily begin at 0), so the playhead stays truthful.
-  anchor = { wallMs: (tsDate ? tsDate.getTime() : (seg?seg.start.getTime():TL.winEnd.getTime())), ct: null };
-
-  const v=$("video"); v.srcObject=null; v.muted=false;
-  const useNative = v.canPlayType("application/vnd.apple.mpegurl") && !CFG.token;
-  if (useNative){                          // Safari/iOS, no token needed
-    v.src = url.toString();
-    // Safari also opens a no-ENDLIST (still-recording) playlist at the LIVE
-    // edge. Seek to the earliest seekable point — the clicked moment — so
-    // playback begins where the user asked, not at "now".
-    v.addEventListener("loadeddata", ()=>{
-      try { if (v.seekable && v.seekable.length) v.currentTime = v.seekable.start(0); } catch(_){}
-      hideOverlay();
-    }, { once:true });
-    v.play().catch(()=>{});
-    return;
-  }
-  if (!window.Hls || !Hls.isSupported()){
-    showOverlay("This browser cannot play recordings",
-      "The HLS video library did not load. Reload the page; if it persists, the hls.min.js file is missing from the recordings folder.");
-    return;
-  }
-  hls = new Hls({
-    // attach the control token (if any) to the playlist AND every segment request
-    xhrSetup: (xhr)=>{ if (CFG.token) xhr.setRequestHeader("X-Ceravis-Control-Token", CFG.token); },
-    // THE FIX: the recording playlist has no #EXT-X-ENDLIST while the camera is
-    // still recording, so hls.js treats it as a LIVE stream and would start at
-    // the live edge (the newest ~15-45s). startPosition:0 forces playback to
-    // begin at the START of the playlist — which the edge builds at the clicked
-    // timestamp — so you watch from the moment you picked, not from "now".
-    // liveMaxLatencyDurationCount stays Infinity (no lowLatencyMode), so the
-    // player never force-seeks back to the edge; it just keeps appending newly
-    // recorded segments, preserving the "plays on into live" behaviour.
-    startPosition: 0,
-    liveDurationInfinity:false, backBufferLength:120,
-  });
-  hls.on(Hls.Events.MANIFEST_PARSED, ()=>{ $("video").play().catch(()=>{}); hideOverlay(); });
-  hls.on(Hls.Events.ERROR, (_,d)=>{
-    if (!d.fatal) return;
-    if (d.type===Hls.ErrorTypes.NETWORK_ERROR && d.details && d.details.indexOf("404")>=0){
-      showOverlay("That moment is no longer available", "It may have aged out of the 12-hour window. Pick another block.");
-    } else {
-      showOverlay("Could not open this recording", esc(d.details||"playback error"));
-    }
-  });
-  hls.loadSource(url.toString());
-  hls.attachMedia($("video"));
-  $("vpChip").className="vp-chip"; $("vpChipTxt").textContent="PLAYBACK"; $("vpChip").classList.remove("hidden");
+/* Wall-clock time (ms since epoch) under a timeline x pixel. */
+function dateAtX(clientX){
+  const r=$("track").getBoundingClientRect();
+  const frac=Math.min(1, Math.max(0, (clientX-r.left)/r.width));
+  return TL.winStart.getTime() + frac*(TL.winEnd - TL.winStart);
 }
+
+/* Load the camera's WHOLE-WINDOW playlist ONCE. Default view = latest footage;
+   after this, moving around the timeline is a pure client-side seek. */
+function loadPlayback(cam){
+  teardownPlayer();
+  showSpinner("Opening timeline…", "");
+  const url = new URL(`/api/v1/recordings/${encodeURIComponent(cam.camera_id)}/playback.m3u8`, location.origin);
+  if (CFG.edge) url.searchParams.set("edge_id", CFG.edge);
+  const v=$("video"); v.srcObject=null; v.muted=false;
+  $("vpChip").className="vp-chip"; $("vpChipTxt").textContent="PLAYBACK"; $("vpChip").classList.remove("hidden");
+
+  // Prefer hls.js wherever it runs: it exposes each fragment's wall-clock time
+  // (from EXT-X-PROGRAM-DATE-TIME), which makes seek-by-date exact and lets it
+  // attach the access token. Native HLS is a last resort (older iOS Safari).
+  if (window.Hls && Hls.isSupported()){
+    hls = new Hls({
+      xhrSetup: (xhr)=>{ if (CFG.token) xhr.setRequestHeader("X-Ceravis-Control-Token", CFG.token); },
+      backBufferLength: 90,           // keep some history buffered for smooth scrub-back
+    });
+    hls.on(Hls.Events.LEVEL_LOADED, ()=>{
+      if (playbackReady) return;      // act only on the FIRST load; reloads just append
+      playbackReady = true; hideOverlay();
+      if (pendingSeekMs!=null){ const ms=pendingSeekMs; pendingSeekMs=null; seekToDate(ms); }
+      else jumpToLatest();
+    });
+    hls.on(Hls.Events.ERROR, onHlsError);
+    hls.loadSource(url.toString());
+    hls.attachMedia(v);
+    return;
+  }
+  if (v.canPlayType("application/vnd.apple.mpegurl")){         // native (older iOS)
+    if (CFG.token) toast("This browser can't attach the access token to native video — use Chrome, or run token-less on the LAN.", "warn", 7000);
+    v.src = url.toString();
+    v.addEventListener("loadedmetadata", ()=>{
+      playbackReady = true; hideOverlay();
+      if (pendingSeekMs!=null){ const ms=pendingSeekMs; pendingSeekMs=null; seekToDate(ms); }
+      else jumpToLatest();
+    }, { once:true });
+    return;
+  }
+  showOverlay("This browser cannot play recordings",
+    "The HLS video library did not load. Reload the page; if it persists, hls.min.js is missing from the recordings folder.");
+}
+
+function onHlsError(_, d){
+  if (!d.fatal) return;
+  const net = d.type===Hls.ErrorTypes.NETWORK_ERROR;
+  if (net && String(d.details||"").indexOf("404")>=0){
+    showOverlay("No footage in the window", "Nothing has been recorded in the last 12 hours yet.");
+  } else if (net){ try{ hls.startLoad(); }catch(_){} }        // transient — retry
+  else if (d.type===Hls.ErrorTypes.MEDIA_ERROR){ try{ hls.recoverMediaError(); }catch(_){} }
+  else showOverlay("Could not open this recording", esc(d.details||"playback error"));
+}
+
+/* THE seek primitive — jump playback to a wall-clock instant (ms since epoch).
+   Uses each fragment's programDateTime, so it is exact and works ACROSS the
+   empty gaps (each run re-anchors its own time) — a live stream cannot do this. */
+function seekToDate(ms){
+  const v=$("video");
+  if (!playbackReady){ pendingSeekMs = ms; return; }   // queued until the playlist parses
+  const lvl = hls && hls.levels && (hls.levels[hls.currentLevel] || hls.levels[0]);
+  if (lvl && lvl.details && lvl.details.fragments){
+    const frags = lvl.details.fragments;
+    let target=null;
+    for (const f of frags){
+      if (f.programDateTime==null) continue;
+      if (ms >= f.programDateTime && ms < f.programDateTime + f.duration*1000){
+        target = f.start + (ms - f.programDateTime)/1000; break;
+      }
+    }
+    if (target==null){                       // the instant sits in a gap -> nearest footage
+      const later = frags.find(f => f.programDateTime!=null && f.programDateTime >= ms);
+      const earlier = [...frags].reverse().find(f => f.programDateTime!=null && f.programDateTime <= ms);
+      target = later ? later.start : (earlier ? earlier.start + earlier.duration : 0);
+    }
+    v.currentTime = Math.max(0, target);
+    v.play().catch(()=>{});
+    positionPlayhead();
+    return;
+  }
+  // native HLS: linear map from the stream's start date (accurate within a run).
+  if (typeof v.getStartDate==="function"){
+    const sd=v.getStartDate();
+    if (sd && !isNaN(sd.getTime())){ v.currentTime = Math.max(0,(ms - sd.getTime())/1000); v.play().catch(()=>{}); }
+  }
+}
+
+/* Jump to the newest recorded moment (the live edge while still recording). */
+function jumpToLatest(){
+  const v=$("video");
+  try { if (v.seekable && v.seekable.length){
+    v.currentTime = Math.max(0, v.seekable.end(v.seekable.length-1) - 1); v.play().catch(()=>{}); return;
+  } } catch(_){}
+  if (TL && TL.segments.length) seekToDate(TL.segments[TL.segments.length-1].end.getTime() - 1000);
+}
+
 function teardownPlayer(){ if(hls){try{hls.destroy();}catch(_){}hls=null;} }
 
-/* Map the video's current time back to wall-clock and move the playhead. */
+/* The wall-clock instant (ms) currently on screen — straight from the stream's
+   own PROGRAM-DATE-TIME, so the readout is the real time, exact across gaps. */
+function currentPlaybackDate(){
+  const v=$("video");
+  if (hls){ const d=hls.playingDate; if (d) return d.getTime(); }
+  if (typeof v.getStartDate==="function"){ const sd=v.getStartDate(); if (sd && !isNaN(sd.getTime())) return sd.getTime()+v.currentTime*1000; }
+  return null;
+}
+
+/* Paint the white playhead + the "Viewing HH:MM:SS" readout from real time. */
 function positionPlayhead(){
   const ph=$("playhead");
-  if (MODE!=="play" || !TL || !anchor){ ph.classList.add("hidden"); return; }
-  const v=$("video");
-  if (anchor.ct==null){                       // baseline on the first real frame
-    if (v.readyState<1 || isNaN(v.currentTime)) return;
-    anchor.ct = v.currentTime;                 // map: clicked wall-time <-> this ct
-  }
-  const wall = anchor.wallMs + (v.currentTime - anchor.ct)*1000;
-  const span = TL.winEnd - TL.winStart;
-  const x=((wall - TL.winStart)/span)*100;
+  if (MODE!=="play" || !TL){ ph.classList.add("hidden"); return; }
+  const ms=currentPlaybackDate();
+  if (ms==null){ ph.classList.add("hidden"); return; }
+  const span=TL.winEnd - TL.winStart;
+  const x=((ms - TL.winStart.getTime())/span)*100;
   if (x<0||x>100){ ph.classList.add("hidden"); }
   else { ph.classList.remove("hidden"); ph.style.left=x+"%"; }
-  $("tcNow").textContent = fmtClock(new Date(wall));
+  $("tcNow").textContent = fmtClock(new Date(ms));
 }
 
 /* ===================================================================== */
@@ -870,7 +921,7 @@ on("tabPlay","click", ()=>setMode("play"));
 on("btnPlayPause","click", ()=>{ const v=$("video"); if(v.paused){v.play();$("btnPlayPause").textContent="⏸";} else {v.pause();$("btnPlayPause").textContent="►";} });
 on("btnBack","click", ()=>{ $("video").currentTime=Math.max(0,$("video").currentTime-15); });
 on("btnFwd","click",  ()=>{ $("video").currentTime=$("video").currentTime+15; });
-on("btnLatest","click", ()=>{ if(TL&&TL.segments.length) playFrom(null, TL.segments[TL.segments.length-1]); });
+on("btnLatest","click", ()=>jumpToLatest());
 
 $("video").addEventListener("timeupdate", positionPlayhead);
 $("video").addEventListener("play",  ()=>$("btnPlayPause").textContent="⏸");
@@ -886,14 +937,12 @@ $("track").addEventListener("mousemove", (e)=>{
   const h=$("tlHover"); h.style.display="block"; h.style.left=(frac*100)+"%"; h.textContent=fmtClock(t);
 });
 $("track").addEventListener("mouseleave", ()=>{ $("tlHover").style.display="none"; });
-/* click on empty track area -> seek to that wall-clock time */
+/* Click anywhere on the ruler -> SEEK the already-loaded stream to that instant
+   (no new request). A click in a gap snaps to the nearest footage. Clicks on a
+   green block are handled by the block's own handler (it stops propagation). */
 $("track").addEventListener("click", (e)=>{
-  if(!TL || e.target.classList.contains("seg")) return;   // seg has its own handler
-  const r=$("track").getBoundingClientRect(); const frac=(e.clientX-r.left)/r.width;
-  const t=new Date(TL.winStart.getTime()+frac*(TL.winEnd-TL.winStart));
-  // find the segment that contains t (only meaningful inside a green block)
-  const seg=(TL.segments||[]).find(s=> t>=s.start && t<=s.end);
-  if (seg) playFrom(t, seg); else toast("No footage at that time — click a green block.", "warn", 2600);
+  if(!TL || !playbackReady || e.target.classList.contains("seg")) return;
+  seekToDate(dateAtX(e.clientX));
 });
 
 /* panels */
