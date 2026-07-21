@@ -761,14 +761,23 @@ function playFrom(tsDate, seg){
   if (tsDate) url.searchParams.set("ts", tsDate.toISOString());
   if (CFG.edge) url.searchParams.set("edge_id", CFG.edge);
 
-  // Anchor the moving playhead: wall-clock at the start of playback.
-  anchor = { wallMs: (tsDate ? tsDate.getTime() : (seg?seg.start.getTime():TL.winEnd.getTime())), ct: 0 };
+  // Anchor the moving playhead: wall-clock at the start of playback. `ct` is
+  // baselined to the video's real start time on the first frame (a live HLS
+  // timeline does not necessarily begin at 0), so the playhead stays truthful.
+  anchor = { wallMs: (tsDate ? tsDate.getTime() : (seg?seg.start.getTime():TL.winEnd.getTime())), ct: null };
 
   const v=$("video"); v.srcObject=null; v.muted=false;
   const useNative = v.canPlayType("application/vnd.apple.mpegurl") && !CFG.token;
   if (useNative){                          // Safari/iOS, no token needed
-    v.src = url.toString(); v.play().catch(()=>{});
-    v.addEventListener("loadeddata", hideOverlay, { once:true });
+    v.src = url.toString();
+    // Safari also opens a no-ENDLIST (still-recording) playlist at the LIVE
+    // edge. Seek to the earliest seekable point — the clicked moment — so
+    // playback begins where the user asked, not at "now".
+    v.addEventListener("loadeddata", ()=>{
+      try { if (v.seekable && v.seekable.length) v.currentTime = v.seekable.start(0); } catch(_){}
+      hideOverlay();
+    }, { once:true });
+    v.play().catch(()=>{});
     return;
   }
   if (!window.Hls || !Hls.isSupported()){
@@ -779,6 +788,15 @@ function playFrom(tsDate, seg){
   hls = new Hls({
     // attach the control token (if any) to the playlist AND every segment request
     xhrSetup: (xhr)=>{ if (CFG.token) xhr.setRequestHeader("X-Ceravis-Control-Token", CFG.token); },
+    // THE FIX: the recording playlist has no #EXT-X-ENDLIST while the camera is
+    // still recording, so hls.js treats it as a LIVE stream and would start at
+    // the live edge (the newest ~15-45s). startPosition:0 forces playback to
+    // begin at the START of the playlist — which the edge builds at the clicked
+    // timestamp — so you watch from the moment you picked, not from "now".
+    // liveMaxLatencyDurationCount stays Infinity (no lowLatencyMode), so the
+    // player never force-seeks back to the edge; it just keeps appending newly
+    // recorded segments, preserving the "plays on into live" behaviour.
+    startPosition: 0,
     liveDurationInfinity:false, backBufferLength:120,
   });
   hls.on(Hls.Events.MANIFEST_PARSED, ()=>{ $("video").play().catch(()=>{}); hideOverlay(); });
@@ -800,7 +818,12 @@ function teardownPlayer(){ if(hls){try{hls.destroy();}catch(_){}hls=null;} }
 function positionPlayhead(){
   const ph=$("playhead");
   if (MODE!=="play" || !TL || !anchor){ ph.classList.add("hidden"); return; }
-  const wall = anchor.wallMs + ($("video").currentTime - anchor.ct)*1000;
+  const v=$("video");
+  if (anchor.ct==null){                       // baseline on the first real frame
+    if (v.readyState<1 || isNaN(v.currentTime)) return;
+    anchor.ct = v.currentTime;                 // map: clicked wall-time <-> this ct
+  }
+  const wall = anchor.wallMs + (v.currentTime - anchor.ct)*1000;
   const span = TL.winEnd - TL.winStart;
   const x=((wall - TL.winStart)/span)*100;
   if (x<0||x>100){ ph.classList.add("hidden"); }
