@@ -175,14 +175,24 @@ function seekToDate(ms) {
   videoEl.currentTime = Math.max(0, t);
   videoEl.play();
 }
+// Default view: open the newest recorded STRETCH from its START (use the last
+// `segments[i].start` from the /timeline call). Do NOT open at the live edge:
+// when the camera isn't recording right now, the playlist ends with ENDLIST and
+// the edge is the last frame — you'd play a blink and stop, which looks like
+// "playback doesn't work". Starting at the stretch's beginning always plays
+// forward (and still rolls on to live if the camera is still recording).
 function jumpToLatest() {
-  const s = videoEl.seekable;
-  if (s.length) { videoEl.currentTime = s.end(s.length - 1) - 1; videoEl.play(); }
+  if (latestSegmentStartMs) seekToDate(latestSegmentStartMs + 200);
 }
 
 // The real wall-clock time on screen (for the "Viewing HH:MM:SS" readout + playhead):
 //   hls.playingDate  ->  a Date, exact, even across gaps.
 ```
+
+> **The one mistake to avoid:** never open playback at the live edge / very end.
+> On a camera that isn't recording at that instant the footage is finite, so the
+> end is the last frame — the player stops immediately. Always **seek to a real
+> moment** (the alert time, or the start of the newest recorded stretch).
 
 Wire it up: call `…/timeline`, draw the availability bar, and on a click compute
 the clicked wall-clock time and call `seekToDate(thatTime)`. Nothing else.
