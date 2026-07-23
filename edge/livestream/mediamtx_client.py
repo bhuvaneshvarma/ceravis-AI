@@ -149,11 +149,20 @@ def local_rtsp_url(camera_id: str) -> str:
 
 
 def tls_enabled() -> bool:
-    """True when the installer-generated cert pair exists — the SAME check the
-    supervisor makes when writing mediamtx.yml, so the scheme we advertise in
-    LAN-direct live links always matches what MediaMTX actually serves. In the
-    fleet/proxy model the edge serves PLAINTEXT (TLS terminates at the cloud
-    Caddy), so no certs live here and this is False by design."""
+    """Whether MediaMTX serves HLS/WebRTC over HTTPS on this device.
+
+    Fleet/proxy mode (DEVICE_STREAM_BASE set): the cloud Caddy terminates TLS and
+    the edge is reached over a PLAIN-HTTP frp tunnel, so the edge MUST serve
+    plaintext — return False even if LAN certs happen to exist (serving HTTPS
+    here would break the http-type tunnel). This one rule keeps "who terminates
+    TLS" unambiguous: the proxy when there is one, else the edge.
+
+    LAN-direct (no DEVICE_STREAM_BASE): serve HTTPS when the installer-generated
+    cert pair exists. This is the SAME check the supervisor makes when writing
+    mediamtx.yml, so the scheme advertised in LAN links always matches what
+    MediaMTX actually serves."""
+    if settings.device_stream_base.strip():
+        return False
     cert_dir = Path(settings.mediamtx_cert_dir)
     cert_dir = cert_dir if cert_dir.is_absolute() else (_EDGE_ROOT / cert_dir)
     return (cert_dir / "server.crt").is_file() and (cert_dir / "server.key").is_file()

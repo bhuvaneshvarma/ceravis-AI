@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Install MediaMTX — the media backbone CERAVIS supervises as a child process
-# (one systemd service; no separate unit). Also generates the self-signed TLS
-# cert MediaMTX uses to serve HLS/WebRTC over HTTPS on the LAN.
+# (one systemd service; no separate unit). Also generates a self-signed TLS cert
+# for serving HLS/WebRTC over HTTPS in LAN-DIRECT mode.
+#
+# Fleet mode (DEVICE_STREAM_BASE set): TLS is terminated upstream at the cloud
+# Caddy and the edge serves plaintext through the frp tunnel, so this cert is
+# IGNORED (tls_enabled() short-circuits to plaintext) — harmless to leave.
 #
 # Run once:  bash setup/install_mediamtx.sh
 set -euo pipefail
@@ -53,5 +57,6 @@ fi
 echo
 echo "Done. MediaMTX is supervised by ceravis.service itself — just restart it:"
 echo "  sudo systemctl restart ceravis"
-echo "Live links:  WebRTC https://<jetson-ip>:8889/<camera-id>"
-echo "             HLS    https://<jetson-ip>:8888/<camera-id>/index.m3u8"
+echo "LAN-direct live links:  https://<jetson-ip>:8889/<camera-id>/whep  (WebRTC)"
+echo "                        https://<jetson-ip>:8888/<camera-id>/index.m3u8  (HLS)"
+echo "Fleet (remote) link:    https://<domain>/<edge_id>/<camera-id>/whep  (see cloud/)"
