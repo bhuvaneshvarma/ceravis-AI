@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from config.settings import settings
 from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
 from integration import call_log
@@ -90,6 +91,17 @@ def sync_cameras(request: Request):
         return {"synced": False, "reason": "No cameras registered yet"}
 
     base = _stream_base(request)
+    # Fleet links route on the /<edge_id> path prefix; without EDGE_ID the pushed
+    # URLs have no prefix and frp can't route them to this house.
+    if settings.device_stream_base.strip() and not settings.edge_id.strip():
+        logger.warning("sync-cameras: DEVICE_STREAM_BASE set but EDGE_ID empty — "
+                       "fleet live links need the /<edge_id> prefix to route; set "
+                       "EDGE_ID in jetson.env and re-sync")
+        call_log.record(
+            "event", False,
+            label="Live links pushed without EDGE_ID — fleet routing will fail",
+            error="set EDGE_ID (the /<edge_id> routing token) in jetson.env, "
+                  "restart ceravis, then re-sync cameras")
     cameras = [{
         "device": c.camera_id,
         "model": "",                         # not collected on the edge

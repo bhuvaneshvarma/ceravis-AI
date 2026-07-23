@@ -30,7 +30,8 @@ from config.settings import settings
 from configuration.camera_config import CameraConfig
 from integration import call_log
 from livestream.mediamtx_client import (
-    aac_republish_cmd, audio_transcode_active, is_up, path_name, tls_enabled,
+    aac_republish_cmd, audio_transcode_active, is_up, path_name,
+    record_path_name, record_source_name, stream_path, tls_enabled,
 )
 
 
@@ -170,20 +171,33 @@ class MediaMTXSupervisor:
             "",
             "webrtc: yes",
             f"webrtcAddress: :{settings.mediamtx_webrtc_port}",
+            # Hybrid transport, the CCTV model: SIGNALING is TCP (the WHEP
+            # handshake on this HTTP port, carried through the frp tunnel), the
+            # VIDEO is UDP and travels peer-to-peer (WebRTC/ICE) — it never
+            # passes through the cloud. This one FIXED UDP port is that media
+            # path; keeping it fixed keeps the home-NAT mapping stable so STUN
+            # hole punching reaches off-LAN viewers.
+            f"webrtcLocalUDPAddress: :{settings.mediamtx_webrtc_udp_port}",
+            # Edge serves plaintext WebRTC; TLS terminates upstream at the cloud
+            # Caddy in the fleet model (certs only exist here for LAN-direct).
             f"webrtcEncryption: {'yes' if tls else 'no'}",
         ]
-        # WebRTC must advertise a reachable ICE candidate. Accessed by IP on the
-        # LAN, the device's own LAN IP is that host — without it the page loads
-        # but the video peer connection never completes.
+        # WebRTC must advertise reachable ICE candidates. On the LAN the device's
+        # own IP is that host; off-LAN, STUN adds the public reflexive candidate
+        # so the UDP media can punch through home NAT straight to the viewer.
         ip = lan_ip()
         if ip:
             lines.append(f"webrtcAdditionalHosts: [{ip}]")
-        # Optional STUN (Option B remote access) — lets MediaMTX gather its
-        # public reflexive candidate so an off-LAN viewer can reach the media
-        # P2P. Absent by default: purely LAN behaviour, nothing to remove.
         stun = settings.mediamtx_stun_server.strip()
         if stun:
             lines += ["webrtcICEServers2:", f"  - url: {stun}"]
+            # FUTURE (strict/symmetric NAT, ~10-20% of homes): add a TURN relay
+            # as a SECOND ICE server so the minority that can't punch UDP falls
+            # back to a relayed path — coturn on the same EC2 box, only that
+            # minority relays media. Leave the shape here for when it lands:
+            #   - url: turn:<host>:3478
+            #     username: <user>
+            #     password: <pass>
         lines += [
             "",
             "rtmp: no",
@@ -207,7 +221,7 @@ class MediaMTXSupervisor:
             # MPEG-TS, not fmp4, on purpose: a TS segment is self-contained (no
             # separate init header), which makes each recorded file a VALID HLS
             # SEGMENT as-is. Playback therefore lists the stored files directly
-            # instead of re-cutting a duplicate copy. See media/recording_index.
+            # instead of re-cutting a duplicate copy. See recording/index.
             "  recordFormat: mpegts",
             f"  recordSegmentDuration: {settings.record_segment_secs}s",
             # Rolling window: each person-clip self-deletes this many hours after
@@ -221,15 +235,18 @@ class MediaMTXSupervisor:
         if cameras:
             lines.append("paths:")
             for cam in cameras:
-                base = path_name(cam.camera_id)
+                base = path_name(cam.camera_id)        # slash-free recording base
+                live = stream_path(cam.camera_id)      # '<edge_id>/<cam>' live path
+                # LIVE main path — what the AI reads (local RTSP) and the public
+                # WebRTC link addresses. Quoted because the name carries a '/'.
                 lines += [
-                    f"  {base}:",
+                    f'  "{live}":',
                     f"    source: {normalize_rtsp_url(cam.rtsp_url)}",
                     "    sourceOnDemand: no",
                     "    record: no",         # flipped at runtime on person detection
                 ]
-                # Dedicated recording stream (second ONVIF profile @ ~1080p).
-                # The main path above stays untouched at native quality.
+                # Dedicated recording stream (second ONVIF profile @ ~1080p),
+                # slash-free. The main path above stays untouched at native quality.
                 rec = getattr(cam, "record_rtsp_url", None)
                 if rec:
                     lines += [
@@ -238,15 +255,16 @@ class MediaMTXSupervisor:
                         "    sourceOnDemand: no",
                         "    record: no",
                     ]
-                # AAC republish — the path that actually gets recorded. MediaMTX
-                # spawns + auto-restarts the FFmpeg (runOnInit); it copies the
-                # video and re-encodes only the G.711 audio to AAC so clips are
+                # AAC republish — the slash-free path that actually gets recorded.
+                # MediaMTX spawns + auto-restarts the FFmpeg (runOnInit); it copies
+                # the video and re-encodes only the G.711 audio to AAC so clips are
                 # H.264+AAC, the combo every player and browser accepts.
                 if audio:
-                    src = f"{base}-rec" if rec else base
+                    out = record_path_name(cam)        # slash-free <cam>[-rec]-aac
+                    src = record_source_name(cam)      # live path or <cam>-rec
                     lines += [
-                        f"  {src}-aac:",
-                        f"    runOnInit: {aac_republish_cmd(src)}",
+                        f"  {out}:",
+                        f"    runOnInit: {aac_republish_cmd(src, out)}",
                         "    runOnInitRestart: yes",
                         "    record: no",
                     ]

@@ -466,6 +466,10 @@ function saveCfg(){ localStorage.setItem("ceravis_console", JSON.stringify(CFG))
 function mediaHost(){ return (CFG.host && CFG.host.trim()) || location.hostname; }
 /* The sanitised MediaMTX path for a camera — mirrors edge path_name(). */
 function pathName(id){ return (String(id||"").trim().replace(/[^A-Za-z0-9_-]+/g,"-")) || "cam"; }
+/* The LIVE MediaMTX path — mirrors edge stream_path(): '<edge_id>/<cam>' when an
+   edge id is set, else '<cam>'. Fleet devices serve the camera under the
+   /<edge_id> prefix, so the console must address the live stream the same way. */
+function streamPath(id){ const e=(CFG.edge||"").trim().replace(/[^A-Za-z0-9_-]+/g,"-"); return e ? `${e}/${pathName(id)}` : pathName(id); }
 
 /* ---- 2. edge API fetch (adds token header + edge_id) ------------------- */
 async function apiGet(path){
@@ -587,7 +591,7 @@ function teardown(){
 /* ===================================================================== */
 async function startLive(cam){
   showSpinner("Connecting to live view…", `Opening a low-latency stream from ${esc(cam.camera_name||cam.camera_id)}.`);
-  const path = pathName(cam.camera_id);
+  const path = streamPath(cam.camera_id);
   // Try secure/plain in an order that matches this page first (fewest surprises).
   const pageSecure = location.protocol === "https:";
   const order = CFG.scheme==="http" ? [false]

@@ -48,7 +48,13 @@ class Settings(BaseSettings):
     mediamtx_rtsp_port: int = 8554         # local restream the AI reads
     mediamtx_api_port: int = 9997          # control API (localhost only)
     mediamtx_hls_port: int = 8888          # HLS over HTTPS
-    mediamtx_webrtc_port: int = 8889       # WebRTC over HTTPS (link sent to cloud)
+    mediamtx_webrtc_port: int = 8889       # WebRTC signaling (WHEP) — the tunneled port
+    # Fixed UDP port MediaMTX gathers WebRTC MEDIA on. The hybrid CCTV model:
+    # signaling is TCP (WHEP over the frp tunnel), the video itself is UDP and
+    # peer-to-peer. Keeping ONE fixed port stable lets STUN hole-punch it for
+    # off-LAN viewers. It carries media DIRECTLY (never through the cloud), so it
+    # is NOT tunneled by frp — it just has to be reachable from the home NAT.
+    mediamtx_webrtc_udp_port: int = 8189
     mediamtx_cert_dir: str = "data/certs"  # server.crt/server.key (installer generates)
     # Optional STUN server so MediaMTX advertises the device's PUBLIC address in
     # WebRTC ICE — needed for remote (off-LAN) live view via the cloud/ tunnel
@@ -120,11 +126,17 @@ class Settings(BaseSettings):
     # set before exposing the edge through the frp tunnel — the edge API has no
     # other auth. Empty = accept unauthenticated (LAN dev only).
     edge_control_token: str = ""
-    # This device's stable identity (e.g. "home_1234"). Fleet routing: with many
-    # edge devices, the backend maps patient/email -> edge_id -> the right tunnel.
-    # When set, the PTZ endpoint OBEYS ONLY commands whose edgeId matches this —
-    # a misrouted command can never move the wrong home's camera. Empty = single
-    # device, no check.
+    # This device's stable identity AND fleet routing token (a long unguessable
+    # value like "home-9f3c1e2b…"). Two jobs:
+    #   1) Live-link routing: it is the FIRST path segment of every public live
+    #      link — https://<domain>/<edge_id>/<cam>/whep — and the key frp routes
+    #      on (locations=["/<edge_id>"]). One shared domain + one shared port
+    #      serve the whole fleet, disambiguated purely by this segment. Because it
+    #      is effectively the access key to a house's cameras, make it long and
+    #      unguessable, NOT "home_1234".
+    #   2) PTZ/recording safety: the control endpoints OBEY ONLY commands whose
+    #      edgeId matches this, so a misrouted command can't touch the wrong home.
+    # Empty = single LAN device: no live-link prefix and no control check.
     edge_id: str = ""
     # Hard ceiling on a single PTZ move (ms). The edge always auto-stops after
     # this even if no stop/duration arrives, so a lost command can never leave a
@@ -308,10 +320,12 @@ class Settings(BaseSettings):
     ceravis_api_key: str = ("sk-0r1g6k7j8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7"
                             "e8f9g0h1i2j3k4l5m6n7o8p9q0r1s2t3u4v5w6x7y8z9")
     ceravis_api_timeout_secs: float = 8.0
-    # Externally-reachable base for the camera streams sent to the app server,
-    # e.g. https://edge.ceravishealth.in (point it at a TLS reverse proxy for a
-    # real https link) or http://192.168.1.50:8000 on a LAN. Blank = auto-derive
-    # from the host the browser used to reach the device.
+    # Externally-reachable base for the live links sent to the app server. In the
+    # fleet model this is the shared domain fronted by the cloud Caddy, e.g.
+    # https://edge.ceravishealth.in — TLS and the /<edge_id> path routing are
+    # terminated upstream, so the link is <base>/<edge_id>/<cam>/whep with NO
+    # port. Blank = LAN-direct: auto-derive from the host the browser used and hit
+    # MediaMTX's WebRTC port on the device. Fleet mode requires edge_id set too.
     device_stream_base: str = ""
     # ALERT + snapshot event types (recipient-gated). Falls + the CRITICAL
     # no-motion welfare alert.

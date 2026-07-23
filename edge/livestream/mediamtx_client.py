@@ -11,16 +11,25 @@ without re-encoding. This client is how the Python side talks to it:
                                           per-path recording, read path state
 
 Recorded footage is NOT read back through MediaMTX: the recorded segments are
-served straight off disk (see media/recording_index), so there is no playback
-server here. The control API is bound to localhost by the generated config —
-nothing here is reachable from the network. All calls are short-timeout and
-raise MediaMTXError on failure so callers can degrade gracefully.
+served straight off disk (see recording/index), so there is no playback server
+here. The control API is bound to localhost by the generated config — nothing
+here is reachable from the network. All calls are short-timeout and raise
+MediaMTXError on failure so callers can degrade gracefully.
+
+Fleet routing (live links): every public live link is
+`https://<domain>/<edge_id>/<cam>/whep`. The `<edge_id>` first segment is what
+frp routes on (locations=["/<edge_id>"]) so one shared domain + one shared port
+serve every house, disambiguated purely by that segment. MediaMTX therefore has
+to serve the camera under the slash path `<edge_id>/<cam>` (stream_path). Only
+the LIVE path carries the prefix; recording path names stay slash-free so the
+recorder and its runtime record-toggle never depend on slash-paths.
 """
 
 import logging
 import re
 import shutil
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -39,8 +48,25 @@ class MediaMTXError(Exception):
 
 
 def path_name(camera_id: str) -> str:
-    """A camera_id sanitized into a valid MediaMTX path name."""
+    """A camera_id sanitized into a valid MediaMTX path name (slash-free)."""
     return re.sub(r"[^A-Za-z0-9_\-]+", "-", (camera_id or "").strip()) or "cam"
+
+
+def edge_prefix() -> str:
+    """`<edge_id>/` when this device carries a fleet routing token, else ''.
+    The token is the FIRST path segment of every public live link and the key
+    frp routes on (locations=["/<edge_id>"]) — one shared domain, one shared
+    port, disambiguated purely by this segment. Empty = LAN-only, no prefix."""
+    eid = re.sub(r"[^A-Za-z0-9_\-]+", "-", settings.edge_id.strip())
+    return f"{eid}/" if eid else ""
+
+
+def stream_path(camera_id: str) -> str:
+    """The MediaMTX path name for a camera's LIVE stream: '<edge_id>/<cam>' on a
+    fleet device, else '<cam>'. This ONE path is what the AI reads over local
+    RTSP AND what the public WebRTC link addresses, so the '<edge_id>/' segment
+    frp routes on and the segment MediaMTX serves are always identical."""
+    return f"{edge_prefix()}{path_name(camera_id)}"
 
 
 # ---- AAC-audio recording (per-camera FFmpeg republish) ----------------
@@ -66,48 +92,68 @@ def audio_transcode_active() -> bool:
     return bool(settings.record_audio) and ffmpeg_available()
 
 
-def aac_republish_cmd(src_path: str) -> str:
+def aac_republish_cmd(src_path: str, out_path: str) -> str:
     """The per-camera FFmpeg command MediaMTX supervises (runOnInit): pull the
-    record stream over loopback TCP, COPY the video untouched, re-encode only
+    record source over loopback TCP, COPY the video untouched, re-encode only
     the camera's G.711/PCM audio to AAC (16 kHz mono, 32 kbps), and publish it
-    back as <src>-aac — the path that actually gets recorded. The '?' on the
-    audio map keeps mic-less cameras publishing video-only instead of dying."""
+    to out_path — the slash-free path that actually gets recorded. The '?' on
+    the audio map keeps mic-less cameras publishing video-only instead of
+    dying. (src_path may be the slash live path; RTSP handles slashes fine.)"""
     port = settings.mediamtx_rtsp_port
     return (f"{settings.ffmpeg_binary} -hide_banner -loglevel warning "
             f"-rtsp_transport tcp -i rtsp://127.0.0.1:{port}/{src_path} "
             f"-map 0:v:0 -map 0:a:0? -c:v copy "
             f"-c:a aac -ar 16000 -ac 1 -b:a 32k "
-            f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:{port}/{src_path}-aac")
+            f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:{port}/{out_path}")
 
 
-def record_source_name(camera) -> str:
-    """The path whose stream feeds recording, BEFORE the audio step: the
-    dedicated -rec path (the camera's second ONVIF profile, compact 1080p
-    H.264) when configured, else the main path (recorded as-is)."""
+def _rec_stub(camera) -> str:
+    """Slash-free base for this camera's recording artifacts: '<cam>-rec' when a
+    dedicated second-profile stream exists, else '<cam>'. Never carries the
+    edge_id prefix, so recorded path names (and the runtime record-toggle) stay
+    slash-free regardless of fleet mode."""
     base = path_name(camera.camera_id)
     return f"{base}-rec" if getattr(camera, "record_rtsp_url", None) else base
 
 
+def record_source_name(camera) -> str:
+    """The path whose stream FEEDS recording, before the audio step: the
+    dedicated -rec path (the camera's second ONVIF profile, compact 1080p
+    H.264) when configured; otherwise the LIVE main path (stream_path) is reused
+    as the source — no extra camera pull. This is only ever a PULL source
+    (loopback RTSP), so a slash here is harmless."""
+    if getattr(camera, "record_rtsp_url", None):
+        return f"{path_name(camera.camera_id)}-rec"
+    return stream_path(camera.camera_id)
+
+
 def record_path_name(camera) -> str:
-    """The path that actually gets RECORDED for this camera: the -aac republish
-    (video copied, audio AAC — plays everywhere) when AAC audio is active, else
-    the record source itself (video-only clips)."""
-    src = record_source_name(camera)
-    return f"{src}-aac" if audio_transcode_active() else src
+    """The path that actually gets RECORDED (and read back for playback): the
+    slash-free -aac republish when AAC audio is active (video copied, audio AAC
+    — plays everywhere), else the record source. With AAC active this is always
+    slash-free, so set_record toggles a plain path name and recordings land in a
+    flat directory; the only slash case is the fallback of recording the live
+    path directly (no ffmpeg AND no second profile), which the control API
+    handles by percent-encoding."""
+    if audio_transcode_active():
+        return f"{_rec_stub(camera)}-aac"
+    return record_source_name(camera)
 
 
 # ---- URLs handed to consumers ---------------------------------------
 
 def local_rtsp_url(camera_id: str) -> str:
-    """The localhost restream the AI ingestion reads (loopback TCP)."""
-    return f"rtsp://127.0.0.1:{settings.mediamtx_rtsp_port}/{path_name(camera_id)}"
+    """The localhost restream the AI ingestion reads (loopback TCP). Reads the
+    LIVE path (stream_path) so the AI and the public WebRTC link share it."""
+    return f"rtsp://127.0.0.1:{settings.mediamtx_rtsp_port}/{stream_path(camera_id)}"
 
 
 def tls_enabled() -> bool:
     """True when the installer-generated cert pair exists — the SAME check the
     supervisor makes when writing mediamtx.yml, so the scheme we advertise in
-    live links always matches what MediaMTX actually serves. (An https link
-    pointing at a plaintext port is one of the ways links go dead.)"""
+    LAN-direct live links always matches what MediaMTX actually serves. In the
+    fleet/proxy model the edge serves PLAINTEXT (TLS terminates at the cloud
+    Caddy), so no certs live here and this is False by design."""
     cert_dir = Path(settings.mediamtx_cert_dir)
     cert_dir = cert_dir if cert_dir.is_absolute() else (_EDGE_ROOT / cert_dir)
     return (cert_dir / "server.crt").is_file() and (cert_dir / "server.key").is_file()
@@ -116,9 +162,9 @@ def tls_enabled() -> bool:
 def stream_base(host: str) -> str:
     """`scheme://host` for the live links sent to the cloud — THE one base
     builder (used by the account camera-sync and tests/test_cloud.py).
-    DEVICE_STREAM_BASE (a reverse proxy) wins when set; otherwise the device
-    host with the scheme MediaMTX is really serving (https only when the
-    cert pair exists)."""
+    DEVICE_STREAM_BASE (the fleet domain / reverse proxy) wins when set;
+    otherwise the device host with the scheme MediaMTX is really serving (https
+    only when the cert pair exists)."""
     override = settings.device_stream_base.strip()
     if override:
         return (override.rstrip("/")
@@ -128,26 +174,37 @@ def stream_base(host: str) -> str:
 
 
 def webrtc_url(camera_id: str, public_base: str) -> str:
-    """The WebRTC page for one camera — the live link sent to the cloud.
-    `public_base` is scheme://host (no port, see stream_base); the WebRTC port
-    is appended unless the base already carries an explicit path (reverse
-    proxy)."""
+    """The public WebRTC (WHEP) live link for one camera — the URL stored on the
+    app server. `public_base` is scheme://host (no port, see stream_base).
+
+    Fleet/proxy model (DEVICE_STREAM_BASE set): the link is
+    `<base>/<edge_id>/<cam>/whep` with NO port — TLS and the /<edge_id> path
+    routing are terminated upstream (Caddy -> frps vhost -> frpc -> MediaMTX),
+    so one shared domain serves every house.
+
+    LAN-direct (no DEVICE_STREAM_BASE): the link hits MediaMTX's WebRTC port on
+    this host directly, `<scheme>://<host>:<webrtc_port>/<cam>/whep`."""
     base = public_base.rstrip("/")
-    name = path_name(camera_id)
-    # A reverse-proxy base like https://edge.example.com/mtx keeps its path;
-    # a bare host gets the WebRTC port appended.
-    host_only = re.match(r"^https?://[^/]+$", base or "")
-    if host_only:
-        host = base.split("://", 1)[1].rsplit(":", 1)[0]
-        scheme = base.split("://", 1)[0]
-        return f"{scheme}://{host}:{settings.mediamtx_webrtc_port}/{name}"
-    return f"{base}/{name}"
+    path = stream_path(camera_id)
+    if settings.device_stream_base.strip():
+        return f"{base}/{path}/whep"
+    scheme, _, host = base.partition("://")
+    scheme = scheme or "http"
+    host = (host or base).rsplit(":", 1)[0]
+    return f"{scheme}://{host}:{settings.mediamtx_webrtc_port}/{path}/whep"
 
 
 # ---- control API ------------------------------------------------------
 
 def _api(path: str) -> str:
     return f"http://127.0.0.1:{settings.mediamtx_api_port}/v3{path}"
+
+
+def _enc(name: str) -> str:
+    """Percent-encode a MediaMTX path NAME for the control-API URL. The live
+    path carries a '/' (`<edge_id>/<cam>`); left raw it would be read as a URL
+    separator and break the endpoint, so slashes become %2F."""
+    return quote(name, safe="")
 
 
 def is_up() -> bool:
@@ -172,10 +229,10 @@ def _path_config(source_url: str) -> dict:
 
 def _sync_path_config(name: str, cfg: dict, desc: str = "") -> None:
     try:
-        r = requests.post(_api(f"/config/paths/add/{name}"), json=cfg,
+        r = requests.post(_api(f"/config/paths/add/{_enc(name)}"), json=cfg,
                           timeout=_TIMEOUT)
         if r.status_code == 400 and "already" in r.text.lower():
-            r = requests.patch(_api(f"/config/paths/patch/{name}"), json=cfg,
+            r = requests.patch(_api(f"/config/paths/patch/{_enc(name)}"), json=cfg,
                                timeout=_TIMEOUT)
         if not r.ok:
             raise MediaMTXError(f"sync path {name}: HTTP {r.status_code} {r.text[:200]}")
@@ -188,11 +245,11 @@ def _sync_named_path(name: str, source_url: str) -> None:
     _sync_path_config(name, _path_config(source_url), f"<- {source_url}")
 
 
-def _aac_path_config(src_path: str) -> dict:
+def _aac_path_config(src_path: str, out_path: str) -> dict:
     """Publisher path fed by the MediaMTX-supervised FFmpeg republish — no
     `source` key: FFmpeg ANNOUNCEs into it; runOnInitRestart respawns it."""
     return {
-        "runOnInit": aac_republish_cmd(src_path),
+        "runOnInit": aac_republish_cmd(src_path, out_path),
         "runOnInitRestart": True,
         "record": False,             # flipped at runtime on person detection
     }
@@ -200,7 +257,7 @@ def _aac_path_config(src_path: str) -> dict:
 
 def _remove_named_path(name: str) -> None:
     try:
-        r = requests.delete(_api(f"/config/paths/delete/{name}"), timeout=_TIMEOUT)
+        r = requests.delete(_api(f"/config/paths/delete/{_enc(name)}"), timeout=_TIMEOUT)
         if not r.ok and r.status_code != 404:
             raise MediaMTXError(f"remove path {name}: HTTP {r.status_code}")
     except requests.RequestException as exc:
@@ -209,12 +266,15 @@ def _remove_named_path(name: str) -> None:
 
 
 def sync_camera(camera) -> None:
-    """Mirror one camera into MediaMTX: main path always; a -rec path when a
-    dedicated recording stream is configured (removed again if it no longer
-    is); and the -aac republish path that actually gets recorded when AAC
-    audio is active (stale variants cleaned up on every sync)."""
-    base = path_name(camera.camera_id)
-    _sync_named_path(base, camera.rtsp_url)
+    """Mirror one camera into MediaMTX: the LIVE main path (stream_path, carrying
+    the edge_id prefix) always; a -rec path when a dedicated recording stream is
+    configured (removed again if it no longer is); and the slash-free -aac
+    republish path that actually gets recorded when AAC audio is active (stale
+    variants cleaned up on every sync)."""
+    main = stream_path(camera.camera_id)
+    _sync_named_path(main, camera.rtsp_url)
+
+    base = path_name(camera.camera_id)                 # slash-free recording base
     rec = getattr(camera, "record_rtsp_url", None)
     if rec:
         _sync_named_path(f"{base}-rec", rec)
@@ -222,11 +282,13 @@ def sync_camera(camera) -> None:
         try:
             _remove_named_path(f"{base}-rec")
         except MediaMTXError:
-            pass                                 # never existed — fine
-    current = f"{record_source_name(camera)}-aac" if audio_transcode_active() else None
+            pass                                       # never existed — fine
+
+    current_aac = record_path_name(camera) if audio_transcode_active() else None
     for cand in (f"{base}-aac", f"{base}-rec-aac"):
-        if cand == current:
-            _sync_path_config(cand, _aac_path_config(record_source_name(camera)),
+        if cand == current_aac:
+            _sync_path_config(cand,
+                              _aac_path_config(record_source_name(camera), cand),
                               "(AAC republish)")
         else:
             try:
@@ -236,8 +298,8 @@ def sync_camera(camera) -> None:
 
 
 def remove_camera(camera_id: str) -> None:
+    _remove_named_path(stream_path(camera_id))
     base = path_name(camera_id)
-    _remove_named_path(base)
     for extra in (f"{base}-rec", f"{base}-aac", f"{base}-rec-aac"):
         try:
             _remove_named_path(extra)
@@ -248,7 +310,7 @@ def remove_camera(camera_id: str) -> None:
 def set_record(path: str, on: bool) -> None:
     """Toggle disk recording for one MediaMTX path at runtime."""
     try:
-        r = requests.patch(_api(f"/config/paths/patch/{path}"),
+        r = requests.patch(_api(f"/config/paths/patch/{_enc(path)}"),
                            json={"record": bool(on)}, timeout=_TIMEOUT)
         if not r.ok:
             raise MediaMTXError(f"record {path}: HTTP {r.status_code} {r.text[:200]}")
@@ -257,9 +319,10 @@ def set_record(path: str, on: bool) -> None:
 
 
 def path_info(camera_id: str) -> dict | None:
-    """Runtime state of a path (ready, tracks/codecs, readers) or None."""
+    """Runtime state of the LIVE path (ready, tracks/codecs, readers) or None."""
     try:
-        r = requests.get(_api(f"/paths/get/{path_name(camera_id)}"), timeout=_TIMEOUT)
+        r = requests.get(_api(f"/paths/get/{_enc(stream_path(camera_id))}"),
+                         timeout=_TIMEOUT)
         return r.json() if r.ok else None
     except (requests.RequestException, ValueError):
         return None
