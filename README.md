@@ -28,8 +28,9 @@ edge/
   configuration/  JSON-backed CRUD (cameras/zones/recipients/account)
   api/            FastAPI routers (incl. account = cloud proxy)
   ingestion/      RTSP reader (via MediaMTX localhost restream) + frame buffer
-  media/          MediaMTX supervisor (child process) + control client
-                  + person-triggered recording (15s fMP4 segments)
+  livestream/     MediaMTX backbone (supervised child) + control client; builds
+                  the public WebRTC/WHEP live links (fleet routing — see cloud/)
+  recording/      Person-triggered recording (15s MPEG-TS segments) + playback index
   detection/      YOLO TRT + buffer + runner (active-camera gated) + engine wrapper
   tracking/       clean-room BoT-SORT (kalman/matching) + buffers + runner
   pose/           YOLO-Pose TRT + posture/fall classifier + runner
@@ -42,7 +43,7 @@ edge/
   bootstrap/      Pipeline assembly (build/start/stop) — keeps main.py thin
   monitoring/     Pipeline metrics + tegrastats parser
   streaming/      WebSocket JPEG stream (built-in UI); external live view is
-                  MediaMTX WebRTC :8889 / HLS :8888 over https
+                  MediaMTX WebRTC (WHEP), fronted by the cloud tunnel — see cloud/
   enrollment/     Per-recipient folder mgmt
   static/         /ui dashboard, camera + zone labeling pages
   models/         detection/ pose/ reid/ — .onnx + .engine (gitignored)
@@ -62,6 +63,12 @@ setup/            One-time provisioning (flash to the device / pendrive):
 ```
 The `edge/` app is what you upgrade (git pull / docker); `setup/` is the one-time
 device provisioning a technician runs on-site.
+
+Within `edge/` the code reads by function — three domains: the **Edge_AI** vision
+pipeline (ingestion → detection → tracking → pose → reid → rules → events →
+alerts), **Recording** (`recording/`), and **Live-stream-share** (`livestream/`
+on the edge + `cloud/` for the shared fleet tunnel + TLS). See
+[`edge/README.md`](edge/README.md) and [`cloud/README.md`](cloud/README.md).
 
 ## Setup on the Jetson (JetPack 6.x flashed via SDK Manager)
 ```bash
