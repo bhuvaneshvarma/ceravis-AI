@@ -159,15 +159,44 @@ EC2 changes.
 
 ---
 
-## 6. Later (deferred, on purpose)
+## 6. (Optional) Admin pages + SSH from anywhere
+
+The **same frpc tunnel** can also expose this edge's admin UI and SSH for remote
+maintenance. Both are **off by default** and are added as extra `[[proxies]]` in
+`frpc.toml` (the commented blocks are in `frpc.toml.example`).
+
+> **⚠ Do NOT route the admin UI through the shared live-stream domain.** The edge
+> API has **no built-in authentication**, and the app is not path-prefix aware,
+> so a `/…` route behind Caddy would be both broken and world-open. Use a
+> per-house **TCP tunnel locked to your IP**.
+
+**Admin pages (uvicorn `:8000` — setup wizard, monitor, live wall):**
+1. In `frpc.toml`, uncomment the `ceravis-admin` block; give this house a unique
+   `remotePort` (e.g. `8001`).
+2. In the EC2 security group open that TCP port with **Source = *My IP*** only.
+3. `sudo systemctl restart frpc`, then browse **`http://EC2_IP:8001/ui/setup.html`**.
+   (Plaintext but IP-locked. For public access add TLS via a separate Caddy
+   `admin.<domain>` subdomain later.)
+
+**SSH into the Jetson:**
+1. Make Jetson SSH **key-only** first: `ssh-copy-id <user>@<jetson-lan-ip>`, then
+   set `PasswordAuthentication no` in `/etc/ssh/sshd_config` + restart sshd.
+2. Uncomment the `ceravis-ssh` block; give this house a unique `remotePort`
+   (e.g. `2222`). Open it in the security group (0.0.0.0/0 is OK once key-only,
+   else *My IP*).
+3. `sudo systemctl restart frpc`, then from anywhere: `ssh -p 2222 <user>@EC2_IP`.
+
+Every house gets its own `remotePort`s so they never collide — the same "one
+server, disambiguate per house" idea as the live-stream path routing.
+
+---
+
+## 7. Later (deferred, on purpose)
 
 - **TURN** (coturn on this same box) for strict-NAT homes. The edge ICE config
   already has the placeholder — add a `turn:<host>:3478` entry as a second ICE
   server next to the STUN one (`livestream/mediamtx_supervisor.py`), open UDP
   3478, and only that minority relays media.
-- **Admin pages off-LAN** — publish the edge UI (`:8000`) through the same Caddy
-  under a distinct, guarded path prefix; the edge API has no built-in auth, so
-  protect it (Basic Auth in Caddy, or lock the source to your IP).
 - **Tokenized, expiring links** minted per-view by the app server — a care
   product should not hand out permanent public URLs. The `edge_id` prefix is
   unguessable but permanent; short-lived signed links are the next step.
