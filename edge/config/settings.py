@@ -322,7 +322,7 @@ class Settings(BaseSettings):
     ceravis_api_timeout_secs: float = 8.0
     # Externally-reachable base for the live links sent to the app server. In the
     # fleet model this is the shared domain fronted by the cloud Caddy, e.g.
-    # https://edge.ceravishealth.in — TLS and the /<edge_id> path routing are
+    # https://edgeai.ceravishealth.in — TLS and the /<edge_id> path routing are
     # terminated upstream, so the link is <base>/<edge_id>/<cam>/whep with NO
     # port. Blank = LAN-direct: auto-derive from the host the browser used and hit
     # MediaMTX's WebRTC port on the device. Fleet mode requires edge_id set too.

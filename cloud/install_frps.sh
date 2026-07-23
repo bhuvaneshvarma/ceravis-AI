@@ -32,6 +32,7 @@ echo "Open these inbound ports in the EC2 security group:"
 echo "  TCP 7000     (edges connect to frps)"
 echo "  TCP 80, 443  (Caddy fleet TLS — run install_caddy.sh next)"
 echo "  TCP 22       (SSH, your IP only)"
-echo "  Keep 7080 CLOSED (frps HTTP vhost; Caddy reaches it over loopback)."
+echo "  Keep 8000 CLOSED to the public (frps vhost; Caddy reaches it over loopback)."
+echo "  (open TCP 8000 to *My IP* only if you use the admin UI — README §6)"
 echo
 echo "Next: cp Caddyfile.example Caddyfile, edit the domain, then bash install_caddy.sh"

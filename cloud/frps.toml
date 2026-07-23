@@ -7,7 +7,7 @@
 # data transfer stays near-zero.
 #
 # Fleet model (one domain, one port, many houses):
-#   Caddy (TLS, :443) ──► frps HTTP vhost (:7080) ──► the right frpc tunnel
+#   Caddy (TLS, :443) ──► frps HTTP vhost (:8000) ──► the right frpc tunnel
 #   picked by the URL path prefix /<edge_id>  ──► that home's MediaMTX :8889
 # Every edge dials in with type="http" + locations=["/<edge_id>"]; frps routes
 # by that first path segment. Adding a house needs NOTHING here — only a new
@@ -18,11 +18,15 @@
 
 bindPort = 7000                     # edges (frpc) connect here — open TCP 7000
 
-# HTTP vhost port for all type="http" proxies (the live-stream tunnels). Caddy
-# terminates TLS on :443 and reverse-proxies to 127.0.0.1:7080, so this port is
-# PLAIN HTTP and must stay CLOSED to the internet in the security group — only
-# Caddy, on the same box, reaches it over loopback.
-vhostHTTPPort = 7080
+# The ONE HTTP vhost port for all type="http" proxies. Two consumers, keyed by
+# the Host header:
+#   - the live-stream tunnels — Caddy terminates TLS on :443 and reverse-proxies
+#     to 127.0.0.1:8000 over loopback, so the public reaches live links https-only;
+#   - the OPTIONAL admin UI (frpc "ceravis-admin", see cloud/README §6) served on
+#     Host=<EC2_IP>, Basic-Auth-protected.
+# Keep this port CLOSED to the public in the security group; open TCP 8000 only
+# to *My IP* if you use the admin UI.
+vhostHTTPPort = 8000
 
 # Only an edge that knows this token may open a tunnel. Change it.
 auth.method = "token"

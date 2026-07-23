@@ -10,7 +10,7 @@ stays near-zero.
 
 ```
                          ┌──────────────── AWS EC2 ────────────────┐
-viewer ──HTTPS(:443)──►  │ Caddy ──HTTP──► frps vhost(:7080) ──┐   │
+viewer ──HTTPS(:443)──►  │ Caddy ──HTTP──► frps vhost(:8000) ──┐   │
   the link               │ (1 LE cert)     route by /<edge_id> │   │
                          └─────────────────────────────────────┼───┘
                                                                 │  outbound tunnel
@@ -56,13 +56,16 @@ relay media for the strict-NAT minority, and *that* uses egress.)
    |------|------|--------|-----|
    | SSH | 22 | *My IP* | manage the box |
    | HTTP | 80 | 0.0.0.0/0 | Caddy ACME challenge |
-   | HTTPS | 443 | 0.0.0.0/0 | Caddy — the public link entry |
+   | HTTPS | 443 | 0.0.0.0/0 | Caddy — the public link entry (live links) |
    | Custom TCP | 7000 | 0.0.0.0/0 | edges connect to frps (token-protected) |
+   | Custom TCP | 8000 | *My IP* | *(optional)* admin UI via the frp vhost — §6 |
+   | Custom TCP | 2222 | *My IP* | *(optional)* SSH to a Jetson — §6 |
 
-   **Do NOT open 7080** — that's the frps HTTP vhost; Caddy reaches it over
-   loopback. Leaving it closed keeps the untunneled edges private.
-4. **DNS:** point an A record for your domain (e.g. `edge.ceravishealth.in`) at
-   the Elastic IP.
+   The public reaches the **live links only through Caddy on :443 (https)**. The
+   frp HTTP vhost (`:8000`) is where Caddy proxies over loopback; it is only
+   opened to *My IP* for the optional admin UI (§6). Leave 8000/2222 closed if
+   you don't use §6.
+4. **DNS:** point an A record for `edgeai.ceravishealth.in` at the Elastic IP.
 
 ---
 
@@ -89,14 +92,16 @@ sudo systemctl status frps      # active (running)
 
 # 2) TLS front — one Let's Encrypt cert for the whole fleet
 cp Caddyfile.example Caddyfile
-nano Caddyfile                  # set your domain
+nano Caddyfile                  # set your domain (edgeai.ceravishealth.in)
 bash install_caddy.sh
 sudo systemctl status caddy
 ```
 
-`frps.toml` already sets `vhostHTTPPort = 7080`; Caddy reverse-proxies `:443 →
-127.0.0.1:7080`. The first HTTPS request mints the cert (needs the A record live
-and 80/443 open).
+`frps.toml` sets `vhostHTTPPort = 8000` (the ONE frp HTTP vhost). Caddy
+reverse-proxies `:443 → 127.0.0.1:8000` over loopback, so the public reaches the
+live links over https only. The same vhost also serves the optional admin UI
+(§6), keyed by host. The first HTTPS request mints the cert (needs the A record
+live and 80/443 open).
 
 ---
 
@@ -104,26 +109,28 @@ and 80/443 open).
 
 Each home is identical **except its `edge_id`** — a long unguessable token that
 is effectively the access key to that home's cameras (make it a UUID-style
-value, not `home_1234`).
+value, not `home_1234`). Generate it once: `openssl rand -hex 16`.
 
 ```bash
 cd ~/ceravis/cloud
 cp frpc.toml.example frpc.toml
 nano frpc.toml
-#   serverAddr    = "EC2_IP"                     (or the domain)
+#   serverAddr    = "EC2_IP"                       (or the domain)
 #   auth.token    = "<the shared secret from step 3>"
-#   customDomains = ["edge.ceravishealth.in"]    (the shared domain)
-#   locations     = ["/<edge_id>"]               (THIS house's token)
+#   customDomains = ["edgeai.ceravishealth.in"]    (the shared domain)
+#   locations     = ["/<edge_id>"]                 (THIS house's token)
 bash install_frpc.sh
 sudo systemctl status frpc      # look for 'start proxy success'
 ```
 
-Then set the matching values in `edge/infra/env/jetson.env` and restart:
+`edge/infra/env/jetson.env` already ships with the fleet domain + STUN set; the
+**only per-house value to fill is `EDGE_ID`** (the same token you put in
+`locations`):
 
 ```
-EDGE_ID=<the same token you put in locations>
-DEVICE_STREAM_BASE=https://edge.ceravishealth.in
-MEDIAMTX_STUN_SERVER=stun:stun.l.google.com:19302
+EDGE_ID=<the same token>
+DEVICE_STREAM_BASE=https://edgeai.ceravishealth.in   # pre-set
+MEDIAMTX_STUN_SERVER=stun:stun.l.google.com:19302    # pre-set
 ```
 ```bash
 sudo systemctl restart ceravis
@@ -134,7 +141,7 @@ auto-offloads when `DEVICE_STREAM_BASE` is set). Re-sync cameras (wizard camera
 step, or `POST /api/v1/account/sync-cameras`) so the app server stores the links:
 
 ```
-https://edge.ceravishealth.in/<edge_id>/<camera>/whep
+https://edgeai.ceravishealth.in/<edge_id>/<camera>/whep
 ```
 
 **Adding another house later:** repeat step 4 with a new `edge_id`. Nothing on
@@ -152,7 +159,7 @@ EC2 changes.
    device).** frp forwards the full path, so MediaMTX serves the camera under the
    slash path `<edge_id>/<cam>`. RTSP and HLS handle slash-paths; WebRTC/WHEP is
    the one to confirm. From a phone **on mobile data** (not home WiFi), open the
-   built-in player page `https://edge.ceravishealth.in/<edge_id>/<cam>` → live
+   built-in player page `https://edgeai.ceravishealth.in/<edge_id>/<cam>` → live
    video. If it plays, the `/whep` link the app stores works too. If the page
    loads but video stalls, that home is behind strict NAT and needs TURN (below).
 4. **Register the links:** re-sync cameras so the app server stores the URLs.
@@ -162,21 +169,27 @@ EC2 changes.
 ## 6. (Optional) Admin pages + SSH from anywhere
 
 The **same frpc tunnel** can also expose this edge's admin UI and SSH for remote
-maintenance. Both are **off by default** and are added as extra `[[proxies]]` in
+maintenance. Both are **off by default** and added as extra `[[proxies]]` in
 `frpc.toml` (the commented blocks are in `frpc.toml.example`).
 
-> **⚠ Do NOT route the admin UI through the shared live-stream domain.** The edge
-> API has **no built-in authentication**, and the app is not path-prefix aware,
-> so a `/…` route behind Caddy would be both broken and world-open. Use a
-> per-house **TCP tunnel locked to your IP**.
+**Why these don't ride the `/<edge_id>` path like the live stream.** MediaMTX
+serves each camera under its own path, so `/<edge_id>/<cam>` routes cleanly.
+SSH is **raw TCP** (there is no URL path to route on), and the admin app
+(uvicorn) serves `/ui/…` at the **root** (it is not path-prefix aware), so
+neither can be split by a URL path. The fleet pattern for them is the same
+"one server, tell houses apart" idea done **by port / host** instead of path:
+a per-house **`remotePort`** (SSH) and the http vhost **keyed by host** (admin).
 
 **Admin pages (uvicorn `:8000` — setup wizard, monitor, live wall):**
-1. In `frpc.toml`, uncomment the `ceravis-admin` block; give this house a unique
-   `remotePort` (e.g. `8001`).
-2. In the EC2 security group open that TCP port with **Source = *My IP*** only.
-3. `sudo systemctl restart frpc`, then browse **`http://EC2_IP:8001/ui/setup.html`**.
-   (Plaintext but IP-locked. For public access add TLS via a separate Caddy
-   `admin.<domain>` subdomain later.)
+1. In `frpc.toml`, uncomment the `ceravis-admin` block (`type = "http"`), set
+   `customDomains` to your EC2 IP, and choose a strong `httpPassword`.
+2. `frps.toml` already exposes `vhostHTTPPort = 8000` — the same vhost Caddy uses,
+   keyed by host: Caddy→domain serves the live links, `Host: <EC2_IP>` serves the
+   admin (frp does the Basic Auth).
+3. In the security group open **TCP 8000 with Source = *My IP*** only.
+4. `sudo systemctl restart frpc`, then browse **`http://EC2_IP:8000/ui/setup.html`**
+   → the browser prompts for the user/password. (Plaintext but IP-locked; for a
+   public admin add TLS via a separate Caddy `admin.<domain>` subdomain later.)
 
 **SSH into the Jetson:**
 1. Make Jetson SSH **key-only** first: `ssh-copy-id <user>@<jetson-lan-ip>`, then
@@ -186,8 +199,9 @@ maintenance. Both are **off by default** and are added as extra `[[proxies]]` in
    else *My IP*).
 3. `sudo systemctl restart frpc`, then from anywhere: `ssh -p 2222 <user>@EC2_IP`.
 
-Every house gets its own `remotePort`s so they never collide — the same "one
-server, disambiguate per house" idea as the live-stream path routing.
+**Many houses:** give each house its **own** `remotePort` for SSH (2222, 2223, …)
+and its own admin host/port — they never collide, the same per-house idea as the
+live-stream path routing.
 
 ---
 

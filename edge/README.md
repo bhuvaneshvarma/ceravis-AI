@@ -58,7 +58,7 @@ the `/<edge_id>` URL path prefix (`locations=["/<edge_id>"]`). See
 [`cloud/README.md`](../cloud/README.md).
 
 ```
-viewer ──HTTPS──► Caddy(:443) ──HTTP──► frps vhost(:7080) ──► frpc(edge)
+viewer ──HTTPS──► Caddy(:443) ──HTTP──► frps vhost(:8000) ──► frpc(edge)
                     (fleet TLS)        route by /<edge_id>      MediaMTX(:8889)
    └───────────── video P2P over UDP (WebRTC/ICE, STUN) — never via the cloud ──┘
 ```
