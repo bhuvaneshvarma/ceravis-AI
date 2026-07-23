@@ -26,8 +26,8 @@ from pathlib import Path
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from detection.detection_buffer import DetectionBuffer
-from media import mediamtx_client
-from media.mediamtx_client import MediaMTXError, record_path_name
+from livestream import mediamtx_client
+from livestream.mediamtx_client import MediaMTXError, record_path_name
 
 
 logger = logging.getLogger("media")

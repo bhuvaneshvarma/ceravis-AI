@@ -16,8 +16,8 @@ from config.settings import settings
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
 from integration import call_log
-from media import mediamtx_client
-from media.mediamtx_client import MediaMTXError
+from livestream import mediamtx_client
+from livestream.mediamtx_client import MediaMTXError
 from schemas.cameras import Camera
 
 

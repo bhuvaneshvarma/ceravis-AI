@@ -144,7 +144,7 @@ class CameraManager:
 
         source_url = None
         if self._via_mediamtx:
-            from media.mediamtx_client import local_rtsp_url
+            from livestream.mediamtx_client import local_rtsp_url
             source_url = local_rtsp_url(camera.camera_id)
 
         try:

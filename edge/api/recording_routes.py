@@ -4,7 +4,7 @@ from __future__ import annotations
 Playback API for the person-triggered recordings.
 
 The recordings ARE the playback segments. MediaMTX writes self-contained MPEG-TS
-segments named with their own start time; media.recording_index reads that
+segments named with their own start time; recording.index reads that
 directory and this API hands the frontend a playlist that points straight at
 those files. Nothing is re-cut, re-encoded or duplicated for playback.
 
@@ -35,8 +35,8 @@ from api.control_auth import check_control_token, check_edge_id
 from common import clock
 from config.settings import settings
 from configuration.camera_config import CameraConfig
-from media import recording_index
-from media.mediamtx_client import record_path_name
+from recording import index as recording_index
+from livestream.mediamtx_client import record_path_name
 
 
 router = APIRouter(prefix="/api/v1/recordings", tags=["Recordings"])

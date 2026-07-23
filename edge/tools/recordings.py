@@ -10,7 +10,7 @@ Answers the questions you need before trusting playback:
   * is anything stale, malformed, or past the retention window?
   * (--probe) what codec/resolution/fps/audio is actually inside a segment?
 
-It reads the SAME index that playback uses (media.recording_index), so a clean
+It reads the SAME index that playback uses (recording.index), so a clean
 report here means the playlist is built from sound data — it is not a parallel
 implementation that could disagree.
 
@@ -29,7 +29,7 @@ import sys
 from datetime import timedelta
 
 from config.settings import settings
-from media import recording_index as ri
+from recording import index as ri
 
 
 def _folders(only: str | None):

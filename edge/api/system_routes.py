@@ -32,7 +32,7 @@ def root():
 
 @router.get("/health")
 async def health():
-    from media.mediamtx_client import is_up
+    from livestream.mediamtx_client import is_up
     return {"status": "ok", "version": settings.app_version,
             "device_id": settings.device_id,
             # False = live links/recording are dead even though the app is up
@@ -119,7 +119,7 @@ def _storage_status() -> dict:
 def _camera_status() -> list[dict]:
     """Per-camera: is MediaMTX actually serving its path, what codec is live,
     how many consumers are reading it, PTZ capability."""
-    from media.mediamtx_client import path_codec, path_info
+    from livestream.mediamtx_client import path_codec, path_info
     cams = []
     for cam in CameraConfig().get_all():
         info = path_info(cam.camera_id) or {}
@@ -158,7 +158,7 @@ def system_status(request: Request):
     down, a camera that should be recording isn't landing segments, the disk is
     nearly full, or the clock isn't NTP-synced — with the specific reasons in
     `problems`."""
-    from media.mediamtx_client import is_up
+    from livestream.mediamtx_client import is_up
     st = request.app.state
     backbone_up = is_up()
     rc = getattr(st, "recording_controller", None)

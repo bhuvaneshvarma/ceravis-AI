@@ -147,7 +147,7 @@ class RTSPReader:
         if not self._via_mediamtx:
             return None
         try:
-            from media.mediamtx_client import path_codec
+            from livestream.mediamtx_client import path_codec
             return path_codec(self.camera_id)
         except Exception:
             return None

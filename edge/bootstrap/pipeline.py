@@ -71,7 +71,7 @@ class Pipeline:
         mediamtx = None
         via_mediamtx = False
         try:
-            from media.mediamtx_supervisor import MediaMTXSupervisor
+            from livestream.mediamtx_supervisor import MediaMTXSupervisor
             mediamtx = MediaMTXSupervisor()
             mediamtx.start()
             if mediamtx.available:
@@ -116,7 +116,7 @@ class Pipeline:
         recording_controller = None
         if via_mediamtx:
             try:
-                from media.recording_controller import RecordingController
+                from recording.controller import RecordingController
                 recording_controller = RecordingController(detection_buffer)
                 recording_controller.start()
             except Exception:
