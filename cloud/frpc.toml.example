@@ -1,10 +1,17 @@
 # CERAVIS live-stream tunnel — frp CLIENT (runs on the Jetson edge).
 #
-# Copy to frpc.toml, fill in the two ALL-CAPS values, then install with
-# cloud/install_frpc.sh. This publishes the edge's local MediaMTX WebRTC port
-# (8889) at the EC2 box's public :8889, so the live links become reachable from
-# anywhere. Fully separate from ceravis.service — stop/disable this alone to
-# turn remote access off; the AI pipeline is untouched.
+# Copy to frpc.toml, fill in the ALL-CAPS values, then install with
+# cloud/install_frpc.sh. This publishes the edge's local MediaMTX WebRTC
+# signaling (127.0.0.1:8889) through the shared cloud domain, so the live links
+# become reachable from anywhere. Fully separate from ceravis.service — stop or
+# disable this alone to turn remote access off; the AI pipeline is untouched.
+#
+# Fleet model: EVERY house uses the identical file below except its own EDGE_ID.
+# frps routes by the /<EDGE_ID> URL path prefix, so one shared domain + one
+# shared port serve the whole fleet — no per-house ports. The public link is
+#   https://<DOMAIN>/<EDGE_ID>/<camera>/whep
+# EDGE_ID must equal edge/infra/env/jetson.env's EDGE_ID (a long unguessable
+# token — it is effectively the access key to this house's cameras).
 
 serverAddr = "EC2_PUBLIC_IP_OR_DOMAIN"   # the AWS box's public IPv4 / domain
 serverPort = 7000
@@ -15,57 +22,47 @@ auth.token = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"   # must match frps.toml
 log.to = "console"
 log.level = "info"
 
-# One tunnel: local MediaMTX WebRTC (127.0.0.1:8889) -> public EC2 :8889.
-# Signaling only; media is P2P. (HLS 8888 can be added the same way if wanted.)
+# The one live-stream tunnel. type="http" so frps can route by URL path prefix.
+#   customDomains — the shared fleet domain (Caddy terminates TLS for it on EC2).
+#   locations     — this house's edge_id; frps forwards /<EDGE_ID>/... here.
+# frps hands the request (path intact) to the local MediaMTX WebRTC port; media
+# then flows P2P over UDP and never returns through this tunnel.
 [[proxies]]
 name = "mediamtx-webrtc"
-type = "tcp"
+type = "http"
 localIP = "127.0.0.1"
-localPort = 8889
-remotePort = 8889
+localPort = 8889                             # MediaMTX WebRTC signaling (WHEP)
+customDomains = ["edge.ceravishealth.in"]    # the shared fleet DOMAIN
+locations = ["/EDGE_ID"]                      # this house's edge_id, e.g. /home-9f3c1e
 
 # ---------------------------------------------------------------------------
-# OPTIONAL: reach the edge admin pages (uvicorn :8000 — setup wizard, monitor,
-# live wall) from anywhere. DISABLED by default on purpose.
+# ⚠ Do NOT tunnel port 80 to the edge for Let's Encrypt. In the fleet model the
+#   cloud Caddy runs the ACME client ON EC2 and needs EC2's own :80 and :443, so
+#   an frpc "acme-http" (80 -> edge) proxy would fight Caddy for that port.
+#   Remove any such proxy. TLS is one shared cert on Caddy for the whole fleet.
+# ---------------------------------------------------------------------------
+# OPTIONAL: reach this edge's admin pages (uvicorn :8000 — setup wizard,
+# monitor, live wall) from anywhere. DISABLED by default on purpose.
 #
 # ⚠ SECURITY: the edge API has NO built-in authentication. Anyone who can reach
 #   port 8000 can view cameras and control the whole system. Do NOT expose it
-#   wide open. Pick ONE of the two protected options below.
-#
-# Option 1 — HTTP Basic Auth at frp (works from any browser, recommended).
-#   Also uncomment `vhostHTTPPort = 8080` in frps.toml, set customDomains to
-#   your EC2 IP, and open TCP 8080 in the security group. Reach it at
-#   http://EC2_IP:8080/ui/setup.html (browser prompts for the user/password).
+#   wide open — use a per-house path behind the same Caddy, or lock it to My IP.
 # [[proxies]]
 # name = "ceravis-admin"
 # type = "http"
 # localIP = "127.0.0.1"
 # localPort = 8000
-# customDomains = ["EC2_PUBLIC_IP"]          # same IP/domain as serverAddr
-# httpUser = "admin"
-# httpPassword = "CHANGE_ME_TO_A_STRONG_PASSWORD"
+# customDomains = ["edge.ceravishealth.in"]
+# locations = ["/EDGE_ID-admin"]             # distinct prefix; guard it in Caddy
 #
-# Option 2 — plain TCP tunnel (no frp auth). ONLY safe if you lock the EC2
-#   security-group source for port 8000 to *My IP*. Reach it at
-#   http://EC2_IP:8000/ui/setup.html.
-# [[proxies]]
-# name = "ceravis-admin"
-# type = "tcp"
-# localIP = "127.0.0.1"
-# localPort = 8000
-# remotePort = 8000
-
 # ---------------------------------------------------------------------------
 # OPTIONAL: SSH into the Jetson from anywhere (remote maintenance / setup).
-#   ssh -p 7022 <jetson-user>@EC2_IP
-# ⚠ Before opening this to the world, make Jetson SSH key-only:
-#   ssh-copy-id from your laptop, then on the Jetson set
-#   PasswordAuthentication no  in /etc/ssh/sshd_config + restart sshd.
-#   Then open TCP 7022 in the EC2 security group (0.0.0.0/0 is OK once
-#   key-only; otherwise restrict Source to *My IP*).
+#   ssh -p <REMOTE_SSH_PORT> <jetson-user>@EC2_IP
+# ⚠ Before opening this, make Jetson SSH key-only (PasswordAuthentication no),
+#   and give each house a UNIQUE remotePort so they don't collide.
 # [[proxies]]
 # name = "ceravis-ssh"
 # type = "tcp"
 # localIP = "127.0.0.1"
 # localPort = 22
-# remotePort = 7022
+# remotePort = 2222                          # unique per house

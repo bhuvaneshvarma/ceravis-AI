@@ -39,6 +39,8 @@ echo "frpc running. Check:  sudo systemctl status frpc   |   journalctl -u frpc 
 echo "A healthy log shows: 'start proxy success' for mediamtx-webrtc."
 echo
 echo "Next: set these in edge/infra/env/jetson.env and restart ceravis —"
-echo "  DEVICE_STREAM_BASE=https://<EC2_PUBLIC_IP>"
+echo "  EDGE_ID=<this house's long unguessable token>   (must match locations= in frpc.toml)"
+echo "  DEVICE_STREAM_BASE=https://<SHARED_DOMAIN>"
 echo "  MEDIAMTX_STUN_SERVER=stun:stun.l.google.com:19302"
-echo "then re-sync cameras so the server stores the new global links."
+echo "then re-sync cameras so the server stores the new links:"
+echo "  https://<SHARED_DOMAIN>/<EDGE_ID>/<camera>/whep"
