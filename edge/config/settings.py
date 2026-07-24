@@ -121,11 +121,6 @@ class Settings(BaseSettings):
     # sweep the local /24 for ONVIF devices. Bounded + thread-pooled; safe to
     # leave on. A "deep" scan (?deep=1) always sweeps and widens the port list.
     onvif_unicast_fallback: bool = True
-    # Shared secret guarding the cloud-facing PTZ endpoint (POST /cameras/ptz).
-    # The ceravishealth backend must send it as X-Ceravis-Control-Token. MUST be
-    # set before exposing the edge through the frp tunnel — the edge API has no
-    # other auth. Empty = accept unauthenticated (LAN dev only).
-    edge_control_token: str = ""
     # This device's stable identity AND fleet routing token (a long unguessable
     # value like "home-9f3c1e2b…"). Two jobs:
     #   1) Live-link routing: it is the FIRST path segment of every public live

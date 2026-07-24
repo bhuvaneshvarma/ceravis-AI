@@ -416,16 +416,11 @@
       <div class="hint">Leave on Auto. If live never connects, the device may use secure streaming — pick "Secure".</div>
     </div>
 
-    <h3>Playback access (only if your device is locked down)</h3>
     <div class="field">
-      <label>Control token</label>
-      <input id="setToken" placeholder="usually blank on the local network" />
-      <div class="hint">The same secret the PTZ / cloud uses (X-Ceravis-Control-Token). Needed only if the device requires it.</div>
-    </div>
-    <div class="field">
-      <label>Edge ID</label>
-      <input id="setEdge" placeholder="e.g. home_1234 (optional)" />
-      <div class="hint">Identifies this home. Optional; blank works on a single device.</div>
+      <label>Edge ID (live stream path)</label>
+      <input id="setEdge" placeholder="auto-detected from the device" />
+      <div class="hint">Only addresses the LIVE stream (…/&lt;edge_id&gt;/&lt;cam&gt;) — auto-filled
+        from the device, override only if needed. Playback and the API need nothing here.</div>
     </div>
 
     <div style="display:flex; gap:10px; margin-top:8px">
@@ -454,7 +449,7 @@ function toast(msg, kind = "", ms = 4200){
 }
 
 /* ---- 1. settings (persisted in the browser, never on the device) ------- */
-const DEFAULTS = { host:"", webrtc:"8889", hls:"8888", scheme:"auto", token:"", edge:"" };
+const DEFAULTS = { host:"", webrtc:"8889", hls:"8888", scheme:"auto", edge:"" };
 const CFG = loadCfg();
 function loadCfg(){
   try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem("ceravis_console")||"{}")); }
@@ -471,15 +466,18 @@ function pathName(id){ return (String(id||"").trim().replace(/[^A-Za-z0-9_-]+/g,
    /<edge_id> prefix, so the console must address the live stream the same way. */
 function streamPath(id){ const e=(CFG.edge||"").trim().replace(/[^A-Za-z0-9_-]+/g,"-"); return e ? `${e}/${pathName(id)}` : pathName(id); }
 
-/* ---- 2. edge API fetch (adds token header + edge_id) ------------------- */
+/* ---- 2. edge API fetch (OPEN — no token, no edge_id) ------------------- */
 async function apiGet(path){
-  const url = new URL(path, location.origin);
-  if (CFG.edge && !url.searchParams.has("edge_id")) url.searchParams.set("edge_id", CFG.edge);
-  const headers = {};
-  if (CFG.token) headers["X-Ceravis-Control-Token"] = CFG.token;
-  const r = await fetch(url, { headers });
+  const r = await fetch(new URL(path, location.origin));
   if (!r.ok) throw Object.assign(new Error("HTTP "+r.status), { status:r.status });
   return r.json();
+}
+/* Auto-fill the live-stream edge_id from the device (so live view needs no
+   manual entry); the API + playback need nothing. Best-effort. */
+async function autofillEdge(){
+  if ((CFG.edge||"").trim()) return;
+  try { const a = await apiGet("/api/v1/account"); const e = a && a.user && a.user.edgeId;
+        if (e) { CFG.edge = e; saveCfg(); } } catch(_) {}
 }
 
 /* ---- 3. state --------------------------------------------------------- */
@@ -721,8 +719,7 @@ async function refreshTimeline(cam){
     drawTimeline();
   } catch(e){
     TL=null;
-    if (e.status===401) toast("Playback needs a control token — open ⚙ Settings.", "warn", 6000);
-    else if (e.status===503) toast("Recording engine is down (503). Live may still work.", "bad", 6000);
+    if (e.status===503) toast("Recording engine is down (503). Live may still work.", "bad", 6000);
     else drawTimeline();
   }
 }
@@ -773,16 +770,14 @@ function loadPlayback(cam){
   teardownPlayer();
   showSpinner("Opening timeline…", "");
   const url = new URL(`/api/v1/recordings/${encodeURIComponent(cam.camera_id)}/playback.m3u8`, location.origin);
-  if (CFG.edge) url.searchParams.set("edge_id", CFG.edge);
   const v=$("video"); v.srcObject=null; v.muted=false;
   $("vpChip").className="vp-chip"; $("vpChipTxt").textContent="PLAYBACK"; $("vpChip").classList.remove("hidden");
 
   // Prefer hls.js wherever it runs: it exposes each fragment's wall-clock time
-  // (from EXT-X-PROGRAM-DATE-TIME), which makes seek-by-date exact and lets it
-  // attach the access token. Native HLS is a last resort (older iOS Safari).
+  // (from EXT-X-PROGRAM-DATE-TIME), which makes seek-by-date exact. Native HLS
+  // is a last resort (older iOS Safari).
   if (window.Hls && Hls.isSupported()){
     hls = new Hls({
-      xhrSetup: (xhr)=>{ if (CFG.token) xhr.setRequestHeader("X-Ceravis-Control-Token", CFG.token); },
       backBufferLength: 90,           // keep some history buffered for smooth scrub-back
     });
     hls.on(Hls.Events.LEVEL_LOADED, ()=>{
@@ -797,7 +792,6 @@ function loadPlayback(cam){
     return;
   }
   if (v.canPlayType("application/vnd.apple.mpegurl")){         // native (older iOS)
-    if (CFG.token) toast("This browser can't attach the access token to native video — use Chrome, or run token-less on the LAN.", "warn", 7000);
     v.src = url.toString();
     v.addEventListener("loadedmetadata", ()=>{
       playbackReady = true; hideOverlay();
@@ -972,12 +966,12 @@ document.querySelectorAll("[data-close]").forEach(b=> b.onclick=closePanels);
 /* settings form */
 function fillSettings(){
   $("setHost").value=CFG.host; $("setWebrtc").value=CFG.webrtc; $("setHls").value=CFG.hls;
-  $("setScheme").value=CFG.scheme; $("setToken").value=CFG.token; $("setEdge").value=CFG.edge;
+  $("setScheme").value=CFG.scheme; $("setEdge").value=CFG.edge;
 }
 on("setSave","click", ()=>{
   CFG.host=$("setHost").value.trim(); CFG.webrtc=$("setWebrtc").value.trim()||"8889";
   CFG.hls=$("setHls").value.trim()||"8888"; CFG.scheme=$("setScheme").value;
-  CFG.token=$("setToken").value.trim(); CFG.edge=$("setEdge").value.trim();
+  CFG.edge=$("setEdge").value.trim();
   saveCfg(); closePanels(); toast("Settings saved — reconnecting.", "", 2200);
   loadCameras(); pollHealth(); applyMode();
 });
@@ -994,7 +988,7 @@ window.addEventListener("keydown", e=>{ if(e.key==="Escape") closePanels(); });
 /* 11. BOOT                                                              */
 /* ===================================================================== */
 tickClock(); setInterval(tickClock, 1000);
-loadCameras();
+autofillEdge().then(loadCameras);      // auto-detect the live-stream edge_id, then load
 pollHealth();
 setInterval(pollHealth, 15000);
 // keep the timeline fresh (rolling 12-hour window) while in playback
