@@ -142,7 +142,8 @@ def ranges(rec_path: str) -> list[tuple[datetime, datetime]]:
     return out
 
 
-def playlist(rec_path: str, since: datetime, uri_prefix: str = "segment/") -> str:
+def playlist(rec_path: str, since: datetime, uri_prefix: str = "segment/",
+             uri_suffix: str = "") -> str:
     """The one seekable HLS playlist over the STORED segments from `since`
     onward — the files themselves, never a copy. Empty string when there's no
     footage. Callers pass `since = now - retention` to get the WHOLE window as a
@@ -198,7 +199,9 @@ def playlist(rec_path: str, since: datetime, uri_prefix: str = "segment/") -> st
         if i == 0 or new_run:
             lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{seg.start.isoformat()}")
         lines.append(f"#EXTINF:{seg.duration:.3f},")
-        lines.append(f"{uri_prefix}{seg.file.name}")
+        # uri_suffix carries the edge_id query onto every segment URI, so the
+        # player (hls.js AND native HLS) authenticates each segment fetch too.
+        lines.append(f"{uri_prefix}{seg.file.name}{uri_suffix}")
     if not ongoing:
         lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"

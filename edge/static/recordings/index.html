@@ -466,9 +466,12 @@ function pathName(id){ return (String(id||"").trim().replace(/[^A-Za-z0-9_-]+/g,
    /<edge_id> prefix, so the console must address the live stream the same way. */
 function streamPath(id){ const e=(CFG.edge||"").trim().replace(/[^A-Za-z0-9_-]+/g,"-"); return e ? `${e}/${pathName(id)}` : pathName(id); }
 
-/* ---- 2. edge API fetch (OPEN — no token, no edge_id) ------------------- */
+/* ---- 2. edge API fetch (NO token; carries edge_id — the control endpoints
+   verify it matches this device, playback + PTZ). ------------------------- */
 async function apiGet(path){
-  const r = await fetch(new URL(path, location.origin));
+  const url = new URL(path, location.origin);
+  if (CFG.edge && !url.searchParams.has("edge_id")) url.searchParams.set("edge_id", CFG.edge);
+  const r = await fetch(url);
   if (!r.ok) throw Object.assign(new Error("HTTP "+r.status), { status:r.status });
   return r.json();
 }
@@ -770,6 +773,7 @@ function loadPlayback(cam){
   teardownPlayer();
   showSpinner("Opening timeline…", "");
   const url = new URL(`/api/v1/recordings/${encodeURIComponent(cam.camera_id)}/playback.m3u8`, location.origin);
+  if (CFG.edge) url.searchParams.set("edge_id", CFG.edge);   // segments inherit it via the playlist
   const v=$("video"); v.srcObject=null; v.muted=false;
   $("vpChip").className="vp-chip"; $("vpChipTxt").textContent="PLAYBACK"; $("vpChip").classList.remove("hidden");
 

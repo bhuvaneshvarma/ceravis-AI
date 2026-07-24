@@ -10,8 +10,10 @@ import cv2
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
+from api.control_auth import check_edge_id
 from common.rtsp import normalize_rtsp_url
 from config.settings import settings
+from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
 from integration import call_log
@@ -172,13 +174,21 @@ def _arm_auto_stop(camera_id: str, onvif_cam, token: str, ms: int) -> int:
 def ptz_by_label(body: dict):
     """
     Pan/tilt one camera by its CameraName label. Body (camelCase or snake_case):
-        { "cameraLabel":"KITCHEN", "action":"move", "pan":-0.4, "tilt":0,
-          "durationMs":300 }
+        { "edgeId":"<edge_id>", "cameraLabel":"KITCHEN", "action":"move",
+          "pan":-0.4, "tilt":0, "durationMs":300 }
     action "move" (or a non-zero pan/tilt) starts motion and auto-stops after
-    durationMs; "stop" (or all-zero) halts immediately. Open endpoint — no token
-    or edge-id check (the tunnel already routes to this house's device).
+    durationMs; "stop" (or all-zero) halts immediately. Auth = the edgeId match
+    (api/control_auth): the request must carry THIS device's edge_id.
     """
     body = body or {}
+    req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
+    try:
+        check_edge_id(req_id)
+    except HTTPException:
+        _ptz_log(False, req_id,
+                 f"rejected: edgeId auth (this device is '{effective_edge_id()}')", 409)
+        raise
+
     label = str(_field(body, "cameraLabel", "camera_label", "cameraNumber",
                        default=""))
     cam = _camera_by_label(label)
