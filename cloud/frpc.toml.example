@@ -1,17 +1,21 @@
-# CERAVIS live-stream tunnel — frp CLIENT (runs on the Jetson edge).
+# CERAVIS remote-access tunnel — frp CLIENT (runs on the Jetson edge).
 #
 # Copy to frpc.toml, fill in the ALL-CAPS values, then install with
-# cloud/install_frpc.sh. This publishes the edge's local MediaMTX WebRTC
-# signaling (127.0.0.1:8889) through the shared cloud domain, so the live links
-# become reachable from anywhere. Fully separate from ceravis.service — stop or
-# disable this alone to turn remote access off; the AI pipeline is untouched.
+# cloud/install_frpc.sh. It publishes, through the ONE shared cloud domain:
+#   • the MediaMTX WebRTC live links   (127.0.0.1:8889)
+#   • the edge API + admin pages       (127.0.0.1:8000, uvicorn)
+# so both are reachable from anywhere over https, no per-house ports. Fully
+# separate from ceravis.service — stop/disable this alone to turn remote access
+# off; the AI pipeline is untouched.
 #
 # Fleet model: EVERY house uses the identical file below except its own EDGE_ID.
-# frps routes by the /<EDGE_ID> URL path prefix, so one shared domain + one
-# shared port serve the whole fleet — no per-house ports. The public link is
-#   https://<DOMAIN>/<EDGE_ID>/<camera>/whep
-# EDGE_ID must equal edge/infra/env/jetson.env's EDGE_ID (a long unguessable
-# token — it is effectively the access key to this house's cameras).
+# frps routes by URL path: /<EDGE_ID>/… -> that house's MediaMTX; /api + /ui ->
+# that house's uvicorn. Public links:
+#   live : https://<DOMAIN>/<EDGE_ID>/<ROOM>/         (MediaMTX player page)
+#   API  : https://<DOMAIN>/api/v1/…                  (open; edgeId in request)
+#   pages: https://<DOMAIN>/ui/setup.html             (Caddy Basic-Auth prompt)
+# EDGE_ID must equal edge/infra/env/jetson.env's EDGE_ID (the app server hands it
+# back at account verification and the edge writes it there for you to copy).
 
 serverAddr = "EC2_PUBLIC_IP_OR_DOMAIN"   # the AWS box's public IPv4 / domain
 serverPort = 7000
@@ -22,40 +26,33 @@ auth.token = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"   # must match frps.toml
 log.to = "console"
 log.level = "info"
 
-# The one live-stream tunnel. type="http" so frps can route by URL path prefix.
-#   customDomains — the shared fleet domain (Caddy terminates TLS for it on EC2).
-#   locations     — this house's edge_id; frps forwards /<EDGE_ID>/... here.
-# frps hands the request (path intact) to the local MediaMTX WebRTC port; media
-# then flows P2P over UDP and never returns through this tunnel.
+# Live-stream tunnel — MediaMTX WebRTC, routed by the /<EDGE_ID> path prefix.
+# frps hands the request (path intact) to MediaMTX; media then flows P2P over
+# UDP and never returns through this tunnel.
 [[proxies]]
 name = "mediamtx-webrtc"
 type = "http"
 localIP = "127.0.0.1"
-localPort = 8889                             # MediaMTX WebRTC signaling (WHEP)
-customDomains = ["edge.ceravishealth.in"]    # the shared fleet DOMAIN
-locations = ["/EDGE_ID"]                      # this house's edge_id, e.g. /home-9f3c1e
+localPort = 8889                               # MediaMTX WebRTC signaling (WHEP)
+customDomains = ["edgeai.ceravishealth.in"]    # the shared fleet DOMAIN
+locations = ["/EDGE_ID"]                        # this house's edge_id, e.g. /home-9f3c1e
+
+# Edge API + admin pages — the SAME domain, routed by the /api and /ui path
+# prefixes to the uvicorn app. The API is open (each control request carries the
+# edgeId, which the edge verifies); the /ui pages are protected by HTTP Basic
+# Auth at Caddy (see Caddyfile.example). No control token needed.
+[[proxies]]
+name = "ceravis-api"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 8000                               # uvicorn (edge API + /ui)
+customDomains = ["edgeai.ceravishealth.in"]
+locations = ["/api", "/ui"]
 
 # ---------------------------------------------------------------------------
-# ⚠ Do NOT tunnel port 80 to the edge for Let's Encrypt. In the fleet model the
-#   cloud Caddy runs the ACME client ON EC2 and needs EC2's own :80 and :443, so
-#   an frpc "acme-http" (80 -> edge) proxy would fight Caddy for that port.
-#   Remove any such proxy. TLS is one shared cert on Caddy for the whole fleet.
-# ---------------------------------------------------------------------------
-# OPTIONAL: reach this edge's admin pages (uvicorn :8000 — setup wizard,
-# monitor, live wall) from anywhere. DISABLED by default on purpose.
-#
-# ⚠ SECURITY: the edge API has NO built-in authentication — anyone who reaches
-#   the port controls the whole system. Do NOT route it through the shared
-#   live-stream domain (the app is not path-prefix aware, and it would be
-#   world-open). Use a per-house TCP tunnel LOCKED to your IP in the EC2
-#   security group. Reach it at http://EC2_IP:<remotePort>/ui/setup.html
-# [[proxies]]
-# name = "ceravis-admin"
-# type = "tcp"
-# localIP = "127.0.0.1"
-# localPort = 8000
-# remotePort = 8001                          # unique per house; SG source = *My IP*
-#
+# ⚠ Do NOT tunnel port 80 to the edge for Let's Encrypt. The cloud Caddy runs
+#   the ACME client ON EC2 and needs EC2's own :80/:443, so an frpc "acme-http"
+#   (80 -> edge) proxy would fight it. TLS is one shared cert on Caddy.
 # ---------------------------------------------------------------------------
 # OPTIONAL: SSH into the Jetson from anywhere (remote maintenance / setup).
 #   ssh -p <remotePort> <jetson-user>@EC2_IP
@@ -67,4 +64,4 @@ locations = ["/EDGE_ID"]                      # this house's edge_id, e.g. /home
 # type = "tcp"
 # localIP = "127.0.0.1"
 # localPort = 22
-# remotePort = 2222                          # unique per house
+# remotePort = 2222                            # unique per house

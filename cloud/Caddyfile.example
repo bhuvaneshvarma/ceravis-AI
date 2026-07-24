@@ -2,21 +2,33 @@
 #
 # Caddy is the ONE public entry for the whole fleet: it obtains and auto-renews a
 # single Let's Encrypt certificate for the shared domain and reverse-proxies
-# every request to the frps HTTP vhost (127.0.0.1:7080), which routes to the
-# right home by the /<edge_id> path prefix. The video itself stays peer-to-peer
-# (UDP) and never passes through here — only the WHEP signaling does.
+# every request to the frps HTTP vhost (127.0.0.1:7080), which routes by path:
+#   /<edge_id>/…  -> that home's MediaMTX (live links, open)
+#   /api/…        -> that home's uvicorn API (open; edgeId verified in-request)
+#   /ui/…         -> that home's uvicorn pages (Basic-Auth, below)
+# The video itself stays peer-to-peer (UDP) and never passes through here.
 #
 # Setup:
 #   1) Point an A record for this domain at the EC2 elastic IP.
-#   2) Open TCP 80 + 443 in the security group (Caddy answers the ACME HTTP
-#      challenge on 80 and serves HTTPS on 443). Keep frps :7080 CLOSED to the
-#      internet — only Caddy reaches it over loopback.
-#   3) cp Caddyfile.example Caddyfile, replace the domain, then:
+#   2) Open TCP 80 + 443 (Caddy: ACME on 80, HTTPS on 443). Keep frps :7080
+#      CLOSED to the internet — only Caddy reaches it over loopback.
+#   3) Generate a password hash for the admin login:
+#        caddy hash-password --plaintext 'YOUR_STRONG_PASSWORD'
+#      paste it below (it is a bcrypt hash, safe to commit-less keep here).
+#   4) cp Caddyfile.example Caddyfile, set the domain + hash, then:
 #        bash install_caddy.sh
 #
-# Caddy preserves the incoming Host header by default, so frps sees
-# Host: edge.ceravishealth.in and matches the edges' customDomains.
+# Caddy preserves the incoming Host header, so frps sees Host:
+# edgeai.ceravishealth.in and matches the edges' customDomains.
 
-edge.ceravishealth.in {
+edgeai.ceravishealth.in {
+	# The admin PAGES require a login; the API and live links do not — the API
+	# verifies the edgeId carried in each request, and live links are the
+	# per-camera URLs the app already gates behind the family's account.
+	@ui path /ui /ui/*
+	basic_auth @ui {
+		admin BCRYPT_HASH_FROM_caddy_hash-password
+	}
+
 	reverse_proxy 127.0.0.1:7080
 }
