@@ -1,6 +1,11 @@
 import re
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
+
+# Derived identity fields excluded ONLY when writing cameras.json (so the file
+# matches the app-server shape); they stay in API responses, which the frontend
+# and pipeline address cameras by. See CameraConfig.add/update.
+FILE_EXCLUDE = {"camera_id", "camera_name"}
 
 
 def room_id(room_name: str) -> str:
@@ -43,11 +48,11 @@ class Camera(BaseModel):
     webrtc_url: str = ""
     hls_url: str = ""
 
-    # Derived from room_name and kept ONLY in memory (the pipeline addresses
-    # cameras by id) — excluded from cameras.json so the file matches the shape
-    # the app server expects. Re-derived on load.
-    camera_id: str = Field(default="", exclude=True)
-    camera_name: str = Field(default="", exclude=True)
+    # Derived from room_name. Present in API responses (the frontend + pipeline
+    # address cameras by id) but written out of cameras.json (FILE_EXCLUDE) so
+    # the file matches the app-server shape. Re-derived on load.
+    camera_id: str = ""
+    camera_name: str = ""
 
     @model_validator(mode="after")
     def _derive_identity(self):

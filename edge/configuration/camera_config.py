@@ -1,4 +1,4 @@
-from schemas.cameras import Camera, room_id
+from schemas.cameras import Camera, FILE_EXCLUDE, room_id
 from configuration.config_store import ConfigStore
 
 
@@ -85,7 +85,7 @@ class CameraConfig:
         )
 
         cameras.append(
-            camera.model_dump()
+            camera.model_dump(exclude=FILE_EXCLUDE)
         )
 
         self.store.save(
@@ -113,7 +113,7 @@ class CameraConfig:
             ):
 
                 cameras[index] = (
-                    updated_camera.model_dump()
+                    updated_camera.model_dump(exclude=FILE_EXCLUDE)
                 )
 
                 updated = True
