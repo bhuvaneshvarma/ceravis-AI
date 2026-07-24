@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -58,6 +59,11 @@ def verify(req: VerifyRequest):
         return {"verified": False,
                 "reason": "No CERAVIS account found for this email"}
 
+    # edge_id — the fleet routing token the app server now returns. Sanitized to
+    # a URL/path-safe form (same rule the live path uses) so the value stored,
+    # the /<edge_id> link segment, and cloud/frpc.toml locations all match.
+    edge_id = re.sub(r"[^A-Za-z0-9_\-]+", "-",
+                     str(user.get("edgeId") or "").strip()).strip("-")
     account = {
         "ceravisUserId": user.get("ceravisUserId"),
         "firstName": user.get("firstName"),
@@ -67,11 +73,20 @@ def verify(req: VerifyRequest):
         "gender": user.get("gender"),
         "role": user.get("role"),
         "tier": user.get("tier"),
+        "edgeId": edge_id or None,
     }
     account_config.save(account)
+    # account.json is the authoritative runtime source (live links + control
+    # checks read it with no restart); also persist to jetson.env so it survives
+    # a reboot and can be copied into cloud/frpc.toml's locations.
+    if edge_id:
+        from config.env_writer import set_env_value
+        set_env_value("EDGE_ID", edge_id)
+        logger.info("edge_id provisioned from app server: %s (also written to "
+                    "jetson.env — set it in cloud/frpc.toml locations)", edge_id)
     logger.info("account verified: user #%s (%s)",
                 account["ceravisUserId"], account["email"])
-    return {"verified": True, "user": account}
+    return {"verified": True, "user": account, "edgeId": edge_id or None}
 
 
 @router.post("/sync-cameras")
@@ -103,11 +118,13 @@ def sync_cameras(request: Request):
             error="set EDGE_ID (the /<edge_id> routing token) in jetson.env, "
                   "restart ceravis, then re-sync cameras")
     cameras = [{
-        "device": c.camera_id,
+        "device": c.camera_id,               # derived from the room (LIVING_ROOM)
         "model": "",                         # not collected on the edge
         "supplier": "",                      # not collected on the edge
         "room": room_to_enum(c.room_name),   # -> server CameraName enum
-        "url": webrtc_url(c.camera_id, base),
+        # The link stored on the camera at save time (…/<edge_id>/<ROOM>/);
+        # recompute as a fallback for a camera saved before links existed.
+        "url": c.webrtc_url or webrtc_url(c.camera_id, base),
     } for c in cams]
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
                 len(cameras), pid, [(c["room"], c["url"]) for c in cameras])

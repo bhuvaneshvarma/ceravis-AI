@@ -1,36 +1,49 @@
 from __future__ import annotations
 
 """
-One guard for the cloud-facing control endpoints (PTZ, recording playback)
-reached through the frp tunnel. Two independent checks, both no-ops when
-unconfigured so LAN development keeps working without ceremony:
+Auth for the cloud-facing control endpoints (PTZ, recording playback) reached
+through the frp tunnel / Caddy.
 
-  * control token — a shared secret the ceravishealth backend sends as the
-    X-Ceravis-Control-Token header (settings.edge_control_token). Empty accepts
-    everything (LAN dev only).
-  * edge-id guard — obey only commands addressed to THIS device
-    (settings.edge_id), so a misrouted request can never touch the wrong home.
+Model (current):
+  * The admin PAGES (/ui/*) are protected by HTTP Basic Auth at the cloud Caddy
+    — humans get an id/password prompt.
+  * The API endpoints (/api/*) are NOT behind Basic Auth (so the app server can
+    call them freely); instead each control request must carry this device's
+    `edgeId`, and we verify it MATCHES the edge_id provisioned for this device
+    (from the userDetails response, stored in account.json / jetson.env). Only
+    the app server that provisioned the device knows that value.
 
-Kept in one place so every control endpoint authenticates identically — see
-[[ceravis-one-mechanism-principle]].
+The legacy X-Ceravis-Control-Token was removed — check_control_token is now a
+no-op kept only so existing call sites don't break. One place, so every control
+endpoint authenticates identically — see [[ceravis-one-mechanism-principle]].
 """
 
 from fastapi import HTTPException
 
-from config.settings import settings
+from configuration.account_config import effective_edge_id
 
 
-def check_control_token(header_value: str | None) -> None:
-    """Raise 401 unless the shared control token matches (or none is set)."""
-    secret = settings.edge_control_token.strip()
-    if secret and (header_value or "").strip() != secret:
-        raise HTTPException(401, "invalid or missing control token")
+def check_control_token(header_value: str | None = None) -> None:
+    """Deprecated no-op. The X-Ceravis-Control-Token was removed; the edgeId
+    match (check_edge_id) is the API auth now. Retained so callers that still
+    pass the old header don't error during the transition."""
+    return
 
 
 def check_edge_id(req_edge_id: str | None) -> None:
-    """Raise 409 when a command is addressed to a different edge device."""
-    mine = settings.edge_id.strip()
+    """The primary control-endpoint auth: the request must target THIS device.
+
+    When the device has an edge_id (a verified account, or jetson.env EDGE_ID),
+    the request MUST carry a matching one — missing => 401, wrong => 409. A
+    caller therefore needs the edge_id, which only the app server that
+    provisioned this device knows. No edge_id on the device = LAN dev, so accept
+    anything (nothing to route or protect yet)."""
+    mine = effective_edge_id()
+    if not mine:
+        return
     req = (req_edge_id or "").strip()
-    if mine and req and req != mine:
+    if not req:
+        raise HTTPException(401, "edgeId required")
+    if req != mine:
         raise HTTPException(409, f"edge_id mismatch: command for '{req}', "
                                  f"this device is '{mine}'")

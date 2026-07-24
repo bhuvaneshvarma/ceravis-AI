@@ -28,10 +28,10 @@ edge-local time (common.clock).
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
-from api.control_auth import check_control_token, check_edge_id
+from api.control_auth import check_edge_id
 from common import clock
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -81,15 +81,13 @@ def recording_toggle(request: Request):
 # ---- timeline (availability for the scrub bar) ----------------------
 
 @router.get("/{camera}/timeline")
-def recording_timeline(camera: str, edge_id: str | None = None,
-                       x_ceravis_control_token: str | None = Header(default=None)):
+def recording_timeline(camera: str, edge_id: str | None = None):
     """The availability data for the scrub bar: which stretches of the last
     `retention_hours` actually have footage (i.e. someone was present) — read
     straight off the stored segments. The frontend draws a bar from
     window_start→now and shades these `segments`; a click on a shaded point
     becomes a /playback.m3u8?ts=… call. Re-fetch anytime to reflect the rolling
     window (oldest aged out, newest added)."""
-    check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
     cam = _resolve_camera(camera)
     now = clock.now()
@@ -114,8 +112,7 @@ def recording_timeline(camera: str, edge_id: str | None = None,
 # ---- HLS-VOD playback over the STORED segments ----------------------
 
 @router.get("/{camera}/playback.m3u8")
-def recording_playlist(camera: str, edge_id: str | None = None,
-                       x_ceravis_control_token: str | None = Header(default=None)):
+def recording_playlist(camera: str, edge_id: str | None = None):
     """The WHOLE retention window as ONE seekable HLS playlist: every recorded
     stretch of the last `record_retention_hours`, each tagged with its real
     wall-clock time (EXT-X-PROGRAM-DATE-TIME) and joined across the empty gaps
@@ -127,7 +124,6 @@ def recording_playlist(camera: str, edge_id: str | None = None,
     There is deliberately no `ts` parameter: seeking is a client concern (the
     player already knows every segment's wall-clock time), which keeps this one
     URL the single, cacheable source of a camera's whole timeline."""
-    check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
     cam = _resolve_camera(camera)
     window_start = clock.now() - timedelta(hours=settings.record_retention_hours)
@@ -141,10 +137,8 @@ def recording_playlist(camera: str, edge_id: str | None = None,
 
 
 @router.get("/{camera}/segment/{filename}")
-def recording_segment(camera: str, filename: str, edge_id: str | None = None,
-                      x_ceravis_control_token: str | None = Header(default=None)):
+def recording_segment(camera: str, filename: str, edge_id: str | None = None):
     """One recorded segment, served straight from disk exactly as recorded."""
-    check_control_token(x_ceravis_control_token)
     check_edge_id(edge_id)
     cam = _resolve_camera(camera)
     path = recording_index.segment_file(record_path_name(cam), filename)

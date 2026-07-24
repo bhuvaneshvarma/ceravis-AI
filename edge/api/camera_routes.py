@@ -7,12 +7,13 @@ import time
 from dataclasses import asdict
 
 import cv2
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
-from api.control_auth import check_control_token, check_edge_id
+from api.control_auth import check_edge_id
 from common.rtsp import normalize_rtsp_url
 from config.settings import settings
+from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
 from integration import call_log
@@ -73,11 +74,22 @@ def _normalize_urls(camera: Camera) -> None:
         camera.record_rtsp_url = normalize_rtsp_url(camera.record_rtsp_url)
 
 
+def _set_links(request: Request, camera: Camera) -> None:
+    """Compute + store the camera's public live link so cameras.json and the
+    app-server sync share ONE canonical value. webrtc_url points at the MediaMTX
+    WebRTC player page under the fleet domain: <base>/<edge_id>/<ROOM>/. hls_url
+    is reserved (left empty for now)."""
+    base = mediamtx_client.stream_base(request.headers.get("host") or "localhost")
+    camera.webrtc_url = mediamtx_client.webrtc_url(camera.camera_id, base)
+    camera.hls_url = camera.hls_url or ""
+
+
 @router.post("")
 def create_camera(camera: Camera, request: Request):
     if camera_config.get_by_id(camera.camera_id):
         raise HTTPException(409, f"Camera exists: {camera.camera_id}")
     _normalize_urls(camera)
+    _set_links(request, camera)
     camera_config.add(camera)
     _mtx_sync(request, camera)
     return {"status": "created", "camera_id": camera.camera_id}
@@ -159,29 +171,22 @@ def _arm_auto_stop(camera_id: str, onvif_cam, token: str, ms: int) -> int:
 
 
 @router.post("/ptz")
-def ptz_by_label(body: dict,
-                 x_ceravis_control_token: str | None = Header(default=None)):
+def ptz_by_label(body: dict):
     """
     Pan/tilt one camera by its CameraName label. Body (camelCase or snake_case):
-        { "edgeId":"home_1234", "cameraLabel":"KITCHEN", "action":"move",
+        { "edgeId":"<edge_id>", "cameraLabel":"KITCHEN", "action":"move",
           "pan":-0.4, "tilt":0, "durationMs":300 }
     action "move" (or a non-zero pan/tilt) starts motion and auto-stops after
-    durationMs; "stop" (or all-zero) halts immediately.
+    durationMs; "stop" (or all-zero) halts immediately. Auth = the edgeId match
+    (api/control_auth) — the request must carry THIS device's edge_id.
     """
     body = body or {}
-    # Same guards as every control endpoint (api/control_auth) — the token and
-    # the fleet edge-id check — but logged to the Cloud Sync Console on rejection.
-    try:
-        check_control_token(x_ceravis_control_token)
-    except HTTPException:
-        _ptz_log(False, "", "rejected: bad/missing control token", 401)
-        raise
     req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
     try:
         check_edge_id(req_id)
     except HTTPException:
         _ptz_log(False, req_id,
-                 f"rejected: edge_id mismatch (I am '{settings.edge_id.strip()}')", 409)
+                 f"rejected: edgeId auth (I am '{effective_edge_id()}')", 409)
         raise
 
     label = str(_field(body, "cameraLabel", "camera_label", "cameraNumber",
@@ -242,6 +247,7 @@ def get_camera(camera_id: str):
 @router.put("/{camera_id}")
 def update_camera(camera_id: str, camera: Camera, request: Request):
     _normalize_urls(camera)
+    _set_links(request, camera)
     if not camera_config.update(camera_id, camera):
         raise HTTPException(404, "Camera not found")
     _mtx_sync(request, camera)

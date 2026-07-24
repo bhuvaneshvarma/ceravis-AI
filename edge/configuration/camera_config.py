@@ -1,5 +1,12 @@
-from schemas.cameras import Camera
+from schemas.cameras import Camera, room_id
 from configuration.config_store import ConfigStore
+
+
+def _id_of(raw: dict) -> str:
+    """The camera id of a RAW cameras.json record. cameras.json stores the room
+    (not the derived id), so derive it — tolerating older files that still carry
+    an explicit camera_id."""
+    return str(raw.get("camera_id") or room_id(raw.get("room_name", "")))
 
 
 class CameraConfig:
@@ -101,7 +108,7 @@ class CameraConfig:
         for index, camera in enumerate(cameras):
 
             if (
-                camera["camera_id"]
+                _id_of(camera)
                 == camera_id
             ):
 
@@ -137,7 +144,7 @@ class CameraConfig:
             camera
             for camera in cameras
             if (
-                camera["camera_id"]
+                _id_of(camera)
                 != camera_id
             )
         ]

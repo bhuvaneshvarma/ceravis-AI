@@ -56,8 +56,11 @@ def edge_prefix() -> str:
     """`<edge_id>/` when this device carries a fleet routing token, else ''.
     The token is the FIRST path segment of every public live link and the key
     frp routes on (locations=["/<edge_id>"]) — one shared domain, one shared
-    port, disambiguated purely by this segment. Empty = LAN-only, no prefix."""
-    eid = re.sub(r"[^A-Za-z0-9_\-]+", "-", settings.edge_id.strip())
+    port, disambiguated purely by this segment. Resolved from the account
+    (edgeId handed back by the app server) first, then jetson.env's EDGE_ID, so a
+    freshly-verified device routes with no restart. Empty = LAN-only, no prefix."""
+    from configuration.account_config import effective_edge_id
+    eid = re.sub(r"[^A-Za-z0-9_\-]+", "-", effective_edge_id())
     return f"{eid}/" if eid else ""
 
 
@@ -183,24 +186,26 @@ def stream_base(host: str) -> str:
 
 
 def webrtc_url(camera_id: str, public_base: str) -> str:
-    """The public WebRTC (WHEP) live link for one camera — the URL stored on the
-    app server. `public_base` is scheme://host (no port, see stream_base).
+    """The public WebRTC live link for one camera — the URL stored on the app
+    server and in cameras.json. `public_base` is scheme://host (no port, see
+    stream_base). The link points at MediaMTX's built-in WebRTC player PAGE
+    (trailing slash), which the cloud frontend embeds directly; the page does the
+    WHEP handshake itself.
 
-    Fleet/proxy model (DEVICE_STREAM_BASE set): the link is
-    `<base>/<edge_id>/<cam>/whep` with NO port — TLS and the /<edge_id> path
-    routing are terminated upstream (Caddy -> frps vhost -> frpc -> MediaMTX),
-    so one shared domain serves every house.
+    Fleet/proxy model (DEVICE_STREAM_BASE set): `<base>/<edge_id>/<ROOM>/` with
+    NO port — TLS and the /<edge_id> path routing are terminated upstream (Caddy
+    -> frps vhost -> frpc -> MediaMTX), so one shared domain serves every house.
 
-    LAN-direct (no DEVICE_STREAM_BASE): the link hits MediaMTX's WebRTC port on
-    this host directly, `<scheme>://<host>:<webrtc_port>/<cam>/whep`."""
+    LAN-direct (no DEVICE_STREAM_BASE): hits MediaMTX's WebRTC port on this host
+    directly, `<scheme>://<host>:<webrtc_port>/<ROOM>/`."""
     base = public_base.rstrip("/")
     path = stream_path(camera_id)
     if settings.device_stream_base.strip():
-        return f"{base}/{path}/whep"
+        return f"{base}/{path}/"
     scheme, _, host = base.partition("://")
     scheme = scheme or "http"
     host = (host or base).rsplit(":", 1)[0]
-    return f"{scheme}://{host}:{settings.mediamtx_webrtc_port}/{path}/whep"
+    return f"{scheme}://{host}:{settings.mediamtx_webrtc_port}/{path}/"
 
 
 # ---- control API ------------------------------------------------------
