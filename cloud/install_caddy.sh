@@ -5,7 +5,7 @@
 #   bash install_caddy.sh
 # Needs Caddyfile (copied from Caddyfile.example, domain edited) next to this
 # script, and frps already running (install_frps.sh). Caddy reverse-proxies to
-# the frps HTTP vhost on 127.0.0.1:8000.
+# the frps HTTP vhost on 127.0.0.1:7080.
 set -euo pipefail
 
 CADDY_VERSION="${CADDY_VERSION:-2.8.4}"     # bump if this tag 404s
@@ -48,5 +48,4 @@ echo "record pointed at this box and TCP 80/443 open."
 echo "EC2 security-group inbound rules for the fleet:"
 echo "  TCP 80, 443  (Caddy — ACME challenge + HTTPS entry)"
 echo "  TCP 7000     (edges connect to frps)"
-echo "  Keep 8000 CLOSED to the public (frps vhost, behind Caddy over loopback;"
-echo "  open to *My IP* only if you use the admin UI)."
+echo "  Keep 7080 CLOSED (frps vhost is loopback-only, behind Caddy)."

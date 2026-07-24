@@ -2,22 +2,21 @@
 #
 # Caddy is the ONE public entry for the whole fleet: it obtains and auto-renews a
 # single Let's Encrypt certificate for the shared domain and reverse-proxies
-# every request to the frps HTTP vhost (127.0.0.1:8000), which routes to the
+# every request to the frps HTTP vhost (127.0.0.1:7080), which routes to the
 # right home by the /<edge_id> path prefix. The video itself stays peer-to-peer
 # (UDP) and never passes through here — only the WHEP signaling does.
 #
 # Setup:
 #   1) Point an A record for this domain at the EC2 elastic IP.
 #   2) Open TCP 80 + 443 in the security group (Caddy answers the ACME HTTP
-#      challenge on 80 and serves HTTPS on 443). Keep frps :8000 CLOSED to the
-#      public — Caddy reaches it over loopback (open 8000 to *My IP* only if you
-#      use the admin UI, README §6).
+#      challenge on 80 and serves HTTPS on 443). Keep frps :7080 CLOSED to the
+#      internet — only Caddy reaches it over loopback.
 #   3) cp Caddyfile.example Caddyfile, replace the domain, then:
 #        bash install_caddy.sh
 #
 # Caddy preserves the incoming Host header by default, so frps sees
-# Host: edgeai.ceravishealth.in and matches the edges' customDomains.
+# Host: edge.ceravishealth.in and matches the edges' customDomains.
 
-edgeai.ceravishealth.in {
-	reverse_proxy 127.0.0.1:8000
+edge.ceravishealth.in {
+	reverse_proxy 127.0.0.1:7080
 }

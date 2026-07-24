@@ -32,7 +32,7 @@ name = "mediamtx-webrtc"
 type = "http"
 localIP = "127.0.0.1"
 localPort = 8889                             # MediaMTX WebRTC signaling (WHEP)
-customDomains = ["edgeai.ceravishealth.in"]  # the shared fleet DOMAIN
+customDomains = ["edge.ceravishealth.in"]    # the shared fleet DOMAIN
 locations = ["/EDGE_ID"]                      # this house's edge_id, e.g. /home-9f3c1e
 
 # ---------------------------------------------------------------------------
@@ -44,20 +44,17 @@ locations = ["/EDGE_ID"]                      # this house's edge_id, e.g. /home
 # OPTIONAL: reach this edge's admin pages (uvicorn :8000 — setup wizard,
 # monitor, live wall) from anywhere. DISABLED by default on purpose.
 #
-# ⚠ SECURITY: the edge API has NO built-in authentication. This block puts frp
-#   HTTP Basic Auth in front, and it MUST only be reachable from your IP. It
-#   rides the SAME frps vhost as the live stream (vhostHTTPPort 8000), keyed by
-#   host: the live links use the DOMAIN (via Caddy), this uses Host=<EC2_IP>.
-#   In the EC2 security group open TCP 8000 to *My IP* only, then browse
-#   http://EC2_IP:8000/ui/setup.html (the browser prompts for user/password).
+# ⚠ SECURITY: the edge API has NO built-in authentication — anyone who reaches
+#   the port controls the whole system. Do NOT route it through the shared
+#   live-stream domain (the app is not path-prefix aware, and it would be
+#   world-open). Use a per-house TCP tunnel LOCKED to your IP in the EC2
+#   security group. Reach it at http://EC2_IP:<remotePort>/ui/setup.html
 # [[proxies]]
 # name = "ceravis-admin"
-# type = "http"
+# type = "tcp"
 # localIP = "127.0.0.1"
 # localPort = 8000
-# customDomains = ["EC2_PUBLIC_IP"]          # your EC2 IP (NOT the fleet domain)
-# httpUser = "admin"
-# httpPassword = "CHANGE_ME_TO_A_STRONG_PASSWORD"
+# remotePort = 8001                          # unique per house; SG source = *My IP*
 #
 # ---------------------------------------------------------------------------
 # OPTIONAL: SSH into the Jetson from anywhere (remote maintenance / setup).
