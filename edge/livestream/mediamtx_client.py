@@ -187,25 +187,25 @@ def stream_base(host: str) -> str:
 
 def webrtc_url(camera_id: str, public_base: str) -> str:
     """The public WebRTC live link for one camera — the URL stored on the app
-    server and in cameras.json. `public_base` is scheme://host (no port, see
-    stream_base). The link points at MediaMTX's built-in WebRTC player PAGE
-    (trailing slash), which the cloud frontend embeds directly; the page does the
-    WHEP handshake itself.
+    server and in cameras.json. It is the WebRTC BASE with NO trailing slash, so
+    the cloud's WHEP player forms the endpoint cleanly as `<url>/whep` (a trailing
+    slash would produce `…//whep`). `public_base` is scheme://host (no port, see
+    stream_base).
 
-    Fleet/proxy model (DEVICE_STREAM_BASE set): `<base>/<edge_id>/<ROOM>/` with
-    NO port — TLS and the /<edge_id> path routing are terminated upstream (Caddy
-    -> frps vhost -> frpc -> MediaMTX), so one shared domain serves every house.
+    Fleet/proxy model (DEVICE_STREAM_BASE set): `<base>/<edge_id>/<ROOM>` — TLS
+    and the /<edge_id> path routing terminate upstream (Caddy -> frps vhost ->
+    frpc -> MediaMTX), so one shared domain serves every house.
 
     LAN-direct (no DEVICE_STREAM_BASE): hits MediaMTX's WebRTC port on this host
-    directly, `<scheme>://<host>:<webrtc_port>/<ROOM>/`."""
+    directly, `<scheme>://<host>:<webrtc_port>/<ROOM>`."""
     base = public_base.rstrip("/")
     path = stream_path(camera_id)
     if settings.device_stream_base.strip():
-        return f"{base}/{path}/"
+        return f"{base}/{path}"
     scheme, _, host = base.partition("://")
     scheme = scheme or "http"
     host = (host or base).rsplit(":", 1)[0]
-    return f"{scheme}://{host}:{settings.mediamtx_webrtc_port}/{path}/"
+    return f"{scheme}://{host}:{settings.mediamtx_webrtc_port}/{path}"
 
 
 # ---- control API ------------------------------------------------------
