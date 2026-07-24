@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
 from config.settings import settings
@@ -40,7 +40,7 @@ class VerifyRequest(BaseModel):
 
 
 @router.post("/verify")
-def verify(req: VerifyRequest):
+def verify(req: VerifyRequest, background_tasks: BackgroundTasks):
     """
     Gate the setup wizard: look the email up on the CERAVIS app server. If the
     account exists, persist it (with the entered phone) and return it so the next
@@ -59,11 +59,11 @@ def verify(req: VerifyRequest):
         return {"verified": False,
                 "reason": "No CERAVIS account found for this email"}
 
-    # edge_id — the fleet routing token the app server now returns. Sanitized to
-    # a URL/path-safe form (same rule the live path uses) so the value stored,
-    # the /<edge_id> link segment, and cloud/frpc.toml locations all match.
-    edge_id = re.sub(r"[^A-Za-z0-9_\-]+", "-",
-                     str(user.get("edgeId") or "").strip()).strip("-")
+    # The app server hands this device's routing token back as `deviceToken`
+    # (older field name: edgeId). Sanitized to a URL/path-safe form so the stored
+    # value, the /<edge_id> link segment, and cloud/frpc.toml locations all match.
+    raw_token = str(user.get("deviceToken") or user.get("edgeId") or "").strip()
+    edge_id = re.sub(r"[^A-Za-z0-9_\-]+", "-", raw_token).strip("-")
     account = {
         "ceravisUserId": user.get("ceravisUserId"),
         "firstName": user.get("firstName"),
@@ -77,16 +77,24 @@ def verify(req: VerifyRequest):
     }
     account_config.save(account)
     # account.json is the authoritative runtime source (live links + control
-    # checks read it with no restart); also persist to jetson.env so it survives
-    # a reboot and can be copied into cloud/frpc.toml's locations.
+    # checks read it with no restart — so ceravis itself never needs restarting).
+    provisioning = False
     if edge_id:
         from config.env_writer import set_env_value
-        set_env_value("EDGE_ID", edge_id)
-        logger.info("edge_id provisioned from app server: %s (also written to "
-                    "jetson.env — set it in cloud/frpc.toml locations)", edge_id)
+        set_env_value("EDGE_ID", edge_id)                # persist for the next boot
+        # Apply to the frp tunnel (patch frpc.toml locations + restart frpc) AFTER
+        # this response is sent, so we never cut the tunnel this reply travels
+        # through. Best-effort: the value is already saved, so a manual frpc setup
+        # still works if the privileged helper isn't installed.
+        from integration.edge_provision import apply_edge_id_async
+        background_tasks.add_task(apply_edge_id_async, edge_id)
+        provisioning = True
+        logger.info("edge_id provisioned: %s (jetson.env written; frpc apply "
+                    "scheduled after response)", edge_id)
     logger.info("account verified: user #%s (%s)",
                 account["ceravisUserId"], account["email"])
-    return {"verified": True, "user": account, "edgeId": edge_id or None}
+    return {"verified": True, "user": account, "edgeId": edge_id or None,
+            "provisioning": provisioning}
 
 
 @router.post("/sync-cameras")

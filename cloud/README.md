@@ -96,20 +96,22 @@ and Basic-Auth-protects only `/ui/*`. First HTTPS request mints the cert.
 
 ## 4. Set up a house (edge / Jetson)
 
-`edge_id` is provisioned **automatically**: when you verify the operator's email
-in the setup wizard, the app server returns the `edgeId`, and the edge stores it
-in `account.json` **and** writes `EDGE_ID=…` into `edge/infra/env/jetson.env`.
-Copy that value into this house's `frpc.toml`:
+`edge_id` is **fully auto-provisioned**. Install the tunnel once with a
+placeholder; then verifying the operator's email in the setup wizard makes the
+edge read `deviceToken` from the app-server response, save it (`account.json` +
+`EDGE_ID` in `jetson.env`), rewrite `frpc.toml`'s `mediamtx-webrtc` `locations`,
+and restart frpc — no manual copy. (`install_frpc.sh` installs the
+`ceravis-apply-edge-id` helper + a locked-down sudoers rule that lets the app do
+that one privileged step.)
 
 ```bash
 cd ~/ceravis/cloud
 cp frpc.toml.example frpc.toml
 nano frpc.toml
-#   serverAddr    = "EC2_IP"                        (or the domain)
-#   auth.token    = "<the shared secret from step 3>"
-#   both proxies' customDomains = ["edgeai.ceravishealth.in"]
-#   mediamtx-webrtc  locations  = ["/<edge_id>"]    (the EDGE_ID from jetson.env)
-bash install_frpc.sh
+#   serverAddr = "EC2_IP"   auth.token = "<the shared secret from step 3>"
+#   leave mediamtx-webrtc  locations = ["/EDGE_ID"]  # ceravis:edge-id  (auto-filled)
+#   keep the ceravis-ssh block if you manage this house remotely!
+bash install_frpc.sh            # installs frpc + the apply-edge-id helper + sudoers
 sudo systemctl status frpc      # 'start proxy success' for both proxies
 ```
 

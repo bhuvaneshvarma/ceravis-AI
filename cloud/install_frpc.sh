@@ -34,13 +34,24 @@ sudo cp "$HERE/systemd/frpc.service" /etc/systemd/system/frpc.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now frpc
 
+# Privileged helper the edge app uses to apply the edge_id to the tunnel at
+# account verification (integration/edge_provision). Root-owned, plus a NOPASSWD
+# sudoers rule for EXACTLY this one command — so the unprivileged app can update
+# frpc's locations + restart it, and nothing else.
+sudo install -m0755 "$HERE/apply_edge_id.sh" /usr/local/bin/ceravis-apply-edge-id
+SVC_USER="$(grep -oP '^User=\K\S+' /etc/systemd/system/ceravis.service 2>/dev/null || true)"
+SVC_USER="${SVC_USER:-${SUDO_USER:-$USER}}"
+printf '%s ALL=(root) NOPASSWD: /usr/local/bin/ceravis-apply-edge-id\n' "$SVC_USER" \
+    | sudo tee /etc/sudoers.d/ceravis-frpc >/dev/null
+sudo chmod 0440 /etc/sudoers.d/ceravis-frpc
+sudo visudo -cf /etc/sudoers.d/ceravis-frpc >/dev/null \
+    || { echo "WARNING: sudoers rule invalid — removing it"; sudo rm -f /etc/sudoers.d/ceravis-frpc; }
+
 echo
 echo "frpc running. Check:  sudo systemctl status frpc   |   journalctl -u frpc -f"
-echo "A healthy log shows: 'start proxy success' for mediamtx-webrtc."
+echo "Healthy log shows 'start proxy success' for mediamtx-webrtc + ceravis-api."
 echo
-echo "Next: set these in edge/infra/env/jetson.env and restart ceravis —"
-echo "  EDGE_ID=<this house's long unguessable token>   (must match locations= in frpc.toml)"
-echo "  DEVICE_STREAM_BASE=https://<SHARED_DOMAIN>"
-echo "  MEDIAMTX_STUN_SERVER=stun:stun.l.google.com:19302"
-echo "then re-sync cameras so the server stores the new links:"
-echo "  https://<SHARED_DOMAIN>/<EDGE_ID>/<camera>/whep"
+echo "edge_id is applied AUTOMATICALLY now: when you verify the account in the"
+echo "setup wizard, the app writes EDGE_ID to jetson.env and runs"
+echo "ceravis-apply-edge-id (installed above) to set the tunnel's locations and"
+echo "restart frpc — no manual edit. Helper runs as: $SVC_USER"

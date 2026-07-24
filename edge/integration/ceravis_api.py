@@ -9,7 +9,10 @@ server address lives in ONE place (device config) and never in the browser.
 Endpoint used during setup:
     POST {base}/v1/ai/userDetails   body {"email": "..."}
     -> ApiResponse<UserDetailsResponse>
-       { ceravisUserId, firstName, lastName, email, gender, role, tier }
+       { ceravisUserId, firstName, lastName, email, gender, role, tier,
+         deviceToken }
+    deviceToken is this device's edge_id — the fleet routing token used as the
+    first segment of every live link and in cloud/frpc.toml locations.
 A user that exists in the server's DB is what "verifies" the operator; if the
 email isn't found, onboarding is blocked.
 """

@@ -35,7 +35,9 @@ type = "http"
 localIP = "127.0.0.1"
 localPort = 8889                               # MediaMTX WebRTC signaling (WHEP)
 customDomains = ["edgeai.ceravishealth.in"]    # the shared fleet DOMAIN
-locations = ["/EDGE_ID"]                        # this house's edge_id, e.g. /home-9f3c1e
+# Leave the marker comment intact: verifying the account rewrites THIS line
+# automatically (ceravis-apply-edge-id) to the device's real edge_id.
+locations = ["/EDGE_ID"]  # ceravis:edge-id — set automatically at account verify
 
 # Edge API + admin pages — the SAME domain, routed by the /api and /ui path
 # prefixes to the uvicorn app. The API is open (each control request carries the
@@ -45,9 +47,12 @@ locations = ["/EDGE_ID"]                        # this house's edge_id, e.g. /ho
 name = "ceravis-api"
 type = "http"
 localIP = "127.0.0.1"
-localPort = 8000                               # uvicorn (edge API + /ui)
+localPort = 8000                               # uvicorn (edge API + /ui + /stream)
 customDomains = ["edgeai.ceravishealth.in"]
-locations = ["/api", "/ui"]
+# /api = API, /ui = pages (Caddy Basic-Auth), /stream = the live JPEG WebSocket
+# the setup wall + monitor use. /stream flows through EC2 (not P2P) — fine for
+# setup/occasional viewing; the 24x7 remote view is the P2P /<edge_id>/ link.
+locations = ["/api", "/ui", "/stream"]
 
 # ---------------------------------------------------------------------------
 # ⚠ Do NOT tunnel port 80 to the edge for Let's Encrypt. The cloud Caddy runs

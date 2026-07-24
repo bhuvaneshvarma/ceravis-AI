@@ -385,19 +385,52 @@ function renderAccount() {
         <span class="faint">CERAVIS user #${u.ceravisUserId ?? "—"}</span>
       </div></div>`;
 }
+/* Small spinner + a "backend is reachable again" wait, used while the device
+   saves the edge_id and restarts the frp tunnel — which briefly drops a REMOTE
+   session, so we poll until it answers again before letting the operator move on. */
+function startSpinner(el, label) {
+  const frames = ["◐", "◓", "◑", "◒"]; let i = 0;
+  el.innerHTML = `<span class="muted"><span data-sp>◐</span> ${label}</span>`;
+  const sp = el.querySelector("[data-sp]");
+  const t = setInterval(() => { sp.textContent = frames[++i % frames.length]; }, 180);
+  return () => clearInterval(t);
+}
+async function waitForBackend(ms = 40000) {
+  await new Promise(r => setTimeout(r, 2500));         // let the frpc restart begin
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    try { const r = await fetch("/api/v1/account", { cache: "no-store" }); if (r.ok) return true; }
+    catch (_) { /* tunnel blip during restart — keep waiting */ }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return false;
+}
 document.getElementById("a-verify").onclick = async () => {
+  const btn = document.getElementById("a-verify");
   const email = document.getElementById("a-email").value.trim();
   const phone = document.getElementById("a-phone").value.trim();
   const out = document.getElementById("a-out");
   if (!email || !phone)
     return out.innerHTML = `<span class="bad">Email and mobile number are required.</span>`;
+  btn.disabled = true;
   out.innerHTML = `<span class="muted">Verifying…</span>`;
   try {
     const r = await api("/api/v1/account/verify",
       { method: "POST", body: JSON.stringify({ email, phone }) });
     if (r.verified) {
       ACCOUNT.verified = true; ACCOUNT.user = r.user; renderAccount();
-      out.innerHTML = `<span class="ok">✓ Verified</span>`;
+      if (r.provisioning) {
+        // The device is writing the edge_id and restarting the tunnel; if you're
+        // remote that briefly drops this connection, so wait it out.
+        const stop = startSpinner(out, "Verified — provisioning remote access & restarting the tunnel…");
+        const ok = await waitForBackend();
+        stop();
+        out.innerHTML = ok
+          ? `<span class="ok">✓ Verified — remote access ready</span>`
+          : `<span class="warn">✓ Verified — the tunnel is still restarting; wait a few seconds and reload.</span>`;
+      } else {
+        out.innerHTML = `<span class="ok">✓ Verified</span>`;
+      }
       document.getElementById("w-next").style.visibility = "visible";
       toast("Account verified — continue to recipient");
     } else {
@@ -408,6 +441,7 @@ document.getElementById("a-verify").onclick = async () => {
       document.getElementById("w-next").style.visibility = "hidden";
     }
   } catch (e) { out.innerHTML = `<span class="bad">✗ verification failed</span>`; }
+  finally { btn.disabled = false; }
 };
 
 /* ================= STEP 3 — cameras ================= */
