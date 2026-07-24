@@ -134,41 +134,18 @@
           <button class="btn btn-ghost" id="c-probe">Test connection</button>
           <span class="probe-result" id="c-probe-out"></span>
         </div>
-        <div class="grid-2">
-          <div>
-            <label class="f">Camera ID</label>
-            <input type="text" id="c-id" placeholder="cam_kitchen" />
-          </div>
-          <div>
-            <label class="f">Display name</label>
-            <input type="text" id="c-name" placeholder="Kitchen Camera" />
-          </div>
-        </div>
-        <label class="f">Room</label>
-        <input type="text" id="c-room" placeholder="Kitchen" list="room-suggestions" />
-        <datalist id="room-suggestions">
-          <!-- match the CERAVIS CameraName enum so cloud sync maps cleanly -->
-          <option>Kitchen</option><option>Bedroom</option><option>Living Room</option>
-          <option>Lounge</option><option>Live Feed</option>
-        </datalist>
-        <div class="grid-2">
-          <div>
-            <label class="f">Camera number</label>
-            <select id="c-number">
-              <option value="">—</option><option>1</option><option>2</option>
-              <option>3</option><option>4</option>
-            </select>
-          </div>
-          <div>
-            <label class="f">Designation</label>
-            <div style="display:flex;gap:14px;padding-top:9px;font-size:12.5px;color:var(--muted)">
-              <label style="display:flex;gap:6px;align-items:center">
-                <input type="checkbox" id="c-bath" style="width:auto"> * bathroom</label>
-              <label style="display:flex;gap:6px;align-items:center">
-                <input type="checkbox" id="c-egress" style="width:auto"> &amp; main entrance</label>
-            </div>
-          </div>
-        </div>
+        <label class="f">Camera label</label>
+        <select id="c-room">
+          <!-- CERAVIS CameraName enum, in caps — the room IS the camera's identity -->
+          <option value="">— select room —</option>
+          <option>KITCHEN</option>
+          <option>BEDROOM</option>
+          <option>LIVING ROOM</option>
+          <option>LOUNGE</option>
+          <option>LIVE FEED</option>
+        </select>
+        <div class="hint">The room this camera watches. Its id and live link are
+          derived from the label automatically on save.</div>
         <div class="row mt">
           <button class="btn btn-primary" id="c-save">Save &amp; start camera</button>
         </div>
@@ -443,10 +420,8 @@ async function refreshCameras() {
     ? `<tr><td class="faint">No cameras yet — add your first above.</td></tr>`
     : cams.map(c => {
         const s = status[c.camera_id] || {};
-        const sym = (c.has_bathroom_entrance ? "*" : "") + (c.is_main_egress ? "&" : "");
-        const num = c.camera_number ? `Cam ${c.camera_number}${sym} · ` : "";
         return `<tr>
-          <td><b>${c.camera_name}</b><br><span class="faint">${num}${c.camera_id} · ${c.room_name}</span></td>
+          <td><b>${c.room_name}</b><br><span class="faint">${c.camera_id}</span></td>
           <td>${healthPill(s.health_state)}</td>
           <td><button class="btn btn-danger btn-sm" data-del="${c.camera_id}">Remove</button></td>
         </tr>`;
@@ -549,14 +524,8 @@ document.getElementById("d-probe").onclick = async () => {
     const rec = r.record_uri ? "dedicated rec stream ✓" : "rec = main stream";
     out.innerHTML = `<span class="ok">✓ ${r.device.manufacturer || ""} ${r.device.model || ""}
       — ${main ? main.width + "×" + main.height : "?"} · ${rec}${r.ptz ? " · PTZ ✓" : ""}</span>`;
-    // Fill the manual form — the operator only names it and picks the room.
+    // Fill the RTSP URL — the operator only picks the room label.
     document.getElementById("c-url").value = r.main_uri;
-    const slug = (r.device.model || DISC.sel.name || "cam")
-      .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-    if (!document.getElementById("c-id").value)
-      document.getElementById("c-id").value = `cam_${slug}`.slice(0, 24);
-    if (!document.getElementById("c-name").value && (DISC.sel.name || r.device.model))
-      document.getElementById("c-name").value = DISC.sel.name || r.device.model;
   } catch (e) {
     out.innerHTML = `<span class="bad">✗ ${e.detail || "connection failed (credentials?)"}</span>`;
   }
@@ -583,15 +552,11 @@ document.getElementById("c-probe").onclick = async () => {
 };
 
 document.getElementById("c-save").onclick = async () => {
+  // The room label IS the camera. Everything else (id, name, live link) is
+  // derived on the device; onvif details ride along from a discovered camera.
   const cam = {
-    camera_id: document.getElementById("c-id").value.trim(),
-    camera_name: document.getElementById("c-name").value.trim(),
     room_name: document.getElementById("c-room").value.trim(),
     rtsp_url: document.getElementById("c-url").value.trim(),
-    camera_number: document.getElementById("c-number").value
-      ? parseInt(document.getElementById("c-number").value, 10) : null,
-    has_bathroom_entrance: document.getElementById("c-bath").checked,
-    is_main_egress: document.getElementById("c-egress").checked,
     is_enabled: true,
   };
   // Discovered camera: carry the ONVIF details (dedicated ~1080p recording
@@ -604,15 +569,14 @@ document.getElementById("c-save").onclick = async () => {
     cam.onvif_profile_token = DISC.probed.main_profile_token || null;
     cam.ptz_supported = !!DISC.probed.ptz;
   }
-  if (!cam.camera_id || !cam.rtsp_url || !cam.room_name)
-    return toast("Camera ID, room and RTSP URL are required", "err");
+  if (!cam.room_name || !cam.rtsp_url)
+    return toast("Pick a camera label and enter (or test) an RTSP URL", "err");
   try {
-    await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
-    await api(`/api/v1/cameras/${cam.camera_id}/start`, { method: "POST" });
-    toast(`Camera ${cam.camera_id} saved & started`);
-    ["c-url","c-id","c-name","c-room","c-number"].forEach(i => document.getElementById(i).value = "");
-    document.getElementById("c-bath").checked = false;
-    document.getElementById("c-egress").checked = false;
+    const res = await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
+    const cid = (res && res.camera_id) || "";       // id derived server-side
+    if (cid) await api(`/api/v1/cameras/${cid}/start`, { method: "POST" });
+    toast(`${cam.room_name} saved & started`);
+    ["c-url", "c-room"].forEach(i => document.getElementById(i).value = "");
     document.getElementById("c-probe-out").textContent = "";
     DISC.probed = DISC.sel = null;                 // consumed by this save
     document.getElementById("d-creds").hidden = true;
