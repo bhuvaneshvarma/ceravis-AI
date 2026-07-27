@@ -99,7 +99,7 @@ def get_media(recipient_id: str, name: str):
 @router.post("/{recipient_id}/postures/import")
 def import_postures(recipient_id: str):
     """Pull the patient's posture images from the CERAVIS app
-    (POST /v1/ai/getPatientPostures) into this recipient's enrollment folder,
+    (PUT /v1/ai/getPatientPostures) into this recipient's enrollment folder,
     each labeled '<view>/<posture>' (e.g. 'front/standing'), so the SAME
     enrollment worker embeds them alongside any on-device captures — one vector
     per image, added to the gallery.

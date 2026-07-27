@@ -291,7 +291,7 @@ def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str,
 
 def get_patient_postures(user_id) -> list[dict]:
     """
-    POST /v1/ai/getPatientPostures — the patient's enrollment posture images
+    PUT /v1/ai/getPatientPostures — the patient's enrollment posture images
     (captured in the main CERAVIS app). Body: { "userId": <patientUserId> }.
 
     Returns the `data` list: one entry per postureType (STANDING, SITTING, …),
@@ -305,11 +305,11 @@ def get_patient_postures(user_id) -> list[dict]:
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/getPatientPostures"
     request_body = {"userId": user_id}
-    logger.info("getPatientPostures -> POST %s  user=%s", url, user_id)
+    logger.info("getPatientPostures -> PUT %s  user=%s", url, user_id)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=request_body, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = requests.put(url, json=request_body, headers=_headers(),
+                            timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("getPatientPostures: cannot reach %s — %s", url, exc)
         call_log.record("getPatientPostures", False, label=str(user_id),
