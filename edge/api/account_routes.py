@@ -34,6 +34,33 @@ def _stream_base(request: Request) -> str:
     return stream_base(request.headers.get("host") or "localhost")
 
 
+def _cloud_camera(c, base: str) -> dict:
+    """One camera in the app-server saveCamera shape (camelCase) — the FULL
+    cameras.json record, so the cloud mirrors the device exactly. `url` and
+    `webrtcUrl` fall back to a freshly computed live link for a camera saved
+    before links were stored; `room` is normalized to the server CameraName
+    enum (KITCHEN, LIVING_ROOM, …)."""
+    link = c.webrtc_url or webrtc_url(c.camera_id, base)
+    return {
+        "device": c.camera_id,                 # derived from the room (LIVING_ROOM)
+        "model": c.model or "",
+        "supplier": c.supplier or "",
+        "room": room_to_enum(c.room_name),     # -> server CameraName enum
+        "url": link,
+        "rtspUrl": c.rtsp_url,
+        "recordRtspUrl": c.record_rtsp_url or "",
+        "hlsUrl": c.hls_url or "",
+        "onvifXaddr": c.onvif_xaddr or "",
+        "onvifUsername": c.onvif_username or "",
+        "onvifPassword": c.onvif_password or "",
+        "onvifProfileToken": c.onvif_profile_token or "",
+        "onvifPtzToken": c.onvif_ptz_token or "",
+        "ptzSupported": bool(c.ptz_supported),
+        "isEnabled": bool(c.is_enabled),
+        "webrtcUrl": link,
+    }
+
+
 class VerifyRequest(BaseModel):
     email: str
     phone: str | None = None
@@ -101,9 +128,11 @@ def verify(req: VerifyRequest, background_tasks: BackgroundTasks):
 def sync_cameras(request: Request):
     """
     Push every registered camera to the app server for the verified patient:
-    PUT /v1/ai/saveCamera with patientUserId + [{ device, model, supplier,
-    room, url }]. `url` = the camera's WebRTC HTTPS live link (MediaMTX) —
-    sub-second latency, plays natively in any modern browser.
+    PUT /v1/ai/saveCamera with patientUserId + the full per-camera record
+    (device, model, supplier, room, url, rtspUrl, recordRtspUrl, hlsUrl,
+    onvif*, ptzSupported, isEnabled, webrtcUrl — see _cloud_camera). `url`/
+    `webrtcUrl` = the camera's WebRTC HTTPS live link (MediaMTX); the cloud
+    mirrors exactly what cameras.json holds on the device.
     """
     acct = account_config.get()
     pid = acct.get("ceravisUserId")
@@ -125,15 +154,7 @@ def sync_cameras(request: Request):
             label="Live links pushed without EDGE_ID — fleet routing will fail",
             error="set EDGE_ID (the /<edge_id> routing token) in jetson.env, "
                   "restart ceravis, then re-sync cameras")
-    cameras = [{
-        "device": c.camera_id,               # derived from the room (LIVING_ROOM)
-        "model": "",                         # not collected on the edge
-        "supplier": "",                      # not collected on the edge
-        "room": room_to_enum(c.room_name),   # -> server CameraName enum
-        # The link stored on the camera at save time (…/<edge_id>/<ROOM>/);
-        # recompute as a fallback for a camera saved before links existed.
-        "url": c.webrtc_url or webrtc_url(c.camera_id, base),
-    } for c in cams]
+    cameras = [_cloud_camera(c, base) for c in cams]
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
                 len(cameras), pid, [(c["room"], c["url"]) for c in cameras])
 

@@ -10,8 +10,8 @@ import cv2
 from common import clock, event_snapshots
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
+from configuration.account_config import account_recipient
 from configuration.camera_config import CameraConfig
-from configuration.recipient_config import RecipientConfig
 from rules.rule_context import RuleContext
 from schemas.event import Event
 
@@ -48,11 +48,9 @@ class EventEnricher:
         self,
         camera_config: CameraConfig | None = None,
         zone_resolver: ZoneResolver | None = None,
-        recipient_config: RecipientConfig | None = None,
     ) -> None:
         self._cams = camera_config or CameraConfig()
         self._zones = zone_resolver or ZoneResolver()
-        self._recipients = recipient_config or RecipientConfig()
         self._events_root = event_snapshots.events_root()
         self._rest_kw = [k.strip().lower()
                          for k in settings.rest_zone_keywords.split(",") if k.strip()]
@@ -112,18 +110,17 @@ class EventEnricher:
 
     def _recipient_name(self, rid: str | None) -> str | None:
         """Resolve a recipient_id to the saved full name (for snapshot label +
-        alert text). Cached briefly — events are infrequent. Falls back to the
-        id if the name isn't found, and None when there's no recipient."""
+        alert text). The care recipient IS the verified account holder
+        (configuration.account_config.account_recipient) — no recipients.json.
+        Cached briefly; falls back to the id if unresolved, None if no rid."""
         if not rid:
             return None
         now = time.monotonic()
         if now - self._name_cache_at > 10.0:
             try:
-                self._name_cache = {
-                    r.get("recipient_id"): r.get("full_name")
-                    for r in self._recipients.get_all()
-                    if r.get("recipient_id") and r.get("full_name")
-                }
+                r = account_recipient()
+                self._name_cache = ({r["recipient_id"]: r["full_name"]} if r
+                                    else {})
             except Exception:
                 logger.exception("recipient name lookup failed")
             self._name_cache_at = now

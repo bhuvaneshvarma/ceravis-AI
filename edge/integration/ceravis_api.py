@@ -17,6 +17,7 @@ A user that exists in the server's DB is what "verifies" the operator; if the
 email isn't found, onboarding is blocked.
 """
 
+import base64
 import logging
 import re
 import time
@@ -114,9 +115,14 @@ def save_cameras(patient_user_id, cameras: list[dict]):
 
     Body:
         { "patientUserId": <id>,
-          "cameras": [ { device, model, supplier, room, url }, ... ] }
-    `room` is the room name we label; `url` is the camera's WebSocket stream URL.
-    Returns the server's response payload; raises CeravisApiError on failure.
+          "cameras": [ { device, model, supplier, room, url, rtspUrl,
+                         recordRtspUrl, hlsUrl, onvifXaddr, onvifUsername,
+                         onvifPassword, onvifProfileToken, onvifPtzToken,
+                         ptzSupported, isEnabled, webrtcUrl }, ... ] }
+    Each camera dict is the full cameras.json record in the server's camelCase
+    shape (built by account_routes._cloud_camera) — the SAME details we persist
+    on the edge, so the cloud mirrors the device exactly. Returns the server's
+    response payload; raises CeravisApiError on failure.
     """
     if not is_configured():
         raise CeravisApiError(
@@ -262,3 +268,91 @@ def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str,
                     status=resp.status_code, latency_ms=lat,
                     link=call_log.find_link(result))
     return result
+
+
+def get_patient_postures(user_id) -> list[dict]:
+    """
+    POST /v1/ai/getPatientPostures — the patient's enrollment posture images
+    (captured in the main CERAVIS app). Body: { "userId": <patientUserId> }.
+
+    Returns the `data` list: one entry per postureType (STANDING, SITTING, …),
+    each with up to four views — frontView / backView / leftView / rightView —
+    and every view carries a signed `downloadUrl`. Views the patient never
+    uploaded are null. Returns [] when the patient has none (or isn't found), so
+    the enrollment step degrades to on-device capture instead of failing.
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/getPatientPostures"
+    logger.info("getPatientPostures -> POST %s  user=%s", url, user_id)
+    t0 = time.perf_counter()
+    try:
+        resp = requests.post(url, json={"userId": user_id}, headers=_headers(),
+                             timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("getPatientPostures: cannot reach %s — %s", url, exc)
+        call_log.record("getPatientPostures", False, label=str(user_id),
+                        error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
+    logger.info("getPatientPostures <- HTTP %s", resp.status_code)
+    call_log.record("getPatientPostures", resp.status_code < 400,
+                    label=str(user_id), status=resp.status_code, latency_ms=lat)
+    if resp.status_code == 404:
+        return []
+    if resp.status_code >= 400:
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+    try:
+        data = _unwrap(resp.json())
+    except ValueError as exc:
+        raise CeravisApiError("app server returned non-JSON") from exc
+    return data if isinstance(data, list) else []
+
+
+def upload_embedding_file(file_category: str, user_id, file_name: str,
+                          file_bytes: bytes):
+    """
+    PUT /v1/ai/uploadEmbeddingFile — store one generated artifact against the
+    patient in the cloud so it survives a device reflash / follows the account.
+    Body: { fileCategory, userId, fileName, fileBytes }.
+      fileCategory : "EMBEDDING" (a recipient's .npy of ReID vectors) or
+                     "ZONING" (the room zones.json)
+      fileBytes    : the raw file, base64-encoded (no data-URI prefix)
+    Returns the server payload; raises CeravisApiError on failure.
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/uploadEmbeddingFile"
+    payload = {
+        "fileCategory": file_category,
+        "userId": user_id,
+        "fileName": file_name,
+        "fileBytes": base64.b64encode(file_bytes).decode("ascii"),
+    }
+    label = f"{file_category} {file_name} ({len(file_bytes)} B)"
+    logger.info("uploadEmbeddingFile -> PUT %s  user=%s  %s", url, user_id, label)
+    t0 = time.perf_counter()
+    try:
+        resp = requests.put(url, json=payload, headers=_headers(),
+                            timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("uploadEmbeddingFile: cannot reach %s — %s", url, exc)
+        call_log.record("uploadEmbeddingFile", False, label=label, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
+    logger.info("uploadEmbeddingFile <- HTTP %s  body=%s",
+                resp.status_code, resp.text[:200])
+    call_log.record("uploadEmbeddingFile", resp.status_code < 400, label=label,
+                    status=resp.status_code, latency_ms=lat)
+    if resp.status_code >= 400:
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+    try:
+        return _unwrap(resp.json())
+    except ValueError:
+        return True

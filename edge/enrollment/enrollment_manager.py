@@ -62,6 +62,19 @@ class EnrollmentManager:
         path.write_bytes(data)
         return path
 
+    def import_photo(self, recipient_id: str, name: str, data: bytes) -> Path:
+        """Save an externally-sourced photo (e.g. a cloud posture image) under a
+        STABLE basename, so re-importing the same source overwrites in place
+        instead of piling up duplicates. Path-traversal safe."""
+        root = self.create_recipient_folder(recipient_id)
+        path = root / "photos" / Path(name).name
+        path.write_bytes(data)
+        return path
+
+    def has_photo(self, recipient_id: str, name: str) -> bool:
+        root = self.get_recipient_folder(recipient_id)
+        return bool(root and (root / "photos" / Path(name).name).exists())
+
     def save_video(self, recipient_id: str, data: bytes, ext: str = "mp4") -> Path:
         root = self.create_recipient_folder(recipient_id)
         name = f"{int(time.time() * 1000)}.{ext.lstrip('.').lower()}"

@@ -157,6 +157,7 @@ class EnrollmentWorker:
         # Keep a few small JPEG crops of the person for future reference.
         refs = self._mgr.save_reference_crops(recipient_id, good_crops)
         self._rebuild_gallery()
+        self._upload_embeddings(recipient_id)
         self._mgr.set_status(recipient_id, state="ready", photos=len(crops),
                              embeddings=len(embeddings), references=refs,
                              message=f"enrolled — {len(embeddings)} embeddings, "
@@ -250,6 +251,35 @@ class EnrollmentWorker:
             resumed += 1
         if resumed:
             logger.info("enroll: re-queued %d pending recipient(s)", resumed)
+
+    # ---- cloud sync --------------------------------------------------
+    def _upload_embeddings(self, recipient_id: str) -> None:
+        """Best-effort: PUT this recipient's embeddings .npy to the app server
+        (uploadEmbeddingFile, fileCategory EMBEDDING) so the ReID vectors follow
+        the patient's account and survive a device reflash. Runs on the worker
+        thread, so it never blocks or fails enrollment — a transport error is
+        logged and dropped. The whole (K×dim) matrix is sent, not a summary."""
+        try:
+            from integration.ceravis_api import (is_configured,
+                                                 upload_embedding_file)
+            if not is_configured():
+                return
+            # recipient_id is 'ceravis-<patientUserId>' (account_recipient) — use
+            # that numeric id as the cloud userId, else fall back to the account.
+            pid = None
+            if recipient_id.startswith("ceravis-"):
+                tail = recipient_id.split("-", 1)[1]
+                pid = int(tail) if tail.isdigit() else tail
+            if not pid:
+                from configuration.account_config import patient_user_id
+                pid = patient_user_id()
+            f = self._mgr.base_path / recipient_id / "body" / "embeddings.npy"
+            if not pid or not f.exists():
+                return
+            upload_embedding_file("EMBEDDING", pid, f"{recipient_id}.npy",
+                                  f.read_bytes())
+        except Exception:
+            logger.warning("enroll: embedding upload failed for %s", recipient_id)
 
     # ---- gallery -----------------------------------------------------
     def _rebuild_gallery(self) -> None:

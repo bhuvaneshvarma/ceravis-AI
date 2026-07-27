@@ -25,6 +25,13 @@ class Camera(BaseModel):
     # transport are auto-detected — no per-camera tuning fields.
     rtsp_url: str
 
+    # Hardware descriptors, part of the app-server saveCamera shape. Not
+    # collected on the edge today (left blank), but kept on the model so
+    # cameras.json and the cloud payload carry the full record when a future
+    # setup step or ONVIF probe fills them in.
+    model: str = ""
+    supplier: str = ""
+
     # Recording-only stream: the camera's SECOND ONVIF profile, standardized to
     # ~1080p by discovery when supported. None = record the main stream as-is.
     # The main stream (AI + live links) is never modified.

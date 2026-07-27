@@ -801,22 +801,13 @@ async function initRecipient() {
   refreshRecipients();
 }
 async function ensureRecipient(u) {
-  // Register the verified account as this device's care recipient (once).
+  // The care recipient IS the verified account (there's no separate recipients
+  // store) — just make sure their on-device enrollment folder exists. Identity
+  // comes from account.json, so no body is sent.
   const rid = "ceravis-" + u.ceravisUserId;
   pendingEnrollRid = pendingEnrollRid || rid;       // enroll this one at the final step
-  try {
-    const list = await api("/api/v1/recipients").catch(() => []);
-    if (list.some(r => r.recipient_id === rid)) return;
-    let dev = "";
-    try { dev = (await api("/health")).device_id || ""; } catch {}
-    await api("/api/v1/recipients", { method: "POST", body: JSON.stringify({
-      recipient_id: rid,
-      full_name: [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email,
-      is_primary_recipient: true,
-      device_id: dev,
-    }) });
-    toast("Care recipient profile created");
-  } catch (e) { /* exists already / save failed — non-fatal */ }
+  try { await api("/api/v1/recipients", { method: "POST" }); }
+  catch (e) { /* not verified yet / non-fatal */ }
 }
 
 const ENROLL_PILL = {
@@ -1069,6 +1060,13 @@ async function initEnroll() {
     if (cur) cur.textContent = "No recipient yet — add one in the Recipient step.";
     return;
   }
+  // Pull the patient's posture images from the app (getPatientPostures) so they
+  // appear as enrollment frames to embed. Best-effort — on-device capture still
+  // works if the account has no cloud postures.
+  try {
+    const r = await api(`/api/v1/recipients/${rid}/postures/import`, { method: "POST" });
+    if (r && r.imported) toast(`${r.imported} posture image(s) loaded from your account`);
+  } catch (e) { /* no cloud postures / offline — non-fatal */ }
   const list = await api("/api/v1/recipients").catch(() => []);
   const rec = list.find(r => r.recipient_id === rid);
   selectEnroll(rid, rec && rec.full_name);
