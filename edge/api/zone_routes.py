@@ -24,11 +24,11 @@ def _upload_zones() -> None:
         from integration.ceravis_api import is_configured, upload_embedding_file
         if not is_configured():
             return
-        pid = patient_user_id()
+        pid = patient_user_id()               # = ceravisUserId (the account)
         if not pid:
             return
         data = json.dumps(zone_config.get_all(), indent=2).encode("utf-8")
-        upload_embedding_file("ZONING", pid, "zones.json", data)
+        upload_embedding_file("ZONING", pid, f"zones_{pid}.json", data)
     except Exception:
         logger.warning("zones upload failed", exc_info=True)
 

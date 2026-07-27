@@ -260,24 +260,16 @@ class EnrollmentWorker:
         thread, so it never blocks or fails enrollment — a transport error is
         logged and dropped. The whole (K×dim) matrix is sent, not a summary."""
         try:
+            from configuration.account_config import patient_user_id
             from integration.ceravis_api import (is_configured,
                                                  upload_embedding_file)
             if not is_configured():
                 return
-            # recipient_id is 'ceravis-<patientUserId>' (account_recipient) — use
-            # that numeric id as the cloud userId, else fall back to the account.
-            pid = None
-            if recipient_id.startswith("ceravis-"):
-                tail = recipient_id.split("-", 1)[1]
-                pid = int(tail) if tail.isdigit() else tail
-            if not pid:
-                from configuration.account_config import patient_user_id
-                pid = patient_user_id()
+            pid = patient_user_id()               # = ceravisUserId (the account)
             f = self._mgr.base_path / recipient_id / "body" / "embeddings.npy"
             if not pid or not f.exists():
                 return
-            upload_embedding_file("EMBEDDING", pid, f"{recipient_id}.npy",
-                                  f.read_bytes())
+            upload_embedding_file("EMBEDDING", pid, f"{pid}.npy", f.read_bytes())
         except Exception:
             logger.warning("enroll: embedding upload failed for %s", recipient_id)
 

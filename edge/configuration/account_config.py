@@ -47,10 +47,10 @@ def account_recipient() -> dict | None:
     """The ONE care recipient this device serves: the verified account holder.
 
     This is the unification of the old recipients.json into account.json —
-    there is no separate recipient store. `recipient_id` keys the enrollment
-    media/embeddings on disk AND maps to the cloud patient (patient_user_id =
-    ceravisUserId), so a person's vectors upload against their own account.
-    None until the account is verified."""
+    there is no separate recipient store. The identifier is the account's own
+    `ceravisUserId` used verbatim (= the cloud patientUserId): it keys the
+    enrollment media/embeddings on disk AND is the userId every /v1/ai/* upload
+    carries — no derived/prefixed key. None until the account is verified."""
     acct = AccountConfig().get()
     pid = acct.get("ceravisUserId")
     if not pid:
@@ -58,7 +58,7 @@ def account_recipient() -> dict | None:
     name = " ".join(str(x) for x in (acct.get("firstName"),
                                      acct.get("lastName")) if x)
     return {
-        "recipient_id": f"ceravis-{pid}",
+        "recipient_id": str(pid),                 # = ceravisUserId, verbatim
         "full_name": name or acct.get("email") or f"Patient {pid}",
         "is_primary_recipient": True,
         "patient_user_id": pid,

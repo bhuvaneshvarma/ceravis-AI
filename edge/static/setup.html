@@ -804,7 +804,7 @@ async function ensureRecipient(u) {
   // The care recipient IS the verified account (there's no separate recipients
   // store) — just make sure their on-device enrollment folder exists. Identity
   // comes from account.json, so no body is sent.
-  const rid = "ceravis-" + u.ceravisUserId;
+  const rid = String(u.ceravisUserId);              // the account's own id, verbatim
   pendingEnrollRid = pendingEnrollRid || rid;       // enroll this one at the final step
   try { await api("/api/v1/recipients", { method: "POST" }); }
   catch (e) { /* not verified yet / non-fatal */ }
