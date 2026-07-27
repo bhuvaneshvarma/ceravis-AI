@@ -18,9 +18,12 @@ email isn't found, onboarding is blocked.
 """
 
 import base64
+import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -29,6 +32,22 @@ from integration import call_log
 
 
 logger = logging.getLogger("integration")
+
+_EDGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _dump_debug(filename: str, record: dict) -> None:
+    """Append one request/response record to data/<filename> (JSON line) for
+    manual inspection. Best-effort — a logging hiccup never affects the call."""
+    try:
+        base = settings.data_path
+        base = base if base.is_absolute() else (_EDGE_ROOT / base)
+        base.mkdir(parents=True, exist_ok=True)
+        record = {"ts": datetime.now(timezone.utc).isoformat(), **record}
+        with (base / filename).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.warning("debug dump to %s failed", filename)
 
 
 # The app server's fixed CameraName enum — `room` must be one of these exactly.
@@ -285,21 +304,30 @@ def get_patient_postures(user_id) -> list[dict]:
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/getPatientPostures"
+    request_body = {"userId": user_id}
     logger.info("getPatientPostures -> POST %s  user=%s", url, user_id)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json={"userId": user_id}, headers=_headers(),
+        resp = requests.post(url, json=request_body, headers=_headers(),
                              timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("getPatientPostures: cannot reach %s — %s", url, exc)
         call_log.record("getPatientPostures", False, label=str(user_id),
                         error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
+        # Persist the failed hit too, so "did it even fire?" is answerable.
+        _dump_debug("getpatientpostures_debug.jsonl",
+                    {"url": url, "request": request_body, "error": str(exc)})
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("getPatientPostures <- HTTP %s", resp.status_code)
     call_log.record("getPatientPostures", resp.status_code < 400,
                     label=str(user_id), status=resp.status_code, latency_ms=lat)
+    # Every hit — request body + full raw response — to a separate file the
+    # operator inspects manually (data/getpatientpostures_debug.jsonl).
+    _dump_debug("getpatientpostures_debug.jsonl",
+                {"url": url, "request": request_body,
+                 "http_status": resp.status_code, "response": resp.text})
     if resp.status_code == 404:
         return []
     if resp.status_code >= 400:

@@ -261,9 +261,12 @@ async function pollCloud() {
   CS.lastTs = calls[0].ts;
 
   const epCls = e => e === "saveAlert" ? "alert"
-    : e === "saveSnapshot" ? "snap" : e === "event" ? "evt" : "cam";
+    : e === "saveSnapshot" ? "snap" : e === "event" ? "evt"
+    : (e === "ptz" || e === "playback" || e === "timeline") ? "evt" : "cam";
   const epTxt = e => ({ saveAlert: "ALERT", saveSnapshot: "SNAPSHOT",
-    saveCamera: "CAMERA", userDetails: "ACCOUNT", event: "EVENT" }[e]
+    saveCamera: "CAMERA", userDetails: "ACCOUNT", event: "EVENT",
+    getPatientPostures: "POSTURES", uploadEmbeddingFile: "UPLOAD",
+    ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE" }[e]
     || (e || "?").toUpperCase());
   // Pipeline detections aren't HTTP calls — word their status accordingly.
   const okTxt = c => c.endpoint === "event"

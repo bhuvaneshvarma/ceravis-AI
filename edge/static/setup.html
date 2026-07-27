@@ -348,11 +348,26 @@ function show(n) {
   if (step === 5) initEnroll();
 }
 document.getElementById("w-back").onclick = () => show(step - 1);
-document.getElementById("w-next").onclick = () => {
+document.getElementById("w-next").onclick = async () => {
   if (step === 1 && !ACCOUNT.verified) return toast("Verify your account first", "err");
   if (step === 3 && ACCOUNT.verified) syncCameras(false);   // push cameras on the way out
+  // Leaving Room zones: write the ONE consolidated zones file to the cloud.
+  // (The posture images are then pulled as the Enrollment step opens.)
+  if (step === 4 && ACCOUNT.verified) await finalizeZones();
   show(step + 1);
 };
+
+/* Continue from Room zones -> upload the single consolidated zones_<id>.json
+   (all cameras). Best-effort: a cloud hiccup never blocks leaving the step. */
+async function finalizeZones() {
+  try {
+    const z = await api("/api/v1/zones/finalize", { method: "POST" });
+    if (z && z.uploaded)
+      toast(`Zones saved to your account · ${z.cameras} camera(s), ${z.zones} zone(s)`);
+    else if (z && z.reason)
+      toast(`Zones not uploaded: ${z.reason}`, "err");
+  } catch (e) { /* non-fatal */ }
+}
 
 /* ================= STEP 1 — account verification ================= */
 const ACCOUNT = { verified: false, user: null };
@@ -1061,12 +1076,16 @@ async function initEnroll() {
     return;
   }
   // Pull the patient's posture images from the app (getPatientPostures) so they
-  // appear as enrollment frames to embed. Best-effort — on-device capture still
+  // appear as enrollment frames to embed. Always reports the outcome so it's
+  // clear whether the call fired and what it found. On-device capture still
   // works if the account has no cloud postures.
   try {
     const r = await api(`/api/v1/recipients/${rid}/postures/import`, { method: "POST" });
-    if (r && r.imported) toast(`${r.imported} posture image(s) loaded from your account`);
-  } catch (e) { /* no cloud postures / offline — non-fatal */ }
+    const got = r ? (r.imported || 0) + (r.skipped || 0) : 0;
+    toast(got
+      ? `${got} posture image(s) from your account (${r.imported || 0} new)`
+      : "No posture images found for this patient in the app");
+  } catch (e) { toast("Could not fetch posture images from the app", "err"); }
   const list = await api("/api/v1/recipients").catch(() => []);
   const rec = list.find(r => r.recipient_id === rid);
   selectEnroll(rid, rec && rec.full_name);

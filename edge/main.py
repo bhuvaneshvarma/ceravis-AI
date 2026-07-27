@@ -31,11 +31,34 @@ logging.basicConfig(
 logger = logging.getLogger("ceravis")
 
 
+def _apply_edge_id_on_boot() -> None:
+    """(Re)apply this device's edge_id to the frp tunnel on startup, so a
+    `systemctl restart ceravis` reliably points frpc at the LATEST verified
+    device token (from account.json / jetson.env). Runs in a daemon thread — the
+    privileged helper restarts frpc, which must not block the API coming up.
+    Best-effort: no account or no installed helper just logs (see
+    integration.edge_provision — install it with `bash cloud/install_frpc.sh`)."""
+    def _run():
+        try:
+            from configuration.account_config import effective_edge_id
+            from integration.edge_provision import apply_edge_id
+            eid = effective_edge_id()
+            if eid:
+                logger.info("boot: applying edge_id %s to frpc", eid)
+                apply_edge_id(eid)
+        except Exception:
+            logger.warning("edge_id boot-apply skipped", exc_info=True)
+
+    import threading
+    threading.Thread(target=_run, daemon=True, name="edge-id-boot").start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pipeline = Pipeline()
     pipeline.start()
     pipeline.attach(app.state)
+    _apply_edge_id_on_boot()          # sync frpc to the account's edge_id
     logger.info("CERAVIS edge ready")
     yield
     pipeline.stop()
@@ -52,33 +75,40 @@ app.add_middleware(
 )
 
 
-# Paths that would flood or loop the monitor console — skipped from the log.
-_LOG_SKIP = {"/api/v1/cloud/activity",        # the console reading itself
-             "/api/v1/cameras/status",        # camera-dot poll (~20 s)
-             "/api/v1/system/status",         # backbone poll
-             "/api/v1/recordings/state"}       # recording-switch poll
+def _inbound_endpoint(path: str) -> str | None:
+    """Classify an inbound request into the ONLY kinds the Cloud Sync Console
+    shows — the endpoints the app.ceravishealth.in backend calls on THIS device.
+    Everything else (local UI CRUD, status polls, HLS segment fetches) returns
+    None and is never logged, so the console stays a clean cloud-only view. PTZ
+    is handled here too even though camera_routes logs it with richer detail —
+    the label check keeps it a single entry."""
+    if path.endswith("/timeline"):
+        return "timeline"
+    if "/playback" in path:
+        return "playback"
+    return None
 
 
 @app.middleware("http")
 async def _log_inbound_calls(request, call_next):
-    """Mirror every inbound API hit into the monitor's Cloud Sync Console, so it
-    shows BOTH directions: the edge's calls OUT to ceravishealth.in
-    (userDetails / saveCamera / saveAlert / saveSnapshot, logged by the client)
-    AND anyone hitting THIS device on the edgeai domain (PTZ, playback, camera
-    CRUD, account, …). High-frequency polls, HLS segment fetches and PTZ (logged
-    with richer detail) are skipped so the console stays readable."""
+    """Mirror ONLY the backend-facing inbound calls into the monitor's Cloud Sync
+    Console: the recording endpoints app.ceravishealth.in hits (playback,
+    timeline). PTZ is logged with richer detail by camera_routes; the edge's
+    OUTBOUND calls to ceravishealth.in (userDetails / saveCamera / saveAlert /
+    saveSnapshot / getPatientPostures / uploadEmbeddingFile) are logged by the
+    API client. All other inbound traffic is intentionally NOT logged."""
     t0 = time.perf_counter()
     response = await call_next(request)
-    path = request.url.path
-    if (request.method != "OPTIONS" and path.startswith("/api/v1/")
-            and path not in _LOG_SKIP and "/segment/" not in path
-            and not path.endswith("/ptz")):
+    if request.method == "OPTIONS":
+        return response
+    endpoint = _inbound_endpoint(request.url.path)
+    if endpoint:
         try:
             from integration import call_log
-            call_log.record("api", 200 <= response.status_code < 400,
+            call_log.record(endpoint, 200 <= response.status_code < 400,
                             status=response.status_code,
                             latency_ms=(time.perf_counter() - t0) * 1000,
-                            label=f"{request.method} {path}")
+                            label=f"{request.method} {request.url.path}")
         except Exception:
             pass
     return response
