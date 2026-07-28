@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from threading import RLock
 
 import numpy as np
 
+from common import clock
 from ingestion.frame_data import FrameData
 
 
@@ -62,8 +63,9 @@ class FrameBuffer:
         frame = self.get(camera_id)
         if frame is None:
             return True
-        now = datetime.now(timezone.utc)
-        age = (now - frame.timestamp).total_seconds()
+        # frame.timestamp is tz-aware (common.clock); aware-minus-aware is offset-
+        # correct even if a caller ever stamped one in UTC.
+        age = (clock.now() - frame.timestamp).total_seconds()
         return age > max_age_secs
 
     def clear(self, camera_id: str) -> None:

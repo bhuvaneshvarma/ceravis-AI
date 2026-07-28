@@ -76,25 +76,28 @@ def _normalize_urls(camera: Camera) -> None:
 
 
 def _enrich_device_info(camera: Camera) -> None:
-    """Best-effort: fill the camera's hardware descriptors (supplier=manufacturer,
-    model=model) from its ONVIF GetDeviceInformation when they're blank and ONVIF
-    creds exist — so the saveCamera record carries the real make/model without
-    the operator typing them. Runs ONLY when a field is missing (once filled, a
-    re-save skips the SOAP call) and NEVER fails the save: a manual camera (no
-    ONVIF) or one unreachable right now just keeps the blank fields.
+    """Best-effort: fill the camera's hardware descriptors from its ONVIF
+    GetDeviceInformation when blank and ONVIF creds exist — so the saveCamera
+    record carries the real make/model/serial without the operator typing them.
+    Runs ONLY when something is missing (once filled, a re-save skips the SOAP
+    call) and NEVER fails the save: a manual camera (no ONVIF) or one unreachable
+    right now just keeps the blank fields.
 
-    `device` is intentionally NOT set from ONVIF — GetDeviceInformation has no
-    friendly device name; the edge keeps camera_id (the room) as `device`."""
-    if not camera.onvif_xaddr or (camera.model and camera.supplier):
+    Cloud mapping (see account_routes._cloud_camera): device <- manufacturer,
+    model <- model, supplier <- serial."""
+    if not camera.onvif_xaddr or (camera.manufacturer and camera.model
+                                  and camera.serial):
         return
     try:
         from onvif.client import OnvifCamera
         info = OnvifCamera(camera.onvif_xaddr, camera.onvif_username or "",
                            camera.onvif_password or "").device_info()
-        camera.supplier = camera.supplier or info.get("manufacturer", "")
+        camera.manufacturer = camera.manufacturer or info.get("manufacturer", "")
         camera.model = camera.model or info.get("model", "")
-        logger.info("device-info enriched %s: supplier=%r model=%r",
-                    camera.camera_id, camera.supplier, camera.model)
+        camera.serial = camera.serial or info.get("serial", "")
+        logger.info("device-info enriched %s: manufacturer=%r model=%r serial=%r",
+                    camera.camera_id, camera.manufacturer, camera.model,
+                    camera.serial)
     except Exception as exc:                      # noqa: BLE001 — never fail a save
         logger.info("device-info enrich skipped for %s: %s",
                     camera.camera_id, exc)

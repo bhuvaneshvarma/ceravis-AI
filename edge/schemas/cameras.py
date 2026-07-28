@@ -25,12 +25,14 @@ class Camera(BaseModel):
     # transport are auto-detected — no per-camera tuning fields.
     rtsp_url: str
 
-    # Hardware descriptors, part of the app-server saveCamera shape. Not
-    # collected on the edge today (left blank), but kept on the model so
-    # cameras.json and the cloud payload carry the full record when a future
-    # setup step or ONVIF probe fills them in.
+    # Hardware descriptors, filled best-effort from the camera's ONVIF
+    # GetDeviceInformation on save (camera_routes._enrich_device_info). They map
+    # onto the app-server saveCamera shape as: device <- manufacturer,
+    # model <- model, supplier <- serial (the `supplier` KEY carries the serial
+    # number; the backend will rename that key to serialNumber later).
+    manufacturer: str = ""
     model: str = ""
-    supplier: str = ""
+    serial: str = ""
 
     # Recording-only stream: the camera's SECOND ONVIF profile, standardized to
     # ~1080p by discovery when supported. None = record the main stream as-is.

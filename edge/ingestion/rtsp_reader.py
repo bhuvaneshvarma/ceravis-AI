@@ -21,10 +21,10 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
 
 import cv2
 
+from common import clock
 from config.settings import settings
 from ingestion.camera_status import CameraHealthState
 from ingestion.frame_buffer import FrameBuffer
@@ -236,7 +236,14 @@ class RTSPReader:
 
                 self._frame_id += 1
                 self._frames_captured += 1
-                self._last_frame_time = datetime.now(timezone.utc)
+                # Stamp on the ONE edge clock (common.clock, device-local and
+                # tz-aware) — the same clock alerts/snapshots/recordings use and
+                # that the camera OSD is NTP-disciplined to, so a frame's time
+                # reads the same everywhere. This is the frame ARRIVAL instant;
+                # the true CAPTURE instant is earlier by the (LAN, ~tens of ms)
+                # transport delay, which is below one frame interval and cannot be
+                # recovered from OpenCV (no RTP/RTCP capture time is exposed).
+                self._last_frame_time = clock.now()
                 self._update_fps()
                 self._frame_buffer.update(
                     camera_id=self.camera_id, frame=frame,

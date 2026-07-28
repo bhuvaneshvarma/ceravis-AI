@@ -42,9 +42,12 @@ def _cloud_camera(c, base: str) -> dict:
     enum (KITCHEN, LIVING_ROOM, …)."""
     link = c.webrtc_url or webrtc_url(c.camera_id, base)
     return {
-        "device": c.camera_id,                 # derived from the room (LIVING_ROOM)
-        "model": c.model or "",
-        "supplier": c.supplier or "",
+        # device/model/supplier come from the camera's ONVIF GetDeviceInformation
+        # (filled on save). `supplier` carries the SERIAL number — the backend
+        # renames that key to serialNumber later.
+        "device": c.manufacturer or "",        # ONVIF manufacturer (e.g. Hikvision)
+        "model": c.model or "",                # ONVIF model
+        "supplier": c.serial or "",            # ONVIF serial number
         "room": room_to_enum(c.room_name),     # -> server CameraName enum
         "url": link,
         "rtspUrl": c.rtsp_url,
