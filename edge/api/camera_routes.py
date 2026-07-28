@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from api.control_auth import check_edge_id
+from common import clock
 from common.rtsp import normalize_rtsp_url
 from config.settings import settings
 from configuration.account_config import effective_edge_id
@@ -74,6 +75,31 @@ def _normalize_urls(camera: Camera) -> None:
         camera.record_rtsp_url = normalize_rtsp_url(camera.record_rtsp_url)
 
 
+def _enrich_device_info(camera: Camera) -> None:
+    """Best-effort: fill the camera's hardware descriptors (supplier=manufacturer,
+    model=model) from its ONVIF GetDeviceInformation when they're blank and ONVIF
+    creds exist — so the saveCamera record carries the real make/model without
+    the operator typing them. Runs ONLY when a field is missing (once filled, a
+    re-save skips the SOAP call) and NEVER fails the save: a manual camera (no
+    ONVIF) or one unreachable right now just keeps the blank fields.
+
+    `device` is intentionally NOT set from ONVIF — GetDeviceInformation has no
+    friendly device name; the edge keeps camera_id (the room) as `device`."""
+    if not camera.onvif_xaddr or (camera.model and camera.supplier):
+        return
+    try:
+        from onvif.client import OnvifCamera
+        info = OnvifCamera(camera.onvif_xaddr, camera.onvif_username or "",
+                           camera.onvif_password or "").device_info()
+        camera.supplier = camera.supplier or info.get("manufacturer", "")
+        camera.model = camera.model or info.get("model", "")
+        logger.info("device-info enriched %s: supplier=%r model=%r",
+                    camera.camera_id, camera.supplier, camera.model)
+    except Exception as exc:                      # noqa: BLE001 — never fail a save
+        logger.info("device-info enrich skipped for %s: %s",
+                    camera.camera_id, exc)
+
+
 def _set_links(request: Request, camera: Camera) -> None:
     """Compute + store the camera's public live link so cameras.json and the
     app-server sync share ONE canonical value. webrtc_url points at the MediaMTX
@@ -89,6 +115,7 @@ def create_camera(camera: Camera, request: Request):
     if camera_config.get_by_id(camera.camera_id):
         raise HTTPException(409, f"Camera exists: {camera.camera_id}")
     _normalize_urls(camera)
+    _enrich_device_info(camera)
     _set_links(request, camera)
     camera_config.add(camera)
     _mtx_sync(request, camera)
@@ -247,6 +274,7 @@ def get_camera(camera_id: str):
 @router.put("/{camera_id}")
 def update_camera(camera_id: str, camera: Camera, request: Request):
     _normalize_urls(camera)
+    _enrich_device_info(camera)
     _set_links(request, camera)
     if not camera_config.update(camera_id, camera):
         raise HTTPException(404, "Camera not found")
@@ -318,6 +346,42 @@ def latest_snapshot(camera_id: str, request: Request, quality: int = 80):
     if not ok:
         raise HTTPException(500, "Encode failed")
     return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+
+@router.get("/{camera_id}/time")
+def camera_time(camera_id: str):
+    """Compare the camera's OWN clock (ONVIF GetSystemDateAndTime) with the edge
+    clock. The camera burns its clock into the video as the OSD timestamp, while
+    a snapshot's reported time comes from the EDGE clock — so a large skew means
+    the two won't line up. This is the diagnostic to confirm they do (both should
+    track the same NTP source). Read-only, unauthenticated ONVIF call."""
+    cam = camera_config.get_by_id(camera_id)
+    if cam is None:
+        raise HTTPException(404, "Camera not found")
+    if not cam.onvif_xaddr:
+        raise HTTPException(400, "Camera has no ONVIF endpoint (added manually) — "
+                                 "no camera clock to read")
+    from onvif.client import OnvifCamera
+    from onvif.soap import OnvifError
+    edge = clock.now()
+    try:
+        cam_utc = OnvifCamera(cam.onvif_xaddr, cam.onvif_username or "",
+                              cam.onvif_password or "").system_datetime()
+    except OnvifError as exc:
+        raise HTTPException(502, f"could not read camera clock: {exc}")
+    skew = (edge - cam_utc).total_seconds()       # aware subtraction, tz-correct
+    return {
+        "cameraId": camera_id,
+        "edgeTime": edge.isoformat(),
+        "cameraTime": cam_utc.astimezone(clock.local_tz()).isoformat(),
+        "skewSeconds": round(skew, 3),
+        "skewMs": round(skew * 1000),
+        "inSync": abs(skew) <= 2.0,
+        "note": ("edge is ahead of the camera" if skew > 0 else
+                 "camera is ahead of the edge" if skew < 0 else "aligned")
+                + " — the OSD burned into frames follows the CAMERA clock; keep "
+                  "both on the same NTP server so snapshot timestamps match it",
+    }
 
 
 @router.post("/{camera_id}/ptz")

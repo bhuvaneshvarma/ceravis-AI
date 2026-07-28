@@ -12,10 +12,11 @@ those files. Nothing is re-cut, re-encoded or duplicated for playback.
                                                      retention window (scrub bar)
     GET /api/v1/recordings/{camera}/playback.m3u8 -> HLS-VOD playlist over the
         ?ts=<ISO8601>                                STORED segments (seekable)
-    GET /api/v1/recordings/{camera}/snapshot      -> ONE JPEG still — live now,
-        ?ts=<ISO8601>&quality=                       or a frame-accurate still at
-                                                     a past instant (photo twin
-                                                     of the playlist)
+    GET /api/v1/recordings/{camera}/snapshot      -> ONE still (base64 JSON, or
+        ?ts=<ISO8601>&quality=&format=jpeg           ?format=jpeg) — live now, or
+                                                     a frame-accurate still at a
+                                                     past instant (photo twin of
+                                                     the playlist)
     GET /api/v1/recordings/{camera}/segment/{file} -> one stored segment, as-is
 
 Plus the monitor's recording on/off switch:
@@ -30,11 +31,12 @@ EITHER the camera_id OR the same CameraName label PTZ takes (KITCHEN, LIVING_ROO
 value is edge-local time (common.clock).
 """
 
+import base64
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from api.control_auth import check_edge_id
 from common import clock
@@ -164,25 +166,25 @@ def _parse_ts(ts: str) -> datetime:
 @router.get("/{camera}/snapshot")
 def recording_snapshot_endpoint(camera: str, request: Request,
                                 edge_id: str | None = None,
-                                ts: str | None = None, quality: int = 80):
-    """A single JPEG still of one camera, for the mobile / cloud live view that
-    can't grab a frame from its WebRTC player.
+                                ts: str | None = None, quality: int = 80,
+                                format: str = "base64"):
+    """A single still of one camera, for the mobile / cloud live view that can't
+    grab a frame from its WebRTC player.
 
         GET /api/v1/recordings/{camera}/snapshot?edge_id=<id>          -> now
         GET /api/v1/recordings/{camera}/snapshot?edge_id=<id>&ts=<ISO> -> that instant
 
     No `ts` (or a `ts` at ~now): the freshest LIVE frame — buffered when fresh
     (instant), else a one-shot grab off the backbone. A past `ts`: a frame-
-    accurate still decoded from the recorded segment covering it (exact time
-    match within the retention window; 404 where no footage exists).
+    accurate still decoded from the recorded segment covering it — the returned
+    `timestamp` IS the requested one (exact match within the retention window;
+    404 where no footage exists).
 
-    The instant the returned frame actually represents — on the SAME device
-    clock the camera OSD is disciplined to — is reported back in headers so the
-    caller can label the photo without trusting the pixels:
-        X-Snapshot-Time    the frame's real instant (ISO-8601, local offset)
-        X-Snapshot-Source  'live' | 'recording'
-        X-Requested-Time   the ts asked for (absent when live-now)
-        X-Snapshot-Delta-Ms |requested - actual| in ms (absent when live-now)
+    `format` (default "base64") -> a JSON body with the image inline as a
+    data-URI (what the mobile app consumes); `format=jpeg` -> the raw JPEG bytes
+    with the same facts in X-Snapshot-* headers (lighter, for <img>/players).
+    Either way the instant the frame represents is on the SAME device clock the
+    camera OSD is disciplined to, so the reported time matches the pixels.
 
     Addressing (camera_id OR the PTZ-style label) and auth (the edgeId match) are
     identical to playback and PTZ — one rule everywhere."""
@@ -195,27 +197,47 @@ def recording_snapshot_endpoint(camera: str, request: Request,
 
     try:
         if live:
-            jpeg, actual, source = recording_snapshot.live_snapshot(
+            snap = recording_snapshot.live_snapshot(
                 cam, getattr(request.app.state, "camera_manager", None)
                 and request.app.state.camera_manager.frame_buffer,
                 mediamtx_active=getattr(request.app.state, "mediamtx_active", False),
                 quality=quality)
         else:
-            jpeg, actual, source = recording_snapshot.archive_snapshot(
-                cam, want, quality=quality)
+            snap = recording_snapshot.archive_snapshot(cam, want, quality=quality)
     except SnapshotError as exc:
         # No footage at a past instant is a genuine 404; a live-capture failure
         # (camera unreachable right now) is a 503 the caller can retry.
         raise HTTPException(404 if not live else 503, str(exc))
 
-    headers = {"X-Snapshot-Time": actual.isoformat(),
-               "X-Snapshot-Source": source,
-               "Cache-Control": "no-store"}
-    if want is not None:
-        headers["X-Requested-Time"] = want.isoformat()
-        headers["X-Snapshot-Delta-Ms"] = str(
-            round(abs((actual - want).total_seconds()) * 1000))
-    return Response(content=jpeg, media_type="image/jpeg", headers=headers)
+    delta_ms = (None if want is None
+                else round(abs((snap.time - want).total_seconds()) * 1000))
+
+    if format.lower() == "jpeg":
+        headers = {"X-Snapshot-Time": snap.time.isoformat(),
+                   "X-Snapshot-Source": snap.source,
+                   "Cache-Control": "no-store"}
+        if want is not None:
+            headers["X-Requested-Time"] = want.isoformat()
+            headers["X-Snapshot-Delta-Ms"] = str(delta_ms)
+        return Response(content=snap.jpeg, media_type="image/jpeg", headers=headers)
+
+    # Default: JSON with the image as a base64 data-URI. `timestamp` is the
+    # instant the frame represents; for a past `ts` it equals `requestedTimestamp`
+    # exactly (deltaMs 0) — the snapshot and the request line up.
+    b64 = base64.b64encode(snap.jpeg).decode("ascii")
+    return JSONResponse({
+        "cameraId": cam.camera_id,
+        "label": cam.camera_name,
+        "source": snap.source,
+        "timestamp": snap.time.isoformat(),
+        "requestedTimestamp": want.isoformat() if want is not None else None,
+        "deltaMs": delta_ms,
+        "format": "jpeg",
+        "width": snap.width,
+        "height": snap.height,
+        "bytes": len(snap.jpeg),
+        "image": f"data:image/jpeg;base64,{b64}",
+    }, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/{camera}/segment/{filename}")

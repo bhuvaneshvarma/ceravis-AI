@@ -18,6 +18,7 @@ profile 2+ are SUB streams (smaller). CERAVIS policy (per product decision):
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from urllib.parse import quote, urlparse, urlunparse
 from xml.etree import ElementTree
 
@@ -131,14 +132,49 @@ class OnvifCamera:
 
     # ---- device ------------------------------------------------------
     def device_info(self) -> dict:
+        """GetDeviceInformation — the camera's hardware identity. Maps onto the
+        saveCamera record: manufacturer -> supplier, model -> model. There is NO
+        friendly "device name" in this call (the ONVIF spec has none), so the
+        edge keeps camera_id (the room) as `device`; firmware/serial/hardware are
+        returned too for onboarding display / future mapping."""
         body = self._call(
             self.xaddr,
             '<GetDeviceInformation xmlns="http://www.onvif.org/ver10/device/wsdl"/>')
         return {
             "manufacturer": body.findtext(".//Manufacturer") or "",
             "model": body.findtext(".//Model") or "",
+            "firmware": body.findtext(".//FirmwareVersion") or "",
             "serial": body.findtext(".//SerialNumber") or "",
+            "hardware": body.findtext(".//HardwareId") or "",
         }
+
+    def system_datetime(self) -> datetime:
+        """The camera's OWN clock, via GetSystemDateAndTime (ONVIF's one
+        unauthenticated call — the same one discovery uses for liveness).
+        Returns an aware UTC datetime parsed from <UTCDateTime>.
+
+        This is the clock the camera burns into the video as its OSD timestamp.
+        Comparing it to the edge clock (common.clock) tells us whether a
+        snapshot's reported time — which we stamp from the EDGE clock — will line
+        up with the time painted into the pixels. Raises OnvifError if the camera
+        doesn't report a usable UTC time."""
+        body = self._call(
+            self.xaddr,
+            '<GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/>')
+        utc = body.find(".//UTCDateTime")
+        if utc is None:
+            raise OnvifError("camera did not report UTCDateTime")
+        d, t = utc.find("Date"), utc.find("Time")
+
+        def _int(el, tag) -> int:
+            return int((el.findtext(tag) if el is not None else 0) or 0)
+
+        try:
+            return datetime(_int(d, "Year"), _int(d, "Month"), _int(d, "Day"),
+                            _int(t, "Hour"), _int(t, "Minute"), _int(t, "Second"),
+                            tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise OnvifError(f"camera reported an invalid datetime: {exc}")
 
     # ---- media profiles ------------------------------------------------
     def profiles(self) -> list[Profile]:

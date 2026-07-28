@@ -30,7 +30,8 @@ builds the playlist, so a still and the timeline can never disagree.
 
 import logging
 import subprocess
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 
 from common import clock
 from config.settings import settings
@@ -39,6 +40,17 @@ from recording import index as recording_index
 
 
 logger = logging.getLogger("media")
+
+
+@dataclass(slots=True)
+class Snap:
+    """A produced still: the JPEG bytes, the instant it represents (on the device
+    clock the camera OSD tracks), which tier produced it, and the pixel size."""
+    jpeg: bytes
+    time: datetime
+    source: str          # "live" | "recording"
+    width: int
+    height: int
 
 # A buffered frame older than this counts as stale for a live snapshot, so we
 # re-grab rather than hand back a frozen frame from an AI-idled camera. Tied to
@@ -60,20 +72,22 @@ def _encode_jpeg(frame, quality: int) -> bytes:
 
 
 def live_snapshot(camera, frame_buffer, *, mediamtx_active: bool,
-                  quality: int = 80) -> tuple[bytes, datetime, str]:
+                  quality: int = 80) -> Snap:
     """A JPEG of the camera RIGHT NOW, with the instant it represents.
 
     Prefers the freshest buffered frame (in-memory, no decode) and falls back to
     a one-shot live grab so a camera the AI isn't actively processing still
-    yields a current still. Returns (jpeg_bytes, actual_time, source)."""
+    yields a current still."""
     frame = frame_buffer.get(camera.camera_id) if frame_buffer else None
     if frame is not None:
         age = (clock.now() - frame.timestamp.astimezone()).total_seconds()
         if age <= _LIVE_FRESH_SECS:
+            h, w = frame.frame.shape[:2]
             # frame.timestamp is the edge capture instant (UTC-aware); report it
             # in device-local time so it matches the OSD and every other stamp.
-            return (_encode_jpeg(frame.frame, quality),
-                    frame.timestamp.astimezone(clock.local_tz()), "live")
+            return Snap(_encode_jpeg(frame.frame, quality),
+                        frame.timestamp.astimezone(clock.local_tz()),
+                        "live", int(w), int(h))
 
     # No fresh buffered frame (idled camera / just started) — pull one live frame
     # straight off the backbone. Loopback when MediaMTX is up (one camera pull
@@ -84,7 +98,9 @@ def live_snapshot(camera, frame_buffer, *, mediamtx_active: bool,
     grabbed = grab_one_frame(source, timeout_secs=settings.read_timeout_secs + 5)
     if grabbed is None:
         raise SnapshotError("camera did not yield a live frame")
-    return _encode_jpeg(grabbed, quality), clock.now(), "live"
+    h, w = grabbed.shape[:2]
+    return Snap(_encode_jpeg(grabbed, quality), clock.now(),
+                "live", int(w), int(h))
 
 
 def _segment_covering(camera, ts: datetime):
@@ -95,12 +111,29 @@ def _segment_covering(camera, ts: datetime):
     return None
 
 
-def archive_snapshot(camera, ts: datetime,
-                     quality: int = 80) -> tuple[bytes, datetime, str]:
+def _jpeg_dims(jpeg: bytes) -> tuple[int, int]:
+    """(width, height) of an encoded JPEG — one small decode, only on the archive
+    path (live already knows its dims from the source frame)."""
+    try:
+        import cv2
+        import numpy as np
+        arr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if arr is not None:
+            h, w = arr.shape[:2]
+            return int(w), int(h)
+    except Exception:                             # noqa: BLE001 — dims are optional
+        pass
+    return 0, 0
+
+
+def archive_snapshot(camera, ts: datetime, quality: int = 80) -> Snap:
     """A frame-accurate JPEG at a PAST instant, decoded from the stored segment
     that covers it. Raises SnapshotError if no footage covers `ts` (an empty
-    stretch — nobody was present) or ffmpeg is unavailable. Returns
-    (jpeg_bytes, actual_time, "recording")."""
+    stretch — nobody was present) or ffmpeg is unavailable.
+
+    The returned Snap.time IS the requested `ts`: output-seek lands on the frame
+    at that instant, so the reported time and the requested time are the same —
+    the exact-match guarantee for a past moment."""
     seg = _segment_covering(camera, ts)
     if seg is None:
         raise SnapshotError("no footage recorded at that instant")
@@ -123,4 +156,5 @@ def archive_snapshot(camera, ts: datetime,
         raise SnapshotError((out.stderr or b"ffmpeg produced no frame")
                             .decode("utf-8", "replace").strip()[:200]
                             or "ffmpeg produced no frame")
-    return out.stdout, seg.start + timedelta(seconds=offset), "recording"
+    w, h = _jpeg_dims(out.stdout)
+    return Snap(out.stdout, ts, "recording", w, h)
