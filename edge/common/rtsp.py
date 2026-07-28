@@ -15,7 +15,49 @@ is IDEMPOTENT: an already-correct '...:p%40ss@...' is returned unchanged, never
 double-encoded to '%2540'. So a save path can run it unconditionally.
 """
 
+import os
+import time
+
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+
+def grab_one_frame(url: str, timeout_secs: float = 8.0):
+    """Open an RTSP URL over interleaved TCP and return ONE freshly decoded
+    BGR frame (numpy array), or None.
+
+    The single owner of "pull one live frame from a stream" — used by the 'Add
+    camera' probe and by the live snapshot tier. Forces TCP transport (a 4K /
+    H.265 main stream loses large fragmented packets over the default UDP and
+    never yields a frame) and waits up to `timeout_secs` for the first keyframe
+    to decode (H.265 only produces a frame at a keyframe), rather than giving up
+    on the first empty read. cv2 is imported lazily so importing this module on a
+    box without OpenCV (tests) stays cheap."""
+    import cv2
+
+    url = normalize_rtsp_url(url)
+    if not url:
+        return None
+    # Interleaved TCP for the FFmpeg backend — same transport the AI ingest and
+    # MediaMTX pull use, so the big-packet 4K/H.265 case behaves identically.
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+    if not cap.isOpened():
+        cap.release()
+        return None
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)     # freshest frame, not a backlog
+    except cv2.error:
+        pass
+    frame = None
+    deadline = time.time() + max(0.5, timeout_secs)
+    while time.time() < deadline:
+        ok, f = cap.read()
+        if ok and f is not None:
+            frame = f
+            break
+        time.sleep(0.05)
+    cap.release()
+    return frame
 
 
 def normalize_rtsp_url(url: str) -> str:

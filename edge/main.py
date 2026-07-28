@@ -72,6 +72,11 @@ app = FastAPI(title="CERAVIS Edge API", version=settings.app_version, lifespan=l
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=False,
     allow_methods=["*"], allow_headers=["*"],
+    # Custom response headers a browser/webview caller must be able to READ
+    # cross-origin — the snapshot's real instant + source (native apps ignore
+    # CORS, but a JS/webview client can't see these without this).
+    expose_headers=["X-Snapshot-Time", "X-Snapshot-Source",
+                    "X-Requested-Time", "X-Snapshot-Delta-Ms"],
 )
 
 
@@ -86,6 +91,10 @@ def _inbound_endpoint(path: str) -> str | None:
         return "timeline"
     if "/playback" in path:
         return "playback"
+    # Only the recordings still-frame (mobile/cloud live view), never the local
+    # zone-labeler's /cameras/{id}/snapshot.
+    if "/recordings/" in path and path.endswith("/snapshot"):
+        return "snapshot"
     return None
 
 
