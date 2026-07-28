@@ -39,7 +39,7 @@ edge/data/cameras.json
 # Per-install runtime config — never ship a seeded/example copy
 edge/data/zones.json
 edge/data/account.json
-edge/data/getpatientpostures_debug.jsonl
+edge/data/ceravis_api_wire.jsonl
 
 # Docker / logs
 *.log

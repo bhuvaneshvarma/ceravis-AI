@@ -21,6 +21,7 @@ import base64
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,19 +36,67 @@ logger = logging.getLogger("integration")
 
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
 
+# ---------------------------------------------------------------------------
+# Wire log — the single, full-fidelity record of every app-server hit.
+#
+# One file (data/ceravis_api_wire.jsonl) captures the EXACT request we sent and
+# the EXACT response we got back for every call to app.ceravishealth.in, so the
+# whole conversation is inspectable by hand. This is the forensic detail level;
+# call_log (data/cloud_calls.jsonl) stays the one-line console summary. Both are
+# best-effort: a logging hiccup never touches the call itself.
+# ---------------------------------------------------------------------------
+_WIRE_FILE = "ceravis_api_wire.jsonl"
+_WIRE_LOCK = threading.Lock()
+_WIRE_MAX_BYTES = 4 * 1024 * 1024       # rotate past this…
+_WIRE_KEEP_LINES = 500                   # …down to the newest N records
+# Request fields that are large base64 blobs — logged as a short marker, never
+# verbatim, so the wire log stays readable and small.
+_WIRE_REDACT_KEYS = ("base64Image", "fileBytes")
 
-def _dump_debug(filename: str, record: dict) -> None:
-    """Append one request/response record to data/<filename> (JSON line) for
-    manual inspection. Best-effort — a logging hiccup never affects the call."""
+
+def _wire_redact(body):
+    """A copy of a request body safe to persist: big base64 fields collapse to
+    a short size marker; everything else is kept exactly as sent."""
+    if not isinstance(body, dict):
+        return body
+    out = {}
+    for k, v in body.items():
+        if k in _WIRE_REDACT_KEYS and isinstance(v, str):
+            out[k] = f"<{k}: {len(v)} base64 chars>"
+        else:
+            out[k] = v
+    return out
+
+
+def _wire(endpoint: str, method: str, url: str, request, *,
+          status: int | None = None, response: str | None = None,
+          error: str | None = None, latency_ms: float | None = None) -> None:
+    """Append one full request/response record to data/ceravis_api_wire.jsonl.
+    Best-effort — any failure here is swallowed and never affects the call."""
     try:
         base = settings.data_path
         base = base if base.is_absolute() else (_EDGE_ROOT / base)
         base.mkdir(parents=True, exist_ok=True)
-        record = {"ts": datetime.now(timezone.utc).isoformat(), **record}
-        with (base / filename).open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "endpoint": endpoint,
+            "method": method,
+            "url": url,
+            "request": _wire_redact(request),
+            "http_status": status,
+            "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,
+            "response": response,
+            "error": error,
+        }
+        f = base / _WIRE_FILE
+        with _WIRE_LOCK:
+            with f.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+            if f.stat().st_size > _WIRE_MAX_BYTES:
+                lines = f.read_text(encoding="utf-8").splitlines()[-_WIRE_KEEP_LINES:]
+                f.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception:
-        logger.warning("debug dump to %s failed", filename)
+        logger.warning("wire dump for %s failed", endpoint)
 
 
 # The app server's fixed CameraName enum — `room` must be one of these exactly.
@@ -98,21 +147,26 @@ def get_user_details(email: str) -> dict | None:
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/userDetails"
+    request_body = {"email": email}
     logger.info("userDetails -> POST %s  email=%s", url, email)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json={"email": email}, headers=_headers(),
+        resp = requests.post(url, json=request_body, headers=_headers(),
                              timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("userDetails: cannot reach %s — %s", url, exc)
         call_log.record("userDetails", False, label=email, error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("userDetails", "POST", url, request_body, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
 
     lat = (time.perf_counter() - t0) * 1000
     logger.info("userDetails <- HTTP %s", resp.status_code)
     call_log.record("userDetails", resp.status_code < 400, label=email,
                     status=resp.status_code, latency_ms=lat)
+    _wire("userDetails", "POST", url, request_body, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
     if resp.status_code == 404:
         return None
     if resp.status_code >= 400:
@@ -160,11 +214,15 @@ def save_cameras(patient_user_id, cameras: list[dict]):
         logger.warning("saveCamera: cannot reach %s — %s", url, exc)
         call_log.record("saveCamera", False, label=label, error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("saveCamera", "PUT", url, payload, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("saveCamera <- HTTP %s  body=%s", resp.status_code, resp.text[:300])
     call_log.record("saveCamera", resp.status_code < 400, label=label,
                     status=resp.status_code, latency_ms=lat)
+    _wire("saveCamera", "PUT", url, payload, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
@@ -221,9 +279,13 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
         logger.warning("saveAlert: cannot reach %s — %s", url, exc)
         call_log.record("saveAlert", False, label=label, error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("saveAlert", "PUT", url, payload, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("saveAlert <- HTTP %s  body=%s", resp.status_code, resp.text[:300])
+    _wire("saveAlert", "PUT", url, payload, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         call_log.record("saveAlert", False, label=label,
                         status=resp.status_code, latency_ms=lat,
@@ -270,9 +332,13 @@ def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str,
         call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
                         error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("saveSnapshot", "POST", url, payload, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("saveSnapshot <- HTTP %s  body=%s", resp.status_code, resp.text[:200])
+    _wire("saveSnapshot", "POST", url, payload, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
                         status=resp.status_code, latency_ms=lat,
@@ -316,18 +382,15 @@ def get_patient_postures(user_id) -> list[dict]:
                         error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
         # Persist the failed hit too, so "did it even fire?" is answerable.
-        _dump_debug("getpatientpostures_debug.jsonl",
-                    {"url": url, "request": request_body, "error": str(exc)})
+        _wire("getPatientPostures", "PUT", url, request_body, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("getPatientPostures <- HTTP %s", resp.status_code)
     call_log.record("getPatientPostures", resp.status_code < 400,
                     label=str(user_id), status=resp.status_code, latency_ms=lat)
-    # Every hit — request body + full raw response — to a separate file the
-    # operator inspects manually (data/getpatientpostures_debug.jsonl).
-    _dump_debug("getpatientpostures_debug.jsonl",
-                {"url": url, "request": request_body,
-                 "http_status": resp.status_code, "response": resp.text})
+    _wire("getPatientPostures", "PUT", url, request_body,
+          status=resp.status_code, response=resp.text, latency_ms=lat)
     if resp.status_code == 404:
         return []
     if resp.status_code >= 400:
@@ -371,12 +434,16 @@ def upload_embedding_file(file_category: str, user_id, file_name: str,
         logger.warning("uploadEmbeddingFile: cannot reach %s — %s", url, exc)
         call_log.record("uploadEmbeddingFile", False, label=label, error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("uploadEmbeddingFile", "PUT", url, payload, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("uploadEmbeddingFile <- HTTP %s  body=%s",
                 resp.status_code, resp.text[:200])
     call_log.record("uploadEmbeddingFile", resp.status_code < 400, label=label,
                     status=resp.status_code, latency_ms=lat)
+    _wire("uploadEmbeddingFile", "PUT", url, payload, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
