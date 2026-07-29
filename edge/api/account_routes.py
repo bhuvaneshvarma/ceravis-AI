@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
 from config.settings import settings
-from configuration.account_config import AccountConfig
+from configuration.account_config import AccountConfig, canonical_edge_id
 from configuration.camera_config import CameraConfig
 from integration import call_log
 from integration.ceravis_api import (
@@ -18,7 +17,7 @@ from integration.ceravis_api import (
     save_cameras,
 )
 from livestream.mediamtx_client import is_up as media_backbone_up
-from livestream.mediamtx_client import stream_base, webrtc_url
+from livestream.mediamtx_client import stream_base, sync_camera, webrtc_url
 
 
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
@@ -34,13 +33,34 @@ def _stream_base(request: Request) -> str:
     return stream_base(request.headers.get("host") or "localhost")
 
 
+def _repoint_live_paths(request: Request) -> None:
+    """After an edge_id change, bring the running device onto the new routing
+    token WITHOUT a full restart: re-sync every camera's MediaMTX live path (now
+    '<new_edge_id>/<ROOM>') and refresh the link stored in cameras.json so the
+    next cloud sync pushes the current URL. Best-effort — a failure here just
+    means a `systemctl restart ceravis` is needed to pick the change up."""
+    import time
+    time.sleep(1.5)                       # let the verify response flush first
+    base = _stream_base(request)
+    for c in CameraConfig().get_all():
+        try:
+            if media_backbone_up():
+                sync_camera(c)
+            c.webrtc_url = webrtc_url(c.camera_id, base)
+            CameraConfig().update(c.camera_id, c)
+        except Exception as exc:          # noqa: BLE001 — never fail provisioning
+            logger.warning("repoint live path failed for %s: %s",
+                           c.camera_id, exc)
+    logger.info("live paths repointed to the new edge_id")
+
+
 def _cloud_camera(c, base: str) -> dict:
     """One camera in the app-server saveCamera shape (camelCase) — the FULL
     cameras.json record, so the cloud mirrors the device exactly. `url` and
-    `webrtcUrl` fall back to a freshly computed live link for a camera saved
-    before links were stored; `room` is normalized to the server CameraName
-    enum (KITCHEN, LIVING_ROOM, …)."""
-    link = c.webrtc_url or webrtc_url(c.camera_id, base)
+    `webrtcUrl` are ALWAYS computed fresh from the current edge_id (never the
+    stored copy, which goes stale the moment the edge_id changes); `room` is
+    normalized to the server CameraName enum (KITCHEN, LIVING_ROOM, …)."""
+    link = webrtc_url(c.camera_id, base)
     return {
         # device/model/supplier come from the camera's ONVIF GetDeviceInformation
         # (filled on save). `supplier` carries the SERIAL number — the backend
@@ -90,10 +110,14 @@ def verify(req: VerifyRequest, background_tasks: BackgroundTasks):
                 "reason": "No CERAVIS account found for this email"}
 
     # The app server hands this device's routing token back as `deviceToken`
-    # (older field name: edgeId). Sanitized to a URL/path-safe form so the stored
-    # value, the /<edge_id> link segment, and cloud/frpc.toml locations all match.
-    raw_token = str(user.get("deviceToken") or user.get("edgeId") or "").strip()
-    edge_id = re.sub(r"[^A-Za-z0-9_\-]+", "-", raw_token).strip("-")
+    # (older field name: edgeId). Stored VERBATIM — the ONE canonical value the
+    # live-link segment, cloud/frpc.toml locations, the MediaMTX path and control
+    # auth all share. canonical_edge_id only trims/guards a path-safe token; it
+    # never remaps characters, so the edge value can never diverge from the
+    # backend's. See [[ceravis-devicetoken-verbatim]].
+    raw_token = user.get("deviceToken") or user.get("edgeId")
+    edge_id = canonical_edge_id(raw_token)
+    prev_edge_id = account_config.get_edge_id()
     account = {
         "ceravisUserId": user.get("ceravisUserId"),
         "firstName": user.get("firstName"),
@@ -121,6 +145,15 @@ def verify(req: VerifyRequest, background_tasks: BackgroundTasks):
         provisioning = True
         logger.info("edge_id provisioned: %s (jetson.env written; frpc apply "
                     "scheduled after response)", edge_id)
+        # The edge_id is the first segment of every camera live path. When it
+        # CHANGES, MediaMTX is still serving the old paths (its config was baked
+        # at the last start) and cameras.json still holds the old links — so
+        # repoint the live paths and refresh the stored links now. This makes the
+        # device self-heal on re-provision with no `systemctl restart ceravis`.
+        if edge_id != prev_edge_id:
+            background_tasks.add_task(_repoint_live_paths, request)
+            logger.info("edge_id changed %r -> %r: MediaMTX repoint + link "
+                        "refresh scheduled", prev_edge_id, edge_id)
     logger.info("account verified: user #%s (%s)",
                 account["ceravisUserId"], account["email"])
     return {"verified": True, "user": account, "edgeId": edge_id or None,

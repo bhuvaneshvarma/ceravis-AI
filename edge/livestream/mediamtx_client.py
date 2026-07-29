@@ -58,9 +58,14 @@ def edge_prefix() -> str:
     frp routes on (locations=["/<edge_id>"]) — one shared domain, one shared
     port, disambiguated purely by this segment. Resolved from the account
     (edgeId handed back by the app server) first, then jetson.env's EDGE_ID, so a
-    freshly-verified device routes with no restart. Empty = LAN-only, no prefix."""
+    freshly-verified device routes with no restart. Empty = LAN-only, no prefix.
+
+    The value is already canonical (normalized once at account ingest by
+    account_config.canonical_edge_id) — it is used verbatim here so the segment
+    frp routes on and the segment MediaMTX serves are byte-identical to the
+    backend's deviceToken. No second transform: see [[ceravis-devicetoken-verbatim]]."""
     from configuration.account_config import effective_edge_id
-    eid = re.sub(r"[^A-Za-z0-9_\-]+", "-", effective_edge_id())
+    eid = effective_edge_id()
     return f"{eid}/" if eid else ""
 
 

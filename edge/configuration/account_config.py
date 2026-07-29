@@ -1,6 +1,32 @@
 from __future__ import annotations
 
+import logging
+
 from configuration.config_store import ConfigStore
+
+logger = logging.getLogger("account")
+
+
+def canonical_edge_id(raw: str | None) -> str:
+    """THE single normalizer for a device edge_id / deviceToken — applied in ONE
+    place (account ingest) so the value is byte-identical everywhere it lands:
+    account.json, jetson.env, frpc `locations`, the MediaMTX live path, the
+    public live-link segment, and the control-auth compare.
+
+    The app server owns the token, so it is stored VERBATIM — never remapped.
+    The only transform is stripping surrounding whitespace and any stray leading/
+    trailing '/', which would break the `/<edge_id>` path routing (the backend
+    already guarantees no interior '/'). A token that still contains a path
+    separator or whitespace after that is refused (returns '') and logged, rather
+    than silently mangled into a value that no longer matches the backend's."""
+    eid = (raw or "").strip().strip("/").strip()
+    if not eid:
+        return ""
+    if any(c.isspace() for c in eid) or "/" in eid:
+        logger.warning("edge_id rejected: contains '/' or whitespace (%r) — the "
+                       "app server must issue a path-safe deviceToken", raw)
+        return ""
+    return eid
 
 
 class AccountConfig:
