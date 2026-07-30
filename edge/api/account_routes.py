@@ -33,15 +33,15 @@ def _stream_base(request: Request) -> str:
     return stream_base(request.headers.get("host") or "localhost")
 
 
-def _repoint_live_paths(request: Request) -> None:
+def _repoint_live_paths(base: str) -> None:
     """After an edge_id change, bring the running device onto the new routing
     token WITHOUT a full restart: re-sync every camera's MediaMTX live path (now
     '<new_edge_id>/<ROOM>') and refresh the link stored in cameras.json so the
-    next cloud sync pushes the current URL. Best-effort — a failure here just
-    means a `systemctl restart ceravis` is needed to pick the change up."""
+    next cloud sync pushes the current URL. `base` is the scheme://host live-link
+    base, precomputed by the caller. Best-effort — a failure here just means a
+    `systemctl restart ceravis` is needed to pick the change up."""
     import time
     time.sleep(1.5)                       # let the verify response flush first
-    base = _stream_base(request)
     for c in CameraConfig().get_all():
         try:
             if media_backbone_up():
@@ -90,7 +90,7 @@ class VerifyRequest(BaseModel):
 
 
 @router.post("/verify")
-def verify(req: VerifyRequest, background_tasks: BackgroundTasks):
+def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTasks):
     """
     Gate the setup wizard: look the email up on the CERAVIS app server. If the
     account exists, persist it (with the entered phone) and return it so the next
@@ -151,7 +151,9 @@ def verify(req: VerifyRequest, background_tasks: BackgroundTasks):
         # repoint the live paths and refresh the stored links now. This makes the
         # device self-heal on re-provision with no `systemctl restart ceravis`.
         if edge_id != prev_edge_id:
-            background_tasks.add_task(_repoint_live_paths, request)
+            # Compute the link base NOW (the Request is valid inside the handler);
+            # the background task only needs the resulting scheme://host string.
+            background_tasks.add_task(_repoint_live_paths, _stream_base(request))
             logger.info("edge_id changed %r -> %r: MediaMTX repoint + link "
                         "refresh scheduled", prev_edge_id, edge_id)
     logger.info("account verified: user #%s (%s)",
