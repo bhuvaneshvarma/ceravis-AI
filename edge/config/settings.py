@@ -114,6 +114,20 @@ class Settings(BaseSettings):
     record_audio: bool = True
     ffmpeg_binary: str = "ffmpeg"           # audio-only transcode for recordings
 
+    # ---- Fall incident clip -----------------------------------------
+    # On a FALL alert, a short clip around the incident is merged from the
+    # already-recorded segments (the one before + the one containing it + the one
+    # after) and sent to the cloud via saveSnapshot with the SAME alertId and
+    # annotation as the alert/still snapshot — so the reviewer gets the moving
+    # footage alongside the frame, linked by alertId. No re-encode (the stored
+    # MPEG-TS is concatenated -c copy), so nothing runs on the Orin encoder.
+    # Best-effort: if recording was OFF or no footage covers the instant the clip
+    # is simply skipped (the alert + snapshot already went). Needs ffmpeg.
+    fall_clip_enabled: bool = True
+    fall_clip_pre_secs: float = 15.0        # footage kept BEFORE the fall instant
+    fall_clip_post_secs: float = 15.0       # footage kept AFTER the fall instant
+    fall_clip_cooldown_secs: float = 60.0   # one clip per camera per incident
+
 
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
     onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window

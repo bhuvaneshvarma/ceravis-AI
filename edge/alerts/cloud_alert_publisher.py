@@ -18,6 +18,7 @@ import base64
 import logging
 import queue
 import threading
+import time
 from datetime import datetime
 
 from alerts.alert_format import format_line
@@ -31,6 +32,8 @@ from integration.ceravis_api import (
     CeravisApiError, alert_id_of, is_configured, room_to_enum, save_alert,
     save_snapshot,
 )
+from livestream.mediamtx_client import record_path_name
+from recording.incident_clip import build_incident_clip
 
 
 logger = logging.getLogger("alerts")
@@ -58,6 +61,9 @@ class CloudAlertPublisher:
         # the follow-up no_motion_snapshot burst (fired minute-by-minute over the
         # rest of the slot) links back to the alert that opened it.
         self._slot_alert_id: dict = {}
+        # camera_id -> monotonic time of its last fall clip, so a burst of fall
+        # events for one incident yields a single clip (fall_clip_cooldown_secs).
+        self._fall_clip_at: dict = {}
 
     def start(self) -> None:
         if not is_configured():
@@ -125,6 +131,12 @@ class CloudAlertPublisher:
             # Snapshot goes with both alert and snapshot-only events (Phase B will
             # populate snapshot_paths with the first/middle/last 3-frame nest).
             self._send_snapshots(pid, event, message, alert_id)
+            # A FALL also gets the moving footage: merge the recorded segments
+            # around the instant and send that clip through the SAME saveSnapshot,
+            # linked by the same alertId + annotation. Deferred (the post-roll
+            # must finish writing) and best-effort — it never blocks this event.
+            if is_alert and etype == "fall":
+                self._schedule_fall_clip(pid, event, message, alert_id)
 
     def _send_snapshots(self, pid, event, text: str, alert_id=None) -> None:
         """Base64-encode and POST each snapshot tied to this alert, linking it
@@ -148,6 +160,64 @@ class CloudAlertPublisher:
                 logger.warning("saveSnapshot failed: %s", exc)
             except Exception:
                 logger.exception("saveSnapshot unexpected error")
+
+    # ---- fall incident clip ------------------------------------------
+    def _schedule_fall_clip(self, pid, event, text: str, alert_id) -> None:
+        """Kick off the deferred fall-clip build for this event (once per camera
+        per incident). Returns immediately — the merge + upload run on a daemon
+        thread so the event loop is never blocked."""
+        if not settings.fall_clip_enabled:
+            return
+        try:
+            cam = self._cameras.get_by_id(event.camera_id)
+        except Exception:
+            cam = None
+        if cam is None:
+            return
+        now = time.monotonic()
+        last = self._fall_clip_at.get(event.camera_id, 0.0)
+        if now - last < settings.fall_clip_cooldown_secs:
+            return                                  # same incident — one clip only
+        self._fall_clip_at[event.camera_id] = now
+        try:
+            at = datetime.fromisoformat(event.timestamp)
+            if at.tzinfo is None:
+                at = at.astimezone()                # naive -> device-local
+        except Exception:
+            at = datetime.now().astimezone()
+        threading.Thread(
+            target=self._build_and_send_fall_clip,
+            args=(pid, record_path_name(cam), at, text,
+                  room_to_enum(event.room_name), alert_id),
+            daemon=True, name="fall-clip").start()
+
+    def _build_and_send_fall_clip(self, pid, rec_path, at, text, camera_number,
+                                  alert_id) -> None:
+        """Wait for the post-roll footage to flush, merge the clip, and POST it
+        via saveSnapshot with the same alertId + annotation as the alert."""
+        # The segment covering at+post is still being written when the alert
+        # fires; wait it out (post window + one segment + a small margin).
+        time.sleep(settings.fall_clip_post_secs + settings.record_segment_secs + 2.0)
+        try:
+            clip = build_incident_clip(rec_path, at, settings.fall_clip_pre_secs,
+                                       settings.fall_clip_post_secs)
+        except Exception:
+            logger.exception("fall clip build error (%s)", rec_path)
+            clip = None
+        if not clip:
+            call_log.record(
+                "saveSnapshot", False, label=f"{text} · clip", alert_id=alert_id,
+                error="fall clip not sent — no footage (recording off or nobody "
+                      "in frame at the incident)")
+            return
+        b64 = base64.b64encode(clip).decode("ascii")
+        try:
+            save_snapshot(pid, b64, text, camera_number, alert_id=alert_id)
+            logger.info("fall clip sent: %d bytes, alert=%s", len(clip), alert_id)
+        except CeravisApiError as exc:
+            logger.warning("fall clip saveSnapshot failed: %s", exc)
+        except Exception:
+            logger.exception("fall clip saveSnapshot unexpected error")
 
     def _b64(self, rel_path: str) -> str | None:
         # Shared resolver (common.event_snapshots) — same one the enricher
