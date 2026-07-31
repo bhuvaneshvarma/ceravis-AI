@@ -14,7 +14,6 @@ Fire-and-forget per event (errors are logged, never block the pipeline). Stays
 silent if the app server isn't configured or no account has been verified yet.
 """
 
-import base64
 import logging
 import queue
 import threading
@@ -139,9 +138,9 @@ class CloudAlertPublisher:
                 self._schedule_fall_clip(pid, event, message, alert_id)
 
     def _send_snapshots(self, pid, event, text: str, alert_id=None) -> None:
-        """Base64-encode and POST each snapshot tied to this alert, linking it
-        to alert_id when the event has one. One today; the first/middle/last
-        nest once Phase B fills snapshot_paths."""
+        """POST each still snapshot tied to this alert as the multipart `image`
+        file, linking it to alert_id when the event has one. One today; the
+        first/middle/last nest once Phase B fills snapshot_paths."""
         paths = list(event.snapshot_paths or [])
         if not paths and event.snapshot_path:
             paths = [event.snapshot_path]
@@ -150,12 +149,13 @@ class CloudAlertPublisher:
         camera_number = room_to_enum(event.room_name)
         n = len(paths)
         for i, rel in enumerate(paths):
-            b64 = self._b64(rel)
-            if not b64:
+            img = self._image_bytes(rel)
+            if not img:
                 continue
             label = text if n == 1 else f"{text} · frame {i + 1}/{n}"
             try:
-                save_snapshot(pid, b64, label, camera_number, alert_id=alert_id)
+                save_snapshot(pid, label, camera_number, image=img,
+                              alert_id=alert_id)
             except CeravisApiError as exc:
                 logger.warning("saveSnapshot failed: %s", exc)
             except Exception:
@@ -210,23 +210,23 @@ class CloudAlertPublisher:
                 error="fall clip not sent — no footage (recording off or nobody "
                       "in frame at the incident)")
             return
-        b64 = base64.b64encode(clip).decode("ascii")
         try:
-            save_snapshot(pid, b64, text, camera_number, alert_id=alert_id)
+            save_snapshot(pid, text, camera_number, video=clip, alert_id=alert_id)
             logger.info("fall clip sent: %d bytes, alert=%s", len(clip), alert_id)
         except CeravisApiError as exc:
             logger.warning("fall clip saveSnapshot failed: %s", exc)
         except Exception:
             logger.exception("fall clip saveSnapshot unexpected error")
 
-    def _b64(self, rel_path: str) -> str | None:
+    def _image_bytes(self, rel_path: str) -> bytes | None:
         # Shared resolver (common.event_snapshots) — same one the enricher
-        # writes through and the events API serves from.
+        # writes through and the events API serves from. Raw JPEG bytes: the
+        # saveSnapshot `image` file part is the file itself, not base64.
         f = snapshot_file(rel_path)
         if f is None:
             return None
         try:
-            return base64.b64encode(f.read_bytes()).decode("ascii")
+            return f.read_bytes()
         except Exception:
             logger.exception("snapshot read failed: %s", f)
             return None

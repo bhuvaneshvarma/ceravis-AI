@@ -301,43 +301,74 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
     return result
 
 
-def save_snapshot(patient_id, base64_image: str, text: str, camera_number: str,
+def _multipart_headers() -> dict[str, str]:
+    """Headers for a multipart/form-data upload: the API key + Accept, but NO
+    Content-Type — `requests` sets `multipart/form-data` with the correct boundary
+    when `files=` is passed, and forcing application/json here would break the
+    server's multipart parsing."""
+    h = {"Accept": "application/json"}
+    key = settings.ceravis_api_key.strip()
+    if key:
+        h["X-API-Key"] = key
+    return h
+
+
+def save_snapshot(patient_id, text: str, camera_number: str, *,
+                  image: bytes | None = None, video: bytes | None = None,
                   alert_id: int | None = None):
     """
-    POST /v1/ai/saveSnapshot — one snapshot tied to an alert/action.
-    Body: { patientId, base64Image, text, cameraNumber, alertId }.
-      base64Image : the JPEG, base64-encoded (no data-URI prefix)
-      text        : the same labeled line the alert carries
-      cameraNumber: the room CameraName enum (KITCHEN, LIVING_ROOM, …)
-      alertId     : the id returned by saveAlert, linking this snapshot to its
-                    alert. Omitted for snapshot-only events (transitions) that
-                    have no originating alert.
+    POST /v1/ai/saveSnapshot — the snapshot/clip for an alert or action.
+    multipart/form-data (SnapshotRequest): patientId, text, cameraNumber as form
+    fields, and the media as FILE parts:
+      image : the JPEG still, raw bytes (MultipartFile `image`)
+      video : the MP4 incident clip, raw bytes (MultipartFile `video`)
+    Either or both may be sent — the still fires immediately, the fall clip
+    follows once its post-roll footage is written; both carry the same text and,
+    when present, alertId so the server associates them with the alert. (The clip
+    is uploaded as a file now, not crammed into a base64 field.)
     """
     if not is_configured():
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    if not image and not video:
+        raise CeravisApiError("saveSnapshot: nothing to send (no image or video)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveSnapshot"
-    payload = {"patientId": patient_id, "base64Image": base64_image,
-               "text": text, "cameraNumber": camera_number}
+    # Multipart form fields must be strings — the encoder rejects a raw int, and
+    # Spring converts "43" back to the Long/enum on its side.
+    data = {"patientId": str(patient_id), "text": text or "",
+            "cameraNumber": camera_number or ""}
     if alert_id is not None:
-        payload["alertId"] = alert_id
-    logger.info("saveSnapshot -> POST %s  patient=%s  cam=%s  alert=%s  img_b64=%d bytes",
-                url, patient_id, camera_number, alert_id, len(base64_image or ""))
+        data["alertId"] = str(alert_id)
+    files = {}
+    if image:
+        files["image"] = ("snapshot.jpg", image, "image/jpeg")
+    if video:
+        files["video"] = ("incident.mp4", video, "video/mp4")
+    # A loggable view of the request: the form fields verbatim + a byte-size
+    # marker for each binary part (never the bytes), so the wire log stays small.
+    log_body = dict(data)
+    for part, blob in (("image", image), ("video", video)):
+        if blob:
+            log_body[part] = f"<{part}: {len(blob)} bytes>"
+    parts = "+".join(k for k in ("image", "video") if k in files)
+    logger.info("saveSnapshot -> POST %s  patient=%s  cam=%s  alert=%s  parts=%s",
+                url, patient_id, camera_number, alert_id, parts)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=payload, headers=_headers(),
+        resp = requests.post(url, data=data, files=files,
+                             headers=_multipart_headers(),
                              timeout=settings.ceravis_api_timeout_secs)
     except requests.RequestException as exc:
         logger.warning("saveSnapshot: cannot reach %s — %s", url, exc)
         call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
                         error=str(exc),
                         latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("saveSnapshot", "POST", url, payload, error=str(exc),
+        _wire("saveSnapshot", "POST", url, log_body, error=str(exc),
               latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("saveSnapshot <- HTTP %s  body=%s", resp.status_code, resp.text[:200])
-    _wire("saveSnapshot", "POST", url, payload, status=resp.status_code,
+    _wire("saveSnapshot", "POST", url, log_body, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
