@@ -477,7 +477,9 @@ async function refreshCameras() {
       }).join("");
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
     if (!confirm(`Remove camera ${b.dataset.del}?`)) return;
-    await api(`/api/v1/cameras/${b.dataset.del}/stop`, { method: "POST" }).catch(() => {});
+    await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
+      { edgeId: (ACCOUNT.user && ACCOUNT.user.edgeId) || "",
+        cameraLabel: b.dataset.del, action: "stop" }) }).catch(() => {});
     await api(`/api/v1/cameras/${b.dataset.del}`, { method: "DELETE" });
     toast("Camera removed"); refreshCameras();
   });
@@ -623,7 +625,9 @@ document.getElementById("c-save").onclick = async () => {
   try {
     const res = await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
     const cid = (res && res.camera_id) || "";       // id derived server-side
-    if (cid) await api(`/api/v1/cameras/${cid}/start`, { method: "POST" });
+    if (cid) await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
+      { edgeId: (ACCOUNT.user && ACCOUNT.user.edgeId) || "",
+        cameraLabel: cid, action: "start" }) });
     toast(`${cam.room_name} saved & started`);
     ["c-url", "c-room"].forEach(i => document.getElementById(i).value = "");
     document.getElementById("c-probe-out").textContent = "";

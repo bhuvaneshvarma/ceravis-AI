@@ -301,25 +301,50 @@ def camera_status(camera_id: str, request: Request):
     return asdict(status)
 
 
-@router.post("/{camera_id}/start")
-def start_camera(camera_id: str, request: Request):
-    if not _mgr(request).start_camera(camera_id):
-        raise HTTPException(404, "Camera not found")
-    return {"status": "started", "camera_id": camera_id}
+# action -> past-tense status word for the response.
+_CAMERA_ACTIONS = {"start": "started", "stop": "stopped", "restart": "restarted"}
 
 
-@router.post("/{camera_id}/stop")
-def stop_camera(camera_id: str, request: Request):
-    if not _mgr(request).stop_camera(camera_id):
-        raise HTTPException(404, "Camera not running")
-    return {"status": "stopped", "camera_id": camera_id}
-
-
-@router.post("/{camera_id}/restart")
-def restart_camera(camera_id: str, request: Request):
-    if not _mgr(request).restart_camera(camera_id):
-        raise HTTPException(404, "Camera not found")
-    return {"status": "restarted", "camera_id": camera_id}
+@router.post("/control")
+def camera_control(body: dict, request: Request):
+    """
+    Start / stop / restart one camera's ingestion by its CameraName label — the
+    cloud-driven twin of PTZ and recording playback (the three old per-id
+    endpoints folded into one). Body (camelCase or snake_case):
+        { "edgeId": "<edge_id>", "cameraLabel": "KITCHEN", "action": "restart" }
+    action ∈ start | stop | restart. Auth = the edgeId match (api/control_auth):
+    the request must carry THIS device's edge_id — the SAME one rule PTZ and
+    playback use. Every hit (and rejection) lands on the sync console.
+    """
+    body = body or {}
+    req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
+    action = str(_field(body, "action", default="")).strip().lower()
+    label = str(_field(body, "cameraLabel", "camera_label", "cameraNumber",
+                       default=""))
+    try:
+        check_edge_id(req_id)
+    except HTTPException:
+        call_log.record("camera-control", False, status=409,
+                        label=f"{_canon(label)} {action or '?'} rejected: edgeId "
+                              f"auth (this device is '{effective_edge_id()}')")
+        raise
+    if action not in _CAMERA_ACTIONS:
+        raise HTTPException(400, "action must be one of: start, stop, restart")
+    cam = _camera_by_label(label)
+    if cam is None:
+        call_log.record("camera-control", False, status=404,
+                        label=f"{_canon(label)} {action}: no such camera")
+        raise HTTPException(404, f"no camera for label {label!r}")
+    dispatch = {"start": _mgr(request).start_camera,
+                "stop": _mgr(request).stop_camera,
+                "restart": _mgr(request).restart_camera}
+    ok = dispatch[action](cam.camera_id)
+    call_log.record("camera-control", bool(ok), status=200 if ok else 409,
+                    label=f"{_canon(label)} {action}")
+    if not ok:
+        raise HTTPException(409, f"camera {action} failed for {cam.camera_id}")
+    return {"status": _CAMERA_ACTIONS[action], "action": action,
+            "camera_id": cam.camera_id, "cameraLabel": _canon(label)}
 
 
 @router.get("/{camera_id}/frame")

@@ -129,6 +129,17 @@ const api = (path, opts={}) => fetch(path, {
   headers:{'Content-Type':'application/json'}, ...opts,
 }).then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(j)));
 
+// This device's edge_id — the control endpoints (camera start/stop/restart, PTZ)
+// authenticate on it, so local calls send the device's own value. Cached; ""
+// on an unprovisioned dev box, which the edge accepts.
+let _edgeId = null;
+async function edgeId() {
+  if (_edgeId !== null) return _edgeId;
+  try { const a = await api('/api/v1/account'); _edgeId = (a && a.user && a.user.edgeId) || ''; }
+  catch { _edgeId = ''; }
+  return _edgeId;
+}
+
 let previewSocket = null;
 
 async function loadCameras() {
@@ -209,7 +220,8 @@ $('btn-save').onclick = async () => {
   }
   try {
     await api('/api/v1/cameras', { method:'POST', body: JSON.stringify(camera) });
-    await api(`/api/v1/cameras/${camera.camera_id}/start`, { method:'POST' })
+    await api('/api/v1/cameras/control', { method:'POST', body: JSON.stringify(
+      { edgeId: await edgeId(), cameraLabel: camera.camera_id, action: 'start' }) })
       .catch(() => {});
     ['camera_id','camera_name','room_name','rtsp_url'].forEach(id => $(id).value='');
     loadCameras();
