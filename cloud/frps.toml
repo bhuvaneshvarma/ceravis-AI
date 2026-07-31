@@ -26,6 +26,14 @@ bindPort = 7000                     # edges (frpc) connect here — open TCP 700
 # Caddy, on the same box, reaches it over loopback.
 vhostHTTPPort = 7080
 
+# OPTIONAL — fleet SSH over ONE shared port. Multiplexes every house's SSH through
+# a single port using HTTP CONNECT, routed by the CONNECT host = each device's
+# edge_id (no per-house remotePort). Uncomment to enable, and open THIS port to
+# admin IPs ONLY in the security group (never 0.0.0.0/0). The SSH session inside
+# stays end-to-end encrypted; frps only sees the edge_id it routes on. Each edge
+# adds a matching type="tcpmux" proxy (see frpc.toml.example).
+# tcpmuxHTTPConnectPort = 7001
+
 # Only an edge that knows this token may open a tunnel. Change it.
 auth.method = "token"
 auth.token = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"

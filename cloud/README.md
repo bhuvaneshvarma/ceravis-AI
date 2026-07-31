@@ -55,7 +55,7 @@ later, does relay media for the strict-NAT minority and uses egress.)
    | HTTP | 80 | 0.0.0.0/0 | Caddy ACME challenge |
    | HTTPS | 443 | 0.0.0.0/0 | Caddy — the one public entry (live + API + UI) |
    | Custom TCP | 7000 | 0.0.0.0/0 | edges connect to frps (token-protected) |
-   | Custom TCP | 2222 | *My IP* | *(optional)* SSH to a Jetson — §6 |
+   | Custom TCP | 7001 | *My IP* | *(optional)* fleet SSH over one port (tcpmux) — §6 |
 
    Keep **7080 CLOSED** (Caddy reaches the frps vhost over loopback).
 3. **DNS:** point an A record for `edgeai.ceravishealth.in` at the Elastic IP.
@@ -157,9 +157,23 @@ pages: https://edgeai.ceravishealth.in/ui/setup.html
   > as "targets the right house", not a secret — the family-facing links are the
   > sensitive surface and stay gated by the app account. Add per-view signed
   > links (§7) before wide use.
-- **SSH (optional):** uncomment the `ceravis-ssh` block in `frpc.toml`, give each
-  house a unique `remotePort` (2222, 2223, …), make Jetson SSH key-only, open the
-  port to *My IP*. Then `ssh -p 2222 <user>@EC2_IP`.
+- **SSH (optional) — one shared port, routed by edge_id (tcpmux):** the whole
+  fleet SSHes through ONE server port; frps routes by the HTTP CONNECT host =
+  each device's `edge_id`, the same token that keys the live links — no per-house
+  port to allocate.
+  1. **frps** (`/etc/frp/frps.toml`): uncomment `tcpmuxHTTPConnectPort = 7001`,
+     restart frps, and open **7001 to admin IPs only** in the security group.
+  2. **Each edge** (`/etc/frp/frpc.toml`): add the `ceravis-ssh` `type="tcpmux"`
+     block from `frpc.toml.example` with `customDomains = ["<that device's
+     edge_id>"]`, restart frpc.
+  3. **Jetson sshd:** `PasswordAuthentication no`, `PubkeyAuthentication yes`
+     first — the `edge_id` is only the routing key; the keys are the auth.
+  4. **Connect** (any HTTP-CONNECT helper):
+     `ssh -o ProxyCommand="ncat --proxy EC2_IP:7001 --proxy-type http %h %p" <user>@<edge_id>`
+
+  *Simpler alternative* (no ProxyCommand, but a port per house): a plain
+  `type="tcp"` proxy with a unique `remotePort` (2222, 2223, …) → `ssh -p 2222
+  <user>@EC2_IP`.
 
 ---
 

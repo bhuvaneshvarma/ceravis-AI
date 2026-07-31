@@ -59,14 +59,24 @@ locations = ["/api", "/ui", "/stream"]
 #   the ACME client ON EC2 and needs EC2's own :80/:443, so an frpc "acme-http"
 #   (80 -> edge) proxy would fight it. TLS is one shared cert on Caddy.
 # ---------------------------------------------------------------------------
-# OPTIONAL: SSH into the Jetson from anywhere (remote maintenance / setup).
-#   ssh -p <remotePort> <jetson-user>@EC2_IP
-# ⚠ Make Jetson SSH key-only first (PasswordAuthentication no). Give each house
-#   a UNIQUE remotePort so they don't collide; SG source = *My IP* (or 0.0.0.0/0
-#   only once it is truly key-only).
+# OPTIONAL: SSH into THIS Jetson from anywhere over the fleet's ONE shared SSH
+# port — no per-house remotePort. frps multiplexes every house's SSH through a
+# single port (tcpmuxHTTPConnectPort in frps.toml) and routes by the HTTP CONNECT
+# host = this device's edge_id, the SAME token that keys the live links. One port
+# serves the whole fleet, disambiguated purely by edge_id.
+#   Connect (any HTTP-CONNECT helper — ncat, corkscrew, socat):
+#     ssh -o ProxyCommand="ncat --proxy EC2_IP:7001 --proxy-type http %h %p" <user>@EDGE_ID
+# ⚠ Make the Jetson key-only FIRST (PasswordAuthentication no). The edge_id is the
+#   ROUTING key, not authentication — the sshd keys are the auth. Open the frps
+#   tcpmux port to admin IPs only in the EC2 security group.
 # [[proxies]]
 # name = "ceravis-ssh"
-# type = "tcp"
+# type = "tcpmux"
+# multiplexer = "httpconnect"
 # localIP = "127.0.0.1"
 # localPort = 22
-# remotePort = 2222                            # unique per house
+# customDomains = ["EDGE_ID"]  # ceravis:ssh-edge-id — this device's edge_id (the CONNECT host)
+#
+# SIMPLER ALTERNATIVE (no shared port, no ProxyCommand): a plain tcp proxy with a
+# UNIQUE remotePort per house — `ssh -p 2222 <user>@EC2_IP`. Swap the block above
+# for: type="tcp", localPort=22, remotePort=2222 (unique per house), SG *My IP*.
