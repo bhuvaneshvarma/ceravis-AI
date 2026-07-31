@@ -37,6 +37,11 @@ from recording.incident_clip import build_incident_clip
 
 logger = logging.getLogger("alerts")
 
+# event_type -> the backend AlertType enum. Explicit so the wire value is a
+# deliberate contract, not an artifact of upper-casing the internal event name
+# (fall -> FALL, no_motion -> NO_MOTION). Anything unmapped falls back to upper().
+_ALERT_TYPE = {"fall": "FALL", "no_motion": "NO_MOTION"}
+
 
 class CloudAlertPublisher:
     def __init__(self, bus: EventBus) -> None:
@@ -116,7 +121,8 @@ class CloudAlertPublisher:
             alert_id = None
             if is_alert:
                 try:
-                    resp = save_alert(pid, etype.upper(), message)
+                    resp = save_alert(pid, _ALERT_TYPE.get(etype, etype.upper()),
+                                      message)
                     alert_id = alert_id_of(resp)
                     if etype == "no_motion" and event.recipient_id:
                         self._slot_alert_id[event.recipient_id] = alert_id
