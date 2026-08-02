@@ -301,6 +301,48 @@ def camera_status(camera_id: str, request: Request):
     return asdict(status)
 
 
+def _mtx_safe(fn, backbone: bool, what: str) -> None:
+    """Run a MediaMTX path op best-effort: skipped when the backbone is down (a
+    dev box with no MediaMTX), and a MediaMTX error is logged but never fails the
+    camera action — the AI-reader step still runs, so control degrades cleanly."""
+    if not backbone:
+        return
+    try:
+        fn()
+    except MediaMTXError as exc:
+        logger.warning("camera-control: MediaMTX %s failed: %s", what, exc)
+
+
+def _apply_camera_action(request: Request, cam, action: str) -> bool:
+    """Apply start/stop/restart to the FULL camera feed — the MediaMTX MAIN-STREAM
+    pull (what the browser live view AND recording consume) as well as the AI
+    reader — so a viewer's control acts on the real camera, not the AI only.
+    MediaMTX steps are best-effort; the returned bool is the AI-reader result.
+
+      start   : bring up the MediaMTX pull, then start the reader
+      stop    : stop the reader, then drop the MediaMTX pull (the live view stops)
+      restart : force MediaMTX to RE-PULL the camera (recovers a dead live feed),
+                then bounce the reader onto the fresh stream
+    """
+    backbone = mediamtx_client.is_up()
+    mgr = _mgr(request)
+    if action == "start":
+        _mtx_safe(lambda: mediamtx_client.sync_camera(cam), backbone,
+                  f"sync {cam.camera_id}")
+        return mgr.start_camera(cam.camera_id)
+    if action == "stop":
+        ok = mgr.stop_camera(cam.camera_id)
+        _mtx_safe(lambda: mediamtx_client.remove_camera(cam.camera_id), backbone,
+                  f"remove {cam.camera_id}")
+        return ok
+
+    def _repull() -> None:                      # restart: reconnect from scratch
+        mediamtx_client.remove_camera(cam.camera_id)
+        mediamtx_client.sync_camera(cam)
+    _mtx_safe(_repull, backbone, f"re-pull {cam.camera_id}")
+    return mgr.restart_camera(cam.camera_id)
+
+
 # action -> past-tense status word for the response.
 _CAMERA_ACTIONS = {"start": "started", "stop": "stopped", "restart": "restarted"}
 
@@ -335,10 +377,7 @@ def camera_control(body: dict, request: Request):
         call_log.record("camera-control", False, status=404,
                         label=f"{_canon(label)} {action}: no such camera")
         raise HTTPException(404, f"no camera for label {label!r}")
-    dispatch = {"start": _mgr(request).start_camera,
-                "stop": _mgr(request).stop_camera,
-                "restart": _mgr(request).restart_camera}
-    ok = dispatch[action](cam.camera_id)
+    ok = _apply_camera_action(request, cam, action)
     call_log.record("camera-control", bool(ok), status=200 if ok else 409,
                     label=f"{_canon(label)} {action}")
     if not ok:

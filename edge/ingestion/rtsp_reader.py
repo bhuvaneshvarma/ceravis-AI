@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime
 
 import cv2
 
@@ -53,12 +54,17 @@ class RTSPReader:
 
         self._capture: cv2.VideoCapture | None = None
         self._thread: threading.Thread | None = None
+        self._watchdog_thread: threading.Thread | None = None
         self._running = False
 
         self._frame_id = 0
         self._frames_captured = 0
         self._reconnect_count = 0
         self._last_frame_time: datetime | None = None
+        # Monotonic instant of the last delivered frame (and of each connect), for
+        # the stall watchdog — monotonic so a clock step can't misfire it. 0 until
+        # the first connection, so the watchdog stays disarmed before then.
+        self._last_frame_monotonic = 0.0
         self._health_state = CameraHealthState.OFFLINE
 
         self._fps_lock = threading.Lock()
@@ -105,6 +111,9 @@ class RTSPReader:
         self._thread = threading.Thread(
             target=self._run, daemon=True, name=f"rtsp-{self.camera_id}")
         self._thread.start()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog, daemon=True, name=f"rtsp-wd-{self.camera_id}")
+        self._watchdog_thread.start()
 
     def stop(self) -> None:
         self._running = False
@@ -114,6 +123,40 @@ class RTSPReader:
                 self._capture.release()
             except Exception:
                 logger.exception("Capture release failed camera=%s", self.camera_id)
+
+    def _watchdog(self) -> None:
+        """Self-heal the SILENT stall: a loopback session that stops delivering
+        frames while cv2.read() stays blocked (no error, no EOS) — so the read
+        loop is stuck INSIDE read() and its post-read timeout never runs, and the
+        live view keeps working (MediaMTX still serves the path) while the AI
+        starves. This independent thread notices frames have stopped and releases
+        the capture; that unblocks the hung read(), the main loop sees the failed
+        read and reconnects on its own. No manual restart. Armed only while
+        RUNNING and after the first connection, so a normal first-frame wait is
+        never cut short."""
+        timeout = max(1.0, settings.camera_stall_reconnect_secs)
+        while self._running:
+            time.sleep(1.0)
+            if self._health_state != CameraHealthState.RUNNING:
+                continue
+            last = self._last_frame_monotonic
+            if not last:
+                continue
+            idle = time.monotonic() - last
+            if idle <= timeout:
+                continue
+            logger.warning(
+                "camera=%s STALLED — %.1fs with no frame while the backbone still "
+                "serves the path; forcing a reader reconnect", self.camera_id, idle)
+            # Re-arm the window first so we don't fire again during the reconnect.
+            self._last_frame_monotonic = time.monotonic()
+            cap = self._capture
+            if cap is not None:
+                try:
+                    cap.release()          # unblocks the hung read() -> reconnect
+                except Exception:
+                    logger.exception("watchdog release failed camera=%s",
+                                     self.camera_id)
 
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
@@ -217,6 +260,9 @@ class RTSPReader:
 
             reconnect_delay = settings.reconnect_delay_secs
             next_frame_time = time.perf_counter()
+            # Arm the stall watchdog from the connection instant, so "connected but
+            # never delivered a first frame" is caught too, not just mid-stream stalls.
+            self._last_frame_monotonic = time.monotonic()
 
             while self._running and self._capture is not None:
                 if frame_interval:                       # 0 => uncapped, no pacing
@@ -244,6 +290,7 @@ class RTSPReader:
                 # transport delay, which is below one frame interval and cannot be
                 # recovered from OpenCV (no RTP/RTCP capture time is exposed).
                 self._last_frame_time = clock.now()
+                self._last_frame_monotonic = time.monotonic()   # feed the watchdog
                 self._update_fps()
                 self._frame_buffer.update(
                     camera_id=self.camera_id, frame=frame,

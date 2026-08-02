@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     reconnect_delay_secs: float = 5.0
     max_reconnect_delay_secs: float = 30.0
     frame_stale_secs: float = 5.0
+    # Self-healing watchdog: if a reader that is RUNNING delivers NO frame for
+    # this long, its loopback session has silently stalled (cv2.read() blocked
+    # with no error while MediaMTX still serves the path to live view) — the
+    # watchdog releases the capture to force a reconnect, so the AI recovers with
+    # no manual restart. Comfortably above one frame interval at any real fps.
+    camera_stall_reconnect_secs: float = 8.0
 
     # ---- MediaMTX (media backbone) -----------------------------------
     # MediaMTX is supervised as a CHILD of this process (one systemd service).
