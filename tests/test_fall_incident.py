@@ -51,7 +51,7 @@ from livestream.mediamtx_client import record_path_name
 from recording.incident_clip import build_incident_clip
 
 
-def _die(msg: str) -> "NoReturn":            # noqa: F821
+def _die(msg: str):
     print(f"[test-fall] ABORT: {msg}")
     raise SystemExit(1)
 

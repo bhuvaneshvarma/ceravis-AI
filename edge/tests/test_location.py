@@ -14,8 +14,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from detection.detection_schema import BoundingBox
 from pose.pose_buffer import PoseBuffer
-from pose.posture_buffer import PostureBuffer, PostureRecord
-from pose.posture_classifier import Posture, PostureTracker
+from pose.posture_buffer import PostureBuffer
+from pose.posture_classifier import PostureTracker
 from reid.identity_buffer import IdentityBuffer
 from reid.identity_schema import Identity
 from rules.location_rule import LocationRule

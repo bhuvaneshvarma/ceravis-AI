@@ -51,7 +51,10 @@ _WIRE_MAX_BYTES = 4 * 1024 * 1024       # rotate past this…
 _WIRE_KEEP_LINES = 500                   # …down to the newest N records
 # Request fields that are large base64 blobs — logged as a short marker, never
 # verbatim, so the wire log stays readable and small.
-_WIRE_REDACT_KEYS = ("base64Image", "fileBytes")
+# Big base64 fields to collapse to a size marker in the wire log. saveSnapshot no
+# longer sends base64 (it uploads image/video as multipart files, logged as byte-
+# size markers by the caller); uploadEmbeddingFile still base64-encodes fileBytes.
+_WIRE_REDACT_KEYS = ("fileBytes",)
 
 
 def _wire_redact(body):
