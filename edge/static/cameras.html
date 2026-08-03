@@ -184,7 +184,9 @@ async function loadCameras() {
           if (!confirm(`Delete camera ${id}?`)) return;
           await api('/api/v1/cameras/' + id, { method:'DELETE' });
         } else {
-          await api(`/api/v1/cameras/${id}/${action}`, { method:'POST' });
+          // start | stop | restart -> the unified edgeId-authed control endpoint.
+          await api('/api/v1/cameras/control', { method:'POST', body: JSON.stringify(
+            { edgeId: await edgeId(), cameraLabel: id, action }) });
         }
         loadCameras();
       } catch (e) { alert(JSON.stringify(e)); }
