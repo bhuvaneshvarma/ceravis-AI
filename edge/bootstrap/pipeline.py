@@ -122,13 +122,24 @@ class Pipeline:
             except Exception:
                 logger.exception("RecordingController disabled")
 
+        # ---- reid gallery (shared by tracking gate + ReID + enrollment) ----
+        # Built BEFORE tracking so the tracker can gate on it: with no enrolled
+        # target embeddings, tracking/ReID/pose/rules stay idle and the pipeline
+        # stops at YOLO detection (which still drives recording).
+        gallery: FaissGallery | None = None
+        try:
+            gallery = FaissGallery()
+        except Exception:
+            logger.exception("FAISS gallery unavailable (ReID + enrollment off)")
+
         # ---- tracking (clean-room BoT-SORT + OSNet appearance) -----
         tracking_runner = None
         try:
             from tracking.tracking_runner import TrackingRunner
             tracking_runner = TrackingRunner(
                 detection_buffer, track_buffer, frame_buffer=frames,
-                feature_buffer=feature_buffer, metrics_registry=metrics_registry)
+                feature_buffer=feature_buffer, metrics_registry=metrics_registry,
+                gallery=gallery)
             tracking_runner.start()
         except Exception:
             logger.exception("TrackingRunner disabled")
@@ -146,13 +157,6 @@ class Pipeline:
             posture_tracker = pose_runner.posture_tracker
         except Exception:
             logger.exception("PoseRunner disabled")
-
-        # ---- reid gallery (shared by ReID runner + enrollment) -----
-        gallery: FaissGallery | None = None
-        try:
-            gallery = FaissGallery()
-        except Exception:
-            logger.exception("FAISS gallery unavailable (ReID + enrollment off)")
 
         # ---- reid --------------------------------------------------
         reid_runner = None

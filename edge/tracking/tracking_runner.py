@@ -38,11 +38,20 @@ class TrackingRunner:
         frame_buffer: FrameBuffer | None = None,
         feature_buffer: TrackFeatureBuffer | None = None,
         metrics_registry=None,
+        gallery=None,
     ) -> None:
         self._detections = detection_buffer
         self._tracks = track_buffer
         self._frames = frame_buffer
         self._features = feature_buffer
+        # Enrollment gate: tracking/ReID/pose/rules run ONLY when the gallery holds
+        # at least one enrolled target embedding. Until then the pipeline stops at
+        # YOLO detection (which still drives recording) — no wasted appearance /
+        # tracking / pose / rule work on a device with nobody enrolled. Re-enables
+        # itself the instant enrollment lands (the gallery is rebuilt live).
+        self._gallery = gallery
+        self._enrolled = False
+        self._gate_logged = 0.0
         self._metrics = (
             metrics_registry.get_or_create("reid_embed") if metrics_registry else None
         )
@@ -124,7 +133,27 @@ class TrackingRunner:
             if sleep > 0:
                 time.sleep(sleep)
 
+    def _reid_ready(self) -> bool:
+        """Whether any target is enrolled — the gate for the whole AI chain below
+        detection. size() is the gallery's live embedding count, so this flips on
+        the moment enrollment finishes and off if the gallery is emptied."""
+        ready = self._gallery is not None and self._gallery.size() > 0
+        if ready and not self._enrolled:
+            logger.info("Tracking ENABLED — %d enrolled embedding(s) present",
+                        self._gallery.size())
+            self._enrolled = True
+        elif not ready and (self._enrolled or self._gate_logged == 0.0
+                            or time.monotonic() - self._gate_logged > 60):
+            logger.info("Tracking IDLE — no enrolled embeddings; running "
+                        "detection-only (recording stays active). Enroll the "
+                        "recipient to start tracking / ReID / pose / alerts.")
+            self._gate_logged = time.monotonic()
+            self._enrolled = False
+        return ready
+
     def _tick(self) -> None:
+        if not self._reid_ready():
+            return                              # gated: stop at YOLO detection
         for camera_id, det_result in self._detections.get_all().items():
             if self._last_seen_frame.get(camera_id) == det_result.frame_id:
                 continue
