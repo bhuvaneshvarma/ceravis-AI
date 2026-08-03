@@ -157,6 +157,12 @@ class Settings(BaseSettings):
     # this even if no stop/duration arrives, so a lost command can never leave a
     # motor spinning. duration_ms in the request is clamped to this.
     ptz_max_move_ms: int = 2000
+    # Manual-override auto-revert: after a viewer pans/tilts, the camera returns
+    # to its pre-override framing (where the AI was locked on the recipient) once
+    # this many seconds pass with NO further PTZ request. Each request re-arms the
+    # window. Best-effort — needs a camera that reports GetStatus / accepts
+    # AbsoluteMove; otherwise the revert is silently skipped. 0 disables it.
+    ptz_revert_secs: float = 15.0
 
     # ---- Hotspot (Jetson as WiFi AP for the household cameras) --------
     hotspot_interface: str = ""            # "" = auto-pick the first wifi device

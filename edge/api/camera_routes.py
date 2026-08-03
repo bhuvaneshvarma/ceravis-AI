@@ -200,6 +200,62 @@ def _arm_auto_stop(camera_id: str, onvif_cam, token: str, ms: int) -> int:
     return ms
 
 
+# ---- manual-override auto-revert (return to the recipient's framing) ------
+# The AI is locked on the recipient in software; a viewer's pan/tilt physically
+# moves the camera off them. These remember the framing at the START of a manual
+# override and, after ptz_revert_secs with NO further PTZ request, return the
+# camera there so it re-frames the target on its own. Best-effort: cameras that
+# don't report GetStatus / accept AbsoluteMove simply never capture a home.
+_ptz_revert_timers: dict[str, threading.Timer] = {}
+_ptz_home: dict[str, tuple] = {}         # camera_id -> (pan,tilt,zoom) before override
+
+
+def _ptz_capture_home(camera_id: str, onvif_cam, token: str) -> None:
+    """Remember the current framing ONCE per override session, BEFORE the camera
+    moves. No-op when revert is off, already captured, or unsupported."""
+    if settings.ptz_revert_secs <= 0:
+        return
+    with _ptz_lock:
+        if camera_id in _ptz_home:
+            return
+    pos = onvif_cam.ptz_status(token)             # None on unsupported cameras
+    if pos is not None:
+        with _ptz_lock:
+            _ptz_home.setdefault(camera_id, pos)
+
+
+def _ptz_arm_revert(camera_id: str, onvif_cam, token: str) -> None:
+    """(Re)start the idle-revert countdown — called on EVERY manual PTZ request,
+    so the window only elapses after the viewer truly stops touching it."""
+    if settings.ptz_revert_secs <= 0:
+        return
+    with _ptz_lock:
+        old = _ptz_revert_timers.pop(camera_id, None)
+        if old is not None:
+            old.cancel()
+        if camera_id not in _ptz_home:
+            return                                # nothing captured -> nothing to revert
+        t = threading.Timer(settings.ptz_revert_secs, _ptz_do_revert,
+                            args=(camera_id, onvif_cam, token))
+        t.daemon = True
+        _ptz_revert_timers[camera_id] = t
+        t.start()
+
+
+def _ptz_do_revert(camera_id: str, onvif_cam, token: str) -> None:
+    from onvif.soap import OnvifError
+    with _ptz_lock:
+        home = _ptz_home.pop(camera_id, None)
+        _ptz_revert_timers.pop(camera_id, None)
+    if home is None:
+        return
+    try:
+        onvif_cam.ptz_absolute_move(token, *home)
+        _ptz_log(True, camera_id, "reverted to the recipient's framing (idle)", 200)
+    except OnvifError as exc:
+        logger.warning("PTZ %s revert failed: %s", camera_id, exc)
+
+
 @router.post("/ptz")
 def ptz_by_label(body: dict):
     """
@@ -248,8 +304,10 @@ def ptz_by_label(body: dict):
                 t.cancel()
             onvif_cam.ptz_stop(token)
             _ptz_log(True, label, "stop", 200)
+            _ptz_arm_revert(cam.camera_id, onvif_cam, token)   # keep the idle countdown alive
             return {"status": "stopped", "camera_id": cam.camera_id,
                     "label": _canon(label)}
+        _ptz_capture_home(cam.camera_id, onvif_cam, token)     # remember framing before moving
         onvif_cam.ptz_move(token, pan, tilt, 0.0)
     except OnvifError as exc:
         _ptz_log(False, label, f"camera error: {exc}", 502)
@@ -257,6 +315,7 @@ def ptz_by_label(body: dict):
     # Default a missing/zero duration to the safety ceiling so it always stops.
     used_ms = _arm_auto_stop(cam.camera_id, onvif_cam, token,
                              duration_ms or settings.ptz_max_move_ms)
+    _ptz_arm_revert(cam.camera_id, onvif_cam, token)           # (re)start the idle-revert window
     _ptz_log(True, label, f"move pan={pan:+.2f} tilt={tilt:+.2f} {used_ms}ms", 200)
     return {"status": "moving", "camera_id": cam.camera_id,
             "label": _canon(label), "auto_stop_ms": used_ms}
@@ -480,9 +539,11 @@ def ptz(camera_id: str, body: dict):
         if stop:
             onvif_cam.ptz_stop(token)
         else:
+            _ptz_capture_home(camera_id, onvif_cam, token)   # remember framing before moving
             onvif_cam.ptz_move(token, pan, tilt, zoom)
     except OnvifError as exc:
         raise HTTPException(502, f"PTZ failed: {exc}")
+    _ptz_arm_revert(camera_id, onvif_cam, token)             # (re)start the idle-revert window
     return {"status": "stopped" if stop else "moving", "camera_id": camera_id}
 
 

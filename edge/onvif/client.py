@@ -373,6 +373,49 @@ class OnvifCamera:
   <PanTilt>true</PanTilt><Zoom>true</Zoom>
 </Stop>""")
 
+    def ptz_status(self, profile_token: str) -> tuple[float, float, float] | None:
+        """The camera's CURRENT absolute PTZ position (pan, tilt, zoom) via
+        GetStatus, or None when it doesn't report one. Used to remember where the
+        camera was framing the target before a manual override, so it can return
+        there. Never raises for an unsupported camera — returns None."""
+        self._services()
+        if not self._ptz_url:
+            return None
+        try:
+            body = self._call(self._ptz_url,
+                              f'<GetStatus xmlns="{_PTZ_NS}">'
+                              f'<ProfileToken>{profile_token}</ProfileToken></GetStatus>')
+        except OnvifError:
+            return None
+        pos = body.find(".//Position")
+        if pos is None:
+            return None
+        pt, zoom_el = pos.find("PanTilt"), pos.find("Zoom")
+        try:
+            pan = float(pt.get("x")) if pt is not None else 0.0
+            tilt = float(pt.get("y")) if pt is not None else 0.0
+            zoom = float(zoom_el.get("x")) if zoom_el is not None else 0.0
+        except (TypeError, ValueError):
+            return None
+        return (pan, tilt, zoom)
+
+    def ptz_absolute_move(self, profile_token: str,
+                          pan: float, tilt: float, zoom: float) -> None:
+        """Move to an ABSOLUTE PTZ position (what ptz_status returned) — used to
+        revert to the pre-override framing. Raises OnvifError if the camera has
+        no PTZ service or rejects absolute positioning."""
+        self._services()
+        if not self._ptz_url:
+            raise OnvifError("camera reports no PTZ service")
+        self._call(self._ptz_url, f"""
+<AbsoluteMove xmlns="{_PTZ_NS}">
+  <ProfileToken>{profile_token}</ProfileToken>
+  <Position>
+    <PanTilt x="{pan}" y="{tilt}" xmlns="{_SCHEMA_NS}"/>
+    <Zoom x="{zoom}" xmlns="{_SCHEMA_NS}"/>
+  </Position>
+</AbsoluteMove>""")
+
 
 # ---- probe: everything the wizard needs in one call ----------------------
 
