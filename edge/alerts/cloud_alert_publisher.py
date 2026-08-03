@@ -43,6 +43,13 @@ logger = logging.getLogger("alerts")
 _ALERT_TYPE = {"fall": "FALL", "no_motion": "NO_MOTION"}
 
 
+def _category_of(event) -> str:
+    """The saveSnapshot `category` for an event — its alert/event type
+    (FALL, NO_MOTION, …), the same vocabulary saveAlert's alertType uses."""
+    et = (event.event_type or "").lower()
+    return _ALERT_TYPE.get(et, et.upper())
+
+
 class CloudAlertPublisher:
     def __init__(self, bus: EventBus) -> None:
         self._queue = bus.subscribe()
@@ -153,6 +160,7 @@ class CloudAlertPublisher:
         if not paths:
             return
         camera_number = room_to_enum(event.room_name)
+        category = _category_of(event)
         n = len(paths)
         for i, rel in enumerate(paths):
             img = self._image_bytes(rel)
@@ -161,7 +169,7 @@ class CloudAlertPublisher:
             label = text if n == 1 else f"{text} · frame {i + 1}/{n}"
             try:
                 save_snapshot(pid, label, camera_number, image=img,
-                              alert_id=alert_id)
+                              alert_id=alert_id, category=category)
             except CeravisApiError as exc:
                 logger.warning("saveSnapshot failed: %s", exc)
             except Exception:
@@ -217,7 +225,8 @@ class CloudAlertPublisher:
                       "in frame at the incident)")
             return
         try:
-            save_snapshot(pid, text, camera_number, video=clip, alert_id=alert_id)
+            save_snapshot(pid, text, camera_number, video=clip, alert_id=alert_id,
+                          category="FALL")
             logger.info("fall clip sent: %d bytes, alert=%s", len(clip), alert_id)
         except CeravisApiError as exc:
             logger.warning("fall clip saveSnapshot failed: %s", exc)

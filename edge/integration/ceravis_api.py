@@ -318,17 +318,17 @@ def _multipart_headers() -> dict[str, str]:
 
 def save_snapshot(patient_id, text: str, camera_number: str, *,
                   image: bytes | None = None, video: bytes | None = None,
-                  alert_id: int | None = None):
+                  alert_id: int | None = None, category: str | None = None):
     """
     POST /v1/ai/saveSnapshot — the snapshot/clip for an alert or action.
-    multipart/form-data (SnapshotRequest): patientId, text, cameraNumber as form
-    fields, and the media as FILE parts:
+    multipart/form-data (SnapshotRequest): patientId, text, cameraNumber, category
+    as form fields, and the media as FILE parts:
       image : the JPEG still, raw bytes (MultipartFile `image`)
       video : the MP4 incident clip, raw bytes (MultipartFile `video`)
     Either or both may be sent — the still fires immediately, the fall clip
     follows once its post-roll footage is written; both carry the same text and,
-    when present, alertId so the server associates them with the alert. (The clip
-    is uploaded as a file now, not crammed into a base64 field.)
+    when present, alertId so the server associates them with the alert. `category`
+    labels what the snapshot is about (the event/alert type — FALL, NO_MOTION, …).
     """
     if not is_configured():
         raise CeravisApiError(
@@ -342,6 +342,8 @@ def save_snapshot(patient_id, text: str, camera_number: str, *,
             "cameraNumber": camera_number or ""}
     if alert_id is not None:
         data["alertId"] = str(alert_id)
+    if category:
+        data["category"] = category
     files = {}
     if image:
         files["image"] = ("snapshot.jpg", image, "image/jpeg")
