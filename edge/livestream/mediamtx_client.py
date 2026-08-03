@@ -326,6 +326,23 @@ def remove_camera(camera_id: str) -> None:
             pass
 
 
+# ---- LIVE-path-only control (camera start/stop/restart) --------------
+# These touch ONLY the camera's live main path, never its recording paths, so
+# a viewer's start/stop/restart of the live feed leaves the independent,
+# person-triggered recording (RecordingController + MediaMTX path resilience)
+# running untouched. In the default config recording lives on the separate -aac
+# path, so it is fully decoupled from the live path either way.
+
+def sync_live_path(camera) -> None:
+    """(Re)connect ONLY the LIVE main path (stream_path <- rtsp_url)."""
+    _sync_named_path(stream_path(camera.camera_id), camera.rtsp_url)
+
+
+def remove_live_path(camera_id: str) -> None:
+    """Drop ONLY the LIVE main path, leaving the recording paths in place."""
+    _remove_named_path(stream_path(camera_id))
+
+
 def set_record(path: str, on: bool) -> None:
     """Toggle disk recording for one MediaMTX path at runtime."""
     try:
