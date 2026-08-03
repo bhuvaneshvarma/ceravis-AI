@@ -3,17 +3,20 @@
 Manual end-to-end test — fire ONE simulated FALL incident NOW, against the real
 cloud, exactly the way the pipeline would.
 
-It runs the SAME production path a real fall takes (nothing is faked except the
-trigger), so you can confirm the alert, the still and the incident clip all land
-in the app / S3 without waiting for an actual fall:
+It exercises the same integration path a real fall takes, so you can confirm the
+alert, the still and the incident clip all land in the app / S3 without waiting
+for an actual fall:
 
-    saveAlert("FALL")                         -> alertId
-    saveSnapshot(image=<live frame>, alertId) -> the still  (multipart image)
-    saveSnapshot(video=<merged clip>, alertId)-> the clip   (multipart video)
+    saveAlert("FALL")                                  -> alertId
+    saveSnapshot(image=<live frame>, video=<clip>,     -> the still AND the clip
+                 alertId, category="FALL")                in ONE multipart call
 
-The clip is merged from the segments already on disk around "now" (recording/
-incident_clip) — same code the CloudAlertPublisher uses. Nothing here touches the
-running pipeline; it just calls the shared integration + recording modules.
+Both artifacts are available at test time (the live still and the clip merged
+from the segments already on disk around "now"), so — unlike production, where the
+clip trails the alert by a post-roll — the test sends them together in a single
+saveSnapshot. Nothing here touches the running pipeline; it calls the shared
+integration + recording modules (recording/incident_clip is the same merge the
+CloudAlertPublisher uses).
 
 PRECONDITIONS (on the edge):
   • account verified            (account.json has ceravisUserId)
@@ -107,33 +110,34 @@ def main() -> None:
     except CeravisApiError as exc:
         _die(f"saveAlert failed: {exc}")
 
-    # 2) the still (a live frame off the camera)
+    # 2) gather BOTH artifacts now — in the test both are available immediately:
+    #    the live still, and the clip merged from the segments already on disk.
     jpeg = _live_jpeg(cam)
-    if jpeg:
-        try:
-            save_snapshot(pid, text, camera_number, image=jpeg, alert_id=alert_id)
-            print(f"[test-fall] still     OK   -> image {len(jpeg)} bytes")
-        except CeravisApiError as exc:
-            print(f"[test-fall] still     FAIL -> {exc}")
-    else:
-        print("[test-fall] still     SKIP -> could not grab a live frame")
+    print("[test-fall] still     " + (f"OK   -> image {len(jpeg)} bytes" if jpeg
+          else "SKIP -> could not grab a live frame"))
 
-    # 3) the incident clip (merged from the segments already on disk around now)
+    clip = None
     if args.no_clip:
         print("[test-fall] clip      SKIP -> --no-clip")
-        return
-    clip = build_incident_clip(record_path_name(cam), at,
-                               settings.fall_clip_pre_secs,
-                               settings.fall_clip_post_secs)
-    if not clip:
-        print("[test-fall] clip      SKIP -> no footage around now "
-              "(is recording ON, and was someone in frame recently?)")
-        return
+    else:
+        clip = build_incident_clip(record_path_name(cam), at,
+                                   settings.fall_clip_pre_secs,
+                                   settings.fall_clip_post_secs)
+        print("[test-fall] clip      " + (f"OK   -> video {len(clip)} bytes" if clip
+              else "SKIP -> no footage around now (recording ON? someone in frame recently?)"))
+
+    # 3) ONE saveSnapshot carrying BOTH the image and the video (+ alertId,
+    #    category) — the SnapshotRequest DTO takes both, so a fall is a single
+    #    call, not two.
+    if not jpeg and not clip:
+        _die("nothing to send — no still and no clip available")
     try:
-        save_snapshot(pid, text, camera_number, video=clip, alert_id=alert_id)
-        print(f"[test-fall] clip      OK   -> video {len(clip)} bytes  — DONE")
+        save_snapshot(pid, text, camera_number, image=jpeg, video=clip,
+                      alert_id=alert_id, category="FALL")
+        print(f"[test-fall] saveSnapshot OK -> image={'yes' if jpeg else 'no'} "
+              f"video={'yes' if clip else 'no'} category=FALL  — DONE")
     except CeravisApiError as exc:
-        print(f"[test-fall] clip      FAIL -> {exc}")
+        _die(f"saveSnapshot failed: {exc}")
 
 
 if __name__ == "__main__":
