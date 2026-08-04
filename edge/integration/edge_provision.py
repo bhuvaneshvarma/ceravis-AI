@@ -46,20 +46,33 @@ def apply_edge_id(edge_id: str) -> bool:
     if not edge_id:
         return False
     if not shutil.which("sudo") or not _helper_present():
-        logger.warning(
-            "edge_id %s NOT auto-applied to the tunnel (sudo/helper missing). "
-            "Run 'bash cloud/install_frpc.sh' to install the helper, or set "
-            "locations = [\"/%s\"] in cloud/frpc.toml and restart frpc.",
-            edge_id, edge_id)
+        _loud_fail(edge_id,
+                   "sudo/helper missing — run 'bash cloud/install_frpc.sh'")
         return False
     try:
         r = subprocess.run(["sudo", "-n", _HELPER, edge_id],
                            capture_output=True, text=True, timeout=30)
         if r.returncode == 0:
-            logger.info("frpc updated with edge_id %s and restarted", edge_id)
+            logger.info("frpc updated with edge_id %s: %s", edge_id,
+                        (r.stdout or "").strip()[:200])
             return True
-        logger.warning("frpc auto-apply failed (rc=%s): %s", r.returncode,
-                       (r.stderr or r.stdout or "").strip()[:300])
+        _loud_fail(edge_id, f"helper rc={r.returncode}: "
+                   + (r.stderr or r.stdout or "").strip()[:200])
     except (subprocess.SubprocessError, OSError) as exc:
-        logger.warning("frpc auto-apply error: %s", exc)
+        _loud_fail(edge_id, f"helper error: {exc}")
     return False
+
+
+def _loud_fail(edge_id: str, why: str) -> None:
+    """A failed tunnel update is what silently kills every live link, so surface
+    it on the monitor's Cloud Sync Console (not just the log). Best-effort."""
+    logger.warning("frpc auto-apply FAILED for edge_id %s — %s. Live links stay "
+                   "dead until fixed: set locations = [\"/%s\"] in "
+                   "/etc/frp/frpc.toml and restart frpc.", edge_id, why, edge_id)
+    try:
+        from integration import call_log
+        call_log.record("event", False,
+                        label="Live-link tunnel NOT updated — live links are dead",
+                        error=why)
+    except Exception:                                 # noqa: BLE001 — never raise
+        pass
