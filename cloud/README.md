@@ -19,11 +19,17 @@ edgeai.ceravishealth.in                          ┌──────── AWS
    └─── live video P2P over UDP (WebRTC/ICE, STUN) — DIRECT, never touches EC2 ──┘
 ```
 
-**One domain, routed by path:**
+**One domain, routed by path — every home keyed by its `edge_id`:**
 - `/<edge_id>/<ROOM>/` → that home's **MediaMTX** live player page (open).
-- `/api/…` → that home's **uvicorn API** — **open** (no Basic Auth), each control
-  request carries the `edgeId` and the edge verifies it matches.
-- `/ui/…` → that home's **admin pages** — **Basic-Auth** prompt at Caddy.
+- `/<edge_id>/api/…` → that home's **uvicorn control API** (PTZ, recordings,
+  timeline, camera start/stop/restart, snapshot) — **open**, and routed PER EDGE
+  by the `/<edge_id>` prefix so calls always reach the right home. frps routes on
+  the URL only (never the request body), so the per-edge path is what makes the
+  API multi-house safe; the `edgeId` in the body stays as a second check.
+- `/ui/…`, `/stream` → that home's **admin pages** (Basic-Auth at Caddy) and the
+  setup JPEG feed — shared, single-operator setup surfaces. `/api` also answers
+  here as a **legacy alias** during the switch to per-edge; drop it before adding
+  a second house (see `frpc.toml.example`).
 
 Adding a home needs **nothing** on EC2 — a new edge with its own `edge_id`.
 
@@ -112,7 +118,7 @@ nano frpc.toml
 #   leave mediamtx-webrtc  locations = ["/EDGE_ID"]  # ceravis:edge-id  (auto-filled)
 #   keep the ceravis-ssh block if you manage this house remotely!
 bash install_frpc.sh            # installs frpc + the apply-edge-id helper + sudoers
-sudo systemctl status frpc      # 'start proxy success' for both proxies
+sudo systemctl status frpc      # 'start proxy success' x3 (mediamtx-webrtc, ceravis-api, ceravis-ui)
 ```
 
 `jetson.env` already ships with the domain + STUN set. After verifying the
@@ -122,16 +128,20 @@ sudo systemctl restart ceravis
 ```
 ```
 live : https://edgeai.ceravishealth.in/<edge_id>/<ROOM>/
-API  : https://edgeai.ceravishealth.in/api/v1/…
+API  : https://edgeai.ceravishealth.in/<edge_id>/api/v1/…   (per-edge — multi-house safe)
 pages: https://edgeai.ceravishealth.in/ui/setup.html
 ```
+The app/backend must call the control API with the **`/<edge_id>` prefix** — it
+is the routing key that puts each call on the right house. (LAN-direct, off the
+tunnel, stays `http://<device-ip>:8000/api/v1/…` — the edge serves both.)
 **Adding another house:** repeat with its own `edge_id`. Nothing changes on EC2.
 
 ---
 
 ## 5. Test & verify
 
-1. **Tunnels up?** edge: `journalctl -u frpc -f` → two `start proxy success`.
+1. **Tunnels up?** edge: `journalctl -u frpc -f` → three `start proxy success`
+   (`mediamtx-webrtc`, `ceravis-api`, `ceravis-ui`).
    Caddy: `journalctl -u caddy -f` → cert obtained.
 2. **Backbone up?** on the edge: `cd edge && python3 -m tools.status` →
    `mediamtx up: yes`, each camera `ready`.

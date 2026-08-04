@@ -80,6 +80,30 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _strip_fleet_edge_prefix(request, call_next):
+    """Make the API multi-device safe. In the fleet, frps routes ONLY by URL, so
+    every home's control call must carry a per-device key in the PATH — the same
+    /<edge_id> prefix the live links use (…/<edge_id>/api/v1/…). frps hands each
+    home's calls to the right edge on that unique prefix; here we strip this
+    device's own prefix so the app's routes (/api, /ui, /stream) still match.
+
+    LAN-direct calls carry NO prefix and are untouched, so both the local UI and
+    the fleet reach the same handlers. The body `edge_id` stays as a second check
+    (control_auth) — routing puts the call on the right edge, the check confirms
+    it. Cheap: effective_edge_id() is an in-memory resolve."""
+    from configuration.account_config import effective_edge_id
+    eid = effective_edge_id()
+    if eid:
+        path = request.scope.get("path", "")
+        prefix = "/" + eid
+        if path == prefix or path.startswith(prefix + "/"):
+            stripped = path[len(prefix):] or "/"
+            request.scope["path"] = stripped
+            request.scope["raw_path"] = stripped.encode("utf-8")
+    return await call_next(request)
+
+
 def _inbound_endpoint(path: str) -> str | None:
     """Classify an inbound request into the ONLY kinds the Cloud Sync Console
     shows — the endpoints the app.ceravishealth.in backend calls on THIS device.

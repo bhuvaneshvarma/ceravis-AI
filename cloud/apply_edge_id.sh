@@ -34,28 +34,39 @@ fi
 
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
-# Rewrite ONLY the mediamtx-webrtc proxy's `locations` line (or insert one),
-# keeping every other byte. A block runs from a `[[proxies]]` header to the next
-# one (or EOF); the target block is the one whose `name` is mediamtx-webrtc. Our
-# template lists `name` before `locations`, so `target` is set before we reach it.
+# Rewrite the per-edge `locations` line (or insert one) of BOTH the live-link and
+# the control-API proxies, keeping every other byte:
+#   mediamtx-webrtc -> ["/<edge_id>"]        (live WHEP, routed per edge)
+#   ceravis-api     -> ["/<edge_id>/api"]    (control API, routed per edge)
+# Any other proxy (ceravis-ui shared /ui,/stream,/api legacy; ceravis-ssh) is
+# left untouched. A block runs from a `[[proxies]]` header to the next (or EOF);
+# our template lists `name` before `locations`, so the target flag is set first.
 awk -v eid="$EDGE_ID" '
-  function loc() { return "locations = [\"/" eid "\"]  # ceravis:edge-id" }
+  function mtx() { return "locations = [\"/" eid "\"]  # ceravis:edge-id" }
+  function api() { return "locations = [\"/" eid "/api\"]  # ceravis:edge-id" }
   /^[[:space:]]*\[\[proxies\]\]/ {
-      if (target && !wrote) { print loc(); wrote=1 }   # block ended w/o locations
-      target=0; print; next
+      if (tmtx && !wrote) print mtx()
+      if (tapi && !wrote) print api()
+      tmtx=0; tapi=0; print; next
   }
   /^[[:space:]]*name[[:space:]]*=/ {
-      target = ($0 ~ /"mediamtx-webrtc"/) ? 1 : 0
-      if (target) wrote=0
+      tmtx = ($0 ~ /"mediamtx-webrtc"/)
+      tapi = ($0 ~ /"ceravis-api"/)
+      if (tmtx || tapi) wrote=0
       print; next
   }
-  (target && /^[[:space:]]*locations[[:space:]]*=/) { print loc(); wrote=1; next }
+  ((tmtx || tapi) && /^[[:space:]]*locations[[:space:]]*=/) {
+      print (tmtx ? mtx() : api()); wrote=1; next
+  }
   { print }
-  END { if (target && !wrote) print loc() }
+  END {
+      if (tmtx && !wrote) print mtx()
+      if (tapi && !wrote) print api()
+  }
 ' "$FRPC" > "$TMP"
 
-# The target proxy must exist — refuse to touch a config with no mediamtx-webrtc
-# block (wrong file / old template) rather than write a stray line.
+# The live-link proxy must exist — refuse to touch a config with no
+# mediamtx-webrtc block (wrong file / old template) rather than write stray lines.
 grep -Eq '^[[:space:]]*name[[:space:]]*=[[:space:]]*"mediamtx-webrtc"' "$TMP" || {
     echo "no 'mediamtx-webrtc' proxy in $FRPC — not touching it" >&2; exit 4; }
 
