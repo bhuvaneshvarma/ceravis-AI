@@ -89,9 +89,8 @@ nano Caddyfile                  # set the domain + paste the hash into basic_aut
 bash install_caddy.sh
 ```
 
-frps uses `vhostHTTPPort = 7080`; Caddy reverse-proxies `:443 → 127.0.0.1:7080`,
-Basic-Auth-protects only `/ui/*`, and owns CORS for the whole domain (see §6) so
-the app's live links play with no login. First HTTPS request mints the cert.
+frps uses `vhostHTTPPort = 7080`; Caddy reverse-proxies `:443 → 127.0.0.1:7080`
+and Basic-Auth-protects only `/ui/*`. First HTTPS request mints the cert.
 
 ---
 
@@ -144,55 +143,12 @@ pages: https://edgeai.ceravishealth.in/ui/setup.html
 4. **API + pages:** `…/api/v1/system/status` should answer; `…/ui/setup.html`
    should prompt for the admin login.
 
-### Live link fails with a CORS error (`No 'Access-Control-Allow-Origin' header`)
-
-The browser blocks the WebRTC preflight because the response to the `OPTIONS`
-request had no `Access-Control-Allow-Origin`. With the current `Caddyfile` Caddy
-answers that preflight itself, so this means either the box is running an OLD
-Caddyfile or the request never reaches Caddy's CORS handler. Check, in order:
-
-```bash
-# 1) Preflight must return 204 + Access-Control-Allow-Origin (from Caddy).
-curl -i -X OPTIONS https://edgeai.ceravishealth.in/<edge_id>/<ROOM>/whep \
-     -H 'Origin: https://app.ceravishealth.in' \
-     -H 'Access-Control-Request-Method: POST'
-#    204 with 'access-control-allow-origin: *'  -> Caddy is correct; go to (2).
-#    401 / login prompt                         -> Basic-Auth is over-scoped:
-#        redeploy Caddyfile.example (auth must match ONLY /ui) + reload caddy.
-#    404 / 502                                  -> not a CORS problem (see 2/3).
-
-# 2) Is the edge reachable through the tunnel? (404 here = frps has no route.)
-curl -i https://edgeai.ceravishealth.in/api/v1/system/status
-#    If this 404s, the edge's frpc is down OR its locations don't match the
-#    edge_id in the URL (a re-verify/redeploy can leave frpc.toml stale):
-#      edge:  grep -n 'ceravis:edge-id' /etc/frp/frpc.toml   # must be /<edge_id>
-#             sudo ceravis-apply-edge-id <edge_id> && systemctl status frpc
-
-# 3) Is MediaMTX up on the edge?  cd edge && python3 -m tools.status
-```
-
-> **Room name must match the link we send.** MediaMTX serves each camera under
-> the exact path in the `url` we PUT to `saveCamera` (e.g. `…/<edge_id>/LIVING-ROOM`).
-> The app must open **that URL verbatim** and append `/whep` — not rebuild it from
-> the room label (`LIVING_ROOM` → `LIVING ROOM`), which points at a path that does
-> not exist and 404s *after* CORS passes.
-
 ---
 
 ## 6. Auth model
 
-- **Live links (`/<edge_id>/<ROOM>/…`)** — **no** login. They play with nothing
-  but the URL; the app already gates them behind the family's account. The
-  browser reaches them cross-origin (the app runs on `app.ceravishealth.in`), so
-  Caddy **owns CORS** for the domain: it answers the WebRTC preflight (`OPTIONS`)
-  itself and stamps exactly one `Access-Control-Allow-Origin` on every response.
-  This lives in one place (`Caddyfile`) — never re-add auth in front of a live
-  link, and never set CORS headers on the edge/MediaMTX side too (two
-  `Access-Control-Allow-Origin` values make the browser reject the response).
 - **Admin pages (`/ui/*`)** — HTTP Basic Auth at Caddy (the `basic_auth` block).
-  Humans get an id/password prompt from anywhere. This is the **only** login on
-  the domain; it is scoped to `/ui` and excludes `OPTIONS` so a CORS preflight is
-  never challenged.
+  Humans get an id/password prompt from anywhere.
 - **API (`/api/*`)** — **no** Basic Auth, so the app server calls it freely.
   Instead each control request (PTZ, recording playback) must carry this
   device's `edgeId`, and the edge verifies it **matches** the provisioned value

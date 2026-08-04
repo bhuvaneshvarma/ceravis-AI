@@ -3,8 +3,8 @@
 # Caddy is the ONE public entry for the whole fleet: it obtains and auto-renews a
 # single Let's Encrypt certificate for the shared domain and reverse-proxies
 # every request to the frps HTTP vhost (127.0.0.1:7080), which routes by path:
-#   /<edge_id>/…  -> that home's MediaMTX (live links, OPEN — no login)
-#   /api/…        -> that home's uvicorn API (OPEN; edgeId verified in-request)
+#   /<edge_id>/…  -> that home's MediaMTX (live links, open)
+#   /api/…        -> that home's uvicorn API (open; edgeId verified in-request)
 #   /ui/…         -> that home's uvicorn pages (Basic-Auth, below)
 # The video itself stays peer-to-peer (UDP) and never passes through here.
 #
@@ -22,51 +22,13 @@
 # edgeai.ceravishealth.in and matches the edges' customDomains.
 
 edgeai.ceravishealth.in {
-	# --- CORS: one owner, at the one public entry --------------------------
-	# The CERAVIS app runs on a DIFFERENT origin (https://app.ceravishealth.in),
-	# so before the WHEP request the browser sends a CORS *preflight* (an OPTIONS
-	# request, because Content-Type: application/sdp is not a "simple" header).
-	# If that preflight comes back without an Access-Control-Allow-Origin header
-	# — which is what happens if a login challenge or an upstream error answers
-	# it — the browser blocks the live link ("No 'Access-Control-Allow-Origin'
-	# header is present").
-	#
-	# So CORS is owned HERE, at the single public entry, not left to the upstream:
-	#   • the preflight is answered by Caddy itself (below), so it can never be
-	#     challenged by the /ui login and never depends on the edge being up;
-	#   • every real response is stamped with exactly one Allow-Origin (further
-	#     down), so a browser never sees a missing or duplicated header.
-	# Live links therefore need NOTHING but the URL to play — no credentials.
-	@preflight method OPTIONS
-	handle @preflight {
-		header Access-Control-Allow-Origin "*"
-		header Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS"
-		header Access-Control-Allow-Headers "Content-Type, Authorization, If-Match"
-		header Access-Control-Max-Age "86400"
-		respond 204
-	}
-
-	# --- Admin PAGES require a login; live links + API do NOT --------------
-	# The prompt is scoped to /ui ONLY. The API verifies the edgeId carried in
-	# each request; the per-camera live links are the URLs the app already gates
-	# behind the family's account. OPTIONS is excluded so the CORS preflight
-	# above is never challenged for a login.
-	@ui {
-		path /ui /ui/*
-		not method OPTIONS
-	}
+	# The admin PAGES require a login; the API and live links do not — the API
+	# verifies the edgeId carried in each request, and live links are the
+	# per-camera URLs the app already gates behind the family's account.
+	@ui path /ui /ui/*
 	basic_auth @ui {
 		admin BCRYPT_HASH_FROM_caddy_hash-password
 	}
 
-	# --- Everything else -> the frps HTTP vhost ----------------------------
-	# Guarantee exactly ONE Access-Control-Allow-Origin on every proxied
-	# response — even an upstream 404/502 — by setting it here (which replaces
-	# whatever MediaMTX/uvicorn also set), so the browser always sees a single,
-	# consistent value instead of a missing header or two conflicting ones.
-	handle {
-		reverse_proxy 127.0.0.1:7080 {
-			header_down Access-Control-Allow-Origin "*"
-		}
-	}
+	reverse_proxy 127.0.0.1:7080
 }
