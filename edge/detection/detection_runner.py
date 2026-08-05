@@ -29,11 +29,9 @@ class DetectionRunner:
         frame_buffer: FrameBuffer,
         detection_buffer: DetectionBuffer,
         metrics_registry=None,
-        target_registry=None,
     ) -> None:
         self._frame_buffer = frame_buffer
         self._detection_buffer = detection_buffer
-        self._targets = target_registry      # focus detection on the active camera
         self._metrics = (
             metrics_registry.get_or_create("detection")
             if metrics_registry else None
@@ -98,26 +96,19 @@ class DetectionRunner:
             if sleep > 0:
                 time.sleep(sleep)
 
-    def _active_cameras(self) -> set:
-        """Cameras to run detection on. Once the enrolled recipient is locked on
-        a camera, focus ONLY on that camera (others go idle — no detection /
-        tracking / pose). With no lock we scan EVERY camera to (re)find them."""
-        if not settings.active_camera_only or self._targets is None:
-            return set()
-        try:
-            return set(self._targets.all().keys())
-        except Exception:
-            return set()
-
     def _process_all_frames(self) -> None:
         assert self._detector is not None
         frames = self._frame_buffer.get_all_latest()
         if not frames:
             return
-        active = self._active_cameras()           # empty => searching (all cameras)
+        # Detection runs on EVERY camera: it is the cheap "person present?" signal
+        # that (a) drives per-camera recording (RecordingController) and (b) lets
+        # the system (re)find the recipient on whichever camera they are on. The
+        # GPU-heavy focus — one camera once the target is locked — is applied
+        # DOWNSTREAM in TrackingRunner, so tracking / OSNet / pose / ReID stay
+        # cheap while recording still covers the whole home. See
+        # settings.active_camera_only.
         for camera_id, fd in frames.items():
-            if active and camera_id not in active:
-                continue                           # recipient is elsewhere; skip
             if self._last_seen_frame.get(camera_id) == fd.frame_id:
                 continue
             self._last_seen_frame[camera_id] = fd.frame_id

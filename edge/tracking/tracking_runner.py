@@ -39,11 +39,18 @@ class TrackingRunner:
         feature_buffer: TrackFeatureBuffer | None = None,
         metrics_registry=None,
         gallery=None,
+        target_registry=None,
     ) -> None:
         self._detections = detection_buffer
         self._tracks = track_buffer
         self._frames = frame_buffer
         self._features = feature_buffer
+        # Active-camera focus: once the recipient is locked on a camera, run the
+        # GPU-heavy work (BoT-SORT + OSNet + pose + ReID all flow from here) ONLY
+        # on that camera; the others idle until the lock lapses. Detection stays
+        # all-cameras so recording keeps covering the whole home. Empty set =
+        # searching (process every camera to (re)find the target).
+        self._targets = target_registry
         # Enrollment gate: tracking/ReID/pose/rules run ONLY when the gallery holds
         # at least one enrolled target embedding. Until then the pipeline stops at
         # YOLO detection (which still drives recording) — no wasted appearance /
@@ -151,10 +158,24 @@ class TrackingRunner:
             self._enrolled = False
         return ready
 
+    def _active_cameras(self) -> set:
+        """Cameras the GPU-heavy chain runs on. Once the recipient is locked on a
+        camera, focus ONLY there (this is where the old detection-level focus now
+        lives); with no lock, empty set = scan EVERY camera to (re)find them."""
+        if not settings.active_camera_only or self._targets is None:
+            return set()
+        try:
+            return set(self._targets.all().keys())
+        except Exception:
+            return set()
+
     def _tick(self) -> None:
         if not self._reid_ready():
             return                              # gated: stop at YOLO detection
+        active = self._active_cameras()         # empty => searching (all cameras)
         for camera_id, det_result in self._detections.get_all().items():
+            if active and camera_id not in active:
+                continue                        # recipient is elsewhere; skip (recording still runs)
             if self._last_seen_frame.get(camera_id) == det_result.frame_id:
                 continue
             self._last_seen_frame[camera_id] = det_result.frame_id

@@ -234,10 +234,13 @@ class Settings(BaseSettings):
     crop_padding_frac: float = 0.08          # margin around a person box for crops
     target_only_pose: bool = True            # once ReID locks the target, pose that crop only
     target_lock_ttl_secs: float = 5.0        # keep target lock this long after last sighting
-    # Focus ALL processing on the recipient's camera: once the target is locked
-    # on a camera, detection (and therefore tracking/reid/pose) runs ONLY there;
-    # the other cameras idle until the lock lapses (target leaves / TTL), when we
-    # scan every camera again to re-find them. Saves GPU on multi-camera homes.
+    # Focus the GPU-HEAVY chain on the recipient's camera: once the target is
+    # locked on a camera, tracking (BoT-SORT + OSNet) / ReID / pose run ONLY
+    # there; the others idle until the lock lapses (target leaves / TTL), when the
+    # tracker scans every camera again to re-find them. Saves GPU on multi-camera
+    # homes. Detection (YOLO) is deliberately NOT scoped by this — it always runs
+    # on every camera so person-triggered recording covers the whole home and the
+    # target can be re-found anywhere; the focus is applied in TrackingRunner.
     active_camera_only: bool = True
 
     # ---- Tracking (clean-room BoT-SORT) -----------------------------

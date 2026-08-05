@@ -103,10 +103,13 @@ class Pipeline:
         system_monitor.start()
         self._system_monitor = system_monitor
 
-        # ---- detection (focus on the recipient's camera) -----------
+        # ---- detection (ALL cameras: person presence -> recording + re-find) --
+        # Detection is the cheap presence signal and runs on EVERY camera, so
+        # person-triggered recording covers the whole home. The GPU-heavy focus
+        # (one camera when the target is locked) lives downstream in tracking.
         detection_runner = DetectionRunner(
             frame_buffer=frames, detection_buffer=detection_buffer,
-            metrics_registry=metrics_registry, target_registry=target_registry)
+            metrics_registry=metrics_registry)
         try:
             detection_runner.start()
         except Exception:
@@ -125,7 +128,7 @@ class Pipeline:
         # ---- reid gallery (shared by tracking gate + ReID + enrollment) ----
         # Built BEFORE tracking so the tracker can gate on it: with no enrolled
         # target embeddings, tracking/ReID/pose/rules stay idle and the pipeline
-        # stops at YOLO detection (which still drives recording).
+        # stops at YOLO detection (which still drives recording on every camera).
         gallery: FaissGallery | None = None
         try:
             gallery = FaissGallery()
@@ -139,7 +142,7 @@ class Pipeline:
             tracking_runner = TrackingRunner(
                 detection_buffer, track_buffer, frame_buffer=frames,
                 feature_buffer=feature_buffer, metrics_registry=metrics_registry,
-                gallery=gallery)
+                gallery=gallery, target_registry=target_registry)
             tracking_runner.start()
         except Exception:
             logger.exception("TrackingRunner disabled")
