@@ -383,7 +383,17 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Resolve relative to the repo, not the process cwd, so the env file
         # is found whether launched by systemd, a shell, or an IDE.
-        env_file=str(Path(__file__).resolve().parents[1] / "infra" / "env" / "jetson.env"),
+        #
+        # TWO files, in order — the LAST one wins (pydantic-settings): the
+        # committed jetson.env holds the shared defaults; jetson.local.env is a
+        # gitignored, DEVICE-LOCAL override. Put per-machine tuning there (e.g.
+        # RECORD_SEGMENT_SECS=5) so it never lands in git and never disturbs other
+        # devices on pull. Missing local file = defaults, so this is a no-op where
+        # it doesn't exist.
+        env_file=(
+            str(Path(__file__).resolve().parents[1] / "infra" / "env" / "jetson.env"),
+            str(Path(__file__).resolve().parents[1] / "infra" / "env" / "jetson.local.env"),
+        ),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

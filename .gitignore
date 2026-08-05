@@ -9,6 +9,10 @@ venv/
 .venv/
 .env/
 
+# Device-local settings override (wins over the committed jetson.env) — holds
+# per-machine tuning like RECORD_SEGMENT_SECS; never commit, never disturbs others.
+edge/infra/env/jetson.local.env
+
 # Models — engines are device-specific, never commit
 models/**/*.engine
 models/**/*.onnx
