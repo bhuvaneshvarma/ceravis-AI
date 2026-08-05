@@ -2,6 +2,27 @@
    CERAVIS shared front-end helpers: nav, API, live streams, toasts
    ===================================================================== */
 
+/* ---- fleet per-edge API base ---------------------------------------
+   Same-origin, portable: a page always talks to whatever host+prefix served
+   it. On the LAN it is served at /ui/… and calls /api/… ; through the fleet
+   tunnel it is served at /<edge_id>/ui/… and must call /<edge_id>/api/… (THIS
+   home's edge — frps routes only by URL). Derive that prefix from this page's
+   own path ONCE and prepend it to root-relative /api and /stream requests. On
+   the LAN or the shared /ui path the prefix is empty and nothing changes, so
+   this is a no-op there — no page needs per-URL edits. */
+const CERAVIS_PREFIX = (location.pathname.match(/^(\/[^/]+)\/ui(?:\/|$)/) || [])[1] || "";
+if (CERAVIS_PREFIX) {
+  const _fetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" &&
+        (input === "/api" || input.startsWith("/api/") ||
+         input === "/stream" || input.startsWith("/stream/"))) {
+      input = CERAVIS_PREFIX + input;
+    }
+    return _fetch(input, init);
+  };
+}
+
 /* ---- tiny API wrapper ---------------------------------------------- */
 async function api(path, opts = {}) {
   const r = await fetch(path, {
@@ -77,7 +98,9 @@ function liveStream(imgEl, cameraId, { onFrame = null, onState = null } = {}) {
   function connect() {
     if (stopped) return;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}/stream/${cameraId}`);
+    // Carry the per-edge prefix so the setup JPEG feed hits THIS home's edge
+    // through the fleet (CERAVIS_PREFIX is "" on the LAN — unchanged there).
+    ws = new WebSocket(`${proto}://${location.host}${CERAVIS_PREFIX}/stream/${cameraId}`);
     ws.binaryType = "blob";
     setState("connecting");
 

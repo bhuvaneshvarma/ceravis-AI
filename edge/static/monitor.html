@@ -63,7 +63,11 @@
     <span class="pill pill-mute" id="m-mode">SEARCHING</span>
     <span id="m-active" class="faint"></span>
     <span id="m-state" class="faint"></span>
-    <button id="rec-toggle" class="btn btn-ghost btn-sm" style="margin-left:auto"
+    <button id="snap-btn" class="btn btn-ghost btn-sm" style="margin-left:auto"
+            title="Capture a still of the camera in view at this instant. Sends the
+current timestamp, so even with network latency the edge picks the frame for the
+moment you clicked.">📸 Snapshot</button>
+    <button id="rec-toggle" class="btn btn-ghost btn-sm"
             title="Person-triggered video recording. OFF = nothing is saved to disk
 (frees space); alerts &amp; snapshots are unaffected.">⏺ Recording: …</button>
   </div>
@@ -118,7 +122,39 @@ async function initCamNames() {
   const cams = await api("/api/v1/cameras").catch(() => []);
   CAM_NAMES = Object.fromEntries(
     cams.map(c => [c.camera_id, `${c.camera_name} (${c.room_name})`]));
+  // This device's edge_id — the snapshot/control endpoints verify it matches
+  // (control_auth). Fetched once; empty on an unverified dev box (then accepted).
+  try { const a = await api("/api/v1/account"); M.edgeId = (a && a.user && a.user.edgeId) || ""; }
+  catch { M.edgeId = ""; }
 }
+
+/* ---- snapshot the current camera at THIS instant --------------------
+   Sends the client's timestamp so the edge maps it to the frame for the moment
+   the button was clicked (freshest live frame when ~now; the exact recorded
+   frame when the instant is older). Falls back to a plain live grab if the
+   timestamped request can't be served (e.g. no footage at that instant). */
+document.getElementById("snap-btn").onclick = async () => {
+  const cam = M.cam;
+  if (!cam) { toast("No camera in view yet", "warn"); return; }
+  const ts = new Date().toISOString();
+  const path = `/api/v1/recordings/${encodeURIComponent(cam)}/snapshot`;
+  const q = M.edgeId ? `edge_id=${encodeURIComponent(M.edgeId)}` : `t=${Date.now()}`;
+  const btn = document.getElementById("snap-btn");
+  btn.disabled = true;
+  try {
+    let snap;
+    try { snap = await api(`${path}?ts=${encodeURIComponent(ts)}&${q}`); }
+    catch { snap = await api(`${path}?${q}`); }            // retry: plain live (freshest frame)
+    const a = document.createElement("a");
+    a.href = snap.image;                                   // data:image/jpeg;base64,…
+    a.download = `${cam}_${ts.replace(/[:.]/g, "-")}.jpg`;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast(`Snapshot saved · ${snap.source} · `
+          + new Date(snap.timestamp).toLocaleTimeString([], { hour12: false }), "ok");
+  } catch (e) {
+    toast((e && (e.detail || e.message)) || "Snapshot failed", "err");
+  } finally { btn.disabled = false; }
+};
 
 /* ---- target-driven camera selection -----------------------------
    The monitor follows the enrolled recipient: it shows whichever camera the
