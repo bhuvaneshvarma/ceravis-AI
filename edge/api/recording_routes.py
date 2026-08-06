@@ -32,7 +32,7 @@ value is edge-local time (common.clock).
 """
 
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
@@ -164,14 +164,33 @@ def recording_playlist(camera: str, edge_id: str | None = None,
 # ---- still-frame snapshot (the photo twin of playback) --------------
 
 def _parse_ts(ts: str) -> datetime:
-    """An ISO-8601 instant exactly as sent. A naive value (no offset) is read as
-    device-local time — the same rule the playlist uses — so the mobile app can
-    send either the aware wall-clock it read off the timeline or a bare local
-    time and get the frame it means."""
+    """Parse the requested instant, tolerant of the shapes a mobile client
+    actually sends. Returns an aware datetime.
+
+    Accepts:
+      • ISO-8601 with an offset      2026-08-05T12:15:30+05:30
+      • ISO-8601 with a 'Z' (UTC)    2026-08-05T12:15:30Z   (pre-3.11
+                                     fromisoformat rejects 'Z' — normalized here)
+      • ISO-8601 naive (no offset)   2026-08-05T12:15:30   -> read as edge-local
+      • Unix epoch seconds or millis 1754397330 / 1754397330000
+    A naive value is edge-local (common.clock) — the same rule the playlist uses,
+    so a bare wall-clock read off the timeline lands on the frame it means."""
+    ts = (ts or "").strip()
+    if not ts:
+        raise HTTPException(400, "ts is empty")
+    # Unix epoch (seconds or milliseconds).
+    if ts.lstrip("+-").isdigit():
+        n = int(ts)
+        secs = n / 1000.0 if abs(n) >= 1_000_000_000_000 else float(n)
+        return datetime.fromtimestamp(secs, tz=timezone.utc).astimezone()
+    # ISO-8601. Normalize a trailing Z (and a space used instead of 'T').
+    iso = ts[:-1] + "+00:00" if ts[-1] in "Zz" else ts
     try:
-        dt = datetime.fromisoformat(ts)
+        dt = datetime.fromisoformat(iso)
     except ValueError:
-        raise HTTPException(400, f"bad ts (want ISO-8601): {ts!r}")
+        raise HTTPException(
+            400, "bad ts — send ISO-8601 like 2026-08-05T12:15:30+05:30 "
+                 f"(a trailing Z or a Unix epoch is fine too): {ts!r}")
     return dt if dt.tzinfo else dt.astimezone()
 
 
@@ -205,17 +224,32 @@ def recording_snapshot_endpoint(camera: str, request: Request,
     quality = max(1, min(100, int(quality)))
 
     want = _parse_ts(ts) if ts else None
-    live = want is None or want >= clock.now() - timedelta(seconds=settings.frame_stale_secs)
+    now = clock.now()
+    live = want is None or want >= now - timedelta(seconds=settings.frame_stale_secs)
+
+    def _live():
+        return recording_snapshot.live_snapshot(
+            cam, getattr(request.app.state, "camera_manager", None)
+            and request.app.state.camera_manager.frame_buffer,
+            mediamtx_active=getattr(request.app.state, "mediamtx_active", False),
+            quality=quality)
 
     try:
         if live:
-            snap = recording_snapshot.live_snapshot(
-                cam, getattr(request.app.state, "camera_manager", None)
-                and request.app.state.camera_manager.frame_buffer,
-                mediamtx_active=getattr(request.app.state, "mediamtx_active", False),
-                quality=quality)
+            snap = _live()
         else:
-            snap = recording_snapshot.archive_snapshot(cam, want, quality=quality)
+            try:
+                snap = recording_snapshot.archive_snapshot(cam, want, quality=quality)
+            except SnapshotError:
+                # A very RECENT instant may have no FINALIZED segment yet (its
+                # covering segment is still being written), so a just-fired event
+                # would 404. Within that window fall back to the freshest live
+                # frame so the app still gets a picture; an OLDER instant with no
+                # footage stays a real 404 (nobody present / past retention).
+                if (now - want) > timedelta(seconds=2 * settings.record_segment_secs):
+                    raise
+                snap = _live()
+                live = True                    # headers + error-mapping now reflect live
     except SnapshotError as exc:
         # No footage at a past instant is a genuine 404; a live-capture failure
         # (camera unreachable right now) is a 503 the caller can retry.
