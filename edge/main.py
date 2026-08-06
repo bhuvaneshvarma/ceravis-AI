@@ -80,39 +80,50 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def _strip_fleet_edge_prefix(request, call_next):
-    """Make the API multi-device safe. In the fleet, frps routes ONLY by URL, so
-    every home's control call must carry a per-device key in the PATH — the same
-    /<edge_id> prefix the live links use (…/<edge_id>/api/v1/…). frps hands each
-    home's calls to the right edge on that unique prefix; here we strip this
-    device's own prefix so the app's routes (/api, /ui, /stream) still match.
+class _FleetEdgePrefix:
+    """Fleet per-edge path handling — a PURE-ASGI middleware on purpose.
 
-    LAN-direct calls carry NO prefix and are untouched, so both the local UI and
-    the fleet reach the same handlers. The body `edge_id` stays as a second check
-    (control_auth) — routing puts the call on the right edge, the check confirms
-    it. Cheap: effective_edge_id() is an in-memory resolve."""
-    path = request.scope.get("path", "")
-    # Normalize a trailing slash on a .html page FIRST (before stripping, so the
-    # redirect keeps the full /<edge_id> prefix). `…/monitor.html/` makes the
-    # browser resolve relative assets (fleet-prefix.js, ceravis.js, css) against a
-    # phantom directory -> 404 -> the page's script crashes. Send it to the
-    # canonical no-slash URL so assets always resolve.
-    if path.endswith(".html/"):
-        from fastapi.responses import RedirectResponse
-        dest = path.rstrip("/")
-        if request.url.query:
-            dest += "?" + request.url.query
-        return RedirectResponse(dest, status_code=308)
-    from configuration.account_config import effective_edge_id
-    eid = effective_edge_id()
-    if eid:
-        prefix = "/" + eid
-        if path == prefix or path.startswith(prefix + "/"):
-            stripped = path[len(prefix):] or "/"
-            request.scope["path"] = stripped
-            request.scope["raw_path"] = stripped.encode("utf-8")
-    return await call_next(request)
+    In the fleet every request arrives path-prefixed with this device's
+    /<edge_id> (frps routes each home by that prefix — it routes ONLY by URL,
+    never the request body). We strip our own prefix so the app's normal /api,
+    /ui and /stream routes match, and we normalise a trailing-slash page url.
+
+    It CANNOT be an @app.middleware("http") one: Starlette's http middleware is
+    skipped for WebSocket scopes, so the /<edge_id>/stream live-preview socket
+    never got its prefix stripped and 403'd through the tunnel. A pure-ASGI
+    middleware runs for BOTH http and websocket, fixing the socket too.
+
+    LAN-direct requests carry no prefix -> no-op. effective_edge_id() is an
+    in-memory resolve. The body `edge_id` stays as a second check (control_auth)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        # 308 `…/page.html/` -> `…/page.html` (http only) so a page's relative
+        # assets (fleet-prefix.js, ceravis.js, css) resolve against the file, not
+        # a phantom directory. Done BEFORE the strip, so the full /<edge_id> stays.
+        if scope["type"] == "http" and path.endswith(".html/"):
+            dest = path.rstrip("/")
+            qs = scope.get("query_string", b"")
+            if qs:
+                dest += "?" + qs.decode("latin-1")
+            await send({"type": "http.response.start", "status": 308,
+                        "headers": [(b"location", dest.encode("latin-1")),
+                                    (b"content-length", b"0")]})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        from configuration.account_config import effective_edge_id
+        eid = effective_edge_id()
+        if eid:
+            prefix = "/" + eid
+            if path == prefix or path.startswith(prefix + "/"):
+                new = path[len(prefix):] or "/"
+                scope = {**scope, "path": new, "raw_path": new.encode("utf-8")}
+        await self.app(scope, receive, send)
 
 
 def _inbound_endpoint(path: str) -> str | None:
@@ -167,6 +178,11 @@ async def _log_inbound_calls(request, call_next):
         except Exception:
             pass
     return response
+
+
+# Added LAST so it wraps everything — the per-edge prefix must be stripped (for
+# http AND websocket) before any routing or the other middleware run.
+app.add_middleware(_FleetEdgePrefix)
 
 
 for _router in (account_router, camera_router, zone_router, recipient_router,
