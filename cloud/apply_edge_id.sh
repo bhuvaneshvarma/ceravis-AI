@@ -36,14 +36,14 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
 # Rewrite the per-edge `locations` line (or insert one) of BOTH the live-link and
 # the control-API proxies, keeping every other byte:
-#   mediamtx-webrtc -> ["/<edge_id>"]        (live WHEP, routed per edge)
-#   ceravis-api     -> ["/<edge_id>/api"]    (control API, routed per edge)
-# Any other proxy (ceravis-ui shared /ui,/stream,/api legacy; ceravis-ssh) is
-# left untouched. A block runs from a `[[proxies]]` header to the next (or EOF);
-# our template lists `name` before `locations`, so the target flag is set first.
+#   mediamtx-webrtc -> ["/<edge_id>"]                                (live WHEP)
+#   ceravis-api     -> ["/<edge_id>/api","/<edge_id>/ui","/<edge_id>/stream"]  (uvicorn)
+# Any other proxy (e.g. ceravis-ssh) is left untouched. A block runs from a
+# `[[proxies]]` header to the next (or EOF); our template lists `name` before
+# `locations`, so the target flag is set first.
 awk -v eid="$EDGE_ID" '
   function mtx() { return "locations = [\"/" eid "\"]  # ceravis:edge-id" }
-  function api() { return "locations = [\"/" eid "/api\"]  # ceravis:edge-id" }
+  function api() { return "locations = [\"/" eid "/api\", \"/" eid "/ui\", \"/" eid "/stream\"]  # ceravis:edge-id" }
   /^[[:space:]]*\[\[proxies\]\]/ {
       if (tmtx && !wrote) print mtx()
       if (tapi && !wrote) print api()

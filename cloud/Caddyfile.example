@@ -25,7 +25,13 @@ edgeai.ceravishealth.in {
 	# The admin PAGES require a login; the API and live links do not — the API
 	# verifies the edgeId carried in each request, and live links are the
 	# per-camera URLs the app already gates behind the family's account.
-	@ui path /ui /ui/*
+	#
+	# Everything is now routed PER EDGE under /<edge_id>/… (api, ui, stream, live),
+	# so the admin pages arrive as /<edge_id>/ui/… — match that with a regex
+	# (Caddy can't know each device's edge_id). `^/[^/]+/ui(/|$)` = the SECOND
+	# path segment is exactly `ui`, so it catches every home's /<edge_id>/ui and
+	# nothing else (a /<edge_id>/api/… or /<edge_id>/<ROOM>/whep never matches).
+	@ui path_regexp ^/[^/]+/ui(/|$)
 	basic_auth @ui {
 		admin BCRYPT_HASH_FROM_caddy_hash-password
 	}
