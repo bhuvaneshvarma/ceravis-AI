@@ -141,8 +141,20 @@ def recording_playlist(camera: str, edge_id: str | None = None,
     # Carry the edge_id onto every segment URI so each segment fetch authenticates
     # too (works for hls.js AND native HLS, which can't attach headers).
     suffix = f"?edge_id={quote(edge_id)}" if edge_id else ""
+    # Emit segment URIs as an ABSOLUTE per-edge path
+    # (/<edge_id>/api/v1/recordings/<camera>/segment/<file>) instead of relative,
+    # so the player fetches them from the RIGHT home no matter what base URL the
+    # frontend hands its HLS player: an absolute path resolves against the page
+    # origin, and the /<edge_id> prefix routes to THIS edge. It also works
+    # LAN-direct — the edge strips its own /<edge_id> prefix internally
+    # (main._strip_fleet_edge_prefix), so /<edge_id>/api/… and /api/… both land
+    # on the same handler. A device with no edge_id (dev box) emits a plain path.
+    from configuration.account_config import effective_edge_id
+    eid = effective_edge_id()
+    base = f"/{eid}" if eid else ""
+    seg_prefix = f"{base}/api/v1/recordings/{quote(camera, safe='')}/segment/"
     body = recording_index.playlist(record_path_name(cam), window_start,
-                                    uri_suffix=suffix)
+                                    uri_prefix=seg_prefix, uri_suffix=suffix)
     if not body:
         raise HTTPException(404, "no footage recorded for this camera in the "
                                  "retention window yet")
