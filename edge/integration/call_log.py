@@ -32,8 +32,18 @@ logger = logging.getLogger("integration")
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
 _LOCK = threading.Lock()
 
-_MAX_BYTES = 512 * 1024      # rotate past this…
+_MAX_BYTES = 1024 * 1024     # rotate past this…
 _KEEP_LINES = 300            # …down to the newest N records
+_MAX_FIELD = 6000            # cap request/response bodies so one record can't bloat
+
+
+def _clip(v) -> str | None:
+    """Stringify + size-cap a request/response body for the console (callers pass
+    already base64-redacted values, so this never leaks the big blobs)."""
+    if v is None:
+        return None
+    s = v if isinstance(v, str) else json.dumps(v, default=str, ensure_ascii=False)
+    return s if len(s) <= _MAX_FIELD else s[:_MAX_FIELD] + f"…(+{len(s) - _MAX_FIELD} chars)"
 
 # Who is making the calls in THIS process: "live" = the service's real
 # pipeline (actual falls/transitions/stillness). A separate diagnostic process
@@ -68,12 +78,19 @@ def find_link(payload) -> str | None:
 def record(endpoint: str, ok: bool, *, status: int | None = None,
            latency_ms: float | None = None, label: str | None = None,
            alert_id=None, link: str | None = None,
-           error: str | None = None) -> None:
-    """Append one call record. Never raises."""
+           error: str | None = None, request=None, response=None,
+           direction: str | None = None) -> None:
+    """Append one call record. Never raises.
+
+    `request`/`response` are the (already base64-redacted) bodies — what we sent
+    or received — so the console can show the full exchange, like the wire log;
+    both are size-capped. `direction` = "out" (edge → app server) or "in" (app
+    server → this edge), so the console can tell them apart."""
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "endpoint": endpoint,   # userDetails|saveCamera|saveAlert|saveSnapshot|event
         "source": SOURCE,                # "live" (real pipeline) | "test" (test_cloud)
+        "direction": direction,          # "out" | "in" | None
         "ok": bool(ok),
         "status": status,
         "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,
@@ -81,6 +98,8 @@ def record(endpoint: str, ok: bool, *, status: int | None = None,
         "alert_id": alert_id,
         "link": link,
         "error": (error or "")[:300] or None,
+        "request": _clip(request),
+        "response": _clip(response),
     }
     try:
         f = _file()

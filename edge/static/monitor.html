@@ -49,6 +49,25 @@
              color: var(--muted); font-size: 10.5px; }
   .cs-meta a { color: #60a5fa; }
   .cs-alertid { color: #fbbf24; font-weight: 600; }
+  /* direction: OUT = edge -> app server, IN = app server -> this edge */
+  .cs-dir { font-size: 9.5px; font-weight: 700; letter-spacing: .5px;
+            padding: 1px 6px; border-radius: 999px; }
+  .cs-dir.out { color: #2dd4bf; border: 1px solid rgba(45,212,191,.4); }
+  .cs-dir.in  { color: #a78bfa; border: 1px solid rgba(167,139,250,.4); }
+  /* expandable full exchange — request (blue) vs response (green) */
+  .cs-io { margin-top: 6px; }
+  .cs-io > summary { cursor: pointer; font-size: 10.5px; color: var(--muted);
+                     user-select: none; list-style: none; }
+  .cs-io > summary::before { content: "▸ "; }
+  .cs-io[open] > summary::before { content: "▾ "; }
+  .cs-io > summary:hover { color: #93c5fd; }
+  .cs-io-tag { display: block; font-size: 9px; font-weight: 700;
+               letter-spacing: .6px; color: var(--muted); margin: 6px 0 2px; }
+  .cs-io pre { margin: 0; padding: 7px 9px; border-radius: 7px; font-size: 10.5px;
+               line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+               overflow-x: auto; max-height: 220px; }
+  .cs-req pre { background: rgba(96,165,250,.08); border: 1px solid rgba(96,165,250,.25); color: #bfdbfe; }
+  .cs-res pre { background: rgba(52,211,153,.08); border: 1px solid rgba(52,211,153,.25); color: #bbf7d0; }
 </style>
 </head>
 <body>
@@ -308,10 +327,21 @@ async function pollCloud() {
   const okTxt = c => c.endpoint === "event"
     ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
     : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
+  // Direction: OUT = this edge → app server; IN = app server → this edge.
+  const dirBadge = c => c.direction === "in" ? `<span class="cs-dir in">↓ IN</span>`
+    : c.direction === "out" ? `<span class="cs-dir out">↑ OUT</span>` : "";
+  // Pretty-print a body (JSON-string or object) for the expandable panel.
+  const fmtBody = v => {
+    if (v == null) return "";
+    let s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+    if (typeof v === "string") { try { s = JSON.stringify(JSON.parse(v), null, 2); } catch (_) {} }
+    return csEsc(s);
+  };
   document.getElementById("cs-log").innerHTML = calls.map(c => `
     <div class="cs-entry ${c.ok ? "" : "err"}">
       <div class="cs-top">
         <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
+        ${dirBadge(c)}
         ${c.source === "test" ? `<span class="cs-ep test">TEST</span>` : ""}
         <span class="${c.ok ? "cs-ok" : "cs-bad"}">${okTxt(c)}</span>
         <span class="cs-time">${new Date(c.ts).toLocaleTimeString([], { hour12: false })}</span>
@@ -324,6 +354,12 @@ async function pollCloud() {
         ${c.link ? `<a href="${csEsc(c.link)}" target="_blank" rel="noopener">view snapshot ↗</a>` : ""}
         ${c.error ? `<span class="cs-bad">${csEsc(c.error)}</span>` : ""}
       </div>
+      ${(c.request || c.response) ? `
+      <details class="cs-io">
+        <summary>request &amp; response</summary>
+        ${c.request ? `<div class="cs-req"><span class="cs-io-tag">REQUEST</span><pre>${fmtBody(c.request)}</pre></div>` : ""}
+        ${c.response ? `<div class="cs-res"><span class="cs-io-tag">RESPONSE</span><pre>${fmtBody(c.response)}</pre></div>` : ""}
+      </details>` : ""}
     </div>`).join("");
 }
 

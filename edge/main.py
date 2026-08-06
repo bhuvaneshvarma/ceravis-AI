@@ -138,10 +138,21 @@ async def _log_inbound_calls(request, call_next):
     if endpoint:
         try:
             from integration import call_log
+            # Request RECEIVED: method + path + query (these endpoints are GETs, no
+            # body). Shorten edge_id so the console line stays readable.
+            q = dict(request.query_params)
+            if q.get("edge_id"):
+                q["edge_id"] = "…" + q["edge_id"][-6:]
+            req = {"method": request.method, "path": request.url.path, "query": q}
+            # Response SENT: the outcome + shape, never the (huge/binary) body.
+            h = response.headers
+            resp = {"status": response.status_code,
+                    "type": h.get("content-type"), "bytes": h.get("content-length")}
             call_log.record(endpoint, 200 <= response.status_code < 400,
-                            status=response.status_code,
+                            direction="in", status=response.status_code,
                             latency_ms=(time.perf_counter() - t0) * 1000,
-                            label=f"{request.method} {request.url.path}")
+                            label=f"{request.method} {request.url.path}",
+                            request=req, response=resp)
         except Exception:
             pass
     return response
