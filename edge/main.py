@@ -92,10 +92,21 @@ async def _strip_fleet_edge_prefix(request, call_next):
     the fleet reach the same handlers. The body `edge_id` stays as a second check
     (control_auth) — routing puts the call on the right edge, the check confirms
     it. Cheap: effective_edge_id() is an in-memory resolve."""
+    path = request.scope.get("path", "")
+    # Normalize a trailing slash on a .html page FIRST (before stripping, so the
+    # redirect keeps the full /<edge_id> prefix). `…/monitor.html/` makes the
+    # browser resolve relative assets (fleet-prefix.js, ceravis.js, css) against a
+    # phantom directory -> 404 -> the page's script crashes. Send it to the
+    # canonical no-slash URL so assets always resolve.
+    if path.endswith(".html/"):
+        from fastapi.responses import RedirectResponse
+        dest = path.rstrip("/")
+        if request.url.query:
+            dest += "?" + request.url.query
+        return RedirectResponse(dest, status_code=308)
     from configuration.account_config import effective_edge_id
     eid = effective_edge_id()
     if eid:
-        path = request.scope.get("path", "")
         prefix = "/" + eid
         if path == prefix or path.startswith(prefix + "/"):
             stripped = path[len(prefix):] or "/"
