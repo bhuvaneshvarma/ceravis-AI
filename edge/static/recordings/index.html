@@ -993,6 +993,23 @@ on("railToggle","click", ()=>$("rail").classList.toggle("open"));
 window.addEventListener("beforeunload", teardown);
 window.addEventListener("keydown", e=>{ if(e.key==="Escape") closePanels(); });
 
+/* Reconcile on tab-return. A backgrounded tab FREEZES our timers and pauses
+   hls.js, so after a while away the rolling 12-hour window has SLID — the oldest
+   footage expired, new footage arrived — while the on-screen timeline + playlist
+   are a stale snapshot. Pro DVR players reconcile on FOCUS rather than trust a
+   throttled background timer: the instant this tab is visible again, re-query the
+   timeline (redraw the footage bar to NOW), resume the player (hls reloads the
+   sliding manifest, dropping expired fragments + appending new), and if the spot
+   we were parked on has itself rolled off the window, snap to the newest footage
+   instead of trying to load an expired segment (which would 404). */
+document.addEventListener("visibilitychange", async ()=>{
+  if (document.visibilityState!=="visible" || MODE!=="play" || !CURRENT) return;
+  await refreshTimeline(CURRENT);
+  if (hls){ try{ hls.startLoad(); }catch(_){} }
+  const ms = currentPlaybackDate();
+  if (TL && (ms==null || ms < TL.winStart.getTime())) jumpToLatest();
+});
+
 /* ===================================================================== */
 /* 11. BOOT                                                              */
 /* ===================================================================== */
