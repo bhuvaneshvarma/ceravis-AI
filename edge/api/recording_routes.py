@@ -10,8 +10,10 @@ those files. Nothing is re-cut, re-encoded or duplicated for playback.
 
     GET /api/v1/recordings/{camera}/timeline      -> where footage exists over the
                                                      retention window (scrub bar)
-    GET /api/v1/recordings/{camera}/playback.m3u8 -> HLS-VOD playlist over the
-        ?ts=<ISO8601>                                STORED segments (seekable)
+    GET /api/v1/recordings/{camera}/playback.m3u8 -> ONE seekable HLS playlist
+                                                     over the STORED segments;
+                                                     stays open, so the player
+                                                     keeps it current by itself
     GET /api/v1/recordings/{camera}/snapshot      -> ONE still (base64 JSON, or
         ?ts=<ISO8601>&quality=&format=jpeg           ?format=jpeg) — live now, or
                                                      a frame-accurate still at a
@@ -32,6 +34,7 @@ value is edge-local time (common.clock).
 """
 
 import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -118,23 +121,41 @@ def recording_timeline(camera: str, edge_id: str | None = None):
     }
 
 
-# ---- HLS-VOD playback over the STORED segments ----------------------
+# ---- HLS playback over the STORED segments --------------------------
+
+def _if_none_match(header: str | None, etag: str) -> bool:
+    """Whether the client already holds this exact playlist. Tolerant of the
+    shapes proxies send: a list, and/or the weak `W/` prefix."""
+    if not header:
+        return False
+    return any(t.strip().lstrip("W/").strip() == etag.strip('"')
+               for t in header.replace('"', "").split(","))
+
 
 @router.get("/{camera}/playback.m3u8")
-def recording_playlist(camera: str, edge_id: str | None = None,
+def recording_playlist(camera: str, request: Request, edge_id: str | None = None,
                        ts: str | None = None):
     """The WHOLE retention window as ONE seekable HLS playlist: every recorded
     stretch of the last `record_retention_hours`, each tagged with its real
     wall-clock time (EXT-X-PROGRAM-DATE-TIME) and joined across the empty gaps
     (EXT-X-DISCONTINUITY). The client loads this ONCE and seeks to any instant
-    by date — no per-moment request. The playlist is left open (no ENDLIST)
-    while the camera is still recording, so it also follows live; ENDLIST
-    appears once recording has stopped.
+    by date — no per-moment request.
+
+    It is a LIVE playlist and carries NO EXT-X-ENDLIST, ever. Every HLS player
+    keeps re-fetching a playlist that has no ENDLIST, so the link STAYS CURRENT
+    BY ITSELF: clips recorded minutes or hours after the app opened it appear in
+    the player automatically, with no second call — and clips that age out of
+    the retention window drop off the front (MEDIA-SEQUENCE /
+    DISCONTINUITY-SEQUENCE tell the player exactly what was dropped).
+
+    Those reloads are cheap: the body carries a strong ETag, so a poll that
+    finds nothing new answers `304 Not Modified` with no body at all. Proxies
+    must pass `If-None-Match` through and must NOT cache the response.
 
     `ts` (RecordingPlaybackRequest) is the OPTIONAL alert/snapshot instant to
     jump to — the whole window is served regardless and the client seeks to it
     (the player knows every segment's wall-clock time), so this one URL stays the
-    single, cacheable source of a camera's timeline."""
+    single source of a camera's timeline."""
     check_edge_id(edge_id)
     cam = _resolve_camera(camera)
     window_start = clock.now() - timedelta(hours=settings.record_retention_hours)
@@ -152,7 +173,16 @@ def recording_playlist(camera: str, edge_id: str | None = None,
     if not body:
         raise HTTPException(404, "no footage recorded for this camera in the "
                                  "retention window yet")
-    return Response(content=body, media_type="application/vnd.apple.mpegurl")
+    # The playlist changes only when a segment is added or ages out, but players
+    # poll it every few seconds forever (that is what keeps it current). A strong
+    # ETag turns every unchanged poll into an empty 304 — the difference between
+    # a self-updating link and a permanent drip of manifest bytes down the tunnel.
+    etag = '"' + hashlib.sha1(body.encode("utf-8")).hexdigest()[:20] + '"'
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if _if_none_match(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/vnd.apple.mpegurl",
+                    headers=headers)
 
 
 # ---- still-frame snapshot (the photo twin of playback) --------------
@@ -288,4 +318,9 @@ def recording_segment(camera: str, filename: str, edge_id: str | None = None):
     path = recording_index.segment_file(record_path_name(cam), filename)
     if path is None:
         raise HTTPException(404, "segment not found (expired or bad name)")
-    return FileResponse(str(path), media_type="video/mp2t")
+    # A recorded segment never changes — its name IS its start instant — so let
+    # the viewer's OWN browser keep it while the tab is open. Scrubbing back over
+    # footage already watched then costs nothing on the tunnel. `private` keeps it
+    # out of any shared proxy cache: this is somebody's home footage.
+    return FileResponse(str(path), media_type="video/mp2t",
+                        headers={"Cache-Control": "private, max-age=3600, immutable"})

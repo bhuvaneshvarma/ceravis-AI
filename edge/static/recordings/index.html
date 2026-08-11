@@ -497,6 +497,7 @@ let pc  = null;             // WebRTC peer connection (live)
 let TL  = null;             // last timeline payload {winStart,winEnd,segments}
 let pendingSeekMs = null;   // a seek-by-date requested before the playlist loaded
 let playbackReady = false;  // the whole-window playlist has parsed at least once
+let playerAttached = false; // a playlist has been handed to a player (loading or ready)
 
 /* ===================================================================== */
 /* 4. CAMERAS + HEALTH                                                    */
@@ -588,7 +589,7 @@ function teardown(){
   if (pc){ try{pc.close();}catch(_){} pc=null; }
   const v=$("video"); try{ v.pause(); }catch(_){}
   v.removeAttribute("src"); v.srcObject=null; try{ v.load(); }catch(_){}
-  pendingSeekMs=null; playbackReady=false; $("playhead").classList.add("hidden");
+  pendingSeekMs=null; playbackReady=false; playerAttached=false; $("playhead").classList.add("hidden");
   $("vpChip").classList.add("hidden");
 }
 
@@ -703,6 +704,9 @@ function liveFailed(cam, path, secure){
 /* (EXT-X-DISCONTINUITY). We load it ONCE per camera; every timeline      */
 /* click is a client-side SEEK BY DATE — no new request — and playback    */
 /* rolls across the empty gaps by itself, exactly like a pro NVR/VMS.     */
+/* The playlist carries no EXT-X-ENDLIST, so hls.js keeps reloading it on */
+/* its own and clips recorded AFTER this page opened appear in the        */
+/* already-loaded player — we never re-issue the playback call for them.  */
 /* ===================================================================== */
 async function startPlayback(cam){
   showSpinner("Loading recorded footage…", "Reading this camera's timeline.");
@@ -711,7 +715,7 @@ async function startPlayback(cam){
     loadPlayback(cam);               // one whole-window playlist; default view = latest
   } else {
     showOverlay("No footage recorded yet",
-      "This camera has not recorded anyone in the last 12 hours. Footage appears here automatically whenever a person is seen.");
+      "This camera has not recorded anyone in the last 12 hours. Leave this page open — playback starts by itself the moment someone is recorded.");
   }
 }
 
@@ -776,6 +780,7 @@ function dateAtX(clientX){
    after this, moving around the timeline is a pure client-side seek. */
 function loadPlayback(cam){
   teardownPlayer();
+  playerAttached = true;
   showSpinner("Opening timeline…", "");
   const url = new URL(`${CV_PREFIX}/api/v1/recordings/${encodeURIComponent(cam.camera_id)}/playback.m3u8`, location.origin);
   if (CFG.edge) url.searchParams.set("edge_id", CFG.edge);   // segments inherit both the prefix (relative URIs) and edge_id via the playlist
@@ -817,7 +822,11 @@ function onHlsError(_, d){
   if (!d.fatal) return;
   const net = d.type===Hls.ErrorTypes.NETWORK_ERROR;
   if (net && String(d.details||"").indexOf("404")>=0){
-    showOverlay("No footage in the window", "Nothing has been recorded in the last 12 hours yet.");
+    // The edge has nothing for this camera yet (the playlist call 404s). Let go
+    // of the player so the timeline poll below opens it the moment footage
+    // exists — an empty camera must not stay dead until the user clicks again.
+    teardownPlayer(); playerAttached=false; playbackReady=false;
+    showOverlay("No footage in the window", "Nothing has been recorded in the last 12 hours yet. This page opens playback automatically as soon as someone is recorded.");
   } else if (net){ try{ hls.startLoad(); }catch(_){} }        // transient — retry
   else if (d.type===Hls.ErrorTypes.MEDIA_ERROR){ try{ hls.recoverMediaError(); }catch(_){} }
   else showOverlay("Could not open this recording", esc(d.details||"playback error"));
@@ -1005,6 +1014,7 @@ window.addEventListener("keydown", e=>{ if(e.key==="Escape") closePanels(); });
 document.addEventListener("visibilitychange", async ()=>{
   if (document.visibilityState!=="visible" || MODE!=="play" || !CURRENT) return;
   await refreshTimeline(CURRENT);
+  if (!playerAttached && TL && TL.segments.length){ loadPlayback(CURRENT); return; }
   if (hls){ try{ hls.startLoad(); }catch(_){} }
   const ms = currentPlaybackDate();
   if (TL && (ms==null || ms < TL.winStart.getTime())) jumpToLatest();
@@ -1017,8 +1027,17 @@ tickClock(); setInterval(tickClock, 1000);
 autofillEdge().then(loadCameras);      // auto-detect the live-stream edge_id, then load
 pollHealth();
 setInterval(pollHealth, 15000);
-// keep the timeline fresh (rolling 12-hour window) while in playback
-setInterval(()=>{ if(MODE==="play" && CURRENT) refreshTimeline(CURRENT); }, 30000);
+/* Keep the timeline fresh (rolling 12-hour window) while in playback. The
+   PLAYER needs no help — its playlist has no ENDLIST, so hls.js reloads it and
+   appends new clips by itself. The one case that does need us is a camera that
+   had NO footage when playback opened (the playlist 404s and there is nothing
+   to reload): the moment this poll sees the first recorded stretch, open the
+   player. From then on it stays current on its own. */
+setInterval(async ()=>{
+  if (MODE!=="play" || !CURRENT) return;
+  await refreshTimeline(CURRENT);
+  if (!playerAttached && TL && TL.segments.length) loadPlayback(CURRENT);
+}, 30000);
 // refresh the camera online/offline dots periodically
 setInterval(loadCameras, 20000);
 </script>

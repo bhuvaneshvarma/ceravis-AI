@@ -93,9 +93,9 @@ wall-clock time**, and **joins the stretches across the empty gaps**:
 ```
 #EXTM3U
 #EXT-X-VERSION:3
-#EXT-X-PLAYLIST-TYPE:EVENT
 #EXT-X-TARGETDURATION:15
-#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-MEDIA-SEQUENCE:119095844        ← where this window starts in the stream
+#EXT-X-DISCONTINUITY-SEQUENCE:0        ← how many gaps already scrolled past it
 #EXT-X-PROGRAM-DATE-TIME:2026-07-16T14:30:00+05:30     ← the wall-clock anchor
 #EXTINF:15.000,
 segment/2026-07-16_14-30-00-000000.ts
@@ -105,10 +105,10 @@ segment/2026-07-16_14-30-15-000000.ts
 #EXT-X-PROGRAM-DATE-TIME:2026-07-16T15:10:00+05:30     ← next stretch re-anchored
 #EXTINF:15.000,
 segment/2026-07-16_15-10-00-000000.ts
-#EXT-X-ENDLIST                                          ← only once recording stopped
+                                        ← and NO #EXT-X-ENDLIST, ever
 ```
 
-Three things make this professional and are the whole reason it works:
+Four things make this professional and are the whole reason it works:
 
 1. **`#EXT-X-PROGRAM-DATE-TIME`** = the real time of each stretch. This is what
    lets the player **seek to an exact instant by date** and show real wall-clock
@@ -117,13 +117,56 @@ Three things make this professional and are the whole reason it works:
 2. **`#EXT-X-DISCONTINUITY`** between stretches = the player **rolls across the
    empty gaps by itself** (jump-cut to the next time someone was present) in the
    same stream — **no new call**.
-3. **No `#EXT-X-ENDLIST` while recording** = the playlist is left open, so the
-   player keeps picking up **newly recorded** segments and you can follow live.
-   `ENDLIST` appears once the person leaves and recording stops.
+3. **No `#EXT-X-ENDLIST` — ever.** This is the tag that would tell a player “this
+   recording is finished, stop asking”. We never send it, because an NVR archive
+   is never finished: the next person can walk in a second from now. So **every
+   HLS player re-fetches this URL by itself every few seconds, forever**, and
+   **clips recorded after the link was opened appear in the already-loaded
+   player automatically** — see §4a.
+4. **`#EXT-X-MEDIA-SEQUENCE` / `#EXT-X-DISCONTINUITY-SEQUENCE`** = the stream’s
+   own numbering, so when the oldest footage ages out of the 12 h window the
+   player knows *exactly* which segments were dropped and keeps everything it
+   already holds correctly aligned. Ignore these two numbers — they are for the
+   player, not for you — but never cache or rewrite them.
 
 There is **no `ts` parameter** anymore. Seeking is the client’s job (the player
-already knows every segment’s time), which keeps this one URL the single,
-cacheable source of a camera’s whole timeline.
+already knows every segment’s time), which keeps this one URL the single source
+of a camera’s whole timeline.
+
+---
+
+## 4a. It keeps itself current — you do not re-request it
+
+**The playlist auto-updates. One call is the whole session.**
+
+| When | What happens | Calls your app makes |
+|---|---|---|
+| A new 15 s clip is recorded | The player’s own reload picks it up within seconds and appends it to the same timeline | **none** |
+| The camera starts recording again after an hour of nobody | Same — the new stretch appears with an `EXT-X-DISCONTINUITY` before it | **none** |
+| Footage passes 12 h and expires | It drops off the front of the playlist; the player follows via the sequence numbers | **none** |
+| The user drags to another time | Client-side `seekToDate(...)` | **none** |
+| You want to redraw the availability bar | `…/timeline` poll (~30 s) — cosmetic, the player does not need it | 1 small JSON |
+
+**Why it works:** an HLS player treats a playlist with no `EXT-X-ENDLIST` as
+still growing and re-requests it on a timer (roughly the target duration, ~7–15 s
+here). That is a **standard player behaviour**, not something you implement —
+hls.js, AVPlayer and ExoPlayer all do it out of the box. Load the URL once and
+leave the player alone.
+
+**Those reloads are nearly free.** The playlist body carries a strong `ETag` and
+`Cache-Control: no-cache`. A reload that finds nothing new gets **`304 Not
+Modified` with no body**, so a viewer parked on a camera all day costs a few
+hundred bytes a minute over the tunnel instead of a full manifest each time.
+
+> **Backend requirement (one line):** the proxy must forward the `If-None-Match`
+> request header and the `ETag`/`Cache-Control` response headers untouched, and
+> must **not** cache `playback.m3u8` itself. Cache the manifest and every viewer
+> freezes at the moment of the first cache fill — the one way to break this.
+
+The only case that still needs a call from your app is a camera that had **no
+footage at all** when the user opened it: that returns `404`, and there is no
+playlist to reload. Re-issue the playlist call once your `…/timeline` poll first
+reports a non-empty `segments[]` (the edge’s own console does exactly this).
 
 The relative `segment/...` URIs resolve to
 `/api/v1/recordings/{camera}/segment/<file>` — **the same path**, so your one
@@ -176,11 +219,11 @@ function seekToDate(ms) {
   videoEl.play();
 }
 // Default view: open the newest recorded STRETCH from its START (use the last
-// `segments[i].start` from the /timeline call). Do NOT open at the live edge:
-// when the camera isn't recording right now, the playlist ends with ENDLIST and
-// the edge is the last frame — you'd play a blink and stop, which looks like
-// "playback doesn't work". Starting at the stretch's beginning always plays
-// forward (and still rolls on to live if the camera is still recording).
+// `segments[i].start` from the /timeline call). Do NOT open at the very end of
+// the footage: on a camera that isn't recording right now the last frame IS the
+// end — you'd play a blink and stop, which looks like "playback doesn't work".
+// Starting at the stretch's beginning always plays forward (and rolls straight
+// on into whatever gets recorded next, since the playlist stays open).
 function jumpToLatest() {
   if (latestSegmentStartMs) seekToDate(latestSegmentStartMs + 200);
 }
@@ -193,6 +236,12 @@ function jumpToLatest() {
 > On a camera that isn't recording at that instant the footage is finite, so the
 > end is the last frame — the player stops immediately. Always **seek to a real
 > moment** (the alert time, or the start of the newest recorded stretch).
+
+> **The second mistake to avoid:** do **not** re-create the player, re-call
+> `loadSource()`, or add a timer that re-downloads the playlist to “get the new
+> clips”. The player is already doing that (§4a), and tearing it down throws away
+> the user’s position and buffer. Load once per camera; the only thing you poll
+> is `…/timeline`, and only to redraw the bar.
 
 Wire it up: call `…/timeline`, draw the availability bar, and on a click compute
 the clicked wall-clock time and call `seekToDate(thatTime)`. Nothing else.
@@ -265,8 +314,9 @@ on the right instant regardless of the viewer’s timezone.
 | Status | Meaning | What to do |
 |---|---|---|
 | `200` | Timeline JSON, or the playlist. | Normal. |
+| `304` | Playlist unchanged since your `If-None-Match`. | Nothing — the player handles it. Proxies must pass it through. |
 | `401` | Missing/wrong control token. | The proxy/backend must send `X-Ceravis-Control-Token`. |
-| `404` | No footage in the 12 h window yet. | Show “no footage”. |
+| `404` | No footage in the 12 h window yet. | Show “no footage”, and re-issue the playlist call when `…/timeline` first reports footage (§4a). |
 | `409` | `edge_id` didn’t match this home. | Wrong device addressed. |
 | `503` | Recording backbone down. | Transient — retry; alert ops if it persists. |
 
@@ -284,6 +334,10 @@ on the right instant regardless of the viewer’s timezone.
 > relative `segment/...` URIs resolve back under the same `/recordings/{cam}/`
 > path). No redirects, no `ts` param, no `/recordings/hls/...` path — those were
 > removed. Never expose the token to the client.
+> **Two rules on the playlist specifically:** pass `If-None-Match` / `ETag` /
+> `Cache-Control` straight through (that turns the player’s own polling into
+> empty `304`s), and **never cache the `.m3u8` body** — the playlist is live and
+> a cached copy freezes every viewer’s footage at the moment it was cached.
 
 **Frontend / mobile team**
 > Build a review panel with two pieces. (1) Call `…/timeline` and draw a bar from
@@ -293,5 +347,8 @@ on the right instant regardless of the viewer’s timezone.
 > **seek by date** — `seekToDate(...)` (web, via `programDateTime`) or
 > `AVPlayerItem.seek(to: Date)` (iOS). The player pauses/scrubs, rolls across
 > gaps on its own, and follows live — with **no further calls per moment**. Use
-> the stream’s own time (`hls.playingDate`) for the “now viewing” readout. That’s
-> the whole feature.
+> the stream’s own time (`hls.playingDate`) for the “now viewing” readout.
+> **The playlist stays current by itself** (§4a): newly recorded clips show up in
+> the player you already loaded, so never re-create the player or re-download the
+> manifest to “refresh” — the only thing you poll is `…/timeline`, for the bar.
+> That’s the whole feature.
