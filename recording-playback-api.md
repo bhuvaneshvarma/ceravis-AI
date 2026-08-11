@@ -73,9 +73,13 @@ GET  /api/v1/recordings/{camera}/timeline?edge_id={homeId}
 
 **How to use it:** draw a bar spanning `window_start` → `now`. Shade each
 `segments[i]` block — those shaded blocks are the only places with video and the
-only clickable spots. Poll it every ~30 s so it reflects the rolling window (the
-oldest ages out, the newest appears). This bar is your *availability* view; the
-player’s own scrubber is a *different* axis (see §6).
+only clickable spots. This bar is your *availability* view; the player’s own
+scrubber is a *different* axis (see §6).
+
+**Call it ONCE, when the camera is opened — do not poll it.** Once the player
+has the playlist, the playlist itself tells you where footage is, and it is
+already being kept current for you (§4a/§4b). Polling this endpoint on a timer
+is a second, slower copy of an answer you already hold.
 
 ---
 
@@ -165,8 +169,51 @@ hundred bytes a minute over the tunnel instead of a full manifest each time.
 
 The only case that still needs a call from your app is a camera that had **no
 footage at all** when the user opened it: that returns `404`, and there is no
-playlist to reload. Re-issue the playlist call once your `…/timeline` poll first
-reports a non-empty `segments[]` (the edge’s own console does exactly this).
+playlist to reload. Retry the playlist call on a slow timer (~30 s) until it
+answers `200`; from that moment the player takes over for good (the edge’s own
+console does exactly this).
+
+### Why you see repeated `playback.m3u8` requests — and why that is correct
+
+A player asking for the playlist again **is** the update. HLS has no “send me
+the new segments” call: the manifest is the index, the player re-reads it,
+diffs it against what it already holds, and downloads **only the `.ts` files it
+does not have**. It is not restarting playback and not re-downloading footage.
+One small request every few seconds per viewer, and with the `ETag` the
+unchanged ones are `304`s carrying no body at all.
+
+---
+
+## 4b. Drawing the availability bar with NO polling at all
+
+You do not need `…/timeline` on a timer to keep the bar fresh — **the playlist
+the player is already reloading contains the same information**. Every fragment
+carries its wall-clock time, so consecutive fragments merge into exactly the
+recorded stretches, and the bar updates in the same beat as the video.
+
+```js
+// hls.js — fires on the first load AND on every self-initiated reload
+hls.on(Hls.Events.LEVEL_LOADED, (_, data) => {
+  const runs = [];
+  let cur = null;
+  for (const f of data.details.fragments) {
+    if (f.programDateTime == null) continue;
+    const end = f.programDateTime + f.duration * 1000;
+    if (cur && Math.abs(f.programDateTime - cur.end) <= 1500) cur.end = end;
+    else runs.push(cur = { start: f.programDateTime, end });     // gap -> new stretch
+  }
+  drawBar(runs);                       // same shape as timeline's `segments[]`
+});
+```
+
+That leaves the whole review screen at **one `…/timeline` call per camera
+opened** (for `retention_hours` and the window bounds) and **zero polling of
+your API**. The window itself slides on the local clock — `winEnd = now`,
+`winStart = now − retention_hours` — which is a clock read, not a request.
+
+iOS/Android have the same data: `AVPlayerItem.seekableTimeRanges` +
+`currentDate()`, and ExoPlayer’s `HlsMediaPlaylist.segments` (each with
+`relativeStartTimeUs` and the playlist’s `startTimeUs`).
 
 The relative `segment/...` URIs resolve to
 `/api/v1/recordings/{camera}/segment/<file>` — **the same path**, so your one
@@ -340,8 +387,10 @@ on the right instant regardless of the viewer’s timezone.
 > a cached copy freezes every viewer’s footage at the moment it was cached.
 
 **Frontend / mobile team**
-> Build a review panel with two pieces. (1) Call `…/timeline` and draw a bar from
-> `window_start`→`now`, shading each `segments[i]`. (2) Load
+> Build a review panel with two pieces. (1) Call `…/timeline` **once** when the
+> camera is opened and draw a bar from `window_start`→`now`, shading each
+> `segments[i]` — then keep that bar fresh from the player's own playlist
+> (§4b), not by polling. (2) Load
 > `…/playback.m3u8?edge_id=<home>` into an HLS player **once** (hls.js on web,
 > AVPlayer on iOS, ExoPlayer on Android). When the user clicks a time on the bar,
 > **seek by date** — `seekToDate(...)` (web, via `programDateTime`) or

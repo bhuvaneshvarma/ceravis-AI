@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CERAVIS — Video Console (Live &amp; Playback)</title>
+<!-- Inline icon: the page must never request /favicon.ico, which through the
+     fleet tunnel is a 404 on every load. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M8 17h4l2-5 3 9 2-5.5L20.5 17H24' stroke='%232dd4bf' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 
 <!--
   ============================================================================
@@ -231,15 +234,6 @@
   .qa .q{font-weight:600; color:var(--text); margin-bottom:4px}
   .qa .a{color:var(--muted); font-size:13px}
 
-  .field{margin-bottom:14px}
-  .field label{display:block; font-size:12px; color:var(--muted); margin-bottom:6px; font-weight:600}
-  .field input,.field select{
-    width:100%; padding:10px 12px; border-radius:9px; border:1px solid var(--line); background:#0a0e13;
-    color:var(--text); font-size:13px; font-family:inherit;
-  }
-  .field .hint{font-size:11px; color:var(--faint); margin-top:5px}
-  .row2{display:grid; grid-template-columns:1fr 1fr; gap:12px}
-
   /* ---- toast ------------------------------------------------------------- */
   .toast{
     position:fixed; left:50%; bottom:26px; transform:translateX(-50%); z-index:80;
@@ -278,7 +272,6 @@
   <span class="pill" id="backbonePill"><span class="dot" id="backboneDot"></span><span id="backboneTxt">checking…</span></span>
   <span class="clock mono" id="clock">—</span>
   <button class="iconbtn" id="btnHelp" title="How this works">?</button>
-  <button class="iconbtn" id="btnSettings" title="Connection settings">⚙</button>
 </header>
 
 <!-- ============================ STAGE ============================ -->
@@ -379,54 +372,10 @@
     <p>Nothing is uploaded to the internet. Live video and recordings both come <b>straight from the device on your network</b>. When you watch from outside the home, it travels through the secure tunnel — but only while you are actually watching.</p>
 
     <h3>If a video will not load</h3>
-    <p>Two common reasons, both easy: (1) the <b class="k">media backbone</b> chip at the top is red — the streaming engine is down; restart the device service. (2) Secure streaming needs its certificate trusted once — the page will show you the exact link to open and approve. Open <b class="k">⚙ Settings</b> to adjust connection details if your setup is unusual.</p>
+    <p>There is nothing to configure — this page works out the right addresses from the one it was opened at. Two things can still stop a video: (1) the <b class="k">media backbone</b> chip at the top is red — the streaming engine is down; restart the device service. (2) On the home network only, secure streaming may need its certificate trusted once — the page shows you the exact link to open and approve.</p>
 
     <h3>Is this permanent?</h3>
     <p>No. This whole page is an optional add-on kept in its own folder. It can be removed at any time with zero effect on cameras, recording, alerts, or the cloud app.</p>
-  </div>
-</aside>
-
-<!-- ============================ SETTINGS PANEL ============================ -->
-<div class="scrim" id="scrimSet"></div>
-<aside class="panel" id="panelSet">
-  <div class="panel-head">
-    <h2>Connection settings</h2>
-    <div style="flex:1"></div>
-    <button class="iconbtn" data-close="set">✕</button>
-  </div>
-  <div class="panel-body">
-    <p>These are remembered on this computer only. Defaults suit a normal setup on the same network — you usually never need to touch them.</p>
-
-    <div class="field">
-      <label>Media host <span class="hint" style="display:inline">(the device's address for live video)</span></label>
-      <input id="setHost" placeholder="e.g. 192.168.0.221" />
-      <div class="hint">Where MediaMTX serves the live WebRTC/HLS stream. Blank = same host as this page.</div>
-    </div>
-    <div class="row2">
-      <div class="field"><label>WebRTC port</label><input id="setWebrtc" value="8889" /></div>
-      <div class="field"><label>HLS port</label><input id="setHls" value="8888" /></div>
-    </div>
-    <div class="field">
-      <label>Live stream security</label>
-      <select id="setScheme">
-        <option value="auto">Auto (match this page, then try the other)</option>
-        <option value="http">Plain (http / ws)</option>
-        <option value="https">Secure (https / wss)</option>
-      </select>
-      <div class="hint">Leave on Auto. If live never connects, the device may use secure streaming — pick "Secure".</div>
-    </div>
-
-    <div class="field">
-      <label>Edge ID (live stream path)</label>
-      <input id="setEdge" placeholder="auto-detected from the device" />
-      <div class="hint">Only addresses the LIVE stream (…/&lt;edge_id&gt;/&lt;cam&gt;) — auto-filled
-        from the device, override only if needed. Playback and the API need nothing here.</div>
-    </div>
-
-    <div style="display:flex; gap:10px; margin-top:8px">
-      <button class="btn primary" id="setSave">Save &amp; reconnect</button>
-      <button class="btn" id="setReset">Reset to defaults</button>
-    </div>
   </div>
 </aside>
 
@@ -448,44 +397,62 @@ function toast(msg, kind = "", ms = 4200){
   if (ms) setTimeout(() => t.remove(), ms);
 }
 
-/* ---- 1. settings (persisted in the browser, never on the device) ------- */
-const DEFAULTS = { host:"", webrtc:"8889", hls:"8888", scheme:"auto", edge:"" };
-const CFG = loadCfg();
-function loadCfg(){
-  try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem("ceravis_console")||"{}")); }
-  catch { return Object.assign({}, DEFAULTS); }
-}
-function saveCfg(){ localStorage.setItem("ceravis_console", JSON.stringify(CFG)); }
+/* ---- 1. addressing — DERIVED, never configured ------------------------
+   There is no settings screen and nothing stored in the browser. Every URL this
+   page needs follows from the ONE address it was opened at, which is also the
+   only address that is guaranteed to reach this device:
 
-/* Host used for the media (live) ports — falls back to this page's host. */
-function mediaHost(){ return (CFG.host && CFG.host.trim()) || location.hostname; }
+     through the fleet tunnel   /<edge_id>/ui/recordings/
+        api   ->  /<edge_id>/api/v1/…        (frps routes by URL path)
+        live  ->  /<edge_id>/<cam>/whep      SAME ORIGIN, no port: Caddy holds
+                  the TLS and frps forwards the path to MediaMTX. Naming a port
+                  here is what used to break live view — :8889 is not published
+                  through the tunnel, and an http:// URL on an https:// page is
+                  blocked as mixed content before it is even tried.
+
+     on the home network        /ui/recordings/
+        api   ->  /api/v1/…                  (same host, same port)
+        live  ->  <host>:8889/<cam>/whep     MediaMTX direct, which is the only
+                  way to reach it with no proxy in front.
+
+   The camera's live PATH ('<edge_id>/<cam>' on a provisioned device, else
+   '<cam>') mirrors the edge's own stream_path(), so the segment frp routes on
+   and the path MediaMTX serves are always the same string. */
+const CV_PREFIX = (location.pathname.match(/^(\/[^/]+)\/ui(?:\/|$)/) || [])[1] || "";
+const FLEET     = !!CV_PREFIX;                 // reached through the cloud tunnel
+const MTX_WEBRTC_PORT = 8889;                  // MediaMTX WHEP  (LAN-direct only)
+const MTX_HLS_PORT    = 8888;                  // MediaMTX HLS   (LAN-direct only)
+
+/* This device's edge_id: it IS the tunnel prefix when we came in that way,
+   otherwise the device tells us (autofillEdge). */
+let EDGE = FLEET ? CV_PREFIX.slice(1) : "";
+
 /* The sanitised MediaMTX path for a camera — mirrors edge path_name(). */
 function pathName(id){ return (String(id||"").trim().replace(/[^A-Za-z0-9_-]+/g,"-")) || "cam"; }
-/* The LIVE MediaMTX path — mirrors edge stream_path(): '<edge_id>/<cam>' when an
-   edge id is set, else '<cam>'. Fleet devices serve the camera under the
-   /<edge_id> prefix, so the console must address the live stream the same way. */
-function streamPath(id){ const e=(CFG.edge||"").trim().replace(/[^A-Za-z0-9_-]+/g,"-"); return e ? `${e}/${pathName(id)}` : pathName(id); }
-
-/* Fleet per-edge base: served at /<edge_id>/ui/… through the tunnel, this page
-   must call /<edge_id>/api/… (frps routes only by URL). Empty on the LAN /
-   shared /ui path, so it is a no-op there. */
-const CV_PREFIX = (location.pathname.match(/^(\/[^/]+)\/ui(?:\/|$)/) || [])[1] || "";
+/* The LIVE MediaMTX path — mirrors edge stream_path(). */
+function streamPath(id){ const e=(EDGE||"").trim().replace(/[^A-Za-z0-9_-]+/g,"-"); return e ? `${e}/${pathName(id)}` : pathName(id); }
+/* Origin that serves the live stream. Fleet = this page's own origin (proxied,
+   no port). LAN = the same host on MediaMTX's own port. */
+function liveOrigin(secure){
+  return FLEET ? location.origin
+               : `${secure?"https":"http"}://${location.hostname}:${MTX_WEBRTC_PORT}`;
+}
 
 /* ---- 2. edge API fetch (NO token; carries edge_id — the control endpoints
    verify it matches this device, playback + PTZ). ------------------------- */
 async function apiGet(path){
   const url = new URL(CV_PREFIX + path, location.origin);
-  if (CFG.edge && !url.searchParams.has("edge_id")) url.searchParams.set("edge_id", CFG.edge);
+  if (EDGE && !url.searchParams.has("edge_id")) url.searchParams.set("edge_id", EDGE);
   const r = await fetch(url);
   if (!r.ok) throw Object.assign(new Error("HTTP "+r.status), { status:r.status });
   return r.json();
 }
-/* Auto-fill the live-stream edge_id from the device (so live view needs no
-   manual entry); the API + playback need nothing. Best-effort. */
+/* On the LAN the URL carries no edge_id, so ask the device for its own once.
+   Through the tunnel we already know it (it IS the prefix) and skip this. */
 async function autofillEdge(){
-  if ((CFG.edge||"").trim()) return;
+  if (EDGE) return;
   try { const a = await apiGet("/api/v1/account"); const e = a && a.user && a.user.edgeId;
-        if (e) { CFG.edge = e; saveCfg(); } } catch(_) {}
+        if (e) EDGE = e; } catch(_) {}
 }
 
 /* ---- 3. state --------------------------------------------------------- */
@@ -498,6 +465,11 @@ let TL  = null;             // last timeline payload {winStart,winEnd,segments}
 let pendingSeekMs = null;   // a seek-by-date requested before the playlist loaded
 let playbackReady = false;  // the whole-window playlist has parsed at least once
 let playerAttached = false; // a playlist has been handed to a player (loading or ready)
+/* Bumped by every teardown. Connecting is asynchronous and cannot be cancelled
+   mid-flight, so each attempt carries the value it started with and drops its
+   result if it no longer matches — otherwise a live attempt that fails AFTER
+   the user switched to Playback paints its error over the running player. */
+let GEN = 0;
 
 /* ===================================================================== */
 /* 4. CAMERAS + HEALTH                                                    */
@@ -585,6 +557,7 @@ function applyMode(){
 
 /* Stop everything cleanly — called on every mode/camera change + unload. */
 function teardown(){
+  GEN++;                                  // invalidate any in-flight connect
   if (hls){ try{hls.destroy();}catch(_){} hls=null; }
   if (pc){ try{pc.close();}catch(_){} pc=null; }
   const v=$("video"); try{ v.pause(); }catch(_){}
@@ -597,29 +570,36 @@ function teardown(){
 /* 6. LIVE  (WebRTC "WHEP" first, then HLS-live, then the raw player)      */
 /* ===================================================================== */
 async function startLive(cam){
+  const gen = GEN;                              // this attempt's ticket (see teardown)
   showSpinner("Connecting to live view…", `Opening a low-latency stream from ${esc(cam.camera_name||cam.camera_id)}.`);
   const path = streamPath(cam.camera_id);
-  // Try secure/plain in an order that matches this page first (fewest surprises).
+  // Fleet: the proxy owns TLS, so there is exactly ONE correct scheme — this
+  // page's. LAN: MediaMTX may serve https (installer certs) or plain, so try
+  // this page's scheme first and the other as a fallback.
   const pageSecure = location.protocol === "https:";
-  const order = CFG.scheme==="http" ? [false]
-              : CFG.scheme==="https" ? [true]
-              : pageSecure ? [true,false] : [false,true];   // "auto"
+  const order = FLEET ? [pageSecure] : (pageSecure ? [true,false] : [false,true]);
   for (const secure of order){
     try {
       await whep(path, secure);
+      if (gen !== GEN) return;                  // camera/mode changed while connecting
       liveChip(cam); hideOverlay();
       return;                                   // success
-    } catch(e){ /* try next scheme */ }
+    } catch(e){ if (gen !== GEN) return; }      // else try the next scheme
   }
-  // WebRTC failed on every scheme — try HLS live as a graceful fallback.
-  try { await hlsLive(path, order[0]); liveChip(cam); hideOverlay(); return; }
-  catch(e){ liveFailed(cam, path, order[0]); }
+  // WebRTC failed. MediaMTX's HLS port is LAN-only (the tunnel publishes WebRTC
+  // and the API, nothing else), so only fall back to it on the LAN — reaching
+  // for it through the tunnel just times out.
+  if (!FLEET){
+    try { await hlsLive(path, order[0]); if (gen!==GEN) return; liveChip(cam); hideOverlay(); return; }
+    catch(e){ /* fall through to the message below */ }
+  }
+  if (gen === GEN) liveFailed(cam, path, order[0]);
 }
 
 /* One WebRTC "WHEP" attempt. Resolves when the peer connection goes live. */
 function whep(path, secure){
   return new Promise(async (resolve, reject) => {
-    const url = `${secure?"https":"http"}://${mediaHost()}:${CFG.webrtc}/${path}/whep`;
+    const url = `${liveOrigin(secure)}/${path}/whep`;
     const peer = new RTCPeerConnection({ iceServers:[{urls:"stun:stun.l.google.com:19302"}] });
     pc = peer;
     let settled=false;
@@ -657,10 +637,11 @@ function iceComplete(peer){
   });
 }
 
-/* HLS live fallback — higher latency (~3s) but very robust. */
+/* HLS live fallback — higher latency (~3s) but very robust. LAN-DIRECT ONLY:
+   MediaMTX's HLS port is not published through the fleet tunnel. */
 function hlsLive(path, secure){
   return new Promise((resolve,reject)=>{
-    const url = `${secure?"https":"http"}://${mediaHost()}:${CFG.hls}/${path}/index.m3u8`;
+    const url = `${secure?"https":"http"}://${location.hostname}:${MTX_HLS_PORT}/${path}/index.m3u8`;
     const v=$("video"); v.srcObject=null;
     if (v.canPlayType("application/vnd.apple.mpegurl")){        // Safari native
       v.src=url; v.play().then(resolve).catch(()=>resolve());
@@ -684,14 +665,18 @@ function liveChip(cam){
 }
 
 function liveFailed(cam, path, secure){
-  const link = `${secure?"https":"http"}://${mediaHost()}:${CFG.webrtc}/${path}`;
-  showOverlay("Live view could not connect",
-    `The streaming engine did not answer for <b>${esc(cam.camera_name||cam.camera_id)}</b>.<br>
-     Most often this is a certificate that must be trusted once, or a wrong address.`,
+  const link = `${liveOrigin(secure)}/${path}`;
+  const why = FLEET
+    ? `The streaming engine did not answer for <b>${esc(cam.camera_name||cam.camera_id)}</b>.
+       The camera may be offline, or the device's tunnel is down — the dot next to the
+       camera and the backbone chip at the top say which. Recorded footage still works.`
+    : `The streaming engine did not answer for <b>${esc(cam.camera_name||cam.camera_id)}</b>.
+       On the home network this is usually a secure-streaming certificate that has to be
+       trusted once — open the raw link below and approve it, then come back.`;
+  showOverlay("Live view could not connect", why,
     [
       { label:"Open the raw stream link", cls:"", href:link },
       { label:"Try Playback instead", cls:"primary", fn:()=>setMode("play") },
-      { label:"Connection settings", cls:"", fn:()=>openPanel("set") },
     ]);
   $("vpChip").classList.add("hidden");
 }
@@ -707,33 +692,70 @@ function liveFailed(cam, path, secure){
 /* The playlist carries no EXT-X-ENDLIST, so hls.js keeps reloading it on */
 /* its own and clips recorded AFTER this page opened appear in the        */
 /* already-loaded player — we never re-issue the playback call for them.  */
+/*                                                                        */
+/* ONE SOURCE OF TRUTH: that same reloaded playlist also draws the green   */
+/* footage bar (timelineFromPlaylist). /timeline is called exactly ONCE    */
+/* per camera, for the window bounds; after that nothing on this page      */
+/* polls the API — the bar, the player and the clock all move off the      */
+/* manifest the player is already fetching, so they can never disagree.    */
 /* ===================================================================== */
 async function startPlayback(cam){
+  const gen = GEN;
   showSpinner("Loading recorded footage…", "Reading this camera's timeline.");
-  await refreshTimeline(cam);
-  if (TL && TL.segments.length){
-    loadPlayback(cam);               // one whole-window playlist; default view = latest
-  } else {
-    showOverlay("No footage recorded yet",
+  if (TL){ TL.segments = []; drawTimeline(); }   // never show the last camera's footage
+  const any = await openWindow(cam);
+  if (gen !== GEN) return;                 // camera/mode changed while loading
+  if (any) loadPlayback(cam);              // one whole-window playlist; default view = latest
+  else if (TL) showOverlay("No footage recorded yet",
       "This camera has not recorded anyone in the last 12 hours. Leave this page open — playback starts by itself the moment someone is recorded.");
-  }
 }
 
-async function refreshTimeline(cam){
+/* The camera's window: how far back footage is kept, and whether there is any
+   at all. ONE call, when the camera is opened — never polled. */
+async function openWindow(cam){
   try {
     const t = await apiGet(`/api/v1/recordings/${encodeURIComponent(cam.camera_id)}/timeline`);
     TL = {
-      winStart: new Date(t.window_start),
-      winEnd:   new Date(t.now),
-      retention: t.retention_hours,
-      segments: (t.segments||[]).map(s => ({ start:new Date(s.start), end:new Date(s.end), seconds:s.seconds })),
+      retention: t.retention_hours || 12,
+      winStart:  new Date(t.window_start),
+      winEnd:    new Date(t.now),
+      segments:  (t.segments||[]).map(s => ({ start:new Date(s.start), end:new Date(s.end), seconds:s.seconds })),
     };
     drawTimeline();
+    return TL.segments.length > 0;
   } catch(e){
-    TL=null;
+    TL = null;
     if (e.status===503) toast("Recording engine is down (503). Live may still work.", "bad", 6000);
     else drawTimeline();
+    return false;
   }
+}
+
+/* Rebuild the footage bar from the playlist the player ALREADY holds. Every
+   fragment carries its true wall-clock time (EXT-X-PROGRAM-DATE-TIME, filled in
+   for the rest by hls.js), so consecutive fragments merge into exactly the runs
+   the edge recorded — the same answer /timeline gives, for no extra request.
+   Runs as the player sees them, so what the bar shows is always what will
+   actually play. Called on every playlist reload, i.e. every few seconds. */
+function timelineFromPlaylist(details){
+  if (!TL || !details || !details.fragments || !details.fragments.length) return;
+  const runs = [];
+  let cur = null;
+  for (const f of details.fragments){
+    const t = f.programDateTime;
+    if (t == null) continue;
+    const end = t + f.duration*1000;
+    if (cur && Math.abs(t - cur.end) <= 1500) cur.end = end;   // contiguous -> same run
+    else runs.push(cur = { start:t, end });
+  }
+  TL.segments = runs.map(r => ({ start:new Date(r.start), end:new Date(r.end),
+                                 seconds:(r.end-r.start)/1000 }));
+  // The window is relative to NOW, so it slides by itself — a clock read, not a
+  // request. Bounds refresh with the playlist (every few seconds), which on a
+  // 12-hour ruler is far finer than one pixel.
+  TL.winEnd   = new Date();
+  TL.winStart = new Date(TL.winEnd.getTime() - TL.retention*3600*1000);
+  drawTimeline();
 }
 
 /* Draw the 12-hour ruler with green footage blocks + hour ticks. */
@@ -778,12 +800,12 @@ function dateAtX(clientX){
 
 /* Load the camera's WHOLE-WINDOW playlist ONCE. Default view = latest footage;
    after this, moving around the timeline is a pure client-side seek. */
-function loadPlayback(cam){
+function loadPlayback(cam, quiet){
   teardownPlayer();
   playerAttached = true;
-  showSpinner("Opening timeline…", "");
+  if (!quiet) showSpinner("Opening timeline…", "");
   const url = new URL(`${CV_PREFIX}/api/v1/recordings/${encodeURIComponent(cam.camera_id)}/playback.m3u8`, location.origin);
-  if (CFG.edge) url.searchParams.set("edge_id", CFG.edge);   // segments inherit both the prefix (relative URIs) and edge_id via the playlist
+  if (EDGE) url.searchParams.set("edge_id", EDGE);   // segments inherit both the prefix (relative URIs) and edge_id via the playlist
   const v=$("video"); v.srcObject=null; v.muted=false;
   $("vpChip").className="vp-chip"; $("vpChipTxt").textContent="PLAYBACK"; $("vpChip").classList.remove("hidden");
 
@@ -794,8 +816,12 @@ function loadPlayback(cam){
     hls = new Hls({
       backBufferLength: 90,           // keep some history buffered for smooth scrub-back
     });
-    hls.on(Hls.Events.LEVEL_LOADED, ()=>{
-      if (playbackReady) return;      // act only on the FIRST load; reloads just append
+    hls.on(Hls.Events.LEVEL_LOADED, (_, data)=>{
+      // Fires on the first load AND on every self-initiated reload after it.
+      // Each reload is where newly recorded clips arrive, so redraw the bar
+      // from it every time; only the first load positions playback.
+      timelineFromPlaylist(data && data.details);
+      if (playbackReady) return;
       playbackReady = true; hideOverlay();
       if (pendingSeekMs!=null){ const ms=pendingSeekMs; pendingSeekMs=null; seekToDate(ms); }
       else jumpToLatest();
@@ -885,6 +911,14 @@ function jumpToLatest(){
 
 function teardownPlayer(){ if(hls){try{hls.destroy();}catch(_){}hls=null;} }
 
+/* Try to (re)open the player for a camera that has none — the no-footage-yet
+   case. Quiet: it must not flash a spinner over the message every attempt. */
+function retryPlayback(){
+  if (MODE!=="play" || !CURRENT || playerAttached) return;
+  if (TL) loadPlayback(CURRENT, true);   // window already known — just the playlist
+  else    startPlayback(CURRENT);        // never got the window — start over
+}
+
 /* The wall-clock instant (ms) currently on screen — straight from the stream's
    own PROGRAM-DATE-TIME, so the readout is the real time, exact across gaps. */
 function currentPlaybackDate(){
@@ -970,30 +1004,12 @@ $("track").addEventListener("click", (e)=>{
   seekToDate(dateAtX(e.clientX));
 });
 
-/* panels */
-function openPanel(which){
-  if(which==="help"){ $("scrimHelp").classList.add("open"); $("panelHelp").classList.add("open"); }
-  else { fillSettings(); $("scrimSet").classList.add("open"); $("panelSet").classList.add("open"); }
-}
-function closePanels(){ ["scrimHelp","panelHelp","scrimSet","panelSet"].forEach(id=>$(id).classList.remove("open")); }
-on("btnHelp","click", ()=>openPanel("help"));
-on("btnSettings","click", ()=>openPanel("set"));
-$("scrimHelp").onclick=closePanels; $("scrimSet").onclick=closePanels;
+/* the help panel (the only one — there is nothing to configure) */
+function openPanel(){ $("scrimHelp").classList.add("open"); $("panelHelp").classList.add("open"); }
+function closePanels(){ ["scrimHelp","panelHelp"].forEach(id=>$(id).classList.remove("open")); }
+on("btnHelp","click", openPanel);
+$("scrimHelp").onclick=closePanels;
 document.querySelectorAll("[data-close]").forEach(b=> b.onclick=closePanels);
-
-/* settings form */
-function fillSettings(){
-  $("setHost").value=CFG.host; $("setWebrtc").value=CFG.webrtc; $("setHls").value=CFG.hls;
-  $("setScheme").value=CFG.scheme; $("setEdge").value=CFG.edge;
-}
-on("setSave","click", ()=>{
-  CFG.host=$("setHost").value.trim(); CFG.webrtc=$("setWebrtc").value.trim()||"8889";
-  CFG.hls=$("setHls").value.trim()||"8888"; CFG.scheme=$("setScheme").value;
-  CFG.edge=$("setEdge").value.trim();
-  saveCfg(); closePanels(); toast("Settings saved — reconnecting.", "", 2200);
-  loadCameras(); pollHealth(); applyMode();
-});
-on("setReset","click", ()=>{ Object.assign(CFG, DEFAULTS); saveCfg(); fillSettings(); toast("Reset to defaults.", "", 2000); });
 
 /* mobile rail toggle */
 if (window.matchMedia("(max-width:820px)").matches) $("railToggle").classList.remove("hidden");
@@ -1004,17 +1020,16 @@ window.addEventListener("keydown", e=>{ if(e.key==="Escape") closePanels(); });
 
 /* Reconcile on tab-return. A backgrounded tab FREEZES our timers and pauses
    hls.js, so after a while away the rolling 12-hour window has SLID — the oldest
-   footage expired, new footage arrived — while the on-screen timeline + playlist
-   are a stale snapshot. Pro DVR players reconcile on FOCUS rather than trust a
-   throttled background timer: the instant this tab is visible again, re-query the
-   timeline (redraw the footage bar to NOW), resume the player (hls reloads the
-   sliding manifest, dropping expired fragments + appending new), and if the spot
-   we were parked on has itself rolled off the window, snap to the newest footage
-   instead of trying to load an expired segment (which would 404). */
-document.addEventListener("visibilitychange", async ()=>{
+   footage expired, new footage arrived — while the on-screen playlist is a stale
+   snapshot. Pro DVR players reconcile on FOCUS rather than trust a throttled
+   background timer: the instant this tab is visible again, resume the player (its
+   next manifest reload drops expired fragments, appends new ones and redraws the
+   bar with them), and if the spot we were parked on has itself rolled off the
+   window, snap to the newest footage instead of trying to load an expired
+   segment (which would 404). */
+document.addEventListener("visibilitychange", ()=>{
   if (document.visibilityState!=="visible" || MODE!=="play" || !CURRENT) return;
-  await refreshTimeline(CURRENT);
-  if (!playerAttached && TL && TL.segments.length){ loadPlayback(CURRENT); return; }
+  if (!playerAttached){ retryPlayback(); return; }
   if (hls){ try{ hls.startLoad(); }catch(_){} }
   const ms = currentPlaybackDate();
   if (TL && (ms==null || ms < TL.winStart.getTime())) jumpToLatest();
@@ -1027,17 +1042,12 @@ tickClock(); setInterval(tickClock, 1000);
 autofillEdge().then(loadCameras);      // auto-detect the live-stream edge_id, then load
 pollHealth();
 setInterval(pollHealth, 15000);
-/* Keep the timeline fresh (rolling 12-hour window) while in playback. The
-   PLAYER needs no help — its playlist has no ENDLIST, so hls.js reloads it and
-   appends new clips by itself. The one case that does need us is a camera that
-   had NO footage when playback opened (the playlist 404s and there is nothing
-   to reload): the moment this poll sees the first recorded stretch, open the
-   player. From then on it stays current on its own. */
-setInterval(async ()=>{
-  if (MODE!=="play" || !CURRENT) return;
-  await refreshTimeline(CURRENT);
-  if (!playerAttached && TL && TL.segments.length) loadPlayback(CURRENT);
-}, 30000);
+/* The ONLY playback poll left, and it runs solely while there is NO player to
+   speak of: a camera with no footage yet answers 404, so there is no playlist
+   to reload and nothing would ever start it. Once a clip exists this succeeds,
+   the manifest takes over (new clips, the footage bar and the sliding window
+   all ride on its own reloads) and this loop goes quiet for good. */
+setInterval(retryPlayback, 30000);
 // refresh the camera online/offline dots periodically
 setInterval(loadCameras, 20000);
 </script>
