@@ -7,8 +7,9 @@ The web app runs as an unprivileged user, so it can't edit /etc/frp/frpc.toml or
 restart frpc itself. Instead it calls a LOCKED-DOWN privileged helper —
 `/usr/local/bin/ceravis-apply-edge-id` (cloud/apply_edge_id.sh, installed by
 cloud/install_frpc.sh with a NOPASSWD sudoers rule for EXACTLY that one command).
-The helper validates the token, rewrites only the marked `locations` line, verifies
-the config, and restarts frpc.
+The helper validates the token, rewrites only the per-edge routing keys (the
+`locations` of the live + API proxies and, if SSH is enabled, the `customDomains`
+of the tcpmux proxy), verifies the config, and restarts frpc.
 
 Everything here is BEST-EFFORT: any failure (no sudo, helper not installed, dev
 box) is logged and swallowed, never raised — the edge_id is already saved to
@@ -40,8 +41,8 @@ def apply_edge_id_async(edge_id: str) -> None:
 
 
 def apply_edge_id(edge_id: str) -> bool:
-    """Patch frpc.toml's mediamtx-webrtc `locations` to /<edge_id> and restart
-    frpc, via the privileged helper. Returns True on success. Never raises."""
+    """Key every frpc proxy to <edge_id> (live/API paths + the SSH CONNECT host)
+    and restart frpc, via the privileged helper. Returns True. Never raises."""
     edge_id = (edge_id or "").strip()
     if not edge_id:
         return False

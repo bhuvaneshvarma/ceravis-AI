@@ -49,9 +49,11 @@ sudo visudo -cf /etc/sudoers.d/ceravis-frpc >/dev/null \
 
 echo
 echo "frpc running. Check:  sudo systemctl status frpc   |   journalctl -u frpc -f"
-echo "Healthy log shows 'start proxy success' for mediamtx-webrtc + ceravis-api."
+echo "Healthy log shows 'start proxy success' for mediamtx-webrtc, ceravis-api"
+echo "and ceravis-ssh (the last one only if you kept the SSH block)."
 echo
 echo "edge_id is applied AUTOMATICALLY now: when you verify the account in the"
 echo "setup wizard, the app writes EDGE_ID to jetson.env and runs"
-echo "ceravis-apply-edge-id (installed above) to set the tunnel's locations and"
-echo "restart frpc — no manual edit. Helper runs as: $SVC_USER"
+echo "ceravis-apply-edge-id (installed above) to key EVERY proxy to it — the live"
+echo "and API locations AND the SSH tunnel's CONNECT host — then restarts frpc."
+echo "No manual edit. Helper runs as: $SVC_USER"

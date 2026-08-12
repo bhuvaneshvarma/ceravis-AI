@@ -64,7 +64,7 @@ later, does relay media for the strict-NAT minority and uses egress.)
    | HTTP | 80 | 0.0.0.0/0 | Caddy ACME challenge |
    | HTTPS | 443 | 0.0.0.0/0 | Caddy — the one public entry (live + API + UI) |
    | Custom TCP | 7000 | 0.0.0.0/0 | edges connect to frps (token-protected) |
-   | Custom TCP | 7001 | *My IP* | *(optional)* fleet SSH over one port (tcpmux) — §6 |
+   | Custom TCP | 7001 | *My IP* | fleet SSH for the whole fleet, one port (tcpmux) — §6 |
 
    Keep **7080 CLOSED** (Caddy reaches the frps vhost over loopback).
 3. **DNS:** point an A record for `edgeai.ceravishealth.in` at the Elastic IP.
@@ -108,20 +108,27 @@ and Basic-Auth-protects only `/ui/*`. First HTTPS request mints the cert.
 `edge_id` is **fully auto-provisioned**. Install the tunnel once with a
 placeholder; then verifying the operator's email in the setup wizard makes the
 edge read `deviceToken` from the app-server response, save it (`account.json` +
-`EDGE_ID` in `jetson.env`), rewrite `frpc.toml`'s `mediamtx-webrtc` `locations`,
-and restart frpc — no manual copy. (`install_frpc.sh` installs the
-`ceravis-apply-edge-id` helper + a locked-down sudoers rule that lets the app do
-that one privileged step.)
+`EDGE_ID` in `jetson.env`), key **every** frpc proxy to it, and restart frpc — no
+manual copy. (`install_frpc.sh` installs the `ceravis-apply-edge-id` helper + a
+locked-down sudoers rule that lets the app do that one privileged step.)
+
+One `edge_id`, written by machine into all three routes — so none can drift:
+
+| proxy | key | value written |
+|-------|-----|---------------|
+| `mediamtx-webrtc` | `locations` | `["/<edge_id>"]` — a URL **path**, leading slash |
+| `ceravis-api` | `locations` | `["/<edge_id>/api", …/ui, …/stream]` |
+| `ceravis-ssh` | `customDomains` | `["<edge_id>"]` — a CONNECT **host**, **no** slash |
 
 ```bash
 cd ~/ceravis/cloud
 cp frpc.toml.example frpc.toml
 nano frpc.toml
 #   serverAddr = "EC2_IP"   auth.token = "<the shared secret from step 3>"
-#   leave mediamtx-webrtc  locations = ["/EDGE_ID"]  # ceravis:edge-id  (auto-filled)
-#   keep the ceravis-ssh block if you manage this house remotely!
+#   leave every  # ceravis:edge-id / # ceravis:ssh-edge-id  line as-is (auto-filled)
+#   comment out the ceravis-ssh block only if this house must NOT be SSH-able
 bash install_frpc.sh            # installs frpc + the apply-edge-id helper + sudoers
-sudo systemctl status frpc      # 'start proxy success' x2 (mediamtx-webrtc, ceravis-api)
+sudo systemctl status frpc      # 'start proxy success' x3 (webrtc, api, ssh)
 ```
 
 `jetson.env` already ships with the domain + STUN set. After verifying the
@@ -173,23 +180,47 @@ internally, so it serves both forms.)
   > as "targets the right house", not a secret — the family-facing links are the
   > sensitive surface and stay gated by the app account. Add per-view signed
   > links (§7) before wide use.
-- **SSH (optional) — one shared port, routed by edge_id (tcpmux):** the whole
-  fleet SSHes through ONE server port; frps routes by the HTTP CONNECT host =
-  each device's `edge_id`, the same token that keys the live links — no per-house
-  port to allocate.
-  1. **frps** (`/etc/frp/frps.toml`): uncomment `tcpmuxHTTPConnectPort = 7001`,
-     restart frps, and open **7001 to admin IPs only** in the security group.
-  2. **Each edge** (`/etc/frp/frpc.toml`): add the `ceravis-ssh` `type="tcpmux"`
-     block from `frpc.toml.example` with `customDomains = ["<that device's
-     edge_id>"]`, restart frpc.
+- **SSH — one shared port, routed by edge_id (tcpmux):** the whole fleet SSHes
+  through ONE server port; frps routes by the HTTP CONNECT host = each device's
+  `edge_id`, the same token that keys the live links — no per-house port to
+  allocate, nothing to change on EC2 when a house is added. The session inside is
+  end-to-end encrypted; frps sees only the `edge_id` it routes on.
+  1. **frps** (`/etc/frp/frps.toml`): `tcpmuxHTTPConnectPort = 7001` (shipped
+     enabled), restart frps, and open **7001 to admin IPs only** in the SG.
+  2. **Each edge**: nothing manual — the `ceravis-ssh` block ships in
+     `frpc.toml.example` and `ceravis-apply-edge-id` fills in its `customDomains`.
   3. **Jetson sshd:** `PasswordAuthentication no`, `PubkeyAuthentication yes`
      first — the `edge_id` is only the routing key; the keys are the auth.
-  4. **Connect** (any HTTP-CONNECT helper):
-     `ssh -o ProxyCommand="ncat --proxy EC2_IP:7001 --proxy-type http %h %p" <user>@<edge_id>`
+  4. **Connect.** Reaching a CONNECT-multiplexed port needs a client that speaks
+     HTTP CONNECT, which Windows has none of, so `cloud/fleet_ssh_proxy.py` is
+     that client — stdlib Python, nothing to install, same command on every OS:
 
-  *Simpler alternative* (no ProxyCommand, but a port per house): a plain
-  `type="tcp"` proxy with a unique `remotePort` (2222, 2223, …) → `ssh -p 2222
-  <user>@EC2_IP`.
+     ```bash
+     python cloud/fleet_ssh_proxy.py --via EC2_IP:7001 --check <edge_id>
+     ```
+     `--check` proves the path without ssh: it opens the tunnel and reads the
+     Jetson's sshd banner back, so a failure names its own layer (port shut, no
+     edge under that `edge_id`, or sshd down). Then:
+     ```bash
+     ssh -o ProxyCommand="python cloud/fleet_ssh_proxy.py --via EC2_IP:7001 %h %p" ceravis@<edge_id>
+     ```
+     Better, put it in `~/.ssh/config` once and the daily command is `ssh house-a`:
+     ```
+     Host house-a
+         HostName     <edge_id>
+         User         ceravis
+         ProxyCommand python C:/path/to/cloud/fleet_ssh_proxy.py --via EC2_IP:7001 %h %p
+     ```
+     (`ncat --proxy EC2_IP:7001 --proxy-type http %h %p` is equivalent where Nmap
+     is installed. `ssh` reporting **`CreateProcessW failed error:2`** or
+     **`posix_spawnp: No such file or directory`** means the ProxyCommand binary
+     is missing on *your* machine — ssh never reached the network, so it says
+     nothing about the tunnel.)
+
+  *Simpler alternative* (no ProxyCommand, but a port per house, and every one of
+  them must be opened in the SG): a plain `type="tcp"` proxy with a unique
+  `remotePort` (2222, 2223, …) → `ssh -p 2222 <user>@EC2_IP`. Fine for one bench
+  device; it does not scale to a fleet.
 
 ---
 

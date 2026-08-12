@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Apply this device's edge_id to the frp tunnel: set the mediamtx-webrtc proxy's
-# `locations` to ["/<edge_id>"] in frpc.toml and restart frpc.
+# Apply this device's edge_id to EVERY per-edge key in frpc.toml and restart frpc:
+#   mediamtx-webrtc  locations    = ["/<edge_id>"]                      (live WHEP)
+#   ceravis-api      locations    = ["/<edge_id>/api|/ui|/stream"]      (uvicorn)
+#   ceravis-ssh      customDomains = ["<edge_id>"]                      (fleet SSH)
+# One edge_id, one command, every route — so no proxy can drift out of step.
 #
 # Installed as /usr/local/bin/ceravis-apply-edge-id by cloud/install_frpc.sh and
 # invoked by the edge app (integration/edge_provision) via a NOPASSWD sudoers
@@ -14,7 +17,10 @@
 #     marker, so an edit that drops the marker can't defeat it.
 #   • ALWAYS writes the leading slash: ["/<edge_id>"]. frp matches a request PATH
 #     (always starts with "/") against this string — a missing slash silently
-#     404s every live link (the exact bug this guards against).
+#     404s every live link (the exact bug this guards against). The SSH proxy is
+#     the mirror image: its CONNECT host is a HOSTNAME, never a path, so there it
+#     writes the bare "<edge_id>" with NO slash. Same token, two shapes, both
+#     machine-written so neither can be typed wrong.
 #   • Inserts the `locations` line if the block has none.
 #   • Idempotent: if the value is already correct it makes NO change and does NOT
 #     restart frpc, so the boot-time self-heal is free when nothing moved.
@@ -34,35 +40,38 @@ fi
 
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
-# Rewrite the per-edge `locations` line (or insert one) of BOTH the live-link and
-# the control-API proxies, keeping every other byte:
-#   mediamtx-webrtc -> ["/<edge_id>"]                                (live WHEP)
-#   ceravis-api     -> ["/<edge_id>/api","/<edge_id>/ui","/<edge_id>/stream"]  (uvicorn)
-# Any other proxy (e.g. ceravis-ssh) is left untouched. A block runs from a
-# `[[proxies]]` header to the next (or EOF); our template lists `name` before
-# `locations`, so the target flag is set first.
+# Rewrite the per-edge key of each proxy (or insert it), keeping every other byte:
+#   mediamtx-webrtc -> locations     = ["/<edge_id>"]                       (WHEP)
+#   ceravis-api     -> locations     = ["/<eid>/api","/<eid>/ui","/<eid>/stream"]
+#   ceravis-ssh     -> customDomains = ["<edge_id>"]                  (tcpmux host)
+# Only ceravis-ssh's customDomains is touched — the HTTP proxies' customDomains is
+# the shared fleet DOMAIN and must never be rewritten. A block runs from a
+# `[[proxies]]` header to the next (or EOF); our template lists `name` first, so
+# the target flag is set before the line it governs. A commented-out block (every
+# line behind a `#`) matches nothing here and is deliberately left alone: SSH stays
+# opt-in per house, and this only maintains it once enabled.
 awk -v eid="$EDGE_ID" '
   function mtx() { return "locations = [\"/" eid "\"]  # ceravis:edge-id" }
   function api() { return "locations = [\"/" eid "/api\", \"/" eid "/ui\", \"/" eid "/stream\"]  # ceravis:edge-id" }
-  /^[[:space:]]*\[\[proxies\]\]/ {
-      if (tmtx && !wrote) print mtx()
-      if (tapi && !wrote) print api()
-      tmtx=0; tapi=0; print; next
+  function ssh() { return "customDomains = [\"" eid "\"]  # ceravis:ssh-edge-id" }
+  function flush_block() {
+      if (wrote) return
+      if (tmtx) print mtx(); else if (tapi) print api(); else if (tssh) print ssh()
   }
+  /^[[:space:]]*\[\[proxies\]\]/ { flush_block(); tmtx=0; tapi=0; tssh=0; print; next }
   /^[[:space:]]*name[[:space:]]*=/ {
       tmtx = ($0 ~ /"mediamtx-webrtc"/)
       tapi = ($0 ~ /"ceravis-api"/)
-      if (tmtx || tapi) wrote=0
+      tssh = ($0 ~ /"ceravis-ssh"/)
+      if (tmtx || tapi || tssh) wrote=0
       print; next
   }
   ((tmtx || tapi) && /^[[:space:]]*locations[[:space:]]*=/) {
       print (tmtx ? mtx() : api()); wrote=1; next
   }
+  (tssh && /^[[:space:]]*customDomains[[:space:]]*=/) { print ssh(); wrote=1; next }
   { print }
-  END {
-      if (tmtx && !wrote) print mtx()
-      if (tapi && !wrote) print api()
-  }
+  END { flush_block() }
 ' "$FRPC" > "$TMP"
 
 # The live-link proxy must exist — refuse to touch a config with no
@@ -72,7 +81,7 @@ grep -Eq '^[[:space:]]*name[[:space:]]*=[[:space:]]*"mediamtx-webrtc"' "$TMP" ||
 
 # Idempotent: already correct -> no rewrite, no restart (keeps boot self-heal free).
 if cmp -s "$TMP" "$FRPC"; then
-    echo "frpc: mediamtx-webrtc already at /${EDGE_ID} — no change"
+    echo "frpc: every proxy already keyed to ${EDGE_ID} — no change"
     exit 0
 fi
 
@@ -84,4 +93,5 @@ fi
 
 install -m 0644 "$TMP" "$FRPC"
 systemctl restart frpc
-echo "frpc: mediamtx-webrtc locations set to /${EDGE_ID}; restarted"
+echo "frpc: proxies keyed to ${EDGE_ID} (live /${EDGE_ID}, api /${EDGE_ID}/api,"
+echo "      ssh CONNECT host ${EDGE_ID} if enabled); restarted"

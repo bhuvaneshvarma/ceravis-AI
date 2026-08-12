@@ -67,24 +67,32 @@ locations = ["/EDGE_ID/api", "/EDGE_ID/ui", "/EDGE_ID/stream"]  # ceravis:edge-i
 #   the ACME client ON EC2 and needs EC2's own :80/:443, so an frpc "acme-http"
 #   (80 -> edge) proxy would fight it. TLS is one shared cert on Caddy.
 # ---------------------------------------------------------------------------
-# OPTIONAL: SSH into THIS Jetson from anywhere over the fleet's ONE shared SSH
-# port — no per-house remotePort. frps multiplexes every house's SSH through a
-# single port (tcpmuxHTTPConnectPort in frps.toml) and routes by the HTTP CONNECT
-# host = this device's edge_id, the SAME token that keys the live links. One port
-# serves the whole fleet, disambiguated purely by edge_id.
-#   Connect (any HTTP-CONNECT helper — ncat, corkscrew, socat):
-#     ssh -o ProxyCommand="ncat --proxy EC2_IP:7001 --proxy-type http %h %p" <user>@EDGE_ID
+# SSH into THIS Jetson from anywhere over the fleet's ONE shared SSH port — no
+# per-house remotePort. frps multiplexes every house's SSH through a single port
+# (tcpmuxHTTPConnectPort in frps.toml) and routes by the HTTP CONNECT host = this
+# device's edge_id, the SAME token that keys the live links. One port serves the
+# whole fleet, disambiguated purely by edge_id — adding a house costs nothing.
+#
+# Connect from the admin machine — no install needed, stdlib Python only:
+#   ssh -o ProxyCommand="python cloud/fleet_ssh_proxy.py --via EC2_IP:7001 %h %p" \
+#       <user>@<edge_id>
+#   test it first:  python cloud/fleet_ssh_proxy.py --via EC2_IP:7001 --check <edge_id>
+# (ncat/corkscrew work too, if installed: --proxy EC2_IP:7001 --proxy-type http.)
+#
 # ⚠ Make the Jetson key-only FIRST (PasswordAuthentication no). The edge_id is the
 #   ROUTING key, not authentication — the sshd keys are the auth. Open the frps
-#   tcpmux port to admin IPs only in the EC2 security group.
-# [[proxies]]
-# name = "ceravis-ssh"
-# type = "tcpmux"
-# multiplexer = "httpconnect"
-# localIP = "127.0.0.1"
-# localPort = 22
-# customDomains = ["EDGE_ID"]  # ceravis:ssh-edge-id — this device's edge_id (the CONNECT host)
-#
-# SIMPLER ALTERNATIVE (no shared port, no ProxyCommand): a plain tcp proxy with a
-# UNIQUE remotePort per house — `ssh -p 2222 <user>@EC2_IP`. Swap the block above
-# for: type="tcp", localPort=22, remotePort=2222 (unique per house), SG *My IP*.
+#   tcpmux port to admin IPs only in the EC2 security group. To opt a house out of
+#   remote SSH entirely, comment this block out (the rest keeps working).
+# Note: the session rides INSIDE frpc, so anything that restarts frpc (account
+# verify, ceravis-apply-edge-id) drops it — just reconnect. The LAN/console path
+# is unaffected, which is what keeps this recoverable.
+[[proxies]]
+name = "ceravis-ssh"
+type = "tcpmux"
+multiplexer = "httpconnect"
+localIP = "127.0.0.1"
+localPort = 22
+# Leave the marker comment intact: ceravis-apply-edge-id rewrites THIS line to the
+# device's real edge_id at account verify + on every boot, exactly like the two
+# proxies above. NO leading slash here — a CONNECT host is a hostname, not a path.
+customDomains = ["EDGE_ID"]  # ceravis:ssh-edge-id — set automatically at account verify
