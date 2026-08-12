@@ -217,6 +217,21 @@ internally, so it serves both forms.)
      is missing on *your* machine — ssh never reached the network, so it says
      nothing about the tunnel.)
 
+  **`HTTP/1.1 404 Not Found` from `--check`** is the one failure whose cause is
+  *not* where you'd look. It means frps has no tcpmux route for that `edge_id` —
+  and a correct `frpc.toml` does **not** disprove it: a proxy that fails to
+  register stays failed until **frpc** restarts, so enabling
+  `tcpmuxHTTPConnectPort` *after* the edges are up leaves a flawless config with
+  nothing registered (the other proxies in the same frpc keep working, which is
+  what makes it convincing). The running state is the authority, not the file:
+  ```bash
+  sudo journalctl -u frps --no-pager | grep -iE 'tcpmux|ceravis-ssh' | tail   # EC2
+  sudo systemctl restart frpc && sudo journalctl -u frpc -n 40 --no-pager     # edge
+  ```
+  Also check `customDomains` holds the **bare** `edge_id` — a leading slash is the
+  live-link `locations` shape and 404s here. `ceravis-apply-edge-id` writes both
+  shapes correctly, so this only bites a hand-edited config.
+
   *Simpler alternative* (no ProxyCommand, but a port per house, and every one of
   them must be opened in the SG): a plain `type="tcp"` proxy with a unique
   `remotePort` (2222, 2223, …) → `ssh -p 2222 <user>@EC2_IP`. Fine for one bench

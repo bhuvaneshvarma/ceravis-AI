@@ -32,6 +32,11 @@ vhostHTTPPort = 7080
 # encrypted; frps only sees the edge_id it routes on. Each edge dials in a
 # matching type="tcpmux" proxy (ceravis-ssh in frpc.toml.example).
 # ⚠ Open THIS port to admin IPs ONLY in the security group — never 0.0.0.0/0.
+# ⚠ ORDER MATTERS: this must be live BEFORE an edge's frpc registers. A proxy that
+#   fails to register stays failed until *frpc* restarts, so if you enable tcpmux
+#   here after the edges are already up, restart frpc on each edge. The symptom is
+#   a perfect-looking frpc.toml plus `HTTP/1.1 404 Not Found` from
+#   `fleet_ssh_proxy.py --check` — the config is not the authority, the frps log is.
 tcpmuxHTTPConnectPort = 7001
 
 # Only an edge that knows this token may open a tunnel. Change it.
