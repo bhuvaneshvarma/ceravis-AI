@@ -27,6 +27,8 @@ stays end-to-end encrypted — frps sees only the `edge_id` it routes on.
     python cloud/fleet_ssh_proxy.py --via EC2_IP:7001 --check <edge_id>
 
 `--via` defaults to $CERAVIS_FLEET_SSH_VIA, so it can be set once per admin box.
+Run it from the ADMIN machine (that is what it tests: your IP through the EC2
+security group). `python3` on Ubuntu/Debian, `python` on Windows.
 """
 from __future__ import annotations
 
@@ -99,9 +101,16 @@ def connect(via: str, edge_id: str, port: int, timeout: float) -> socket.socket:
         ) from None
 
     routing_hint = (
-        f"  - on the edge: `sudo grep -A6 ceravis-ssh /etc/frp/frpc.toml` must show\n"
-        f"    customDomains = [\"{edge_id}\"] (exact, no slash), and\n"
-        f"    `journalctl -u frpc | grep ceravis-ssh` must show 'start proxy success'."
+        f"  frps has no tcpmux route registered for {edge_id!r} right now.\n"
+        f"  A correct frpc.toml does NOT prove registration - the authority is the\n"
+        f"  RUNNING state, so read the logs, in this order:\n"
+        f"    EC2 : sudo journalctl -u frps --no-pager | grep -iE 'tcpmux|ceravis-ssh' | tail\n"
+        f"    edge: sudo systemctl restart frpc && sudo journalctl -u frpc -n 40 --no-pager\n"
+        f"  A proxy that failed to register STAYS failed until frpc restarts - so if\n"
+        f"  frpc started while frps still had tcpmuxHTTPConnectPort commented out,\n"
+        f"  the block reads perfectly and nothing is registered. Restarting frpc is\n"
+        f"  the fix. Also check customDomains is the BARE edge_id: no leading slash\n"
+        f"  (that is the live-link `locations` shape, and it 404s here)."
     )
     if not head:
         sock.close()
