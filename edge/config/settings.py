@@ -155,14 +155,18 @@ class Settings(BaseSettings):
     edge_id: str = ""
     # Hard ceiling on a single PTZ move (ms). The edge always auto-stops after
     # this even if no stop/duration arrives, so a lost command can never leave a
-    # motor spinning. duration_ms in the request is clamped to this.
+    # motor spinning — which is why the cloud PTZ call has no stop action at all.
+    # durationMs in the request is clamped to this.
     ptz_max_move_ms: int = 2000
-    # Manual-override auto-revert: after a viewer pans/tilts, the camera returns
-    # to its pre-override framing (where the AI was locked on the recipient) once
-    # this many seconds pass with NO further PTZ request. Each request re-arms the
-    # window. Best-effort — needs a camera that reports GetStatus / accepts
-    # AbsoluteMove; otherwise the revert is silently skipped. 0 disables it.
+    # >>> ceravis:ptz-autorevert
+    # Idle auto-revert — a REMOVABLE add-on (api/ptz_autorevert.py): after a
+    # viewer pans/tilts, the camera returns to its pre-override framing once this
+    # many seconds pass with NO further PTZ request. Each request re-arms the
+    # window. Superseded by the PTZ call's own action:"revert" (which does the
+    # same on demand); the monitor's 🗑 button deletes the add-on and this line.
+    # 0 disables it. Best-effort — needs GetStatus / AbsoluteMove support.
     ptz_revert_secs: float = 15.0
+    # <<< ceravis:ptz-autorevert
 
     # ---- Hotspot (Jetson as WiFi AP for the household cameras) --------
     hotspot_interface: str = ""            # "" = auto-pick the first wifi device

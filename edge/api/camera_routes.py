@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import time
 from dataclasses import asdict
 
@@ -10,10 +9,10 @@ import cv2
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
-from api.control_auth import check_edge_id
+from api import ptz_control
+from api.control_auth import canon, check_edge_id, field
 from common import clock
 from common.rtsp import normalize_rtsp_url
-from config.settings import settings
 from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
@@ -136,27 +135,12 @@ def all_camera_status(request: Request):
 # =====================================================================
 # CLOUD PTZ — label-based control from the ceravishealth backend.
 # Flow: frontend -> backend REST -> frp tunnel -> THIS endpoint -> ONVIF camera.
-# The command is self-terminating: we start a ContinuousMove and auto-stop after
-# duration_ms (clamped to ptz_max_move_ms), so a lost stop can never leave a
-# motor spinning. Zoom is intentionally NOT handled here — it's client-side
-# digital zoom in the browser; the edge only drives pan/tilt.
+# Two actions, and no third: a move STOPS ITSELF (api/ptz_control arms the
+# auto-stop), and `revert` puts the camera back where it was framing before the
+# override. Zoom is not accepted — it's client-side digital zoom in the player.
 # =====================================================================
 
-_ptz_stop_timers: dict[str, threading.Timer] = {}
-_ptz_lock = threading.Lock()
-
-
-def _canon(text: str) -> str:
-    return (text or "").strip().upper().replace(" ", "_")
-
-
-def _field(body: dict, *keys, default=None):
-    """First present, non-null key — so the same endpoint takes the backend's
-    camelCase (cameraLabel, durationMs) and snake_case interchangeably."""
-    for k in keys:
-        if body.get(k) is not None:
-            return body[k]
-    return default
+_PTZ_ACTIONS = ("move", "revert")
 
 
 def _camera_by_label(label: str) -> Camera | None:
@@ -166,159 +150,108 @@ def _camera_by_label(label: str) -> Camera | None:
     return camera_config.get_by_label(label)
 
 
-def _ptz_log(ok: bool, label: str, detail: str, status: int) -> None:
-    """Make every PTZ hit visible in BOTH places: the app log (journalctl) and
-    the monitor's Cloud Sync Console (call_log). So you can see who moved what,
-    and rejected/failed attempts, without guessing."""
-    (logger.info if ok else logger.warning)("PTZ %s — %s", label or "?", detail)
-    call_log.record("ptz", ok, status=status,
-                    label=f"{_canon(label)} {detail}".strip()[:300])
+def _ptz_camera(label: str) -> Camera:
+    """The camera this request is for, or the right 4xx explaining why not."""
+    cam = _camera_by_label(label)
+    if cam is None:
+        ptz_control.log(False, label, "rejected: no camera for label", 404)
+        raise HTTPException(404, f"no camera for label '{label}'")
+    if not ptz_control.has_ptz(cam):
+        ptz_control.log(False, label, "rejected: camera has no PTZ", 400)
+        raise HTTPException(400, f"camera '{label}' has no PTZ")
+    return cam
 
 
-def _arm_auto_stop(camera_id: str, onvif_cam, token: str, ms: int) -> int:
-    """(Re)arm a single pending auto-stop for this camera. Cancels any previous
-    one so a new move supersedes it. Returns the clamped duration used."""
-    from onvif.soap import OnvifError
-    ms = max(1, min(ms, settings.ptz_max_move_ms))
-
-    def _stop():
-        try:
-            onvif_cam.ptz_stop(token)
-        except OnvifError:
-            pass
-        with _ptz_lock:
-            _ptz_stop_timers.pop(camera_id, None)
-
-    with _ptz_lock:
-        old = _ptz_stop_timers.pop(camera_id, None)
-        if old is not None:
-            old.cancel()
-        timer = threading.Timer(ms / 1000.0, _stop)
-        timer.daemon = True
-        _ptz_stop_timers[camera_id] = timer
-        timer.start()
-    return ms
-
-
-# ---- manual-override auto-revert (return to the recipient's framing) ------
-# The AI is locked on the recipient in software; a viewer's pan/tilt physically
-# moves the camera off them. These remember the framing at the START of a manual
-# override and, after ptz_revert_secs with NO further PTZ request, return the
-# camera there so it re-frames the target on its own. Best-effort: cameras that
-# don't report GetStatus / accept AbsoluteMove simply never capture a home.
-_ptz_revert_timers: dict[str, threading.Timer] = {}
-_ptz_home: dict[str, tuple] = {}         # camera_id -> (pan,tilt,zoom) before override
-
-
-def _ptz_capture_home(camera_id: str, onvif_cam, token: str) -> None:
-    """Remember the current framing ONCE per override session, BEFORE the camera
-    moves. No-op when revert is off, already captured, or unsupported."""
-    if settings.ptz_revert_secs <= 0:
-        return
-    with _ptz_lock:
-        if camera_id in _ptz_home:
-            return
-    pos = onvif_cam.ptz_status(token)             # None on unsupported cameras
-    if pos is not None:
-        with _ptz_lock:
-            _ptz_home.setdefault(camera_id, pos)
-
-
-def _ptz_arm_revert(camera_id: str, onvif_cam, token: str) -> None:
-    """(Re)start the idle-revert countdown — called on EVERY manual PTZ request,
-    so the window only elapses after the viewer truly stops touching it."""
-    if settings.ptz_revert_secs <= 0:
-        return
-    with _ptz_lock:
-        old = _ptz_revert_timers.pop(camera_id, None)
-        if old is not None:
-            old.cancel()
-        if camera_id not in _ptz_home:
-            return                                # nothing captured -> nothing to revert
-        t = threading.Timer(settings.ptz_revert_secs, _ptz_do_revert,
-                            args=(camera_id, onvif_cam, token))
-        t.daemon = True
-        _ptz_revert_timers[camera_id] = t
-        t.start()
-
-
-def _ptz_do_revert(camera_id: str, onvif_cam, token: str) -> None:
-    from onvif.soap import OnvifError
-    with _ptz_lock:
-        home = _ptz_home.pop(camera_id, None)
-        _ptz_revert_timers.pop(camera_id, None)
-    if home is None:
-        return
+def _velocity(body: dict, key: str) -> float:
+    """A pan/tilt velocity, clamped to the ONVIF -1..1 range a camera accepts.
+    A non-numeric value is the caller's bug, so say so instead of 500-ing."""
     try:
-        onvif_cam.ptz_absolute_move(token, *home)
-        _ptz_log(True, camera_id, "reverted to the recipient's framing (idle)", 200)
-    except OnvifError as exc:
-        logger.warning("PTZ %s revert failed: %s", camera_id, exc)
+        return max(-1.0, min(1.0, float(field(body, key, default=0) or 0)))
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"'{key}' must be a number between -1 and 1")
+
+
+def _duration_ms(body: dict) -> int:
+    """How long to move. 0/absent = the ptz_max_move_ms ceiling, which is also
+    the clamp — ptz_control owns both."""
+    try:
+        return int(float(field(body, "durationMs", "duration_ms", default=0) or 0))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "'durationMs' must be a number of milliseconds")
 
 
 @router.post("/ptz")
 def ptz_by_label(body: dict):
     """
-    Pan/tilt one camera by its CameraName label. Body (camelCase or snake_case):
-        { "edgeId":"<edge_id>", "cameraLabel":"KITCHEN", "action":"move",
-          "pan":-0.4, "tilt":0, "durationMs":300 }
-    action "move" (or a non-zero pan/tilt) starts motion and auto-stops after
-    durationMs; "stop" (or all-zero) halts immediately. Auth = the edgeId match
+    Pan/tilt ONE camera by its CameraName label — the cloud control call.
+
+        { "edgeId":"<edge_id>", "cameraLabel":"KITCHEN",
+          "action":"move", "pan":-0.4, "tilt":0, "durationMs":300 }
+        { "edgeId":"<edge_id>", "cameraLabel":"KITCHEN", "action":"revert" }
+
+    action (camelCase or snake_case everywhere):
+      move   (default) — start pan/tilt at these velocities (-1..1). The EDGE
+                         stops it after durationMs, clamped to ptz_max_move_ms,
+                         so there is no stop to send and none to lose.
+      revert           — drive back to the framing the camera held before the
+                         first move of this override, and forget it. Idempotent:
+                         a camera already home answers "unchanged".
+
+    zoom is not accepted (client-side digital zoom). Auth = the edgeId match
     (api/control_auth): the request must carry THIS device's edge_id.
     """
     body = body or {}
-    req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
+    req_id = str(field(body, "edgeId", "edge_id", default="")).strip()
+    label = str(field(body, "cameraLabel", "camera_label", "cameraNumber",
+                      default=""))
     try:
         check_edge_id(req_id)
     except HTTPException:
-        _ptz_log(False, req_id,
-                 f"rejected: edgeId auth (this device is '{effective_edge_id()}')", 409)
+        ptz_control.log(False, label, "rejected: edgeId auth (this device is "
+                                      f"'{effective_edge_id()}')", 409)
         raise
 
-    label = str(_field(body, "cameraLabel", "camera_label", "cameraNumber",
-                       default=""))
-    cam = _camera_by_label(label)
-    if cam is None:
-        _ptz_log(False, label, "rejected: no camera for label", 404)
-        raise HTTPException(404, f"no camera for label '{label}'")
-    if not (cam.ptz_supported and cam.onvif_xaddr):
-        _ptz_log(False, label, "rejected: camera has no PTZ", 400)
-        raise HTTPException(400, f"camera '{label}' has no PTZ")
+    action = str(field(body, "action", default="move") or "move").strip().lower()
+    if action not in _PTZ_ACTIONS:
+        detail = "action must be 'move' or 'revert'"
+        if action == "stop":                  # the removed action, named explicitly
+            detail += " — a move stops itself, so there is no stop to send"
+        ptz_control.log(False, label, f"rejected: {detail}", 400)
+        raise HTTPException(400, detail)
 
-    from onvif.client import OnvifCamera
+    cam = _ptz_camera(label)
     from onvif.soap import OnvifError
-    pan = float(_field(body, "pan", default=0) or 0)
-    tilt = float(_field(body, "tilt", default=0) or 0)
-    # zoom is deliberately ignored here (client-side digital zoom).
-    duration_ms = int(_field(body, "durationMs", "duration_ms", default=0) or 0)
-    stop = _field(body, "action", default="move") == "stop" or not (pan or tilt)
 
-    onvif_cam = OnvifCamera(cam.onvif_xaddr, cam.onvif_username or "",
-                            cam.onvif_password or "")
-    token = cam.onvif_ptz_token or cam.onvif_profile_token or ""
+    if action == "revert":
+        try:
+            reverted = ptz_control.revert(cam)
+        except OnvifError as exc:
+            ptz_control.log(False, label, f"revert failed: {exc}", 502)
+            raise HTTPException(502, f"PTZ revert failed: {exc}")
+        ptz_control.log(True, label,
+                        "revert" if reverted else "revert: already at its "
+                                                  "original framing", 200)
+        return {"status": "reverted" if reverted else "unchanged",
+                "reverted": reverted, "camera_id": cam.camera_id,
+                "label": canon(label)}
+
     try:
-        if stop:
-            with _ptz_lock:
-                t = _ptz_stop_timers.pop(cam.camera_id, None)
-            if t is not None:
-                t.cancel()
-            onvif_cam.ptz_stop(token)
-            _ptz_log(True, label, "stop", 200)
-            _ptz_arm_revert(cam.camera_id, onvif_cam, token)   # keep the idle countdown alive
-            return {"status": "stopped", "camera_id": cam.camera_id,
-                    "label": _canon(label)}
-        _ptz_capture_home(cam.camera_id, onvif_cam, token)     # remember framing before moving
-        onvif_cam.ptz_move(token, pan, tilt, 0.0)
+        pan, tilt = _velocity(body, "pan"), _velocity(body, "tilt")
+        if not (pan or tilt):
+            raise HTTPException(400, "a move needs a non-zero pan or tilt")
+        duration_ms = _duration_ms(body)
+    except HTTPException as exc:              # a malformed body is worth seeing
+        ptz_control.log(False, label, f"rejected: {exc.detail}", 400)
+        raise
+    try:
+        used_ms = ptz_control.move(cam, pan, tilt, duration_ms=duration_ms)
     except OnvifError as exc:
-        _ptz_log(False, label, f"camera error: {exc}", 502)
+        ptz_control.log(False, label, f"camera error: {exc}", 502)
         raise HTTPException(502, f"PTZ failed: {exc}")
-    # Default a missing/zero duration to the safety ceiling so it always stops.
-    used_ms = _arm_auto_stop(cam.camera_id, onvif_cam, token,
-                             duration_ms or settings.ptz_max_move_ms)
-    _ptz_arm_revert(cam.camera_id, onvif_cam, token)           # (re)start the idle-revert window
-    _ptz_log(True, label, f"move pan={pan:+.2f} tilt={tilt:+.2f} {used_ms}ms", 200)
-    return {"status": "moving", "camera_id": cam.camera_id,
-            "label": _canon(label), "auto_stop_ms": used_ms}
+    ptz_control.log(True, label,
+                    f"move pan={pan:+.2f} tilt={tilt:+.2f} {used_ms}ms", 200)
+    return {"status": "moving", "camera_id": cam.camera_id, "label": canon(label),
+            "pan": pan, "tilt": tilt, "auto_stop_ms": used_ms}
 
 
 # =====================================================================
@@ -349,6 +282,7 @@ def delete_camera(camera_id: str, request: Request):
     if not camera_config.delete(camera_id):
         raise HTTPException(404, "Camera not found")
     _mtx_remove(request, camera_id)
+    ptz_control.forget_home(camera_id)        # no stale framing to drive back to
     return {"status": "deleted", "camera_id": camera_id}
 
 
@@ -420,15 +354,15 @@ def camera_control(body: dict, request: Request):
     playback use. Every hit (and rejection) lands on the sync console.
     """
     body = body or {}
-    req_id = str(_field(body, "edgeId", "edge_id", default="")).strip()
-    action = str(_field(body, "action", default="")).strip().lower()
-    label = str(_field(body, "cameraLabel", "camera_label", "cameraNumber",
-                       default=""))
+    req_id = str(field(body, "edgeId", "edge_id", default="")).strip()
+    action = str(field(body, "action", default="")).strip().lower()
+    label = str(field(body, "cameraLabel", "camera_label", "cameraNumber",
+                      default=""))
     try:
         check_edge_id(req_id)
     except HTTPException:
         call_log.record("camera-control", False, status=409,
-                        label=f"{_canon(label)} {action or '?'} rejected: edgeId "
+                        label=f"{canon(label)} {action or '?'} rejected: edgeId "
                               f"auth (this device is '{effective_edge_id()}')")
         raise
     if action not in _CAMERA_ACTIONS:
@@ -436,15 +370,15 @@ def camera_control(body: dict, request: Request):
     cam = _camera_by_label(label)
     if cam is None:
         call_log.record("camera-control", False, status=404,
-                        label=f"{_canon(label)} {action}: no such camera")
+                        label=f"{canon(label)} {action}: no such camera")
         raise HTTPException(404, f"no camera for label {label!r}")
     ok = _apply_camera_action(request, cam, action)
     call_log.record("camera-control", bool(ok), status=200 if ok else 409,
-                    label=f"{_canon(label)} {action}")
+                    label=f"{canon(label)} {action}")
     if not ok:
         raise HTTPException(409, f"camera {action} failed for {cam.camera_id}")
     return {"status": _CAMERA_ACTIONS[action], "action": action,
-            "camera_id": cam.camera_id, "cameraLabel": _canon(label)}
+            "camera_id": cam.camera_id, "cameraLabel": canon(label)}
 
 
 @router.get("/{camera_id}/frame")
@@ -515,36 +449,36 @@ def camera_time(camera_id: str):
 @router.post("/{camera_id}/ptz")
 def ptz(camera_id: str, body: dict):
     """
-    Pan/tilt/zoom via the camera's ONVIF service (discovered cameras only).
-    Body: { "pan": -1..1, "tilt": -1..1, "zoom": -1..1 } starts continuous
-    motion; all-zero (or "action": "stop") halts. The UI sends move on
-    button-press and stop on release.
+    The INSTALLER pad (ui/cameras.html): pan/tilt/zoom one camera by its raw
+    camera_id, move on button-press and stop on release.
+
+    Two deliberate differences from the cloud endpoint above. It keeps a stop
+    (the browser holds the button, so a held move must not time out), and it
+    honours optical `zoom` — this is the tool used while aiming a camera during
+    setup, on the LAN, behind the admin login. It shares the same core, so a
+    later cloud `revert` also undoes an installer's nudge.
+    Body: { "pan": -1..1, "tilt": -1..1, "zoom": -1..1 } or { "action": "stop" }.
     """
     cam = camera_config.get_by_id(camera_id)
     if cam is None:
         raise HTTPException(404, "Camera not found")
-    if not (cam.ptz_supported and cam.onvif_xaddr):
+    if not ptz_control.has_ptz(cam):
         raise HTTPException(400, "Camera has no PTZ (or was added manually — "
                                  "re-add it via discovery to enable PTZ)")
-    from onvif.client import OnvifCamera
     from onvif.soap import OnvifError
-    pan = float((body or {}).get("pan", 0) or 0)
-    tilt = float((body or {}).get("tilt", 0) or 0)
-    zoom = float((body or {}).get("zoom", 0) or 0)
-    stop = (body or {}).get("action") == "stop" or not (pan or tilt or zoom)
-    onvif_cam = OnvifCamera(cam.onvif_xaddr, cam.onvif_username or "",
-                            cam.onvif_password or "")
-    token = cam.onvif_profile_token or ""
+    body = body or {}
+    pan = float(body.get("pan", 0) or 0)
+    tilt = float(body.get("tilt", 0) or 0)
+    zoom = float(body.get("zoom", 0) or 0)
+    halt = body.get("action") == "stop" or not (pan or tilt or zoom)
     try:
-        if stop:
-            onvif_cam.ptz_stop(token)
-        else:
-            _ptz_capture_home(camera_id, onvif_cam, token)   # remember framing before moving
-            onvif_cam.ptz_move(token, pan, tilt, zoom)
+        if halt:
+            ptz_control.stop(cam)
+        else:                                 # duration None: the browser stops it
+            ptz_control.move(cam, pan, tilt, zoom, duration_ms=None)
     except OnvifError as exc:
         raise HTTPException(502, f"PTZ failed: {exc}")
-    _ptz_arm_revert(camera_id, onvif_cam, token)             # (re)start the idle-revert window
-    return {"status": "stopped" if stop else "moving", "camera_id": camera_id}
+    return {"status": "stopped" if halt else "moving", "camera_id": camera_id}
 
 
 @router.post("/probe")

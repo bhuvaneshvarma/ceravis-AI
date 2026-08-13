@@ -190,5 +190,14 @@ for _router in (account_router, camera_router, zone_router, recipient_router,
                 discovery_router, network_router, system_router):
     app.include_router(_router)
 
+# >>> ceravis:ptz-autorevert
+# Removable add-on — the PTZ idle auto-revert, its monitor switch and its own
+# delete button. Superseded by the PTZ call's action:"revert"; kept until the
+# app has switched over. Imported HERE rather than at the top so the entire
+# feature is ONE strippable block: DELETE /api/v1/ptz/autorevert removes it.
+from api.ptz_autorevert import router as _ptz_autorevert_router  # noqa: E402
+app.include_router(_ptz_autorevert_router)
+
+# <<< ceravis:ptz-autorevert
 # Static UI (dashboard, cameras, zones) served same-origin.
 app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 """
-edge_id auth for the cloud-facing control endpoints (PTZ, recording playback).
+The request contract for the cloud-facing control endpoints (PTZ, camera
+start/stop/restart, recording playback): how their body is READ (`field`,
+`canon`) and how they are AUTHENTICATED (`check_edge_id`). One module, so every
+control endpoint parses and authenticates identically.
 
 Every control request carries this device's `edgeId`, and we verify it MATCHES
 the edge_id provisioned for this device — the `deviceToken` from the userDetails
@@ -17,6 +20,20 @@ authenticates identically — see [[ceravis-one-mechanism-principle]].
 from fastapi import HTTPException
 
 from configuration.account_config import effective_edge_id
+
+
+def field(body: dict, *keys, default=None):
+    """First present, non-null key — so ONE endpoint takes the backend's
+    camelCase (cameraLabel, durationMs) and snake_case interchangeably."""
+    for key in keys:
+        if (body or {}).get(key) is not None:
+            return body[key]
+    return default
+
+
+def canon(text: str) -> str:
+    """A label as the edge writes it back: upper-cased, spaces as underscores."""
+    return (text or "").strip().upper().replace(" ", "_")
 
 
 def check_edge_id(req_edge_id: str | None) -> None:
