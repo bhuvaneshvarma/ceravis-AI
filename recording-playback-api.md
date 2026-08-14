@@ -27,27 +27,52 @@ across the empty gaps on its own.
 
 ## 2. The connection (identical to PTZ)
 
-```
-   Browser / App  ──►  your backend / proxy  ──►  frp tunnel  ──►  edge device
-                       (adds the 2 secrets)        (secure)         (answers)
-```
-
-The client never holds the secrets. Your proxy forwards the **whole**
-`/api/v1/recordings/*` path to the edge through the existing frp tunnel and adds
-**one header on every request** (the playlist request *and* each little video
-segment request that follows):
+**Give the player this URL and nothing else:**
 
 ```
-X-Ceravis-Control-Token: <the SAME secret PTZ uses (edge_control_token)>
+https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/<CAMERA>/playback.m3u8?edge_id=<edge_id>
 ```
 
-> A single proxy rule — forward `/api/v1/recordings/` + inject that header —
-> covers all three sub-paths below (`timeline`, `playback.m3u8`, `segment/*`).
-> The URLs never change between dev and prod.
+| Where you call from | Full URL |
+|---|---|
+| **Cloud / app (the real one)** | `https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/…` |
+| **Inside the home LAN** | `http://<jetson-ip>:8000/api/v1/recordings/…` |
+
+There is **no** `X-Ceravis-Control-Token`, no API key and **no header of any
+kind** on these calls. That legacy header was removed for good; **the `edge_id`
+in the URL is the whole authentication** (`edge/api/control_auth.py`) — exactly
+like the PTZ call. The `/<edge_id>` prefix is also how the fleet tunnel picks
+the house: frps routes by URL only, never by a request body, and the edge strips
+its own prefix internally.
+
+Everything the player needs is therefore already in a plain URL:
+
+- **HTTPS** with a real Let's Encrypt certificate (Caddy on EC2) — satisfies iOS ATS.
+- **No login.** Caddy's Basic-Auth covers only the admin pages at
+  `/<edge_id>/ui/…`; `/<edge_id>/api/…` is open and self-authenticating.
+- **CORS `*`** on the edge API, so even a browser can fetch it cross-origin.
+- The playlist's `segment/…` URIs are **relative**, so they resolve against that
+  same HTTPS URL and inherit both the `/<edge_id>/api/…` prefix and the
+  `edge_id` query — every segment is an HTTPS URL that authenticates itself.
+
+> ### ⚠ Do NOT fetch-and-rewrite the playlist into a `blob:` URL
+> There is nothing to inject, so there is no reason to download the manifest in
+> JavaScript, rewrite its URIs and hand a `blob:` to the player. That pattern
+> **works on web and is impossible on iOS** — `AVPlayer` cannot open a `blob:`
+> URL and cannot attach headers to its own segment fetches — and it silently
+> throws away the self-updating behaviour in §4a. Point every player at the URL
+> above directly.
+>
+> If you still want the stream to appear under your own domain, front it with a
+> **transparent pass-through reverse proxy**: forward
+> `/<edge_id>/api/v1/recordings/*` (playlist **and** `segment/*`) unchanged,
+> preserving the query string, `If-None-Match`/`ETag`, and the response
+> `Content-Type`. Rewrite nothing. A proxy that only serves the `.m3u8` and not
+> the segment path under the same base will break playback.
 
 **Addressing a camera:** the `{camera}` slot takes the SAME label as PTZ —
 `KITCHEN`, `BEDROOM`, `LIVING_ROOM`, `LOUNGE`, … (case-insensitive) — or the raw
-`camera_id`. `edge_id` (the home, e.g. `home_1234`) is the same value PTZ uses.
+`camera_id`. `edge_id` (the home) is the same value PTZ uses.
 
 ---
 
@@ -235,7 +260,7 @@ a new moment.
 import Hls from "hls.js";
 
 const url = `/api/v1/recordings/${cameraLabel}/playback.m3u8?edge_id=${homeId}`;
-// (Your proxy injects X-Ceravis-Control-Token; the browser sends none.)
+// The whole URL, exactly as in §2 — no headers, no rewrite, no blob.
 
 let ready = false, pending = null;
 const hls = new Hls({ backBufferLength: 90 });
@@ -288,11 +313,11 @@ function jumpToLatest() {
 > **The second mistake to avoid:** do **not** re-create the player, re-call
 > `loadSource()`, or add a timer that re-downloads the playlist to “get the new
 > clips”. The player is already doing that (§4a), and tearing it down throws away
-> the user’s position and buffer. Load once per camera; the only thing you poll
-> is `…/timeline`, and only to redraw the bar.
+> the user’s position and buffer. Load once per camera, and poll nothing — the
+> bar rides on the player’s own reloads (§4b).
 
-Wire it up: call `…/timeline`, draw the availability bar, and on a click compute
-the clicked wall-clock time and call `seekToDate(thatTime)`. Nothing else.
+Wire it up: call `…/timeline` once, draw the availability bar, and on a click
+compute the clicked wall-clock time and call `seekToDate(thatTime)`. Nothing else.
 
 ### iOS app (AVPlayer — the easy one)
 
@@ -300,17 +325,27 @@ iOS speaks HLS natively **and** understands `PROGRAM-DATE-TIME`, so seeking by
 time is a one-liner:
 
 ```swift
-let item = AVPlayerItem(url: playbackURL)          // same /playback.m3u8 URL
+// The WHOLE integration. The URL from §2 — nothing else, no headers, no proxy,
+// no AVAssetResourceLoaderDelegate, no downloading and rewriting the manifest.
+let url = URL(string:
+  "https://edgeai.ceravishealth.in/\(edgeId)/api/v1/recordings/\(cameraLabel)"
+  + "/playback.m3u8?edge_id=\(edgeId)")!
+let item = AVPlayerItem(url: url)
 let player = AVPlayer(playerItem: item)
+
 // ... later, when the user taps 14:30:15 on the timeline:
 let target = ISO8601DateFormatter().date(from: "2026-07-16T14:30:15+05:30")!
 item.seek(to: target, completionHandler: nil)      // seekToDate — needs PDT (we send it)
 ```
 
 `item.seek(to: Date)` **only works because** the playlist carries
-`EXT-X-PROGRAM-DATE-TIME`. (Your networking layer adds the token header on the
-manifest and segment requests, e.g. via an `AVAssetResourceLoaderDelegate` or by
-pointing AVPlayer at your app’s proxy.)
+`EXT-X-PROGRAM-DATE-TIME`.
+
+> **If iOS is failing today, check these three before anything else:** the URL
+> must be `https://` (ATS), it must be a real `.m3u8` URL and **not** a `blob:`
+> or `file:` one (AVPlayer cannot open those — this is the single most common
+> cause), and it must carry `?edge_id=…` (else `401`). AVPlayer needs no
+> intermediary endpoint to reach us.
 
 ### Android app (ExoPlayer)
 
@@ -363,7 +398,7 @@ on the right instant regardless of the viewer’s timezone.
 |---|---|---|
 | `200` | Timeline JSON, or the playlist. | Normal. |
 | `304` | Playlist unchanged since your `If-None-Match`. | Nothing — the player handles it. Proxies must pass it through. |
-| `401` | Missing/wrong control token. | The proxy/backend must send `X-Ceravis-Control-Token`. |
+| `401` | `edgeId required` — the request carried no `edge_id`. | Add `?edge_id=<home>` to the URL. There is no token to send. |
 | `404` | No footage in the 12 h window yet. | Show “no footage”, and re-issue the playlist call when `…/timeline` first reports footage (§4a). |
 | `409` | `edge_id` didn’t match this home. | Wrong device addressed. |
 | `503` | Recording backbone down. | Transient — retry; alert ops if it persists. |
@@ -373,32 +408,34 @@ on the right instant regardless of the viewer’s timezone.
 ## 10. What to tell each team (copy-paste)
 
 **Backend team**
-> Add one proxy rule: forward the whole `/api/v1/recordings/*` path to the edge
-> through the existing frp tunnel, injecting the header
-> `X-Ceravis-Control-Token: <same secret as PTZ>` on every request (playlist AND
-> the `segment/*.ts` requests that follow). Two endpoints matter:
-> `GET …/{cameraLabel}/timeline?edge_id=` (JSON) and
-> `GET …/{cameraLabel}/playback.m3u8?edge_id=` (an HLS playlist, HTTP 200, whose
-> relative `segment/...` URIs resolve back under the same `/recordings/{cam}/`
-> path). No redirects, no `ts` param, no `/recordings/hls/...` path — those were
-> removed. Never expose the token to the client.
-> **Two rules on the playlist specifically:** pass `If-None-Match` / `ETag` /
-> `Cache-Control` straight through (that turns the player’s own polling into
-> empty `304`s), and **never cache the `.m3u8` body** — the playlist is live and
-> a cached copy freezes every viewer’s footage at the moment it was cached.
+> **There is nothing to build.** Hand the app this URL and you are done:
+> `https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/<CAMERA>/playback.m3u8?edge_id=<edge_id>`
+> — HTTPS, no header, no token, no login, no `hls-proxy`, no playlist rewriting.
+> The `edge_id` in the URL is the authentication, and the playlist's relative
+> `segment/...` URIs resolve back under the same path automatically. Two
+> endpoints matter: `GET …/{cameraLabel}/timeline?edge_id=` (JSON) and
+> `GET …/{cameraLabel}/playback.m3u8?edge_id=` (an HLS playlist, HTTP 200). No
+> redirects, no `ts` param, no `/recordings/hls/...` path — those were removed.
+> **Only if you insist on your own domain in front of it:** a transparent
+> pass-through reverse proxy for the whole `/<edge_id>/api/v1/recordings/*` path
+> — playlist AND `segment/*.ts` — preserving the query string and rewriting
+> nothing. Pass `If-None-Match` / `ETag` / `Cache-Control` straight through
+> (that turns the player's own polling into empty `304`s), and **never cache the
+> `.m3u8` body** — the playlist is live and a cached copy freezes every viewer's
+> footage at the moment it was cached.
 
 **Frontend / mobile team**
 > Build a review panel with two pieces. (1) Call `…/timeline` **once** when the
 > camera is opened and draw a bar from `window_start`→`now`, shading each
 > `segments[i]` — then keep that bar fresh from the player's own playlist
-> (§4b), not by polling. (2) Load
-> `…/playback.m3u8?edge_id=<home>` into an HLS player **once** (hls.js on web,
-> AVPlayer on iOS, ExoPlayer on Android). When the user clicks a time on the bar,
+> (§4b), not by polling. (2) Give the **full HTTPS URL** from §2 straight to an
+> HLS player, **once** — `hls.js` on web, `AVPlayer` on iOS, ExoPlayer on
+> Android. No headers, no `fetch()`, no rewriting the manifest, no `blob:` URL:
+> iOS cannot play a blob and needs no proxy to play ours. When the user clicks a time on the bar,
 > **seek by date** — `seekToDate(...)` (web, via `programDateTime`) or
 > `AVPlayerItem.seek(to: Date)` (iOS). The player pauses/scrubs, rolls across
 > gaps on its own, and follows live — with **no further calls per moment**. Use
 > the stream’s own time (`hls.playingDate`) for the “now viewing” readout.
 > **The playlist stays current by itself** (§4a): newly recorded clips show up in
 > the player you already loaded, so never re-create the player or re-download the
-> manifest to “refresh” — the only thing you poll is `…/timeline`, for the bar.
-> That’s the whole feature.
+> manifest to “refresh”, and nothing needs polling at all. That’s the whole feature.
