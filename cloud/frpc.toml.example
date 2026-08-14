@@ -39,28 +39,29 @@ customDomains = ["edgeai.ceravishealth.in"]    # the shared fleet DOMAIN
 # automatically (ceravis-apply-edge-id) to the device's real edge_id.
 locations = ["/EDGE_ID"]  # ceravis:edge-id — set automatically at account verify
 
-# Edge uvicorn — EVERYTHING (API + admin pages + setup stream) routed PER EDGE
-# under the ONE /<edge_id> path prefix, the SAME per-device key the live links
-# use. frps routes ONLY by URL (never the request body), so every call carries
-# the edge_id in the PATH and can only ever reach THIS home — no shared route can
-# collide across houses. The edge strips the prefix internally
-# (main._strip_fleet_edge_prefix), so uvicorn serves its normal /api, /ui,
-# /stream. The edgeId in the request body stays as a second check (control_auth).
+# Edge uvicorn — the API + admin pages routed PER EDGE under the ONE
+# /<edge_id> path prefix, the SAME per-device key the live links use. frps
+# routes ONLY by URL (never the request body), so every call carries the edge_id
+# in the PATH and can only ever reach THIS home — no shared route can collide
+# across houses. The edge strips the prefix internally (main._FleetEdgePrefix),
+# so uvicorn serves its normal /api and /ui. The edgeId in the request body
+# stays as a second check (control_auth).
 #   API   : https://<DOMAIN>/<edge_id>/api/v1/…
 #   pages : https://<DOMAIN>/<edge_id>/ui/setup.html   (Basic-Auth at Caddy)
-#   stream: https://<DOMAIN>/<edge_id>/stream/<cam>    (setup JPEG WebSocket)
-# frps picks the LONGEST matching location, so /<edge_id>/api|ui|stream go here
-# to uvicorn while /<edge_id>/<ROOM>/whep falls to the mediamtx-webrtc proxy.
+# No video is proxied here: the admin pages play the SAME WebRTC stream as the
+# live links, which the mediamtx-webrtc proxy below already serves.
+# frps picks the LONGEST matching location, so /<edge_id>/api|ui go here to
+# uvicorn while /<edge_id>/<ROOM>/whep falls to the mediamtx-webrtc proxy.
 [[proxies]]
 name = "ceravis-api"
 type = "http"
 localIP = "127.0.0.1"
-localPort = 8000                               # uvicorn (edge API + pages + stream)
+localPort = 8000                               # uvicorn (edge API + admin pages)
 customDomains = ["edgeai.ceravishealth.in"]
 # Leave the marker comment intact: ceravis-apply-edge-id rewrites THIS line to
-# ["/<edge_id>/api", "/<edge_id>/ui", "/<edge_id>/stream"] automatically at
+# ["/<edge_id>/api", "/<edge_id>/ui"] automatically at
 # account verify + on every boot.
-locations = ["/EDGE_ID/api", "/EDGE_ID/ui", "/EDGE_ID/stream"]  # ceravis:edge-id — set automatically at account verify
+locations = ["/EDGE_ID/api", "/EDGE_ID/ui"]  # ceravis:edge-id — set automatically at account verify
 
 # ---------------------------------------------------------------------------
 # ⚠ Do NOT tunnel port 80 to the edge for Let's Encrypt. The cloud Caddy runs

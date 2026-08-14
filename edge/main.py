@@ -85,13 +85,12 @@ class _FleetEdgePrefix:
 
     In the fleet every request arrives path-prefixed with this device's
     /<edge_id> (frps routes each home by that prefix — it routes ONLY by URL,
-    never the request body). We strip our own prefix so the app's normal /api,
-    /ui and /stream routes match, and we normalise a trailing-slash page url.
+    never the request body). We strip our own prefix so the app's normal /api
+    and /ui routes match, and we normalise a trailing-slash page url.
 
-    It CANNOT be an @app.middleware("http") one: Starlette's http middleware is
-    skipped for WebSocket scopes, so the /<edge_id>/stream live-preview socket
-    never got its prefix stripped and 403'd through the tunnel. A pure-ASGI
-    middleware runs for BOTH http and websocket, fixing the socket too.
+    Pure ASGI rather than @app.middleware("http") so the strip happens before
+    routing for EVERY scope type, with none of Starlette's per-request
+    request/response wrapping on a path that runs on every single call.
 
     LAN-direct requests carry no prefix -> no-op. effective_edge_id() is an
     in-memory resolve. The body `edge_id` stays as a second check (control_auth)."""

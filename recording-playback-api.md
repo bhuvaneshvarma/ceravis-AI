@@ -12,8 +12,9 @@ There are exactly **two endpoints**, and one idea that makes it professional:
 
 ## 1. What it does, in one line
 
-Every time the AI sees a person, the edge records that camera as **1080p H.264 +
-AAC audio**, kept for a **rolling 12 hours**. To review it, the app asks the edge
+Every time the AI sees a person, the edge records that camera's **main stream
+at its full native resolution** (H.264 + AAC audio) — the very same stream the
+live link plays — kept for a **rolling 12 hours**. To review it, the app asks the edge
 **“where is there footage?”** (draws a timeline bar) and loads **one playlist for
 the whole 12 h** into a video player. The player then **seeks to any moment by
 date** — all on the client, no more calls.

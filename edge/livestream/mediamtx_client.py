@@ -16,12 +16,20 @@ here. The control API is bound to localhost by the generated config — nothing
 here is reachable from the network. All calls are short-timeout and raise
 MediaMTXError on failure so callers can degrade gracefully.
 
+ONE camera connection, one stream. MediaMTX dials each camera exactly once, on
+its MAIN profile, and that single pull feeds everything: the AI (loopback RTSP),
+the live links (WebRTC), the UI pages (the same WebRTC) and the disk recorder.
+Nothing here ever opens a second stream on a camera — on the WiFi links these
+cameras sit on, a second pull is bandwidth taken directly from the first, which
+degrades the AI and live view together. Recording therefore keeps the camera's
+NATIVE quality (remux only, no device encode) instead of a cut-down sub-stream.
+
 Fleet routing (live links): every public live link is
 `https://<domain>/<edge_id>/<cam>/whep`. The `<edge_id>` first segment is what
 frp routes on (locations=["/<edge_id>"]) so one shared domain + one shared port
 serve every house, disambiguated purely by that segment. MediaMTX therefore has
 to serve the camera under the slash path `<edge_id>/<cam>` (stream_path). Only
-the LIVE path carries the prefix; recording path names stay slash-free so the
+the LIVE path carries the prefix; the recorded path name stays slash-free so the
 recorder and its runtime record-toggle never depend on slash-paths.
 """
 
@@ -102,11 +110,12 @@ def audio_transcode_active() -> bool:
 
 def aac_republish_cmd(src_path: str, out_path: str) -> str:
     """The per-camera FFmpeg command MediaMTX supervises (runOnInit): pull the
-    record source over loopback TCP, COPY the video untouched, re-encode only
-    the camera's G.711/PCM audio to AAC (16 kHz mono, 32 kbps), and publish it
-    to out_path — the slash-free path that actually gets recorded. The '?' on
-    the audio map keeps mic-less cameras publishing video-only instead of
-    dying. (src_path may be the slash live path; RTSP handles slashes fine.)"""
+    LIVE path over loopback TCP, COPY the video untouched (native quality, no
+    re-encode, no extra camera connection), re-encode only the camera's
+    G.711/PCM audio to AAC (16 kHz mono, 32 kbps), and publish it to out_path —
+    the slash-free path that actually gets recorded. The '?' on the audio map
+    keeps mic-less cameras publishing video-only instead of dying. (src_path is
+    the slash live path; RTSP handles slashes fine.)"""
     port = settings.mediamtx_rtsp_port
     return (f"{settings.ffmpeg_binary} -hide_banner -loglevel warning "
             f"-rtsp_transport tcp -i rtsp://127.0.0.1:{port}/{src_path} "
@@ -115,37 +124,32 @@ def aac_republish_cmd(src_path: str, out_path: str) -> str:
             f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:{port}/{out_path}")
 
 
-def _rec_stub(camera) -> str:
-    """Slash-free base for this camera's recording artifacts: '<cam>-rec' when a
-    dedicated second-profile stream exists, else '<cam>'. Never carries the
-    edge_id prefix, so recorded path names (and the runtime record-toggle) stay
-    slash-free regardless of fleet mode."""
-    base = path_name(camera.camera_id)
-    return f"{base}-rec" if getattr(camera, "record_rtsp_url", None) else base
-
-
 def record_source_name(camera) -> str:
-    """The path whose stream FEEDS recording, before the audio step: the
-    dedicated -rec path (the camera's second ONVIF profile, compact 1080p
-    H.264) when configured; otherwise the LIVE main path (stream_path) is reused
-    as the source — no extra camera pull. This is only ever a PULL source
-    (loopback RTSP), so a slash here is harmless."""
-    if getattr(camera, "record_rtsp_url", None):
-        return f"{path_name(camera.camera_id)}-rec"
+    """The path whose stream FEEDS recording: always the camera's LIVE main path
+    (stream_path) — the one stream MediaMTX already holds. No second camera pull
+    exists, so recording costs the camera nothing and keeps its native quality.
+    This is only ever a loopback PULL source, so a slash here is harmless."""
     return stream_path(camera.camera_id)
 
 
 def record_path_name(camera) -> str:
     """The path that actually gets RECORDED (and read back for playback): the
-    slash-free -aac republish when AAC audio is active (video copied, audio AAC
-    — plays everywhere), else the record source. With AAC active this is always
-    slash-free, so set_record toggles a plain path name and recordings land in a
-    flat directory; the only slash case is the fallback of recording the live
-    path directly (no ffmpeg AND no second profile), which the control API
-    handles by percent-encoding."""
+    slash-free '<cam>-aac' republish when AAC audio is active (video copied
+    untouched, audio re-encoded — the one combo every player accepts), else the
+    live path recorded directly. With AAC active this is always slash-free, so
+    set_record toggles a plain path name and recordings land in a flat
+    directory; the only slash case is the no-ffmpeg fallback, which the control
+    API handles by percent-encoding."""
     if audio_transcode_active():
-        return f"{_rec_stub(camera)}-aac"
+        return f"{path_name(camera.camera_id)}-aac"
     return record_source_name(camera)
+
+
+def recorded_path_names(camera) -> set[str]:
+    """Every path name this camera's footage could currently be stored under —
+    used to tell live recording directories apart from orphans left by an older
+    configuration (see recording.controller.prune_orphan_recordings)."""
+    return {record_path_name(camera), record_source_name(camera)}
 
 
 # ---- URLs handed to consumers ---------------------------------------
@@ -284,46 +288,42 @@ def _remove_named_path(name: str) -> None:
     logger.info("MediaMTX path removed: %s", name)
 
 
+# Path suffixes an older configuration may have left behind on this device: the
+# dedicated second-profile pull and its AAC republish. Removed on every sync so
+# an upgraded device converges to ONE camera connection with no manual step.
+_LEGACY_SUFFIXES = ("-rec", "-rec-aac")
+
+
+def _drop_quietly(name: str) -> None:
+    try:
+        _remove_named_path(name)
+    except MediaMTXError:
+        pass                                           # never existed — fine
+
+
 def sync_camera(camera) -> None:
     """Mirror one camera into MediaMTX: the LIVE main path (stream_path, carrying
-    the edge_id prefix) always; a -rec path when a dedicated recording stream is
-    configured (removed again if it no longer is); and the slash-free -aac
-    republish path that actually gets recorded when AAC audio is active (stale
-    variants cleaned up on every sync)."""
-    main = stream_path(camera.camera_id)
-    _sync_named_path(main, camera.rtsp_url)
+    the edge_id prefix) — the single connection to the camera — plus the
+    slash-free -aac republish path that actually gets recorded when AAC audio is
+    active. Legacy second-profile paths are removed on every sync."""
+    _sync_named_path(stream_path(camera.camera_id), camera.rtsp_url)
 
     base = path_name(camera.camera_id)                 # slash-free recording base
-    rec = getattr(camera, "record_rtsp_url", None)
-    if rec:
-        _sync_named_path(f"{base}-rec", rec)
+    if audio_transcode_active():
+        aac = record_path_name(camera)
+        _sync_path_config(aac, _aac_path_config(record_source_name(camera), aac),
+                          "(AAC republish)")
     else:
-        try:
-            _remove_named_path(f"{base}-rec")
-        except MediaMTXError:
-            pass                                       # never existed — fine
-
-    current_aac = record_path_name(camera) if audio_transcode_active() else None
-    for cand in (f"{base}-aac", f"{base}-rec-aac"):
-        if cand == current_aac:
-            _sync_path_config(cand,
-                              _aac_path_config(record_source_name(camera), cand),
-                              "(AAC republish)")
-        else:
-            try:
-                _remove_named_path(cand)
-            except MediaMTXError:
-                pass
+        _drop_quietly(f"{base}-aac")
+    for suffix in _LEGACY_SUFFIXES:
+        _drop_quietly(f"{base}{suffix}")
 
 
 def remove_camera(camera_id: str) -> None:
     _remove_named_path(stream_path(camera_id))
     base = path_name(camera_id)
-    for extra in (f"{base}-rec", f"{base}-aac", f"{base}-rec-aac"):
-        try:
-            _remove_named_path(extra)
-        except MediaMTXError:
-            pass
+    for suffix in ("-aac",) + _LEGACY_SUFFIXES:
+        _drop_quietly(f"{base}{suffix}")
 
 
 # ---- LIVE-path-only control (camera start/stop/restart) --------------

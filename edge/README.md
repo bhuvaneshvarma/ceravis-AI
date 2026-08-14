@@ -19,16 +19,20 @@ edge/
 │   events/       in-process bus + enricher + SQLite writer
 │   alerts/       cloud_alert_publisher (falls / no-motion → app server)
 │
-├─ LIVE-STREAM-SHARE  — remote live view (paired with cloud/)
+├─ LIVE-STREAM-SHARE  — every viewer, local or remote (paired with cloud/)
 │   livestream/   MediaMTX backbone: supervised child + control client. Owns the
 │                 media backbone and builds the public WebRTC/WHEP live links.
 │                 stream_path() = "<edge_id>/<cam>" is the ONE path the AI reads
-│                 (local RTSP) AND the public link addresses, so the segment frp
-│                 routes on and the segment MediaMTX serves are identical.
+│                 (local RTSP), the public link addresses, the /ui pages play
+│                 and the recorder writes — so the segment frp routes on and the
+│                 segment MediaMTX serves are identical, and the camera is dialled
+│                 exactly ONCE. This process never serves video itself.
 │                 (the cloud tunnel + TLS live in ../cloud/ — see cloud/README.md)
 │
 ├─ RECORDING  — the person-triggered playback archive
-│   recording/    controller.py  person on camera → MediaMTX record on/off
+│   recording/    controller.py  person on camera → MediaMTX record on/off,
+│                                 recording the camera's MAIN stream at native
+│                                 quality (remux only, no second camera pull)
 │                 index.py        turns the stored MPEG-TS segments into a
 │                                 seekable, time-addressable HLS timeline
 │                 (recording path names are deliberately SLASH-FREE — the record
@@ -41,14 +45,15 @@ edge/
     api/            FastAPI routers (account = cloud proxy, cameras, recordings,
                     system, discovery, network, zones, events, ai, metrics)
     integration/    CERAVIS app-server client + call log
-    onvif/          dependency-free WS-Discovery / SOAP / PTZ / encoder
+    onvif/          dependency-free WS-Discovery / SOAP / PTZ (read-only:
+                    camera encoder settings are never rewritten)
     storage/        SQLite wrapper + EventStore
     monitoring/     pipeline metrics + tegrastats
-    streaming/      WebSocket JPEG live wall (built-in UI)
     common/         net / rtsp / clock / crops / letterbox helpers
     bootstrap/      pipeline assembly (build/start/stop) — keeps main.py thin
     tools/          status + recordings CLIs
-    static/         /ui pages (dashboard, cameras, zones, monitor, recordings)
+    static/         /ui pages (dashboard, cameras, zones, monitor, recordings);
+                    live-view.js plays every camera tile over MediaMTX WebRTC
 ```
 
 ## How live sharing routes (fleet model)

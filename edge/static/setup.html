@@ -46,7 +46,8 @@
                         border-radius: 5px; }
   .en-live-stage { position: relative; background: #000; border-radius: 10px;
                    overflow: hidden; margin-top: 8px; border: 1px solid var(--line); }
-  .en-live-stage img { width: 100%; display: block; min-height: 120px; }
+  .en-live-stage video { width: 100%; display: block; min-height: 120px;
+                         aspect-ratio: 16/9; object-fit: contain; background: #000; }
   .en-live-nosig { position: absolute; inset: 0; display: flex; align-items: center;
                    justify-content: center; font-size: 12.5px; color: var(--muted); }
   .btn-capture { background: #e11d48; border-color: #e11d48; color: #fff; }
@@ -250,7 +251,7 @@
           <div class="etab-body" data-body="live" hidden>
             <select id="en-cam"></select>
             <div class="en-live-stage">
-              <img id="en-live-img" alt="live preview" />
+              <video id="en-live-video"></video>
               <div class="en-live-nosig" id="en-live-nosig">Connecting…</div>
             </div>
             <div class="row mt" style="gap:8px; align-items:center; flex-wrap:wrap">
@@ -313,13 +314,14 @@
 </div>
 
 <script src="ceravis.js"></script>
+<script src="live-view.js"></script>
 <script>
 renderNav("setup.html");
 
 /* ================= wizard frame ================= */
 const STEPS = ["Account", "Recipient", "Cameras", "Room zones", "Enrollment"];
 let step = 1;
-const streams = {};            // camera_id -> liveStream handle (step 1 wall)
+const streams = {};            // camera_id -> liveView handle (step 1 wall)
 
 function renderStepper() {
   document.getElementById("stepper").innerHTML = STEPS.map((s, i) => {
@@ -497,16 +499,16 @@ async function refreshCameras() {
     tile.id = `tile-${c.camera_id}`;
     tile.innerHTML = `
       <div class="nosignal">NO SIGNAL</div>
-      <img alt="${c.camera_id}" style="display:none" />
+      <video style="display:none"></video>
       <div class="overlay"><span class="name">${c.camera_name}</span>
         <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
       <div class="foot"><span id="st-${c.camera_id}">connecting…</span></div>`;
     grid.appendChild(tile);
-    const img = tile.querySelector("img");
-    streams[c.camera_id] = liveStream(img, c.camera_id, {
+    const video = tile.querySelector("video");
+    streams[c.camera_id] = liveView(video, c.camera_id, {
       onState: s => {
         tile.querySelector(".nosignal").style.display = s === "live" ? "none" : "flex";
-        img.style.display = s === "live" ? "block" : "none";
+        video.style.display = s === "live" ? "block" : "none";
         const st = document.getElementById(`st-${c.camera_id}`);
         if (st) st.textContent = s.toUpperCase();
       },
@@ -572,10 +574,14 @@ document.getElementById("d-probe").onclick = async () => {
       }),
     });
     DISC.probed = r;
-    const main = r.profiles && r.profiles[0];
-    const rec = r.record_uri ? "dedicated rec stream ✓" : "rec = main stream";
+    // One stream per camera: the main profile feeds live view, the AI and the
+    // recordings alike, so its resolution/codec is the whole story.
+    const res = r.main_resolution || "?";
+    const enc = (r.main_encoding || "").toUpperCase();
+    const encWarn = enc && enc !== "H264"
+      ? ` · <span class="warn">${enc} — recordings won't play in a browser</span>` : "";
     out.innerHTML = `<span class="ok">✓ ${r.device.manufacturer || ""} ${r.device.model || ""}
-      — ${main ? main.width + "×" + main.height : "?"} · ${rec}${r.ptz ? " · PTZ ✓" : ""}</span>`;
+      — ${res} ${enc}${r.ptz ? " · PTZ ✓" : ""}</span>${encWarn}`;
     // Fill the RTSP URL — the operator only picks the room label.
     document.getElementById("c-url").value = r.main_uri;
   } catch (e) {
@@ -611,10 +617,9 @@ document.getElementById("c-save").onclick = async () => {
     rtsp_url: document.getElementById("c-url").value.trim(),
     is_enabled: true,
   };
-  // Discovered camera: carry the ONVIF details (dedicated ~1080p recording
-  // stream, PTZ endpoint + credentials) — only if the URL is still the probed one.
+  // Discovered camera: carry the ONVIF details (PTZ endpoint + credentials) —
+  // only if the URL is still the probed one.
   if (DISC.probed && cam.rtsp_url === DISC.probed.main_uri) {
-    cam.record_rtsp_url = DISC.probed.record_uri || null;
     cam.onvif_xaddr = DISC.sel ? DISC.sel.xaddr : null;
     cam.onvif_username = document.getElementById("d-user").value.trim() || null;
     cam.onvif_password = document.getElementById("d-pass").value || null;
@@ -971,17 +976,20 @@ async function loadFrames() {
   catch {}
 }
 
-/* live preview for the capture flow (reuses the shared WebSocket stream) */
+/* Live preview for the capture flow. Framing aid only — the capture itself is
+   taken server-side from the AI frame buffer, so what this shows never affects
+   what gets enrolled. */
 function startEnrollPreview() {
   stopEnrollPreview();
   const cam = document.getElementById("en-cam").value;
-  const img = document.getElementById("en-live-img");
+  const video = document.getElementById("en-live-video");
   const nosig = document.getElementById("en-live-nosig");
-  if (!cam || !img) return;
-  enrollPreview = liveStream(img, cam, {
+  if (!cam || !video) return;
+  enrollPreview = liveView(video, cam, {
     onState: s => { if (nosig) {
       nosig.style.display = s === "live" ? "none" : "flex";
-      nosig.textContent = s === "offline" ? "Camera offline" : "Connecting…";
+      nosig.textContent = s === "offline" ? "Camera offline"
+        : s === "stalled" ? "Signal stalled" : "Connecting…";
     }},
   });
 }

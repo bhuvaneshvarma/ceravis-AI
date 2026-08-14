@@ -16,9 +16,9 @@ def ai_state(request: Request, camera_id: str | None = None):
     Live AI state per camera, merged from the pipeline buffers:
     ByteTrack boxes + posture classification + ReID identity.
 
-    The monitor UI polls this a few times per second and draws the
-    boxes/labels over the live JPEG stream client-side — zero extra
-    GPU cost on the device.
+    The monitor UI polls this a few times per second and draws the target
+    marker on a transparent canvas over the WebRTC <video> client-side — no
+    frame ever passes through this process, so it costs no GPU and no CPU.
     """
     state = request.app.state
     tracks_by_cam = state.track_buffer.get_all()

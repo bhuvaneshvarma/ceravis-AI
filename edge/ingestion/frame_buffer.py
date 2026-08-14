@@ -15,7 +15,8 @@ class FrameBuffer:
 
     One slot per camera (drop-oldest semantics for free).
     Writers: RTSPReader threads.
-    Readers: FrameScheduler, runners, streaming.
+    Readers: the AI runners (detection/tracking/pose/reid) + snapshots.
+    No viewer ever reads it — live video comes off MediaMTX over WebRTC.
     """
 
     __slots__ = ("_lock", "_latest_frames")

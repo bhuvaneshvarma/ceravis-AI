@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 """
-Per-camera ONVIF client: device info, media profiles, RTSP stream URIs,
-recording-profile standardization, and PTZ.
+Per-camera ONVIF client: device info, media profiles, RTSP stream URIs and PTZ.
 
 An ONVIF camera exposes several "media profiles" — independent encoders on the
 same sensor. Typically profile 1 is the MAIN stream (full native quality) and
 profile 2+ are SUB streams (smaller). CERAVIS policy (per product decision):
 
-  • MAIN stream: NEVER modified. The AI, WebRTC live links and HLS all consume
-    it at the camera's raw native quality via MediaMTX.
-  • RECORD stream: the SECOND profile, standardized to ~1080p when the camera
-    supports it (SetVideoEncoderConfiguration) — recorded as its own MediaMTX
-    path, still remux-only. If there is no usable second profile, recording
-    falls back to the main stream untouched.
+  • We use the MAIN profile, and ONLY the main profile. MediaMTX pulls it once
+    and fans it out to the AI, the live links, the UI pages and the recorder —
+    so recordings are native quality, remux-only, and a camera on a weak WiFi
+    link never has to carry a second stream.
+  • This client READS the camera and drives PTZ. It never rewrites an encoder
+    configuration: these are the customer's cameras, they are shared with the
+    Tapo app, and a fire-and-forget SetVideoEncoderConfiguration is a change
+    nobody can explain later.
 """
 
 import logging
@@ -40,7 +41,7 @@ class Profile:
     width: int
     height: int
     fps: float
-    encoder_token: str     # VideoEncoderConfiguration token (for standardizing)
+    encoder_token: str     # VideoEncoderConfiguration token (reported, never written)
     has_ptz: bool
 
 
@@ -217,135 +218,6 @@ class OnvifCamera:
             raise OnvifError("camera returned no stream URI")
         return with_credentials(uri, self.username, self.password)
 
-    # ---- recording-profile standardization ------------------------------
-    def standardize_record_profile(self, profile: Profile,
-                                   width: int = 1920, height: int = 1080,
-                                   bitrate_kbps: int = 2048, fps: int = 15,
-                                   prefer_h264: bool = True) -> bool:
-        """Best-effort: shape a SUB profile into a compact recording stream —
-        <=1080p, H.264, a capped bitrate and frame-rate — so the CAMERA emits a
-        small stream MediaMTX only has to remux (no device re-encode). Only ever
-        called on a non-main profile; picks the closest supported resolution <=
-        target. Returns True when the encoder was updated (best-effort: a camera
-        that rejects any field falls back to recording the stream as-is)."""
-        self._services()
-        try:
-            opts = self._call(self._media_url, f"""
-<GetVideoEncoderConfigurationOptions xmlns="{_MEDIA_NS}">
-  <ConfigurationToken>{profile.encoder_token}</ConfigurationToken>
-</GetVideoEncoderConfigurationOptions>""")
-            resolutions = []
-            for r in opts.findall(".//ResolutionsAvailable"):
-                w = int(r.findtext("Width") or 0)
-                h = int(r.findtext("Height") or 0)
-                if 0 < h <= height and 0 < w <= width:
-                    resolutions.append((w, h))
-            if not resolutions:
-                return False
-            best_w, best_h = max(resolutions, key=lambda wh: wh[0] * wh[1])
-
-            cfg = self._call(self._media_url, f"""
-<GetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
-  <ConfigurationToken>{profile.encoder_token}</ConfigurationToken>
-</GetVideoEncoderConfiguration>""").find(".//Configuration")
-            if cfg is None:
-                return False
-            # Force H.264 for in-browser playback; keep the camera's codec only if
-            # the operator opted out of the H.264 preference.
-            encoding = "H264" if prefer_h264 else (cfg.findtext("Encoding") or "H264")
-            # Codec block only when we're actually writing H.264 (the ver10 schema
-            # has no H.265 element — an H.265 camera keeps its codec via <Encoding>).
-            gov = max(1, int(fps) * 2)            # ~2-second GOP
-            codec_block = (f"""
-    <H264 xmlns="{_SCHEMA_NS}">
-      <GovLength>{gov}</GovLength>
-      <H264Profile>Main</H264Profile>
-    </H264>""" if encoding == "H264" else "")
-            # Element order follows the ONVIF VideoEncoderConfiguration schema:
-            # Name, UseCount, Encoding, Resolution, Quality, RateControl, H264,
-            # SessionTimeout. RateControl (frame-rate + bitrate) is the disk lever.
-            self._call(self._media_url, f"""
-<SetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
-  <Configuration token="{profile.encoder_token}">
-    <Name xmlns="{_SCHEMA_NS}">{cfg.findtext("Name") or "record"}</Name>
-    <UseCount xmlns="{_SCHEMA_NS}">{cfg.findtext("UseCount") or 1}</UseCount>
-    <Encoding xmlns="{_SCHEMA_NS}">{encoding}</Encoding>
-    <Resolution xmlns="{_SCHEMA_NS}">
-      <Width>{best_w}</Width><Height>{best_h}</Height>
-    </Resolution>
-    <Quality xmlns="{_SCHEMA_NS}">{cfg.findtext("Quality") or 4}</Quality>
-    <RateControl xmlns="{_SCHEMA_NS}">
-      <FrameRateLimit>{int(fps)}</FrameRateLimit>
-      <EncodingInterval>1</EncodingInterval>
-      <BitrateLimit>{int(bitrate_kbps)}</BitrateLimit>
-    </RateControl>{codec_block}
-    <SessionTimeout xmlns="{_SCHEMA_NS}">{cfg.findtext("SessionTimeout") or "PT60S"}</SessionTimeout>
-  </Configuration>
-  <ForcePersistence>true</ForcePersistence>
-</SetVideoEncoderConfiguration>""")
-            logger.info("record profile %s standardized: %dx%d %s @ %d fps, %d kbps",
-                        profile.token, best_w, best_h, encoding, int(fps),
-                        int(bitrate_kbps))
-            return True
-        except OnvifError as exc:
-            logger.info("record-profile standardization skipped: %s", exc)
-            return False
-
-    def remove_profile_audio(self, profile_token: str) -> bool:
-        """Best-effort: detach the audio encoder (and source) from ONE profile so
-        its RTSP stream is VIDEO-ONLY. Used on the RECORD profile: these cameras
-        speak G.711/PCM audio, which fMP4 can only store as LPCM in the 'ipcm'
-        box — a 2023 spec that GStreamer/Totem, pre-6.0 FFmpeg and several
-        browsers don't read, so ONE audio track makes the whole clip
-        "unplayable". Never called on the main profile — live view keeps audio."""
-        self._services()
-        ok = False
-        for op in ("RemoveAudioEncoderConfiguration",
-                   "RemoveAudioSourceConfiguration"):
-            try:
-                self._call(self._media_url,
-                           f'<{op} xmlns="{_MEDIA_NS}">'
-                           f'<ProfileToken>{profile_token}</ProfileToken></{op}>')
-                ok = True
-            except OnvifError as exc:
-                # normal on cameras whose profile carries no audio to begin with
-                logger.info("%s skipped: %s", op, exc)
-        if ok:
-            logger.info("record profile %s: audio detached (video-only recording)",
-                        profile_token)
-        return ok
-
-    def restore_profile_audio(self, profile_token: str) -> bool:
-        """Best-effort inverse of remove_profile_audio: attach the camera's
-        first audio source + encoder configuration to a profile so its stream
-        carries audio again. Used on the RECORD profile when recordings should
-        include audio (the edge transcodes it to AAC) — converges a profile a
-        previous video-only probe stripped. Harmless when already attached."""
-        self._services()
-        ok = False
-        for get_op, add_op in (
-                ("GetAudioSourceConfigurations", "AddAudioSourceConfiguration"),
-                ("GetAudioEncoderConfigurations", "AddAudioEncoderConfiguration")):
-            try:
-                body = self._call(self._media_url,
-                                  f'<{get_op} xmlns="{_MEDIA_NS}"/>')
-                cfg = body.find(".//Configurations")
-                token = cfg.get("token") if cfg is not None else None
-                if not token:
-                    continue                      # camera has no audio at all
-                self._call(self._media_url, f"""
-<{add_op} xmlns="{_MEDIA_NS}">
-  <ProfileToken>{profile_token}</ProfileToken>
-  <ConfigurationToken>{token}</ConfigurationToken>
-</{add_op}>""")
-                ok = True
-            except OnvifError as exc:
-                logger.info("%s skipped: %s", add_op, exc)
-        if ok:
-            logger.info("record profile %s: audio attached (AAC recordings)",
-                        profile_token)
-        return ok
-
     # ---- PTZ -------------------------------------------------------------
     def ptz_move(self, profile_token: str,
                  pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0) -> None:
@@ -419,15 +291,14 @@ class OnvifCamera:
 
 # ---- probe: everything the wizard needs in one call ----------------------
 
-def probe(xaddr: str, username: str, password: str,
-          record_height: int = 1080, record_bitrate_kbps: int = 2048,
-          record_fps: int = 15, prefer_h264: bool = True,
-          record_audio: bool = False) -> dict:
-    """Interrogate one discovered camera. Returns device info, EVERY media
-    profile with its own RTSP URI (so the operator can pick stream1/stream2
-    themselves), the highest-res profile as the default main stream, a
-    standardized recording stream (compact 1080p H.264, video-only unless
-    record_audio), and PTZ capability + the profile token to drive it."""
+def probe(xaddr: str, username: str, password: str) -> dict:
+    """Interrogate one discovered camera — READ-ONLY, nothing on the camera is
+    changed. Returns device info, EVERY media profile with its own RTSP URI (so
+    the operator can pick stream1/stream2 themselves), the highest-res profile
+    as the main stream, and PTZ capability + the profile token to drive it.
+
+    The main profile is the whole answer: it is the one stream we pull, and it
+    is what live view, the AI and recording all consume."""
     cam = OnvifCamera(xaddr, username, password)
     info = cam.device_info()                    # also proves the credentials
     profs = cam.profiles()
@@ -435,7 +306,7 @@ def probe(xaddr: str, username: str, password: str,
         raise OnvifError("camera exposes no media profiles")
 
     profs.sort(key=lambda p: p.width * p.height, reverse=True)
-    main, subs = profs[0], profs[1:]
+    main = profs[0]
 
     # Every profile with its own stream URI — the wizard renders these as a
     # picker. One SOAP call each; a camera has only a handful of profiles.
@@ -446,31 +317,6 @@ def probe(xaddr: str, username: str, password: str,
         except OnvifError:
             uri = ""
         profiles_out.append({**vars(p), "uri": uri})
-
-    record_uri = None
-    record_profile = None
-    for sub in subs:                            # best sub-profile for recording
-        if cam.standardize_record_profile(
-                sub, height=record_height, bitrate_kbps=record_bitrate_kbps,
-                fps=record_fps, prefer_h264=prefer_h264):
-            record_profile = sub
-            break
-    if record_profile is None and subs:
-        # couldn't standardize but a sub exists — record it as-is only if it's
-        # a sane recording quality; otherwise fall back to main.
-        best_sub = max(subs, key=lambda p: p.width * p.height)
-        if best_sub.height >= 720:
-            record_profile = best_sub
-    if record_profile is not None:
-        # Audio policy on the RECORD profile only (main/live never touched).
-        # record_audio=True (default): make sure the camera audio is present —
-        # the media backbone transcodes it to AAC for the clips. False: detach
-        # it, so no MP4-hostile PCM ('ipcm') track poisons video-only clips.
-        if record_audio:
-            cam.restore_profile_audio(record_profile.token)
-        else:
-            cam.remove_profile_audio(record_profile.token)
-        record_uri = cam.stream_uri(record_profile.token)
 
     # PTZ is supported if the camera exposes a PTZ service (reliable) OR a
     # profile embeds a PTZConfiguration. Drive it with a PTZ-bound profile when
@@ -484,7 +330,8 @@ def probe(xaddr: str, username: str, password: str,
         "profiles": profiles_out,               # [{token,name,encoding,w,h,fps,has_ptz,uri}]
         "main_uri": main_out["uri"] if main_out else "",
         "main_profile_token": main.token,
-        "record_uri": record_uri,               # None -> record the main stream
+        "main_encoding": main.encoding,         # H264 plays in a browser; H265 does not
+        "main_resolution": f"{main.width}x{main.height}",
         "ptz": ptz,
         "ptz_token": ptz_token,
     }

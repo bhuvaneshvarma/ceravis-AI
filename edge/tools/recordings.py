@@ -16,7 +16,7 @@ implementation that could disagree.
 
     python -m tools.recordings                # all cameras (run from edge/)
     python -m tools.recordings --probe        # + ffprobe a real segment
-    python -m tools.recordings --path cam_001-rec-aac
+    python -m tools.recordings --path LIVING_ROOM-aac
     python -m tools.recordings --json
 
 Exit code: 0 clean, 1 problems found.
@@ -131,12 +131,10 @@ def inspect(folder, do_probe: bool) -> dict:
                         f"is not deleting (check MediaMTX recordDeleteAfter)")
 
     runs = ri.ranges(folder.name)
-    cap = settings.record_target_bitrate_kbps
-    if kbps > cap * 1.25:
-        problems.append(f"~{kbps:.0f} kbps is well above the {cap} kbps target "
-                        f"- the camera's record profile likely wasn't applied "
-                        f"(re-probe the camera)")
-
+    # Bitrate is the CAMERA's — we remux its main stream, we never re-encode —
+    # so this is reported, not policed. If the footprint is too big, lower the
+    # camera's own main-stream bitrate in its app; that is the only lever, and
+    # it moves live view and the AI with it.
     out = {
         "path": folder.name,
         "segments": len(segs),
@@ -145,7 +143,6 @@ def inspect(folder, do_probe: bool) -> dict:
         "recorded_minutes": round(total_secs / 60, 1),
         "avg_segment_mb": round(avg_mb, 2),
         "measured_kbps": round(kbps),
-        "target_kbps": cap,
         "projected_mb_per_hour": round(kbps * 1000 / 8 * 3600 / 1e6, 1),
         "first_label": segs[0].file.name,
         "last_label": segs[-1].file.name,
@@ -172,9 +169,8 @@ def _print(rep: dict) -> None:
     print(f"   span            {rep['span']}")
     print(f"   size            {rep['total_mb']} MB total, "
           f"{rep['avg_segment_mb']} MB per {settings.record_segment_secs}s segment")
-    print(f"   bitrate         ~{rep['measured_kbps']} kbps measured "
-          f"(target {rep['target_kbps']}) -> ~{rep['projected_mb_per_hour']} MB "
-          f"per hour of footage")
+    print(f"   bitrate         ~{rep['measured_kbps']} kbps as sent by the camera "
+          f"-> ~{rep['projected_mb_per_hour']} MB per hour of footage")
     if "probe" in rep:
         p = rep["probe"]
         if p.get("error"):

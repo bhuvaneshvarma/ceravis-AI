@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Apply this device's edge_id to EVERY per-edge key in frpc.toml and restart frpc:
 #   mediamtx-webrtc  locations    = ["/<edge_id>"]                      (live WHEP)
-#   ceravis-api      locations    = ["/<edge_id>/api|/ui|/stream"]      (uvicorn)
+#   ceravis-api      locations    = ["/<edge_id>/api|/ui"]              (uvicorn)
 #   ceravis-ssh      customDomains = ["<edge_id>"]                      (fleet SSH)
 # One edge_id, one command, every route — so no proxy can drift out of step.
 #
@@ -42,7 +42,7 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
 # Rewrite the per-edge key of each proxy (or insert it), keeping every other byte:
 #   mediamtx-webrtc -> locations     = ["/<edge_id>"]                       (WHEP)
-#   ceravis-api     -> locations     = ["/<eid>/api","/<eid>/ui","/<eid>/stream"]
+#   ceravis-api     -> locations     = ["/<eid>/api", "/<eid>/ui"]
 #   ceravis-ssh     -> customDomains = ["<edge_id>"]                  (tcpmux host)
 # Only ceravis-ssh's customDomains is touched — the HTTP proxies' customDomains is
 # the shared fleet DOMAIN and must never be rewritten. A block runs from a
@@ -52,7 +52,7 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 # opt-in per house, and this only maintains it once enabled.
 awk -v eid="$EDGE_ID" '
   function mtx() { return "locations = [\"/" eid "\"]  # ceravis:edge-id" }
-  function api() { return "locations = [\"/" eid "/api\", \"/" eid "/ui\", \"/" eid "/stream\"]  # ceravis:edge-id" }
+  function api() { return "locations = [\"/" eid "/api\", \"/" eid "/ui\"]  # ceravis:edge-id" }
   function ssh() { return "customDomains = [\"" eid "\"]  # ceravis:ssh-edge-id" }
   function flush_block() {
       if (wrote) return

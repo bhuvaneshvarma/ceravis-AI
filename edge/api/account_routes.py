@@ -6,7 +6,9 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
 from config.settings import settings
-from configuration.account_config import AccountConfig, canonical_edge_id
+from configuration.account_config import (
+    AccountConfig, canonical_edge_id, effective_edge_id,
+)
 from configuration.camera_config import CameraConfig
 from integration import call_log
 from integration.ceravis_api import (
@@ -71,7 +73,10 @@ def _cloud_camera(c, base: str) -> dict:
         "room": room_to_enum(c.room_name),     # -> server CameraName enum
         "url": link,
         "rtspUrl": c.rtsp_url,
-        "recordRtspUrl": c.record_rtsp_url or "",
+        # Kept in the saveCamera shape (the backend contract is unchanged) but
+        # always empty now: there is no separate recording stream — the main
+        # stream above is what gets recorded, at native quality.
+        "recordRtspUrl": "",
         "hlsUrl": c.hls_url or "",
         "onvifXaddr": c.onvif_xaddr or "",
         "onvifUsername": c.onvif_username or "",
@@ -222,10 +227,16 @@ def sync_cameras(request: Request):
 @router.get("")
 def get_account():
     """Return the stored verified account (so the wizard can resume) plus
-    whether the app-server integration is configured on this device."""
+    whether the app-server integration is configured on this device.
+
+    `edge_id` is the CANONICAL routing token — the same value the edge serves
+    its MediaMTX paths under and frp routes on. LAN-served UI pages read it to
+    build a camera's live-stream path; through the tunnel they already know it
+    (it is the URL prefix) and never ask."""
     acct = account_config.get()
     return {
         "verified": bool(acct.get("ceravisUserId")),
         "user": acct or None,
+        "edge_id": effective_edge_id(),
         "configured": is_configured(),
     }

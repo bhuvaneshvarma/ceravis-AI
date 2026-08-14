@@ -6,8 +6,9 @@ Person-triggered local recording.
 Watches the DetectionBuffer (the same YOLO output the tracker consumes) and
 flips MediaMTX recording per camera:
 
-    person detected on a camera  -> record ON  (15 s fMP4 segments, native
-                                    camera quality — remux only, no re-encode)
+    person detected on a camera  -> record ON  (MPEG-TS segments of the camera's
+                                    MAIN stream at native quality — remux only,
+                                    no re-encode, no second camera connection)
     nobody for POST_ROLL seconds -> record OFF
 
 Completely independent of alerts/snapshots — this is the playback archive the
@@ -18,6 +19,7 @@ idled produces no fresh results, so its recording winds down naturally).
 
 import json
 import logging
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -27,7 +29,9 @@ from config.settings import settings
 from configuration.camera_config import CameraConfig
 from detection.detection_buffer import DetectionBuffer
 from livestream import mediamtx_client
-from livestream.mediamtx_client import MediaMTXError, record_path_name
+from livestream.mediamtx_client import (
+    MediaMTXError, path_codec, record_path_name, recorded_path_names,
+)
 
 
 logger = logging.getLogger("media")
@@ -36,6 +40,11 @@ _EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # a detection result older than this is stale — its camera counts as empty
 _FRESH_SECS = 3.0
+
+
+def _record_root() -> Path:
+    root = Path(settings.record_dir)
+    return root if root.is_absolute() else (_EDGE_ROOT / root)
 
 
 class RecordingController:
@@ -90,8 +99,7 @@ class RecordingController:
         (bad path, disk full, MediaMTX hiccup), the kind of silent failure an
         NVR alarms on."""
         out: list[dict] = []
-        root = Path(settings.record_dir)
-        root = root if root.is_absolute() else (_EDGE_ROOT / root)
+        root = _record_root()
         for cam in self._cameras.get_all():
             path = record_path_name(cam)
             recording = self._recording.get(cam.camera_id, False)
@@ -110,6 +118,63 @@ class RecordingController:
                 "writing_ok": writing_ok,
             })
         return out
+
+    # ---- start-up housekeeping ---------------------------------------
+    def _prune_orphans(self) -> None:
+        """Delete recording folders no live camera writes to any more.
+
+        MediaMTX's `recordDeleteAfter` only expires footage under paths it
+        currently knows about, so footage left behind when a path name changes
+        (an earlier release recorded a separate `<cam>-rec-aac` sub-stream; a
+        removed camera does the same) would sit on disk forever. Runs once at
+        start-up, and deletes only a folder that BOTH no camera writes to and
+        whose newest file is already past the retention window — so it can never
+        touch footage still inside the window a viewer might be playing.
+
+        Two guards make it safe rather than clever: a recorded path can contain
+        a slash (the no-ffmpeg fallback records the live `<edge_id>/<cam>` path
+        straight), so a top-level entry may be a PARENT of a live folder rather
+        than a stale one — those are skipped whole, deliberately leaving any
+        orphan nested inside them rather than risking a live tree."""
+        root = _record_root()
+        if not root.is_dir():
+            return
+        live: set[Path] = set()
+        for cam in self._cameras.get_all():
+            live |= {root / name for name in recorded_path_names(cam)}
+        cutoff = time.time() - settings.record_retention_hours * 3600
+        for folder in root.iterdir():
+            if not folder.is_dir():
+                continue
+            # in use, or an ancestor of something in use
+            if any(d == folder or folder in d.parents for d in live):
+                continue
+            newest, _, _ = self._segment_stats(folder)
+            if newest is not None and newest > cutoff:
+                continue                       # still inside the window — leave it
+            try:
+                shutil.rmtree(folder)
+                logger.info("pruned orphaned recording folder: %s", folder.name)
+            except OSError as exc:
+                logger.warning("could not prune %s: %s", folder.name, exc)
+
+    def _warn_unplayable_codecs(self) -> None:
+        """Recording is a straight remux of the camera's main stream, so the
+        clips carry whatever codec the camera sends. Browsers play H.264 and not
+        H.265, and playback is in-browser — so a non-H.264 camera is a real
+        product fault, not a detail. Say so loudly at start-up (and
+        /system/status reports the live codec per camera) instead of letting the
+        reviewer discover a black player."""
+        for cam in self._cameras.get_all():
+            if not getattr(cam, "is_enabled", True):
+                continue
+            codec = path_codec(cam.camera_id)
+            if codec and codec != "h264":
+                logger.warning(
+                    "camera=%s streams %s — recordings are remuxed as-is and %s "
+                    "does NOT play in a browser. Set this camera's main profile "
+                    "to H.264 in its own app.",
+                    cam.camera_id, codec.upper(), codec.upper())
 
     @staticmethod
     def _segment_stats(folder: Path) -> tuple[float | None, int, int]:
@@ -137,14 +202,19 @@ class RecordingController:
         return (newest or None), count, total
 
     def start(self) -> None:
+        for step in (self._prune_orphans, self._warn_unplayable_codecs):
+            try:
+                step()
+            except Exception:                  # housekeeping never blocks start
+                logger.exception("recording start-up check failed: %s", step.__name__)
         self._running = True
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="recording-controller")
         self._thread.start()
-        logger.info("Recording on person detection — %ds segments, %.0fs post-roll, "
-                    "keep %dh, enabled=%s", settings.record_segment_secs,
-                    settings.record_post_roll_secs, settings.record_retention_hours,
-                    self.is_enabled())
+        logger.info("Recording on person detection — native main stream, %ds "
+                    "segments, %.0fs post-roll, keep %dh, enabled=%s",
+                    settings.record_segment_secs, settings.record_post_roll_secs,
+                    settings.record_retention_hours, self.is_enabled())
 
     def stop(self) -> None:
         self._running = False
@@ -186,8 +256,8 @@ class RecordingController:
                 self._set(cam, want)
 
     def _set(self, camera_id: str, on: bool) -> None:
-        # Record the camera's dedicated -rec path (standardized second ONVIF
-        # profile) when it has one; otherwise its main path, native quality.
+        # One path per camera: the AAC republish of its main stream (or the main
+        # stream itself when ffmpeg is absent). Native quality either way.
         cam = self._cameras.get_by_id(camera_id)
         path = record_path_name(cam) if cam else camera_id
         try:

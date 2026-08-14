@@ -20,9 +20,13 @@ class Camera(BaseModel):
     # dropdown, in caps) is the one thing collected; id/name are derived from it.
     room_name: str
 
-    # The camera's own RTSP URL (manual entry or ONVIF discovery). MediaMTX
-    # connects to it; everything else consumes MediaMTX's restream. Codec and
-    # transport are auto-detected — no per-camera tuning fields.
+    # The camera's own RTSP URL (manual entry or ONVIF discovery) — its MAIN
+    # profile, at native quality. This is the ONE connection made to the camera:
+    # MediaMTX dials it and fans the same compressed stream out to the AI, the
+    # live links, the UI pages and the disk recorder. There is deliberately no
+    # second (sub-stream) URL: on a WiFi camera a second pull is bandwidth taken
+    # straight from the first. Codec and transport are auto-detected — no
+    # per-camera tuning fields.
     rtsp_url: str
 
     # Hardware descriptors, filled best-effort from the camera's ONVIF
@@ -33,11 +37,6 @@ class Camera(BaseModel):
     manufacturer: str = ""
     model: str = ""
     serial: str = ""
-
-    # Recording-only stream: the camera's SECOND ONVIF profile, standardized to
-    # ~1080p by discovery when supported. None = record the main stream as-is.
-    # The main stream (AI + live links) is never modified.
-    record_rtsp_url: str | None = None
 
     # ONVIF control endpoint + credentials (filled by discovery; cameras.json is
     # gitignored). Enables PTZ and future re-probing / 2-way audio.

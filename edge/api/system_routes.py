@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 """
-System endpoints: root redirect, health, and the built-in UI's WebSocket JPEG
-live stream. External live viewing (cloud, browsers) is served by MediaMTX
-(WebRTC/HLS) — not by this process. Kept here so main.py is just app wiring.
+System endpoints: root redirect, health and the live status surface.
+
+This process serves NO video. Every viewer — the built-in UI pages, the cloud,
+a phone — plays the camera's compressed stream straight from MediaMTX over
+WebRTC. Kept here so main.py is just app wiring.
 """
 
 import shutil
@@ -11,13 +13,12 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Request, WebSocket
+from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
 from common import clock
 from config.settings import settings
 from configuration.camera_config import CameraConfig
-from streaming.websocket_stream import stream_camera
 
 
 router = APIRouter()
@@ -195,9 +196,3 @@ def system_status(request: Request):
         "storage": storage,
         "cloud": _cloud_status(),
     }
-
-
-@router.websocket("/stream/{camera_id}")
-async def websocket_stream(websocket: WebSocket, camera_id: str):
-    await stream_camera(websocket,
-                        websocket.app.state.camera_manager.frame_buffer, camera_id)

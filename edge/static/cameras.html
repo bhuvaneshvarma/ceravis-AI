@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <script src="fleet-prefix.js"></script>
+<script src="live-view.js"></script>
 <meta charset="utf-8" />
 <title>CERAVIS — Cameras</title>
 <style>
@@ -95,7 +96,7 @@
       <select id="preview-select">
         <option value="">— select a camera —</option>
       </select>
-      <img id="preview" class="preview" alt="select a camera to preview" />
+      <video id="preview" class="preview"></video>
       <div id="preview-meta" class="note"></div>
       <div id="ptz-pad" class="row" hidden
            style="margin-top:10px;gap:6px;flex-wrap:wrap">
@@ -141,7 +142,7 @@ async function edgeId() {
   return _edgeId;
 }
 
-let previewSocket = null;
+let previewView = null;      // live-view.js handle for the preview pane
 
 async function loadCameras() {
   const [cams, statuses] = await Promise.all([
@@ -236,7 +237,8 @@ $('btn-clear').onclick = () => {
   $('err').textContent = ''; $('probe-result').textContent = '';
 };
 
-// Live preview via the existing /stream/{camera_id} websocket
+// Live preview: the MediaMTX WebRTC stream (live-view.js) — the same feed the
+// shared links serve, so what you see here is exactly what a remote viewer sees.
 let CAMS = [];                    // refreshed by loadCameras for the PTZ pad
 $('preview-select').onchange = (e) => {
   connectPreview(e.target.value);
@@ -255,22 +257,13 @@ document.querySelectorAll('.ptz').forEach(btn => {
 });
 
 function connectPreview(camera_id) {
-  if (previewSocket) { try { previewSocket.close(); } catch(_){} previewSocket = null; }
-  const img = $('preview');
-  if (!camera_id) { img.removeAttribute('src'); return; }
-  const ws = new WebSocket(
-    (location.protocol === 'https:' ? 'wss://' : 'ws://')
-    + location.host + '/stream/' + camera_id);
-  ws.binaryType = 'blob';
-  let lastUrl = null;
-  ws.onmessage = (ev) => {
-    if (lastUrl) URL.revokeObjectURL(lastUrl);
-    lastUrl = URL.createObjectURL(ev.data);
-    img.src = lastUrl;
-  };
-  ws.onclose = () => $('preview-meta').textContent = 'stream closed';
-  ws.onopen  = () => $('preview-meta').textContent = 'streaming ' + camera_id;
-  previewSocket = ws;
+  if (previewView) { previewView.stop(); previewView = null; }
+  const video = $('preview');
+  if (!camera_id) { $('preview-meta').textContent = ''; return; }
+  previewView = liveView(video, camera_id, {
+    onState: s => $('preview-meta').textContent =
+      s === 'live' ? 'streaming ' + camera_id : s,
+  });
 }
 
 loadCameras();

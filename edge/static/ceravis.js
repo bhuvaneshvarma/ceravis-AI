@@ -1,10 +1,11 @@
 /* =====================================================================
-   CERAVIS shared front-end helpers: nav, API, live streams, toasts
+   CERAVIS shared front-end helpers: nav, API, toasts
+   (live camera video lives in live-view.js — one mechanism, WebRTC only)
    ===================================================================== */
 
-/* The fleet per-edge prefix (for /api + /stream on /<edge_id>/ui/… pages) is
-   handled globally by fleet-prefix.js, which every page loads BEFORE this file —
-   it wraps fetch + WebSocket, so nothing here needs to know the prefix. */
+/* The fleet per-edge prefix (for /api on /<edge_id>/ui/… pages) is handled
+   globally by fleet-prefix.js, which every page loads BEFORE this file — it
+   wraps fetch, so nothing here needs to know the prefix. */
 
 /* ---- tiny API wrapper ---------------------------------------------- */
 async function api(path, opts = {}) {
@@ -69,60 +70,9 @@ function renderNav(active) {
   tick(); setInterval(tick, 1000);
 }
 
-/* ---- live JPEG-over-WebSocket stream --------------------------------
-   Usage:  const s = liveStream(imgEl, "cam_1", { onFrame: img => ... });
-           s.stop();
-   Auto-reconnects with backoff; flags stale feeds via onState callback. */
-function liveStream(imgEl, cameraId, { onFrame = null, onState = null } = {}) {
-  let ws = null, stopped = false, lastUrl = null, retry = 1000, lastMsg = 0;
-
-  const setState = s => onState && onState(s);
-
-  function connect() {
-    if (stopped) return;
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    // fleet-prefix.js wraps WebSocket to add the /<edge_id> prefix on fleet pages.
-    ws = new WebSocket(`${proto}://${location.host}/stream/${cameraId}`);
-    ws.binaryType = "blob";
-    setState("connecting");
-
-    ws.onmessage = (e) => {
-      lastMsg = Date.now();
-      retry = 1000;
-      const url = URL.createObjectURL(e.data);
-      imgEl.onload = () => {
-        if (lastUrl) URL.revokeObjectURL(lastUrl);
-        lastUrl = url;
-        setState("live");
-        onFrame && onFrame(imgEl);
-      };
-      imgEl.onerror = () => URL.revokeObjectURL(url);
-      imgEl.src = url;
-    };
-    ws.onclose = () => {
-      if (stopped) return;
-      setState("offline");
-      setTimeout(connect, retry);
-      retry = Math.min(retry * 1.7, 10000);
-    };
-    ws.onerror = () => { try { ws.close(); } catch (_) {} };
-  }
-  connect();
-
-  // stale watchdog: no frame for 6 s -> show as stalled
-  const wd = setInterval(() => {
-    if (!stopped && lastMsg && Date.now() - lastMsg > 6000) setState("stalled");
-  }, 2000);
-
-  return {
-    stop() {
-      stopped = true;
-      clearInterval(wd);
-      try { ws && ws.close(); } catch (_) {}
-      if (lastUrl) URL.revokeObjectURL(lastUrl);
-    },
-  };
-}
+/* Live camera video is NOT served by this process — every page plays the same
+   MediaMTX WebRTC stream as the public live links, via liveView() in
+   live-view.js (loaded by the pages that show cameras). */
 
 /* ---- misc ------------------------------------------------------------ */
 function el(tag, cls, html) {

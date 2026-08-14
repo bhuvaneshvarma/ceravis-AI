@@ -24,14 +24,16 @@ edgeai.ceravishealth.in                          ┌──────── AWS
 - `/<edge_id>/api/…` → that home's **uvicorn control API** (PTZ, recordings,
   timeline, camera start/stop/restart, snapshot) — open.
 - `/<edge_id>/ui/…` → that home's **admin pages** (Basic-Auth at Caddy).
-- `/<edge_id>/stream/<cam>` → that home's **setup JPEG** WebSocket.
+
+No video crosses the tunnel as pixels: the admin pages play the same
+`/<edge_id>/<ROOM>/whep` WebRTC stream as the live links.
 
 frps routes on the URL **only** (never the request body), so putting the
 `edge_id` in the PATH is what makes it multi-house safe: every call can only
 reach the home whose `edge_id` it carries — no shared route can collide. There is
-**no** shared `/api`, `/ui`, or `/stream` anymore; the `edgeId` in the body stays
+**no** shared `/api` or `/ui` anymore; the `edgeId` in the body stays
 as a second check. Two frpc proxies do it: `mediamtx-webrtc` (`/<edge_id>` →
-:8889) and `ceravis-api` (`/<edge_id>/api|ui|stream` → :8000); frps picks the
+:8889) and `ceravis-api` (`/<edge_id>/api|ui` → :8000); frps picks the
 longest match, so `whep` falls to MediaMTX and the rest to uvicorn.
 
 Adding a home needs **nothing** on EC2 — a new edge with its own `edge_id`.
@@ -117,7 +119,7 @@ One `edge_id`, written by machine into all three routes — so none can drift:
 | proxy | key | value written |
 |-------|-----|---------------|
 | `mediamtx-webrtc` | `locations` | `["/<edge_id>"]` — a URL **path**, leading slash |
-| `ceravis-api` | `locations` | `["/<edge_id>/api", …/ui, …/stream]` |
+| `ceravis-api` | `locations` | `["/<edge_id>/api", …/ui]` |
 | `ceravis-ssh` | `customDomains` | `["<edge_id>"]` — a CONNECT **host**, **no** slash |
 
 ```bash
@@ -140,7 +142,6 @@ sudo systemctl restart ceravis
 live  : https://edgeai.ceravishealth.in/<edge_id>/<ROOM>/
 API   : https://edgeai.ceravishealth.in/<edge_id>/api/v1/…
 pages : https://edgeai.ceravishealth.in/<edge_id>/ui/setup.html
-stream: https://edgeai.ceravishealth.in/<edge_id>/stream/<cam>
 ```
 Every fleet URL carries the **`/<edge_id>` prefix** — it is the routing key that
 puts each call on the right house. (LAN-direct, off the tunnel, stays

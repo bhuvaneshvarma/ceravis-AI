@@ -173,8 +173,9 @@ input:-webkit-autofill:focus, input:-webkit-autofill:active {
   position: relative; background: #000; border-radius: 12px; overflow: hidden;
   border: 1px solid var(--line); aspect-ratio: 16/9; cursor: pointer;
 }
-.cam-tile img, .cam-tile canvas {
+.cam-tile img, .cam-tile canvas, .cam-tile video {
   width: 100%; height: 100%; object-fit: contain; display: block;
+  background: #000;
 }
 .cam-tile .overlay {
   position: absolute; left: 0; right: 0; top: 0;

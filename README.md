@@ -28,9 +28,12 @@ edge/
   configuration/  JSON-backed CRUD (cameras/zones/recipients/account)
   api/            FastAPI routers (incl. account = cloud proxy)
   ingestion/      RTSP reader (via MediaMTX localhost restream) + frame buffer
-  livestream/     MediaMTX backbone (supervised child) + control client; builds
-                  the public WebRTC/WHEP live links (fleet routing — see cloud/)
-  recording/      Person-triggered recording (15s MPEG-TS segments) + playback index
+  livestream/     MediaMTX backbone (supervised child) + control client. THE one
+                  connection to each camera, fanned out to the AI, every viewer
+                  (WebRTC/WHEP — /ui pages, cloud tunnel) and the recorder; this
+                  process never serves video itself (fleet routing — see cloud/)
+  recording/      Person-triggered recording of the camera's native main stream
+                  (15s MPEG-TS segments, remux only) + playback index
   detection/      YOLO TRT + buffer + runner (active-camera gated) + engine wrapper
   tracking/       clean-room BoT-SORT (kalman/matching) + buffers + runner
   pose/           YOLO-Pose TRT + posture/fall classifier + runner
@@ -42,8 +45,6 @@ edge/
   storage/        SQLite wrapper + EventStore
   bootstrap/      Pipeline assembly (build/start/stop) — keeps main.py thin
   monitoring/     Pipeline metrics + tegrastats parser
-  streaming/      WebSocket JPEG stream (built-in UI); external live view is
-                  MediaMTX WebRTC (WHEP), fronted by the cloud tunnel — see cloud/
   enrollment/     Per-recipient folder mgmt
   static/         /ui dashboard, camera + zone labeling pages
   models/         detection/ pose/ reid/ — .onnx + .engine (gitignored)

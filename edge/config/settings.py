@@ -21,8 +21,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ---- Ingestion (RTSP) -------------------------------------------
-    # Capture rate decoupled from inference. The frame buffer keeps only the
-    # latest frame, so each consumer (detection/pose/stream) samples the
+    # This is the AI's frame path and nothing else's — no viewer is ever served
+    # from it (live video comes straight off MediaMTX over WebRTC), so every
+    # setting here is tuned purely for getting the freshest possible frame to
+    # YOLO. Capture rate is decoupled from inference: the frame buffer keeps only
+    # the latest frame, so each consumer (detection/pose/reid) samples the
     # newest frame at ITS own rate. 0 = UNCAPPED (default): drain the decoder at
     # the camera's native rate and publish every frame, so movement stays smooth
     # and consumers always get the freshest frame. Decimating capture below
@@ -31,7 +34,6 @@ class Settings(BaseSettings):
     # a soft ceiling on weak / many-camera boxes. Decode is on NVDEC (dedicated
     # hardware), so uncapped adds no GPU-compute cost.
     target_camera_fps: float = 0.0
-    stream_fps: float = 15.0           # WebSocket live view smoothness (CPU JPEG)
     read_timeout_secs: float = 3.0
     reconnect_delay_secs: float = 5.0
     max_reconnect_delay_secs: float = 30.0
@@ -68,22 +70,25 @@ class Settings(BaseSettings):
     # public STUN is free and carries NO media (that stays P2P), e.g.
     # stun:stun.l.google.com:19302. Removing remote access = clear this again.
     mediamtx_stun_server: str = ""
-    # Reassembly headroom for the AI's localhost RTSP pull (ms). The link is
-    # loopback TCP (no jitter to absorb — MediaMTX already handles the camera
-    # side), so this is NOT playout latency: the reader never drops on it
-    # (drop-on-latency is off) and the appsink still hands over only the newest
-    # complete frame. It just gives the jitterbuffer room to reassemble the big
-    # P-frame bursts that movement produces without corrupting the frame.
-    rtsp_latency_ms: int = 200
+    # Jitterbuffer depth for the AI's localhost RTSP pull (ms). 0 = NO BUFFER,
+    # and that is correct here: the link is loopback interleaved TCP, which
+    # delivers every packet, in order, with no loss — there is no jitter to
+    # absorb, so any value above zero is pure added delay between the camera and
+    # YOLO. (MediaMTX already absorbed the real network jitter on the camera
+    # side; reassembly happens there, not here.) Raise it ONLY if a future
+    # source is genuinely lossy — for a loopback pull it should stay 0.
+    rtsp_latency_ms: int = 0
 
-    # ---- Recording (person-triggered, compact 1080p H.264) -----------
-    # Records ONLY while YOLO sees a person on that camera (+ post-roll). The
-    # disk footprint is driven by the SOURCE bitrate, NOT the container: MediaMTX
-    # only ever remuxes (the Orin Nano has no hardware encoder, so re-encoding on
-    # the device is off the table), so the way to save disk is to make the CAMERA
-    # emit a small stream. Discovery shapes the camera's second ONVIF profile to
-    # compact 1080p H.264 (see the standardization targets below) and we record
-    # THAT, remux-only. The main stream feeding the AI + live links is untouched.
+    # ---- Recording (person-triggered, the camera's native main stream) ----
+    # Records ONLY while YOLO sees a person on that camera (+ post-roll), and
+    # records the camera's MAIN stream — the one connection MediaMTX already
+    # holds for live view and the AI. Remux only (the Orin Nano has no hardware
+    # encoder, so re-encoding on the device is off the table), which means
+    # footage is full native quality at zero extra camera bandwidth and zero
+    # extra CPU. Disk is bounded by person-triggering plus the rolling window
+    # below, not by degrading the picture. There is deliberately no sub-stream
+    # option: a second pull on a WiFi camera steals bandwidth from the first and
+    # destabilises live view and the AI together.
     record_enabled: bool = True
     record_dir: str = "data/recordings"
     record_segment_secs: int = 15
@@ -95,23 +100,10 @@ class Settings(BaseSettings):
     record_retention_hours: int = 12
     record_post_roll_secs: float = 15.0    # keep recording this long after the last person
     record_poll_secs: float = 0.5          # detection-buffer poll cadence
-    # Recording-profile standardization (RECORDING ONLY — the main stream that
-    # feeds the AI and the WebRTC/HLS live links is NEVER touched). At discovery
-    # the camera's SECOND ONVIF profile is shaped to <= this height, H.264, and a
-    # capped bitrate/frame-rate so the camera itself produces the small stream we
-    # remux — the same trick professional NVRs use to keep footage small without
-    # spending device CPU. H.264 (not the smaller H.265) is deliberate: browsers
-    # play H.264 MP4 natively, so the frontend scrubs recordings with NO
-    # server-side transcode. Cameras with no usable second profile record their
-    # main stream as-is.
-    record_target_height: int = 1080
-    record_target_bitrate_kbps: int = 2048  # ~0.9 GB/hour at 1080p — the real disk lever
-    record_target_fps: int = 15             # surveillance-standard; smooth enough, ~half the bytes of 30
-    record_prefer_h264: bool = True         # force H.264 on the record profile for in-browser playback
     # Recordings carry AAC AUDIO (video + AAC = the one MP4 combo every player
     # and browser accepts). The cameras speak G.711/PCM, which MP4 can only
     # hold as the 2023 'ipcm' box many players reject — so a tiny per-camera
-    # FFmpeg (supervised by MediaMTX via runOnInit) republishes the record
+    # FFmpeg (supervised by MediaMTX via runOnInit) republishes the main
     # stream with the VIDEO COPIED untouched and only the ~8 kHz mono audio
     # re-encoded to AAC (~32 kbps — negligible CPU and disk). Live view is
     # untouched: WebRTC speaks G.711 natively, which is why live audio always
@@ -171,10 +163,6 @@ class Settings(BaseSettings):
     # ---- Hotspot (Jetson as WiFi AP for the household cameras) --------
     hotspot_interface: str = ""            # "" = auto-pick the first wifi device
     hotspot_connection_name: str = "ceravis-hotspot"
-
-    # Live WebSocket stream only — does NOT change what the AI engines see.
-    stream_jpeg_quality: int = 70
-    stream_max_width: int = 0          # 0 = full resolution; e.g. 960 downscales the wall feed
 
     # ---- Detection (YOLO26m) ----------------------------------------
     # Detection must scan the full frame, so it's the heaviest stage. 10 fps

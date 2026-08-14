@@ -9,6 +9,10 @@ connection, its flaky WiFi transport and its reconnects, and fans the same
 compressed stream out to live view / recording without re-encoding. This
 reader is then purely: pull loopback RTSP -> hardware-decode -> BGR frames.
 
+These frames feed the AI and nothing else: no viewer is ever served from
+here, so the path is tuned solely for handing YOLO the freshest frame — no
+jitterbuffer, no pacing, no queue (see _gst_pipeline).
+
 Fallback (dev box / MediaMTX missing): reads the camera's RTSP URL directly
 over TCP. Same decode ladder either way:
     hw GStreamer (nvv4l2decoder) -> sw GStreamer (avdec) -> plain FFmpeg.
@@ -169,15 +173,17 @@ class RTSPReader:
         decode = ("nvv4l2decoder ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert"
                   if hw else
                   ("avdec_h265" if codec == "h265" else "avdec_h264") + " ! videoconvert")
-        # NO drop-on-latency. On a lossless loopback pull there is no network
-        # jitter to bound — the flag only DROPS packets when reassembly briefly
-        # exceeds the latency budget, which is exactly what happens on movement
-        # (big P-frames): incomplete frames -> decode smearing the AI reads as
-        # noise. Let the jitterbuffer keep every packet and emit only COMPLETE
-        # frames. Freshness is owned downstream by the appsink (drop=true
-        # max-buffers=1), which always yields the newest complete frame and
-        # discards the backlog — so we get integrity AND low latency, not a
-        # trade-off. latency= is just reassembly headroom now (see settings).
+        # ZERO added buffering between the camera and YOLO, on purpose:
+        #   latency=0        the loopback pull is interleaved TCP — every packet
+        #                    arrives, in order, so the jitterbuffer has nothing
+        #                    to absorb and any depth is pure delay. (MediaMTX
+        #                    already handled the real network jitter camera-side.)
+        #   NO drop-on-latency — the flag DROPS packets when reassembly exceeds
+        #                    the budget, which is exactly what movement's big
+        #                    P-frames do: incomplete frames the AI reads as noise.
+        #   appsink drop=true max-buffers=1 — freshness is owned here: always the
+        #                    newest COMPLETE frame, backlog discarded.
+        # So the reader is integrity AND immediacy, not a trade-off between them.
         return (
             f"rtspsrc location={self._source_url} protocols=tcp "
             f"latency={int(settings.rtsp_latency_ms)} ! "

@@ -25,7 +25,8 @@
 <div class="page">
   <div class="page-head">
     <h1>Live wall</h1>
-    <div class="sub">All registered cameras, streaming live from the edge device.
+    <div class="sub">All registered cameras, streaming live over WebRTC straight from
+      the media backbone — the same feed the shared links serve.
       Click any tile to maximize · <span class="kbd">Esc</span> to exit.</div>
   </div>
 
@@ -44,6 +45,7 @@
 </div>
 
 <script src="ceravis.js"></script>
+<script src="live-view.js"></script>
 <script>
 renderNav("live.html");
 
@@ -79,7 +81,7 @@ async function sync() {
     const tile = el("div", "cam-tile");
     tile.innerHTML = `
       <div class="nosignal">NO SIGNAL</div>
-      <img alt="${c.camera_id}" style="display:none" />
+      <video style="display:none"></video>
       <div class="overlay"><span class="name">${c.camera_name}</span>
         <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
       <div class="foot"><span></span></div>`;
@@ -90,11 +92,11 @@ async function sync() {
     };
     document.getElementById("wall").appendChild(tile);
     tiles[c.camera_id] = tile;
-    const img = tile.querySelector("img");
-    streams[c.camera_id] = liveStream(img, c.camera_id, {
+    const video = tile.querySelector("video");
+    streams[c.camera_id] = liveView(video, c.camera_id, {
       onState: st => {
         tile.querySelector(".nosignal").style.display = st === "live" ? "none" : "flex";
-        img.style.display = st === "live" ? "block" : "none";
+        video.style.display = st === "live" ? "block" : "none";
         tile.querySelector(".nosignal").textContent =
           st === "stalled" ? "SIGNAL STALLED" : st === "connecting" ? "CONNECTING…" : "NO SIGNAL";
       },
