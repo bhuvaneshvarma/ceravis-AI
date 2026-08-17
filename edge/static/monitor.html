@@ -257,15 +257,25 @@ function setCamera(camId, searching) {
 
 /* ---- overlay -------------------------------------------------------
    Only the target marker is drawn — the picture itself is the <video> beneath.
-   The canvas is sized to the stream's own pixel dimensions so AI bboxes (which
-   are in source pixels) need no scaling, and CSS stretches both identically. */
+
+   The canvas is kept SMALL and the bboxes are scaled into it. Matching the
+   stream's own pixel size would be simpler (no scale factor) but means a 4K
+   canvas layer blended over a 4K video layer on every composite, plus a 33 MB
+   clear on every AI poll — free on a GPU-composited browser, and very much not
+   free on one falling back to software. A single dot needs none of that
+   precision. Both layers keep the video's aspect ratio and the same
+   object-fit: contain box, so they line up exactly. */
+const OVERLAY_W = 960;
+
 function clearOverlay() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 function draw() {
-  const w = video.videoWidth, h = video.videoHeight;
-  if (!w || !h) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  const w = Math.min(OVERLAY_W, vw);         // never upscale a small stream
+  const h = Math.round(vh * (w / vw));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   clearOverlay();
   if (M.searching) return;                  // clean preview — no search overlay
@@ -274,9 +284,10 @@ function draw() {
   const best = bestTarget(M.state[M.cam]);
   if (!best) return;
   const [x1, y1, x2, y2] = best.bbox;
-  const cx = (x1 + x2) / 2;
-  const cy = y1 + (y2 - y1) * 0.08;          // sit the dot on the head
-  const r = Math.max(7, canvas.width / 110); // noticeable but not big
+  const s = w / vw;                          // source pixels -> overlay pixels
+  const cx = ((x1 + x2) / 2) * s;
+  const cy = (y1 + (y2 - y1) * 0.08) * s;    // sit the dot on the head
+  const r = Math.max(7, w / 110);            // noticeable but not big
   const color = best.posture === "fallen" ? "#ef4444" : "#22c55e";
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,.65)"; ctx.shadowBlur = r;

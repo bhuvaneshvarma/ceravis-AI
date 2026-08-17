@@ -111,6 +111,7 @@
     opts = opts || {};
     var onState = opts.onState || function () {};
     var stopped = false;
+    var paused = false;          // page hidden — see the visibility handler
     var pc = null;
     var retry = RETRY_MIN_MS;
     var watchdog = null;
@@ -199,7 +200,7 @@
     }
 
     async function connect() {
-      if (stopped) return;
+      if (stopped || paused) return;
       setState("connecting");
       var edge = await edgeId();
       if (stopped) return;
@@ -224,7 +225,7 @@
     }
 
     function schedule() {
-      if (stopped) return;
+      if (stopped || paused) return;
       setTimeout(connect, retry);
       retry = Math.min(Math.round(retry * 1.7), RETRY_MAX_MS);
     }
@@ -235,6 +236,25 @@
       setState("offline");
       schedule();
     }
+
+    /* Stop decoding video nobody is looking at. A hidden tab keeps its peer
+       connections alive, so a backgrounded wall goes on decoding every camera
+       for no one — the cost lands hardest on the machine least able to afford
+       it. document.hidden tracks tab VISIBILITY, not focus, so a wall left open
+       on a second monitor keeps running. */
+    function onVisibility() {
+      if (stopped) return;
+      if (document.hidden) {
+        paused = true;
+        closePeer();
+        setState("offline");
+      } else if (paused) {
+        paused = false;
+        retry = RETRY_MIN_MS;
+        connect();
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibility);
 
     /* Silent-stall guard. A weak link can leave the peer connection "connected"
        while no frames arrive — the picture freezes with no error. The video
@@ -257,6 +277,7 @@
       stop: function () {
         stopped = true;
         clearInterval(watchdog);
+        document.removeEventListener("visibilitychange", onVisibility);
         closePeer();
       },
     };
