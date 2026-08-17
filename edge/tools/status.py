@@ -54,7 +54,8 @@ def _fmt(d: dict) -> str:
             break
         state = "ready" if c.get("path_ready") else "NOT READY"
         out.append(_line(c.get("camera_id", ""),
-                         f"{state}  codec={c.get('codec') or '-'}  "
+                         f"{state}  {c.get('resolution') or '-'}  "
+                         f"codec={c.get('codec') or '-'}  "
                          f"readers={c.get('readers')}  ptz={'y' if c.get('ptz') else 'n'}"))
 
     rec = d.get("recording", {})

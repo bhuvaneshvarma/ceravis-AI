@@ -19,6 +19,7 @@ from fastapi.responses import RedirectResponse
 from common import clock
 from config.settings import settings
 from configuration.camera_config import CameraConfig
+from ingestion.camera_status import substream_warning
 
 
 router = APIRouter()
@@ -117,13 +118,23 @@ def _storage_status() -> dict:
     return out
 
 
-def _camera_status() -> list[dict]:
-    """Per-camera: is MediaMTX actually serving its path, what codec is live,
-    how many consumers are reading it, PTZ capability."""
+def _camera_status(manager=None) -> list[dict]:
+    """Per-camera: is MediaMTX actually serving its path, what codec and
+    RESOLUTION are live, how many consumers are reading it, PTZ capability.
+
+    `resolution` is measured off the decoded frames, not read from config. A
+    camera accidentally pointed at its sub-stream is healthy by every other
+    measure — running, good fps, no reconnects — while feeding the AI, the
+    recordings and every live link a fraction of the pixels. Reporting the real
+    number is the only thing that makes that visible."""
     from livestream.mediamtx_client import path_codec, path_info
+    live = manager.get_status() if manager is not None else {}
     cams = []
     for cam in CameraConfig().get_all():
         info = path_info(cam.camera_id) or {}
+        st = live.get(cam.camera_id)
+        w = getattr(st, "frame_width", 0) or 0
+        h = getattr(st, "frame_height", 0) or 0
         cams.append({
             "camera_id": cam.camera_id,
             "name": getattr(cam, "camera_name", ""),
@@ -131,6 +142,9 @@ def _camera_status() -> list[dict]:
             "enabled": bool(getattr(cam, "is_enabled", True)),
             "path_ready": bool(info.get("ready")),
             "codec": path_codec(cam.camera_id),
+            "resolution": f"{w}x{h}" if w and h else None,
+            "width": w,
+            "height": h,
             "readers": len(info.get("readers") or []),
             "ptz": bool(getattr(cam, "ptz_supported", False)),
         })
@@ -171,10 +185,18 @@ def system_status(request: Request):
     }
     storage = _storage_status()
     time_info = _time_status()
+    cameras = _camera_status(getattr(st, "camera_manager", None))
 
     problems: list[str] = []
     if not backbone_up:
         problems.append("media backbone down (no live links, no recording)")
+    for c in cameras:
+        if not c["enabled"]:
+            continue
+        warning = substream_warning(c["camera_id"], c.get("width") or 0,
+                                    c.get("height") or 0)
+        if warning:
+            problems.append(warning)
     for c in recording["cameras"]:
         if not c.get("writing_ok", True):
             problems.append(f"{c['camera_id']}: recording but no segments landing")
@@ -191,7 +213,7 @@ def system_status(request: Request):
         "edge_id": settings.edge_id,
         "time": time_info,
         "media_backbone": {"up": backbone_up, "binary": settings.mediamtx_binary},
-        "cameras": _camera_status(),
+        "cameras": cameras,
         "recording": recording,
         "storage": storage,
         "cloud": _cloud_status(),

@@ -266,6 +266,7 @@ class RTSPReader:
 
             reconnect_delay = settings.reconnect_delay_secs
             next_frame_time = time.perf_counter()
+            logged_size = False        # announce the real resolution once per connect
             # Arm the stall watchdog from the connection instant, so "connected but
             # never delivered a first frame" is caught too, not just mid-stream stalls.
             self._last_frame_monotonic = time.monotonic()
@@ -285,6 +286,14 @@ class RTSPReader:
                 if not success:
                     logger.warning("Read failure camera=%s", self.camera_id)
                     break
+
+                if not logged_size:
+                    # What the AI is REALLY being fed. A camera configured with
+                    # its sub-stream URL looks perfectly healthy on every other
+                    # metric, so the resolution has to be said out loud.
+                    logged_size = True
+                    logger.info("camera=%s decoding %dx%d", self.camera_id,
+                                frame.shape[1], frame.shape[0])
 
                 self._frame_id += 1
                 self._frames_captured += 1

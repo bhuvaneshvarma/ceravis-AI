@@ -250,6 +250,10 @@ class CameraManager:
 
                 continue
 
+            # Resolution is read off the newest decoded frame, so it reports
+            # what the pipeline is REALLY working with.
+            latest = self._frame_buffer.get(camera.camera_id)
+
             status[
                 camera.camera_id
             ] = CameraStatus(
@@ -262,6 +266,8 @@ class CameraManager:
                 reconnect_count=reader.reconnect_count,
                 last_frame_time=reader.last_frame_time,
                 current_fps=reader.current_fps,
+                frame_width=latest.width if latest else 0,
+                frame_height=latest.height if latest else 0,
             )
 
         return status
