@@ -68,20 +68,18 @@ class Settings(BaseSettings):
     # is NOT tunneled by frp — it just has to be reachable from the home NAT.
     mediamtx_webrtc_udp_port: int = 8189
     mediamtx_cert_dir: str = "data/certs"  # server.crt/server.key (installer generates)
-    # Optional height cap for a camera's MAIN encoder, applied ONLY when you ask
-    # for it (POST /api/v1/cameras/{id}/stream-profile) — never at discovery, and
-    # never on its own. 0 leaves every camera exactly as its owner set it.
+    # Which profile a camera gets consumed on is decided ONCE, at registration:
+    # the wizard picks the largest H.264 profile at or below this height and
+    # stores its RTSP URL. Nothing on the camera is ever rewritten — we choose
+    # among what it already offers.
     #
-    # Read this before using it: there is ONE stream per camera, so this ONE
-    # number moves ALL FOUR consumers together — the public live links, the /ui
-    # tiles, the AI's input and the recordings. It cannot be applied to some and
-    # not others; that would need a second camera connection, which is what
-    # destabilised the WiFi and the AI in the first place. The bitrate is left
-    # untouched, so a lower cap spends the same bits on fewer pixels: sharper per
-    # pixel, cheaper for every decoder, smaller on disk. What it costs is reach —
-    # the AI resolves a distant person from fewer pixels, so ReID and pose on
-    # someone across a large room degrade first. 1440 is the sane starting point.
-    camera_stream_max_height: int = 0
+    # It is a single number because there is a single stream: the AI, the public
+    # live links, the /ui tiles and the recorder all read it. More pixels is more
+    # reach for ReID and pose at distance; it also costs camera WiFi, decode on
+    # every viewer, and disk. H.264 is not negotiable — no browser decodes HEVC
+    # over WebRTC, so an H.265 profile is a black screen everywhere and its
+    # recordings are unplayable.
+    camera_preferred_height: int = 1440
     # Optional STUN server so MediaMTX advertises the device's PUBLIC address in
     # WebRTC ICE — needed for remote (off-LAN) live view via the cloud/ tunnel
     # (Option B). Empty = LAN-only (default: remote access OFF, zero change). A

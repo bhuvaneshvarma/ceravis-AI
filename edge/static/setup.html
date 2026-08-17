@@ -58,6 +58,16 @@
               border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); }
   .cov-cell.on { border-color: var(--teal-dim); background: rgba(45,212,191,.1); color: var(--teal); }
   .cov-cell.next { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal-dim) inset; }
+  .prof-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+              border: 1px solid var(--line-soft); border-radius: 9px;
+              margin-bottom: 6px; cursor: pointer; font-size: 12.5px; }
+  .prof-row.sel { border-color: var(--teal-dim); background: rgba(45,212,191,.07); }
+  .prof-row .res { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .prof-row .tag { font-size: 10px; letter-spacing: .5px; padding: 1px 6px;
+                   border-radius: 999px; border: 1px solid var(--line); }
+  .prof-row .tag.bad { color: #f87171; border-color: rgba(248,113,113,.45); }
+  .prof-row .pick { margin-left: auto; font-size: 10px; letter-spacing: .5px;
+                    color: var(--teal); }
 </style>
 </head>
 <body>
@@ -121,8 +131,16 @@
             </div>
           </div>
           <div class="row mt">
-            <button class="btn btn-ghost" id="d-probe">Connect &amp; fill form</button>
+            <button class="btn btn-ghost" id="d-probe">Connect &amp; read profiles</button>
             <span class="probe-result" id="d-probe-out"></span>
+          </div>
+          <div id="d-profiles" class="mt" hidden>
+            <label class="f">Stream to use</label>
+            <div class="hint" style="margin-bottom:6px">This ONE stream feeds the AI,
+              the recordings and every live view, so it is chosen once here. The
+              recommended pick is already selected.</div>
+            <div id="d-profile-list"></div>
+            <div class="probe-result" id="d-profile-why"></div>
           </div>
         </div>
         <hr class="sep" />
@@ -517,7 +535,7 @@ async function refreshCameras() {
 }
 
 /* ---- ONVIF discovery (WiFi cameras on the LAN / device hotspot) ---- */
-const DISC = { cams: [], sel: null, probed: null };
+const DISC = { cams: [], sel: null, probed: null, profileToken: null };
 
 async function runScan(deep) {
   const out = document.getElementById("d-scan-out");
@@ -574,20 +592,67 @@ document.getElementById("d-probe").onclick = async () => {
       }),
     });
     DISC.probed = r;
-    // One stream per camera: the main profile feeds live view, the AI and the
-    // recordings alike, so its resolution/codec is the whole story.
-    const res = r.main_resolution || "?";
-    const enc = (r.main_encoding || "").toUpperCase();
-    const encWarn = enc && enc !== "H264"
-      ? ` · <span class="warn">${enc} — recordings won't play in a browser</span>` : "";
     out.innerHTML = `<span class="ok">✓ ${r.device.manufacturer || ""} ${r.device.model || ""}
-      — ${res} ${enc}${r.ptz ? " · PTZ ✓" : ""}</span>${encWarn}`;
-    // Fill the RTSP URL — the operator only picks the room label.
-    document.getElementById("c-url").value = r.main_uri;
+      ${r.ptz ? " · PTZ ✓" : ""}</span>`;
+    renderProfiles(r);
   } catch (e) {
     out.innerHTML = `<span class="bad">✗ ${e.detail || "connection failed (credentials?)"}</span>`;
   }
 };
+
+/* ---- stream profile picker -------------------------------------------
+   A camera exposes several profiles (main / sub / jpeg) and we consume exactly
+   ONE — the same stream reaches the AI, the recordings, the /ui tiles and the
+   public links. So the choice is made here, at registration, not left to
+   whichever URL happened to get pasted. The edge recommends the largest H.264
+   profile at or below CAMERA_PREFERRED_HEIGHT and says why; the operator can
+   override. H.265 rows are marked unusable: no browser decodes HEVC over
+   WebRTC, so such a profile is a black screen everywhere and its recordings
+   cannot be played back. */
+function selectProfile(token) {
+  const r = DISC.probed;
+  if (!r) return;
+  const p = (r.profiles || []).find(x => x.token === token);
+  if (!p) return;
+  DISC.profileToken = token;
+  document.getElementById("c-url").value = p.uri || "";
+  document.querySelectorAll(".prof-row").forEach(el =>
+    el.classList.toggle("sel", el.dataset.token === token));
+  const enc = (p.encoding || "").toUpperCase();
+  document.getElementById("d-profile-why").innerHTML = enc && enc !== "H264"
+    ? `<span class="bad">${enc} cannot play in any browser — live view will be
+       black and its recordings unplayable.</span>`
+    : `<span class="muted">${(r.recommended || {}).reason || ""}</span>`;
+}
+
+function renderProfiles(r) {
+  const wrap = document.getElementById("d-profiles");
+  const list = document.getElementById("d-profile-list");
+  const rec = r.recommended || {};
+  // JPEG profiles exist for stills, not for a stream — they are not a choice,
+  // so they are not offered. Matches usable_profiles() on the edge, so the list
+  // the operator sees and the list the recommendation ranked are the same list.
+  const profiles = (r.profiles || [])
+    .filter(p => p.uri && (p.encoding || "").toUpperCase() !== "JPEG");
+  if (!profiles.length) {
+    wrap.hidden = true;
+    return;
+  }
+  list.innerHTML = profiles.map(p => {
+    const enc = (p.encoding || "").toUpperCase();
+    const bad = enc && enc !== "H264";
+    return `<div class="prof-row" data-token="${p.token}">
+      <span class="res">${p.width}×${p.height}</span>
+      <span class="tag ${bad ? "bad" : ""}">${enc || "?"}</span>
+      <span class="muted">${p.fps ? Math.round(p.fps) + " fps" : ""} · ${p.name || p.token}</span>
+      ${p.token === rec.token ? '<span class="pick">RECOMMENDED</span>' : ""}
+    </div>`;
+  }).join("");
+  list.querySelectorAll(".prof-row").forEach(el =>
+    el.onclick = () => selectProfile(el.dataset.token));
+  wrap.hidden = false;
+  selectProfile(rec.token || profiles[0].token);
+}
 
 document.getElementById("c-probe").onclick = async () => {
   const out = document.getElementById("c-probe-out");
@@ -619,11 +684,15 @@ document.getElementById("c-save").onclick = async () => {
   };
   // Discovered camera: carry the ONVIF details (PTZ endpoint + credentials) —
   // only if the URL is still the probed one.
-  if (DISC.probed && cam.rtsp_url === DISC.probed.main_uri) {
+  const picked = DISC.probed && (DISC.probed.profiles || [])
+    .find(p => p.token === DISC.profileToken);
+  if (picked && cam.rtsp_url === picked.uri) {
     cam.onvif_xaddr = DISC.sel ? DISC.sel.xaddr : null;
     cam.onvif_username = document.getElementById("d-user").value.trim() || null;
     cam.onvif_password = document.getElementById("d-pass").value || null;
-    cam.onvif_profile_token = DISC.probed.main_profile_token || null;
+    // The profile we chose above IS the one the pipeline consumes — store its
+    // token so PTZ and any later re-read address the same stream.
+    cam.onvif_profile_token = picked.token || null;
     cam.ptz_supported = !!DISC.probed.ptz;
   }
   if (!cam.room_name || !cam.rtsp_url)
@@ -637,8 +706,9 @@ document.getElementById("c-save").onclick = async () => {
     toast(`${cam.room_name} saved & started`);
     ["c-url", "c-room"].forEach(i => document.getElementById(i).value = "");
     document.getElementById("c-probe-out").textContent = "";
-    DISC.probed = DISC.sel = null;                 // consumed by this save
+    DISC.probed = DISC.sel = DISC.profileToken = null;   // consumed by this save
     document.getElementById("d-creds").hidden = true;
+    document.getElementById("d-profiles").hidden = true;
     document.getElementById("d-probe-out").textContent = "";
     refreshCameras();
   } catch (e) { toast(e.detail || "Save failed", "err"); }

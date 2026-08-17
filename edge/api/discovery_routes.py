@@ -8,11 +8,12 @@ the Jetson's own hotspot) and interrogate one for its streams.
          ?deep=1  also sweeps the local subnet on the ONVIF ports (use when the
                   WiFi AP blocks multicast between clients — "AP isolation")
     POST /api/v1/discovery/probe         -> {xaddr, username, password} ->
-         device info + every media profile + the main stream URI (raw quality)
-         + PTZ capability. The wizard feeds this straight into the camera form.
-         READ-ONLY: nothing on the camera is reconfigured. The main stream is
-         the only one we take, and it is what live view, the AI and recording
-         all consume.
+         device info + every media profile with its own URI + the one we
+         RECOMMEND consuming (largest H.264 at or below CAMERA_PREFERRED_HEIGHT)
+         with the reason why. The wizard pre-selects it and the operator can
+         override. READ-ONLY: nothing on the camera is reconfigured — we choose
+         among the profiles it already offers, and that one choice feeds the AI,
+         the live links, the /ui tiles and the recorder alike.
 
 The scan response also reports the interfaces/subnets it searched and how each
 camera was found ("multicast" vs "unicast"), so a silent network is diagnosable
@@ -62,7 +63,8 @@ def scan(deep: bool = False):
 def probe_camera(req: ProbeRequest):
     """Full interrogation of one discovered camera (proves the credentials)."""
     try:
-        result = probe(req.xaddr, req.username, req.password)
+        result = probe(req.xaddr, req.username, req.password,
+                       preferred_height=settings.camera_preferred_height)
     except OnvifError as exc:
         raise HTTPException(400, str(exc))
     return result

@@ -218,147 +218,6 @@ class OnvifCamera:
             raise OnvifError("camera returned no stream URI")
         return with_credentials(uri, self.username, self.password)
 
-    # ---- stream shaping (explicit, never automatic) ----------------------
-    def encoder_options(self, encoder_token: str) -> dict[str, list[tuple[int, int]]]:
-        """What this encoder can actually do: {codec: [(w,h), ...]}, largest first.
-
-        The resolutions are nested UNDER each codec element in the ver10 options
-        envelope, so they must be read per codec — a flat search mixes the JPEG
-        snapshot sizes in with the video ones.
-
-        Note what ver10 cannot say: the schema has <JPEG>, <MPEG4> and <H264>
-        elements and no H.265 at all. That is precisely how a camera can report
-        "H264" here and stream HEVC anyway — which is what the C260 does. So this
-        tells you what the camera will ACCEPT, never what it is actually sending;
-        for that, observe the live stream."""
-        body = self._call(self._media_url, f"""
-<GetVideoEncoderConfigurationOptions xmlns="{_MEDIA_NS}">
-  <ConfigurationToken>{encoder_token}</ConfigurationToken>
-</GetVideoEncoderConfigurationOptions>""")
-        out: dict[str, list[tuple[int, int]]] = {}
-        for codec in ("H264", "MPEG4", "JPEG"):
-            section = body.find(f".//{codec}")
-            if section is None:
-                continue
-            sizes = []
-            for r in section.findall("ResolutionsAvailable"):
-                w = int(r.findtext("Width") or 0)
-                h = int(r.findtext("Height") or 0)
-                if w > 0 and h > 0:
-                    sizes.append((w, h))
-            if sizes:
-                out[codec] = sorted(set(sizes), key=lambda wh: wh[0] * wh[1],
-                                    reverse=True)
-        return out
-
-    def _encoder_config(self, encoder_token: str):
-        return self._call(self._media_url, f"""
-<GetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
-  <ConfigurationToken>{encoder_token}</ConfigurationToken>
-</GetVideoEncoderConfiguration>""").find(".//Configuration")
-
-    @staticmethod
-    def _config_state(cfg) -> tuple[int, int, str]:
-        """(width, height, encoding) as the camera currently reports them."""
-        if cfg is None:
-            return 0, 0, ""
-        res = cfg.find("Resolution")
-        w = int(res.findtext("Width") or 0) if res is not None else 0
-        h = int(res.findtext("Height") or 0) if res is not None else 0
-        return w, h, (cfg.findtext("Encoding") or "").upper()
-
-    def shape_stream(self, encoder_token: str, max_height: int | None = None,
-                     codec: str | None = None) -> dict:
-        """Shape ONE encoder: cap its height and/or set its codec. Reports what
-        actually happened, and only ever changes what was asked for.
-
-        Deliberately MINIMAL: fields you do not name are read and written back
-        exactly as the camera reported them — quality, bitrate, frame rate and
-        the H.264 GOP block all survive untouched. Holding the bitrate while
-        lowering the resolution is the point: the same bits cover fewer pixels,
-        so the picture gets sharper per pixel while costing every decoder less.
-
-        Always reads back afterwards, because "the write didn't throw" is not
-        evidence the camera accepted it. Be aware the read-back is the camera's
-        CLAIM — this family reports H264 while streaming HEVC — so a caller that
-        cares about the codec must also observe the live stream.
-
-        Returns before/requested/after (each {resolution, codec}), `changed`,
-        `accepted`, and the `options` the camera advertises."""
-        self._services()
-        options = self.encoder_options(encoder_token)
-        if not options:
-            raise OnvifError("camera reports no encoder options")
-
-        cfg = self._encoder_config(encoder_token)
-        if cfg is None:
-            raise OnvifError("camera returned no encoder configuration")
-        cur_w, cur_h, cur_codec = self._config_state(cfg)
-
-        want_codec = (codec or cur_codec or "H264").upper()
-        if codec and want_codec not in options:
-            raise OnvifError(f"camera does not offer {want_codec} on this profile "
-                             f"(it offers: {', '.join(sorted(options))})")
-
-        sizes = options.get(want_codec) or next(iter(options.values()))
-        if max_height is None:
-            target = (cur_w, cur_h) if (cur_w, cur_h) in sizes else sizes[0]
-        else:
-            # Largest at or below the cap; if everything is taller, its smallest
-            # is the closest honest answer rather than a failure.
-            target = next(((w, h) for w, h in sizes if h <= max_height), sizes[-1])
-
-        def state(w, h, c):
-            return {"resolution": f"{w}x{h}", "codec": c}
-
-        result = {
-            "before": state(cur_w, cur_h, cur_codec),
-            "requested": state(target[0], target[1], want_codec),
-            "options": {c: [f"{w}x{h}" for w, h in v] for c, v in options.items()},
-        }
-        if (cur_w, cur_h) == target and cur_codec == want_codec:
-            return {**result, "after": result["before"], "changed": False,
-                    "accepted": True}
-
-        rate, h264 = cfg.find("RateControl"), cfg.find("H264")
-        rate_block = "" if rate is None else f"""
-    <RateControl xmlns="{_SCHEMA_NS}">
-      <FrameRateLimit>{rate.findtext("FrameRateLimit") or 0}</FrameRateLimit>
-      <EncodingInterval>{rate.findtext("EncodingInterval") or 1}</EncodingInterval>
-      <BitrateLimit>{rate.findtext("BitrateLimit") or 0}</BitrateLimit>
-    </RateControl>"""
-        # The <H264> block belongs only to an H.264 configuration.
-        h264_block = "" if (h264 is None or want_codec != "H264") else f"""
-    <H264 xmlns="{_SCHEMA_NS}">
-      <GovLength>{h264.findtext("GovLength") or 25}</GovLength>
-      <H264Profile>{h264.findtext("H264Profile") or "Main"}</H264Profile>
-    </H264>"""
-        # Element order follows the ONVIF VideoEncoderConfiguration schema.
-        self._call(self._media_url, f"""
-<SetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
-  <Configuration token="{encoder_token}">
-    <Name xmlns="{_SCHEMA_NS}">{cfg.findtext("Name") or "main"}</Name>
-    <UseCount xmlns="{_SCHEMA_NS}">{cfg.findtext("UseCount") or 1}</UseCount>
-    <Encoding xmlns="{_SCHEMA_NS}">{want_codec}</Encoding>
-    <Resolution xmlns="{_SCHEMA_NS}">
-      <Width>{target[0]}</Width><Height>{target[1]}</Height>
-    </Resolution>
-    <Quality xmlns="{_SCHEMA_NS}">{cfg.findtext("Quality") or 4}</Quality>{rate_block}{h264_block}
-    <SessionTimeout xmlns="{_SCHEMA_NS}">{cfg.findtext("SessionTimeout") or "PT60S"}</SessionTimeout>
-  </Configuration>
-  <ForcePersistence>true</ForcePersistence>
-</SetVideoEncoderConfiguration>""")
-
-        aw, ah, ac = self._config_state(self._encoder_config(encoder_token))
-        accepted = (aw, ah) == target and ac == want_codec
-        changed = (aw, ah, ac) != (cur_w, cur_h, cur_codec)
-        logger.info("encoder %s: %s %s -> %s %s (requested %s %s, camera %s)",
-                    encoder_token, result["before"]["resolution"], cur_codec,
-                    f"{aw}x{ah}", ac, result["requested"]["resolution"], want_codec,
-                    "accepted" if accepted else "IGNORED OR CLAMPED")
-        return {**result, "after": state(aw, ah, ac),
-                "changed": changed, "accepted": accepted}
-
     # ---- PTZ -------------------------------------------------------------
     def ptz_move(self, profile_token: str,
                  pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0) -> None:
@@ -430,16 +289,72 @@ class OnvifCamera:
 </AbsoluteMove>""")
 
 
+# ---- choosing which profile to consume ----------------------------------
+
+def usable_profiles(profiles: list[Profile]) -> list[Profile]:
+    """The profiles that can carry live video, largest first. JPEG profiles are
+    dropped — they exist for stills, not for a stream."""
+    return sorted((p for p in profiles if p.encoding.upper() != "JPEG"),
+                  key=lambda p: p.width * p.height, reverse=True)
+
+
+def recommend_profile(profiles: list[Profile],
+                      preferred_height: int = 1440) -> tuple[Profile | None, str]:
+    """Pick the profile this camera should be consumed on, and say why.
+
+    Ranked by what actually breaks the product, in order:
+
+    1. **H.264, as a hard requirement.** No browser decodes HEVC over WebRTC, so
+       an H.265 profile is a black screen on the /ui pages, the public links and
+       the cloud alike — and recordings are remuxed as-is, so its clips are
+       unplayable too. A smaller H.264 profile beats a bigger unplayable one
+       every time. (These cameras hide this: the ONVIF ver10 encoder schema has
+       no H.265 element, so the reported `encoding` can read H264 while the
+       stream is HEVC. Hence the caller verifies against the live stream.)
+    2. **The largest resolution at or below `preferred_height`.** More pixels is
+       more reach for ReID and pose, but the whole system shares this ONE stream,
+       so it also costs camera WiFi, decode and disk on every consumer.
+    3. If every H.264 profile is taller than that, the smallest of them — closest
+       to the target from above rather than the biggest thing on offer.
+
+    Returns (profile, reason). The profile is None only when the camera exposes
+    nothing but JPEG."""
+    candidates = usable_profiles(profiles)
+    if not candidates:
+        return None, "camera exposes no video profile"
+
+    h264 = [p for p in candidates if p.encoding.upper() == "H264"]
+    if not h264:
+        best = candidates[0]
+        return best, (f"no H.264 profile — {best.encoding or 'this codec'} cannot "
+                      f"play in a browser, so live view and recordings will not work")
+
+    at_or_below = [p for p in h264 if p.height <= preferred_height]
+    if at_or_below:
+        best = at_or_below[0]
+        note = ("the target" if best.height == preferred_height
+                else f"the closest below {preferred_height}p")
+        return best, f"{best.width}x{best.height} H.264 — {note}"
+    best = h264[-1]
+    return best, (f"{best.width}x{best.height} H.264 — every H.264 profile is "
+                  f"above {preferred_height}p, so this is the smallest")
+
+
 # ---- probe: everything the wizard needs in one call ----------------------
 
-def probe(xaddr: str, username: str, password: str) -> dict:
+def probe(xaddr: str, username: str, password: str,
+          preferred_height: int = 1440) -> dict:
     """Interrogate one discovered camera — READ-ONLY, nothing on the camera is
-    changed. Returns device info, EVERY media profile with its own RTSP URI (so
-    the operator can pick stream1/stream2 themselves), the highest-res profile
-    as the main stream, and PTZ capability + the profile token to drive it.
+    changed. Returns device info, EVERY media profile with its own RTSP URI, the
+    one we RECOMMEND consuming (with the reason), and PTZ capability.
 
-    The main profile is the whole answer: it is the one stream we pull, and it
-    is what live view, the AI and recording all consume."""
+    Which profile a camera is consumed on is decided HERE, at registration, and
+    written into the camera record — because there is exactly one stream per
+    camera and it feeds the AI, the live links, the /ui tiles and the recorder
+    together. Getting it wrong once is invisible afterwards: a camera stored with
+    its sub-stream URL reports perfectly healthy forever. See recommend_profile
+    for the ranking, and /system/status for the alarm that catches a bad choice
+    against the LIVE stream rather than against what ONVIF claimed."""
     cam = OnvifCamera(xaddr, username, password)
     info = cam.device_info()                    # also proves the credentials
     profs = cam.profiles()
@@ -447,7 +362,6 @@ def probe(xaddr: str, username: str, password: str) -> dict:
         raise OnvifError("camera exposes no media profiles")
 
     profs.sort(key=lambda p: p.width * p.height, reverse=True)
-    main = profs[0]
 
     # Every profile with its own stream URI — the wizard renders these as a
     # picker. One SOAP call each; a camera has only a handful of profiles.
@@ -459,20 +373,30 @@ def probe(xaddr: str, username: str, password: str) -> dict:
             uri = ""
         profiles_out.append({**vars(p), "uri": uri})
 
+    best, reason = recommend_profile(profs, preferred_height)
+    chosen = next((p for p in profiles_out
+                   if best is not None and p["token"] == best.token), None)
+
     # PTZ is supported if the camera exposes a PTZ service (reliable) OR a
     # profile embeds a PTZConfiguration. Drive it with a PTZ-bound profile when
-    # one exists, else the main profile (single-config cameras accept any).
+    # one exists, else the chosen one (single-config cameras accept any).
     ptz = cam.has_ptz_service() or any(p.has_ptz for p in profs)
-    ptz_token = next((p.token for p in profs if p.has_ptz), main.token)
+    ptz_token = next((p.token for p in profs if p.has_ptz),
+                     best.token if best else profs[0].token)
 
-    main_out = next((p for p in profiles_out if p["token"] == main.token), None)
     return {
         "device": info,
-        "profiles": profiles_out,               # [{token,name,encoding,w,h,fps,has_ptz,uri}]
-        "main_uri": main_out["uri"] if main_out else "",
-        "main_profile_token": main.token,
-        "main_encoding": main.encoding,         # H264 plays in a browser; H265 does not
-        "main_resolution": f"{main.width}x{main.height}",
+        "profiles": profiles_out,           # [{token,name,encoding,w,h,fps,has_ptz,uri}]
+        "recommended": {
+            "token": chosen["token"] if chosen else "",
+            "uri": chosen["uri"] if chosen else "",
+            "resolution": f"{best.width}x{best.height}" if best else "",
+            # ONVIF's word, not evidence — an HEVC camera reports H264 here
+            # because the ver10 schema has no H.265 element.
+            "encoding": best.encoding if best else "",
+            "reason": reason,
+            "preferred_height": preferred_height,
+        },
         "ptz": ptz,
         "ptz_token": ptz_token,
     }

@@ -76,7 +76,7 @@ Set `EDGE_ID`, `DEVICE_STREAM_BASE=https://<domain>` and `MEDIAMTX_STUN_SERVER`
 in `infra/env/jetson.env`, then re-sync cameras. Blank `EDGE_ID`/`DEVICE_STREAM_BASE`
 = LAN-direct: links hit MediaMTX's WebRTC port on the device directly.
 
-## One stream per camera — and the one knob that resizes it
+## One stream per camera — and how its profile is chosen
 
 MediaMTX dials each camera **once**, on its main profile, and fans that single
 compressed stream out to four consumers:
@@ -94,39 +94,62 @@ camera — and a second pull on a WiFi camera takes bandwidth straight from the
 first, which starves the AI reader and destabilises live view. That is the
 failure this design exists to prevent, so the second pull is not coming back.
 
-`CAMERA_STREAM_MAX_HEIGHT` (default `0` = never touch a camera) is therefore a
-**whole-camera** setting, applied only when you ask for it:
+**Which profile a camera is consumed on is decided ONCE, at registration.** The
+setup wizard reads every profile the camera exposes, pre-selects the one we
+recommend, and stores that profile's RTSP URL and token. Nothing on the camera is
+ever rewritten — we only choose among what it already offers.
 
-```bash
-curl -X POST http://<device>:8000/api/v1/cameras/LIVING_ROOM/stream-profile \
-     -H 'Content-Type: application/json' \
-     -d '{"edgeId":"<this device>","max_height":1440,"codec":"H264"}'
-```
+`onvif.client.recommend_profile()` is that policy, as a pure function, ranked by
+what actually breaks the product:
 
-It reads the camera's supported resolutions and codecs, clamps into them, writes
-**only** what you named (bitrate, frame rate and GOP are preserved), then reads
-the encoder back and reports `before / requested / after / accepted`. A camera
-that silently ignores or clamps the write comes back `accepted: false` rather
-than as a false success. Nothing runs at discovery — probes are read-only.
+1. **H.264, as a hard requirement.** No browser decodes HEVC over WebRTC, so an
+   H.265 profile is a black screen on the /ui pages, the public links and the
+   cloud alike — and recordings are remuxed as-is, so its clips are unplayable
+   too. A smaller H.264 profile beats a bigger unplayable one, every time.
+2. **The largest resolution at or below `CAMERA_PREFERRED_HEIGHT`** (default
+   1440). More pixels is more reach for ReID and pose at distance; it also costs
+   camera WiFi, decode on every viewer, and disk.
+3. If every H.264 profile is taller than that, the smallest of them.
 
-`codec` is there because **H.265 is a product-level fault, not a preference**: no
-browser decodes HEVC over WebRTC, so live view is a black screen on the /ui
-pages, the public links and the cloud alike — and recordings are remuxed as-is,
-so the clips are unplayable too. Worse, ONVIF will not admit it: the ver10
-encoder schema has no H.265 element, so a camera reports `H264` while sending
-HEVC. That is why the response also carries **`observed_codec`**, read off the
-live stream after the change — `after.codec` is the camera's claim,
-`observed_codec` is the truth — and why `/system/status` alarms on any camera
-not observed to be H.264.
+The operator can override the pick in the wizard, and H.265 rows are marked
+unusable rather than merely listed.
 
-Because the bitrate is held, a lower cap spends the same bits on fewer pixels:
-sharper per pixel, cheaper for every decoder, smaller on disk. What it costs is
-reach, and the AI feels that first.
+Two traps this design exists to avoid, both of which cost real weeks:
+
+- **A stored sub-stream URL is invisible.** A 4K camera saved with its 720p
+  `/stream2` URL reports running, steady fps and zero reconnects forever, while
+  the AI, the recordings and every viewer quietly run on a fraction of the
+  pixels. `/system/status` now measures the LIVE resolution and alarms below
+  720p, so the choice is verified rather than assumed.
+- **ONVIF lies about the codec.** The ver10 encoder schema has no H.265 element,
+  so an HEVC camera reports `H264`. The profile list shows what the camera claims;
+  `/system/status` reports the codec **observed** off the live stream, and alarms
+  on anything that is not H.264. Claims are for the picker, evidence is for the
+  alarm.
 
 ### Viewing on the device itself
 
-Don't. Chrome on JetPack has no hardware video decode (NVIDIA ships no VA-API),
-so the Jetson's own browser software-decodes H.264 on the CPU — competing with
-YOLO for the cores it needs, and stuttering at anything near native resolution.
-The AI is unaffected by this: it decodes on **NVDEC** via `nvv4l2decoder`, a
-different path entirely. Watch the cameras from a phone, a laptop or the cloud.
+Don't — use a phone, a laptop or the cloud. Live view in a browser **on the
+Jetson** stutters badly (a picture roughly once per GOP, everything between
+dropped) while the identical stream is flawless on any other machine.
+
+What is measured, so nobody re-derives it: `chrome://gpu` on the device reports
+Canvas, Compositing, Rasterization **and Video Decode** all hardware
+accelerated, and HLS playback of recorded footage in that same browser is
+perfect. But `chrome://webrtc-internals` shows WebRTC choosing
+`decoderImplementation=FFmpeg` with `powerEfficientDecoder=false` — the software
+decoder — with `packetsLost` and `nackCount` at zero, `pliCount` in the
+thousands and `keyFramesDecoded` tracking `framesDecoded`. So packets all
+arrive and Chrome decodes only keyframes. Chrome's media pipeline takes the
+hardware decoder; its WebRTC pipeline does not. **Why is not established** —
+these were also ruled out by measurement: the network, the UDP receive buffer
+(`RcvbufErrors` = 0), the recorder, the AI layer, and our own JavaScript (the
+fault reproduces on MediaMTX's own player page).
+
+The AI is unaffected either way: it decodes on **NVDEC** via `nvv4l2decoder`, a
+different path entirely. If you need live video on the device itself, use that
+same hardware rather than a browser:
+
+```bash
+gst-launch-1.0 rtspsrc location=rtsp://127.0.0.1:8554/<edge_id>/<CAM>   protocols=tcp latency=0 ! rtph264depay ! h264parse ! nvv4l2decoder   ! nvvidconv ! autovideosink sync=false
+```
