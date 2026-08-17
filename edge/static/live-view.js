@@ -160,8 +160,14 @@
           resolve();
         }
 
+        // VIDEO ONLY. These tiles are muted (a wall of unmuted rooms is
+        // unusable), so negotiating audio bought nothing — and it was not free:
+        // once an audio track exists, the browser slaves video playback to the
+        // audio clock, and a camera whose RTP timestamps drift can stall the
+        // picture while the pipeline waits for sync. Never ask for a track you
+        // will not play. (Two-way audio, if it ever lands, is its own feature
+        // with its own negotiation, not a side effect of a wall tile.)
         peer.addTransceiver("video", { direction: "recvonly" });
-        peer.addTransceiver("audio", { direction: "recvonly" });
         peer.ontrack = function (e) { videoEl.srcObject = e.streams[0]; };
         peer.onconnectionstatechange = function () {
           if (peer.connectionState === "connected") return ok();

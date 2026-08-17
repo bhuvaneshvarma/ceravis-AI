@@ -110,8 +110,8 @@ check("the republish pulls LOOPBACK, never the camera again",
       yml.count("-i rtsp://127.0.0.1:") == len(cams))
 check("the republish copies the video (native quality, no re-encode)",
       yml.count("-c:v copy") == len(cams))
-check("readers get a queue deep enough for a 4K keyframe burst",
-      "writeQueueSize: 2048" in yml)
+check("no speculative reader-queue tuning is emitted",
+      "writeQueueSize" not in yml)
 shutil.rmtree(tmp, ignore_errors=True)
 mtx.audio_transcode_active = _real_audio
 
