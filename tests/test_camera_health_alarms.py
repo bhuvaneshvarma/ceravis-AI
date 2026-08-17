@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-Sanity check for the sub-stream guard — the alarm that would have caught a 4K
-camera quietly running on its 720p sub-stream.
+Sanity check for the two camera health alarms — the checks that catch a camera
+which is running perfectly and still useless.
 
-This is worth a test because of HOW the real bug hid. A camera pointed at the
-wrong RTSP path reports perfectly healthy on every field the system had:
-running, steady fps, zero reconnects, MediaMTX path ready, correct codec. The
-resolution was the only thing that told the truth, and nothing measured it — so
-the AI, the recordings and every live link ran at a fraction of the pixels for
-weeks without a single warning.
+Both exist because of HOW the real faults hid. A 4K camera pointed at its 720p
+sub-stream, and a camera streaming HEVC, each report healthy on every field the
+system had: running, steady fps, zero reconnects, MediaMTX path ready. Nothing
+measured the resolution, and the codec was only whispered into a log — so the
+AI ran on a fraction of the pixels and live view was a black screen, for weeks,
+without the status surface saying a word.
 
 Asserted here:
   * a sub-stream resolution raises a warning naming the camera and the size
   * a real main stream (1080p and up) does not
   * exactly 720p is caught — that is the common sub-stream size, not a
     borderline case to be generous about
-  * a camera with no frames yet (starting up, offline) is silent, never a
-    false alarm
+  * H.265 is flagged as unplayable, saying so about BOTH live view and the
+    recordings, and naming the fix
+  * a camera with no frames or no codec yet (starting up, offline) is silent,
+    never a false alarm
 
-    python tests/test_substream_guard.py
+    python tests/test_camera_health_alarms.py
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ sys.path.insert(0, str(EDGE))
 os.chdir(EDGE)
 
 from ingestion.camera_status import (                       # noqa: E402
-    SUBSTREAM_MAX_HEIGHT, substream_warning,
+    SUBSTREAM_MAX_HEIGHT, codec_warning, substream_warning,
 )
 
 FAILURES: list[str] = []
@@ -73,10 +75,24 @@ check("a half-reported size -> silent",
       substream_warning("X", 1280, 0) is None)
 
 # --------------------------------------------------------------------------
+print("\n4. the codec alarm: H.265 is unplayable everywhere that matters")
+w = codec_warning("LIVING_ROOM", "h265")
+check("h265 is flagged", w is not None)
+check("it says live view is black", "black" in (w or "").lower())
+check("it says the recordings are affected too",
+      "recording" in (w or "").lower())
+check("it names the fix", "H.264" in (w or ""))
+check("h264 is silent", codec_warning("LOUNGE", "h264") is None)
+check("an unknown codec is flagged rather than assumed fine",
+      codec_warning("X", "vp9") is not None)
+check("no codec reported yet -> silent, never a false alarm",
+      codec_warning("X", None) is None)
+
+# --------------------------------------------------------------------------
 print()
 if FAILURES:
     print(f"{len(FAILURES)} check(s) FAILED:")
     for f in FAILURES:
         print(f"  - {f}")
     sys.exit(1)
-print("All sub-stream guard checks passed.")
+print("All camera health alarm checks passed.")

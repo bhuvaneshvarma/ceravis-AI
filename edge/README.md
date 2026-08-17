@@ -100,14 +100,24 @@ failure this design exists to prevent, so the second pull is not coming back.
 ```bash
 curl -X POST http://<device>:8000/api/v1/cameras/LIVING_ROOM/stream-profile \
      -H 'Content-Type: application/json' \
-     -d '{"edgeId":"<this device>","max_height":1440}'
+     -d '{"edgeId":"<this device>","max_height":1440,"codec":"H264"}'
 ```
 
-It reads the camera's supported resolutions, clamps into them, writes **only**
-the resolution (bitrate, frame rate and GOP are preserved), then reads the
-encoder back and reports `before / requested / after / accepted`. A camera that
-silently ignores or clamps the write comes back `accepted: false` rather than as
-a false success. Nothing runs at discovery — probes are read-only.
+It reads the camera's supported resolutions and codecs, clamps into them, writes
+**only** what you named (bitrate, frame rate and GOP are preserved), then reads
+the encoder back and reports `before / requested / after / accepted`. A camera
+that silently ignores or clamps the write comes back `accepted: false` rather
+than as a false success. Nothing runs at discovery — probes are read-only.
+
+`codec` is there because **H.265 is a product-level fault, not a preference**: no
+browser decodes HEVC over WebRTC, so live view is a black screen on the /ui
+pages, the public links and the cloud alike — and recordings are remuxed as-is,
+so the clips are unplayable too. Worse, ONVIF will not admit it: the ver10
+encoder schema has no H.265 element, so a camera reports `H264` while sending
+HEVC. That is why the response also carries **`observed_codec`**, read off the
+live stream after the change — `after.codec` is the camera's claim,
+`observed_codec` is the truth — and why `/system/status` alarms on any camera
+not observed to be H.264.
 
 Because the bitrate is held, a lower cap spends the same bits on fewer pixels:
 sharper per pixel, cheaper for every decoder, smaller on disk. What it costs is

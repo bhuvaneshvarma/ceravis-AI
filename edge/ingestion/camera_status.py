@@ -72,3 +72,20 @@ def substream_warning(camera_id: str, width: int, height: int) -> str | None:
         return None
     return (f"{camera_id}: streaming only {width}x{height} — check its rtsp_url "
             f"points at the camera's MAIN profile, not a sub-stream")
+
+
+def codec_warning(camera_id: str, codec: str | None) -> str | None:
+    """The message for a camera whose codec nothing downstream can play, or None.
+
+    H.264 is not a preference here, it is a requirement. No browser decodes HEVC
+    over WebRTC, so live view is a BLACK SCREEN — on the /ui pages, the public
+    links and the cloud alike. Recordings are remuxed as-is, so the clips are
+    unplayable too. A camera can also be set to HEVC without ONVIF admitting it:
+    the ver10 encoder schema has no H.265 element, so the camera reports "H264"
+    while sending HEVC. That is why this checks the OBSERVED codec off the live
+    stream rather than anything the camera claims about itself."""
+    if not codec or codec.lower() == "h264":
+        return None
+    return (f"{camera_id}: streaming {codec.upper()} — no browser can play it, so "
+            f"live view is black and its recordings are unplayable. Set this "
+            f"camera's main profile to H.264.")

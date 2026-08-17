@@ -19,7 +19,7 @@ from fastapi.responses import RedirectResponse
 from common import clock
 from config.settings import settings
 from configuration.camera_config import CameraConfig
-from ingestion.camera_status import substream_warning
+from ingestion.camera_status import codec_warning, substream_warning
 
 
 router = APIRouter()
@@ -193,10 +193,11 @@ def system_status(request: Request):
     for c in cameras:
         if not c["enabled"]:
             continue
-        warning = substream_warning(c["camera_id"], c.get("width") or 0,
-                                    c.get("height") or 0)
-        if warning:
-            problems.append(warning)
+        for warning in (substream_warning(c["camera_id"], c.get("width") or 0,
+                                          c.get("height") or 0),
+                        codec_warning(c["camera_id"], c.get("codec"))):
+            if warning:
+                problems.append(warning)
     for c in recording["cameras"]:
         if not c.get("writing_ok", True):
             problems.append(f"{c['camera_id']}: recording but no segments landing")

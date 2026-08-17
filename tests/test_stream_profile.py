@@ -54,9 +54,11 @@ class FakeCamera:
     models the real failure mode: the Set succeeds but nothing changes."""
 
     def __init__(self, options, current, honours_write=True,
-                 bitrate=2560, fps=20, gov=25):
+                 bitrate=2560, fps=20, gov=25, codec="H264", codecs=("H264",)):
         self.options = options
         self.current = current
+        self.codec = codec              # what the camera CLAIMS over ONVIF
+        self.codecs = codecs            # what ver10 says it will accept
         self.honours_write = honours_write
         self.bitrate, self.fps, self.gov = bitrate, fps, gov
         self.writes: list[tuple[int, int]] = []
@@ -64,14 +66,18 @@ class FakeCamera:
 
     def __call__(self, url, body, username="", password="", timeout=None):
         if "GetVideoEncoderConfigurationOptions" in body:
+            # ver10 nests ResolutionsAvailable UNDER each codec element, and has
+            # no H265 element at all — modelled faithfully, because that nesting
+            # is what a flat search gets wrong.
             res = "".join(f"<ResolutionsAvailable><Width>{w}</Width>"
                           f"<Height>{h}</Height></ResolutionsAvailable>"
                           for w, h in self.options)
-            return ElementTree.fromstring(f"<Body><Options>{res}</Options></Body>")
+            secs = "".join(f"<{c}>{res}</{c}>" for c in self.codecs)
+            return ElementTree.fromstring(f"<Body><Options>{secs}</Options></Body>")
         if "GetVideoEncoderConfiguration" in body:
             w, h = self.current
             return ElementTree.fromstring(f"""<Body><Configuration token="enc0">
-                <Name>mainStream</Name><UseCount>2</UseCount><Encoding>H264</Encoding>
+                <Name>mainStream</Name><UseCount>2</UseCount><Encoding>{self.codec}</Encoding>
                 <Resolution><Width>{w}</Width><Height>{h}</Height></Resolution>
                 <Quality>4</Quality>
                 <RateControl><FrameRateLimit>{self.fps}</FrameRateLimit>
@@ -89,6 +95,7 @@ class FakeCamera:
             self.writes.append(want)
             if self.honours_write:
                 self.current = want
+                self.codec = (root.findtext(".//Encoding") or self.codec).upper()
             return ElementTree.fromstring("<Body><ok/></Body>")
         raise AssertionError("unexpected SOAP call: " + body[:60])
 
@@ -107,10 +114,10 @@ C220 = [(2560, 1440), (1920, 1080)]
 # --------------------------------------------------------------------------
 print("\n1. C260 (4K main) capped to 1440")
 fake = FakeCamera(C260, (3840, 2160))
-r = camera(fake).cap_stream_height("enc0", 1440)
-check("picks the largest option at or below the cap", r["requested"] == "2560x1440")
-check("reports what it was", r["before"] == "3840x2160")
-check("read-back confirms the camera took it", r["after"] == "2560x1440")
+r = camera(fake).shape_stream("enc0", max_height=1440)
+check("picks the largest option at or below the cap", r["requested"]["resolution"] == "2560x1440")
+check("reports what it was", r["before"]["resolution"] == "3840x2160")
+check("read-back confirms the camera took it", r["after"]["resolution"] == "2560x1440")
 check("reports changed + accepted", r["changed"] and r["accepted"])
 check("exactly one write was issued", fake.writes == [(2560, 1440)])
 
@@ -127,37 +134,74 @@ check("the new resolution is what was sent",
 # --------------------------------------------------------------------------
 print("\n3. C220 is ALREADY 1440 -> nothing is written to the camera")
 fake = FakeCamera(C220, (2560, 1440))
-r = camera(fake).cap_stream_height("enc0", 1440)
+r = camera(fake).shape_stream("enc0", max_height=1440)
 check("no SOAP write was issued at all", fake.writes == [])
 check("reported as unchanged", r["changed"] is False)
 check("still reported as accepted (it is already compliant)", r["accepted"])
-check("before and after agree", r["before"] == r["after"] == "2560x1440")
+check("before and after agree",
+      r["before"]["resolution"] == r["after"]["resolution"] == "2560x1440")
 
 # --------------------------------------------------------------------------
 print("\n4. a camera that IGNORES the write is reported honestly")
 fake = FakeCamera(C260, (3840, 2160), honours_write=False)
-r = camera(fake).cap_stream_height("enc0", 1440)
+r = camera(fake).shape_stream("enc0", max_height=1440)
 check("the write was attempted", fake.writes == [(2560, 1440)])
-check("read-back shows the camera did NOT take it", r["after"] == "3840x2160")
+check("read-back shows the camera did NOT take it", r["after"]["resolution"] == "3840x2160")
 check("accepted is False - no false success", r["accepted"] is False)
 check("changed is False, because nothing actually changed", r["changed"] is False)
 
 # --------------------------------------------------------------------------
 print("\n5. a cap below everything the camera offers")
 fake = FakeCamera(C220, (2560, 1440))
-r = camera(fake).cap_stream_height("enc0", 240)
-check("falls to the camera's smallest option", r["requested"] == "1920x1080")
-check("and says what the camera can actually do", r["options"] == ["2560x1440", "1920x1080"])
+r = camera(fake).shape_stream("enc0", max_height=240)
+check("falls to the camera's smallest option", r["requested"]["resolution"] == "1920x1080")
+check("and says what the camera can actually do", r["options"]["H264"] == ["2560x1440", "1920x1080"])
 
 # --------------------------------------------------------------------------
 print("\n6. a camera that reports no resolutions at all raises, never guesses")
 fake = FakeCamera([], (1920, 1080))
 try:
-    camera(fake).cap_stream_height("enc0", 1440)
+    camera(fake).shape_stream("enc0", max_height=1440)
     check("raises OnvifError", False)
 except OnvifError:
     check("raises OnvifError", True)
     check("and wrote nothing", fake.writes == [])
+
+# --------------------------------------------------------------------------
+print("\n7. the real C260: main profile switched to H.264")
+# The camera CLAIMS H264 over ONVIF while actually streaming HEVC — the ver10
+# schema has no H265 element, so this is the only thing it can say.
+fake = FakeCamera(C260, (2560, 1440), codec="H264")
+r = camera(fake).shape_stream("enc0", codec="H264")
+check("already claiming H264 at this size -> no write attempted", fake.writes == [])
+check("reported unchanged", r["changed"] is False)
+
+fake = FakeCamera(C260, (3840, 2160), codec="H264")
+r = camera(fake).shape_stream("enc0", max_height=1440, codec="H264")
+check("height and codec can be shaped in one call",
+      r["requested"] == {"resolution": "2560x1440", "codec": "H264"})
+check("the write carries the codec", ">H264</Encoding>" in fake.last_set)
+check("accepted", r["accepted"])
+
+# --------------------------------------------------------------------------
+print("\n8. a codec the camera does not offer is refused, not attempted")
+fake = FakeCamera(C260, (3840, 2160), codec="H264", codecs=("H264",))
+try:
+    camera(fake).shape_stream("enc0", codec="H265")
+    check("raises OnvifError", False)
+except OnvifError as exc:
+    check("raises OnvifError", True)
+    check("the message names what the camera DOES offer", "H264" in str(exc))
+    check("and nothing was written", fake.writes == [])
+
+# --------------------------------------------------------------------------
+print("\n9. resolutions are read per codec, not flattened across sections")
+# A camera offering JPEG stills at sizes its H.264 encoder cannot do: a flat
+# ".//ResolutionsAvailable" search would mix them and could pick an invalid one.
+fake = FakeCamera(C220, (2560, 1440), codecs=("H264", "JPEG"))
+opts = camera(fake).encoder_options("enc0")
+check("options are keyed by codec", set(opts) == {"H264", "JPEG"})
+check("H264 keeps its own list", opts["H264"] == [(2560, 1440), (1920, 1080)])
 
 # --------------------------------------------------------------------------
 print()
