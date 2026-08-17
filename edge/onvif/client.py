@@ -218,6 +218,116 @@ class OnvifCamera:
             raise OnvifError("camera returned no stream URI")
         return with_credentials(uri, self.username, self.password)
 
+    # ---- stream shaping (explicit, never automatic) ----------------------
+    def encoder_options(self, encoder_token: str) -> list[tuple[int, int]]:
+        """Resolutions this encoder actually supports, largest first. Reading
+        BEFORE writing is the whole point: a camera silently clamps or rejects an
+        out-of-range value, so guessing produces a config nobody can explain."""
+        body = self._call(self._media_url, f"""
+<GetVideoEncoderConfigurationOptions xmlns="{_MEDIA_NS}">
+  <ConfigurationToken>{encoder_token}</ConfigurationToken>
+</GetVideoEncoderConfigurationOptions>""")
+        out = []
+        for r in body.findall(".//ResolutionsAvailable"):
+            w = int(r.findtext("Width") or 0)
+            h = int(r.findtext("Height") or 0)
+            if w > 0 and h > 0:
+                out.append((w, h))
+        return sorted(set(out), key=lambda wh: wh[0] * wh[1], reverse=True)
+
+    def _encoder_config(self, encoder_token: str):
+        return self._call(self._media_url, f"""
+<GetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
+  <ConfigurationToken>{encoder_token}</ConfigurationToken>
+</GetVideoEncoderConfiguration>""").find(".//Configuration")
+
+    @staticmethod
+    def _config_size(cfg) -> tuple[int, int]:
+        res = cfg.find("Resolution") if cfg is not None else None
+        if res is None:
+            return 0, 0
+        return int(res.findtext("Width") or 0), int(res.findtext("Height") or 0)
+
+    def cap_stream_height(self, encoder_token: str, max_height: int) -> dict:
+        """Cap ONE encoder to the largest supported resolution at or below
+        `max_height`, and report exactly what happened.
+
+        Deliberately a MINIMAL mutation: only <Resolution> changes. Encoding,
+        Quality, RateControl (bitrate + frame rate) and the H.264 GOP block are
+        read and written back byte-for-byte as the camera reported them. Holding
+        the bitrate while lowering the resolution is the point — the same bits
+        now cover fewer pixels, so the picture gets *better* per pixel while
+        costing every decoder less work.
+
+        Always reads back afterwards, because "the write didn't throw" is not
+        evidence the camera accepted it — the previous generation of this code
+        inferred success that way and was wrong on one of the two bench models.
+
+        Returns {before, requested, after, changed, accepted, options}. Raises
+        OnvifError only if the camera cannot be interrogated at all."""
+        self._services()
+        options = self.encoder_options(encoder_token)
+        if not options:
+            raise OnvifError("camera reports no selectable resolutions")
+        target = next(((w, h) for w, h in options if h <= max_height), None)
+        if target is None:
+            # Everything the camera offers is taller than the cap — the smallest
+            # it has is the closest honest answer, and we say so rather than fail.
+            target = options[-1]
+
+        cfg = self._encoder_config(encoder_token)
+        if cfg is None:
+            raise OnvifError("camera returned no encoder configuration")
+        before = self._config_size(cfg)
+        result = {"before": f"{before[0]}x{before[1]}",
+                  "requested": f"{target[0]}x{target[1]}",
+                  "options": [f"{w}x{h}" for w, h in options]}
+        if before == target:
+            return {**result, "after": result["before"], "changed": False,
+                    "accepted": True}
+
+        rate = cfg.find("RateControl")
+        h264 = cfg.find("H264")
+        rate_block = ""
+        if rate is not None:
+            rate_block = f"""
+    <RateControl xmlns="{_SCHEMA_NS}">
+      <FrameRateLimit>{rate.findtext("FrameRateLimit") or 0}</FrameRateLimit>
+      <EncodingInterval>{rate.findtext("EncodingInterval") or 1}</EncodingInterval>
+      <BitrateLimit>{rate.findtext("BitrateLimit") or 0}</BitrateLimit>
+    </RateControl>"""
+        h264_block = ""
+        if h264 is not None:
+            h264_block = f"""
+    <H264 xmlns="{_SCHEMA_NS}">
+      <GovLength>{h264.findtext("GovLength") or 25}</GovLength>
+      <H264Profile>{h264.findtext("H264Profile") or "Main"}</H264Profile>
+    </H264>"""
+        # Element order follows the ONVIF VideoEncoderConfiguration schema.
+        self._call(self._media_url, f"""
+<SetVideoEncoderConfiguration xmlns="{_MEDIA_NS}">
+  <Configuration token="{encoder_token}">
+    <Name xmlns="{_SCHEMA_NS}">{cfg.findtext("Name") or "main"}</Name>
+    <UseCount xmlns="{_SCHEMA_NS}">{cfg.findtext("UseCount") or 1}</UseCount>
+    <Encoding xmlns="{_SCHEMA_NS}">{cfg.findtext("Encoding") or "H264"}</Encoding>
+    <Resolution xmlns="{_SCHEMA_NS}">
+      <Width>{target[0]}</Width><Height>{target[1]}</Height>
+    </Resolution>
+    <Quality xmlns="{_SCHEMA_NS}">{cfg.findtext("Quality") or 4}</Quality>{rate_block}{h264_block}
+    <SessionTimeout xmlns="{_SCHEMA_NS}">{cfg.findtext("SessionTimeout") or "PT60S"}</SessionTimeout>
+  </Configuration>
+  <ForcePersistence>true</ForcePersistence>
+</SetVideoEncoderConfiguration>""")
+
+        after = self._config_size(self._encoder_config(encoder_token))
+        accepted = after == target
+        logger.info("encoder %s: %s -> %s (requested %s, camera %s)",
+                    encoder_token, result["before"], f"{after[0]}x{after[1]}",
+                    result["requested"],
+                    "accepted" if accepted else "IGNORED OR CLAMPED")
+        return {**result, "after": f"{after[0]}x{after[1]}",
+                "changed": after != before, "accepted": accepted}
+
     # ---- PTZ -------------------------------------------------------------
     def ptz_move(self, profile_token: str,
                  pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0) -> None:

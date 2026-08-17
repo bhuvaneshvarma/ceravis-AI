@@ -26,14 +26,18 @@ class Settings(BaseSettings):
     # setting here is tuned purely for getting the freshest possible frame to
     # YOLO. Capture rate is decoupled from inference: the frame buffer keeps only
     # the latest frame, so each consumer (detection/pose/reid) samples the
-    # newest frame at ITS own rate. 0 = UNCAPPED (default): drain the decoder at
-    # the camera's native rate and publish every frame, so movement stays smooth
-    # and consumers always get the freshest frame. Decimating capture below
-    # native never lowers latency (the decode backend already yields only the
-    # newest frame) — it just makes motion choppy. Set a positive value ONLY as
-    # a soft ceiling on weak / many-camera boxes. Decode is on NVDEC (dedicated
-    # hardware), so uncapped adds no GPU-compute cost.
-    target_camera_fps: float = 0.0
+    # newest frame at ITS own rate. 0 = uncapped (drain at the camera's native
+    # rate); any positive value is a ceiling on how often we decode.
+    #
+    # 15 fps: a deliberate ceiling, NOT a limitation. Nothing samples this buffer
+    # faster than pose (12 fps); detection and tracking take 10, ReID 3, rules 1.
+    # Uncapped, the reader decoded the camera's full native rate (~20-25 fps) and
+    # colour-converted every frame to BGR — at 4K that is a 25 MB frame, so ~500
+    # MB/s per camera of NVDEC + memory-bus traffic, HALF of which was overwritten
+    # unread. 15 leaves every consumer a frame at most 66 ms old (well inside one
+    # of its own intervals) and hands the saved bandwidth back to inference.
+    # Raise it only if a consumer above is ever tuned past 15 fps.
+    target_camera_fps: float = 15.0
     read_timeout_secs: float = 3.0
     reconnect_delay_secs: float = 5.0
     max_reconnect_delay_secs: float = 30.0
@@ -64,6 +68,20 @@ class Settings(BaseSettings):
     # is NOT tunneled by frp — it just has to be reachable from the home NAT.
     mediamtx_webrtc_udp_port: int = 8189
     mediamtx_cert_dir: str = "data/certs"  # server.crt/server.key (installer generates)
+    # Optional height cap for a camera's MAIN encoder, applied ONLY when you ask
+    # for it (POST /api/v1/cameras/{id}/stream-profile) — never at discovery, and
+    # never on its own. 0 leaves every camera exactly as its owner set it.
+    #
+    # Read this before using it: there is ONE stream per camera, so this ONE
+    # number moves ALL FOUR consumers together — the public live links, the /ui
+    # tiles, the AI's input and the recordings. It cannot be applied to some and
+    # not others; that would need a second camera connection, which is what
+    # destabilised the WiFi and the AI in the first place. The bitrate is left
+    # untouched, so a lower cap spends the same bits on fewer pixels: sharper per
+    # pixel, cheaper for every decoder, smaller on disk. What it costs is reach —
+    # the AI resolves a distant person from fewer pixels, so ReID and pose on
+    # someone across a large room degrade first. 1440 is the sane starting point.
+    camera_stream_max_height: int = 0
     # Optional STUN server so MediaMTX advertises the device's PUBLIC address in
     # WebRTC ICE — needed for remote (off-LAN) live view via the cloud/ tunnel
     # (Option B). Empty = LAN-only (default: remote access OFF, zero change). A

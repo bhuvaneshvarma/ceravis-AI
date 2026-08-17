@@ -13,6 +13,7 @@ from api import ptz_control
 from api.control_auth import canon, check_edge_id, field
 from common import clock
 from common.rtsp import normalize_rtsp_url
+from config.settings import settings
 from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
@@ -477,6 +478,82 @@ def ptz(camera_id: str, body: dict):
     except OnvifError as exc:
         raise HTTPException(502, f"PTZ failed: {exc}")
     return {"status": "stopped" if halt else "moving", "camera_id": camera_id}
+
+
+@router.post("/{camera_id}/stream-profile")
+def set_stream_profile(camera_id: str, body: dict | None = None):
+    """Cap this camera's MAIN encoder to a height, on request only.
+
+    Body: { "edgeId": "<this device>", "max_height": 1440 }
+          (omit max_height to use CAMERA_STREAM_MAX_HEIGHT)
+
+    Authenticated by edge_id like every other control endpoint (control_auth):
+    this rewrites configuration on hardware the customer owns, so it is held to
+    the same bar as PTZ from the cloud, not to the looser installer-pad bar.
+
+    Read this before calling it. There is ONE stream per camera, so this ONE
+    change moves ALL FOUR consumers together — the public live links, the /ui
+    tiles, the AI's input and the recordings. There is no way to cap some and
+    not others without opening a second connection to the camera, which is
+    exactly what was starving the AI and the WiFi before.
+
+    Everything except the resolution is preserved byte-for-byte, bitrate
+    included — so the same bits cover fewer pixels and the picture gets sharper
+    per pixel while every decoder does less work.
+
+    Nothing is inferred: the camera's supported resolutions are read first, the
+    request is clamped into them, and the encoder is READ BACK afterwards. The
+    response reports before / requested / after and whether the camera actually
+    accepted it, because a write that doesn't raise is not proof that it took.
+    On a real change the live path is re-synced so MediaMTX picks up the new
+    resolution cleanly instead of riding a stale stream description."""
+    body = body or {}
+    check_edge_id(field(body, "edgeId", "edge_id"))
+    cam = camera_config.get_by_id(camera_id)
+    if cam is None:
+        raise HTTPException(404, "Camera not found")
+    if not cam.onvif_xaddr:
+        raise HTTPException(400, "Camera has no ONVIF endpoint (added manually — "
+                                 "re-add it via discovery to shape its stream)")
+    max_height = int(field(body, "max_height", "maxHeight")
+                     or settings.camera_stream_max_height or 0)
+    if max_height <= 0:
+        raise HTTPException(400, "max_height required (or set "
+                                 "CAMERA_STREAM_MAX_HEIGHT in jetson.env)")
+
+    from onvif.client import OnvifCamera
+    from onvif.soap import OnvifError
+    onvif_cam = OnvifCamera(cam.onvif_xaddr, cam.onvif_username or "",
+                            cam.onvif_password or "")
+    try:
+        # The profile whose stream we actually consume, not "whichever is
+        # biggest" — after a cap those can differ.
+        token = cam.onvif_profile_token
+        profiles = onvif_cam.profiles()
+        profile = next((p for p in profiles if p.token == token), None)
+        if profile is None:
+            profile = max(profiles, key=lambda p: p.width * p.height, default=None)
+        if profile is None:
+            raise OnvifError("camera exposes no media profiles")
+        result = onvif_cam.cap_stream_height(profile.encoder_token, max_height)
+    except OnvifError as exc:
+        raise HTTPException(502, f"stream profile change failed: {exc}")
+
+    if result["changed"]:
+        # The camera restarts its encoder; drop and re-add the live path so every
+        # consumer renegotiates against the new resolution.
+        try:
+            mediamtx_client.sync_live_path(cam)
+        except MediaMTXError as exc:
+            logger.warning("live path re-sync after profile change failed: %s", exc)
+
+    logger.info("stream profile %s: %s", camera_id, result)
+    call_log.record("event", result["accepted"],
+                    label=f"{camera_id} main stream {result['before']} -> "
+                          f"{result['after']} (requested {result['requested']})",
+                    error=None if result["accepted"]
+                    else "camera did not accept the requested resolution")
+    return {"camera_id": camera_id, **result}
 
 
 @router.post("/probe")

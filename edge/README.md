@@ -75,3 +75,48 @@ the frp tunnel), **video is UDP** and travels peer-to-peer. Public link:
 Set `EDGE_ID`, `DEVICE_STREAM_BASE=https://<domain>` and `MEDIAMTX_STUN_SERVER`
 in `infra/env/jetson.env`, then re-sync cameras. Blank `EDGE_ID`/`DEVICE_STREAM_BASE`
 = LAN-direct: links hit MediaMTX's WebRTC port on the device directly.
+
+## One stream per camera — and the one knob that resizes it
+
+MediaMTX dials each camera **once**, on its main profile, and fans that single
+compressed stream out to four consumers:
+
+| consumer | how it reads | why it wants what it wants |
+|---|---|---|
+| AI pipeline | loopback RTSP `127.0.0.1:8554` | resolution is *reach* — a distant person must survive being cropped for ReID and pose |
+| public live links | WebRTC/WHEP through the cloud tunnel | native quality, untouched |
+| `/ui` pages | the **same** WebRTC stream (`static/live-view.js`) | whatever the viewer's browser can decode |
+| recorder | MediaMTX writes the packets to disk | native quality, remux only |
+
+They share one stream, so **they share one resolution**. There is no way to give
+the recorder 1440p while the AI keeps 4K without a second connection to the
+camera — and a second pull on a WiFi camera takes bandwidth straight from the
+first, which starves the AI reader and destabilises live view. That is the
+failure this design exists to prevent, so the second pull is not coming back.
+
+`CAMERA_STREAM_MAX_HEIGHT` (default `0` = never touch a camera) is therefore a
+**whole-camera** setting, applied only when you ask for it:
+
+```bash
+curl -X POST http://<device>:8000/api/v1/cameras/LIVING_ROOM/stream-profile \
+     -H 'Content-Type: application/json' \
+     -d '{"edgeId":"<this device>","max_height":1440}'
+```
+
+It reads the camera's supported resolutions, clamps into them, writes **only**
+the resolution (bitrate, frame rate and GOP are preserved), then reads the
+encoder back and reports `before / requested / after / accepted`. A camera that
+silently ignores or clamps the write comes back `accepted: false` rather than as
+a false success. Nothing runs at discovery — probes are read-only.
+
+Because the bitrate is held, a lower cap spends the same bits on fewer pixels:
+sharper per pixel, cheaper for every decoder, smaller on disk. What it costs is
+reach, and the AI feels that first.
+
+### Viewing on the device itself
+
+Don't. Chrome on JetPack has no hardware video decode (NVIDIA ships no VA-API),
+so the Jetson's own browser software-decodes H.264 on the CPU — competing with
+YOLO for the cores it needs, and stuttering at anything near native resolution.
+The AI is unaffected by this: it decodes on **NVDEC** via `nvv4l2decoder`, a
+different path entirely. Watch the cameras from a phone, a laptop or the cloud.
