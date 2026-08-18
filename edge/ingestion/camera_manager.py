@@ -144,8 +144,11 @@ class CameraManager:
 
         source_url = None
         if self._via_mediamtx:
-            from livestream.mediamtx_client import local_rtsp_url
-            source_url = local_rtsp_url(camera.camera_id)
+            # The AI's own loopback path. Identical to the live path on almost
+            # every camera; a separate '<cam>-ai' only where the biggest stream
+            # is unplayable in a browser and viewers had to take a smaller one.
+            from livestream.mediamtx_client import ai_local_rtsp_url
+            source_url = ai_local_rtsp_url(camera)
 
         try:
             reader = RTSPReader(camera=camera, frame_buffer=self._frame_buffer,

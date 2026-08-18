@@ -35,7 +35,7 @@ from datetime import datetime
 
 from common import clock
 from config.settings import settings
-from livestream.mediamtx_client import local_rtsp_url, record_path_name
+from livestream.mediamtx_client import ai_local_rtsp_url, record_path_name
 from recording import index as recording_index
 
 
@@ -93,7 +93,7 @@ def live_snapshot(camera, frame_buffer, *, mediamtx_active: bool,
     # straight off the backbone. Loopback when MediaMTX is up (one camera pull
     # shared with the AI + WebRTC); the camera directly on a dev box without it.
     from common.rtsp import grab_one_frame
-    source = local_rtsp_url(camera.camera_id) if mediamtx_active else \
+    source = ai_local_rtsp_url(camera) if mediamtx_active else \
         (camera.rtsp_url or "")
     grabbed = grab_one_frame(source, timeout_secs=settings.read_timeout_secs + 5)
     if grabbed is None:

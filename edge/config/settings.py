@@ -68,18 +68,20 @@ class Settings(BaseSettings):
     # is NOT tunneled by frp — it just has to be reachable from the home NAT.
     mediamtx_webrtc_udp_port: int = 8189
     mediamtx_cert_dir: str = "data/certs"  # server.crt/server.key (installer generates)
-    # Which profile a camera gets consumed on is decided ONCE, at registration:
-    # the wizard picks the largest H.264 profile at or below this height and
-    # stores its RTSP URL. Nothing on the camera is ever rewritten — we choose
-    # among what it already offers.
+    # The resolution VIEWERS get, decided ONCE at registration: the wizard picks
+    # the H.264 profile NEAREST this height and stores its RTSP URL. Nothing on
+    # the camera is ever rewritten — we choose among what it already offers.
     #
-    # It is a single number because there is a single stream: the AI, the public
-    # live links, the /ui tiles and the recorder all read it. More pixels is more
-    # reach for ReID and pose at distance; it also costs camera WiFi, decode on
-    # every viewer, and disk. H.264 is not negotiable — no browser decodes HEVC
-    # over WebRTC, so an H.265 profile is a black screen everywhere and its
-    # recordings are unplayable.
-    camera_preferred_height: int = 1440
+    # "Nearest", not "largest at or below": a camera offering 1440p and 360p,
+    # asked for 1080p, must give 1440p. The at-or-below rule hands back 360p and
+    # silently destroys the picture.
+    #
+    # H.264 is not negotiable for this stream — it feeds the public live links,
+    # the /ui tiles and the recordings, and no browser decodes HEVC over WebRTC.
+    # Where a camera's BIGGEST stream is HEVC, the AI separately reads that one
+    # (Camera.ai_rtsp_url) so tracking keeps its reach; see
+    # onvif.client.recommend_streams for when that second pull happens at all.
+    camera_preferred_height: int = 1080
     # Optional STUN server so MediaMTX advertises the device's PUBLIC address in
     # WebRTC ICE — needed for remote (off-LAN) live view via the cloud/ tunnel
     # (Option B). Empty = LAN-only (default: remote access OFF, zero change). A

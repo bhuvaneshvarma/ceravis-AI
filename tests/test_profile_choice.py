@@ -15,9 +15,12 @@ Both real failures are covered:
   * the C260's 4K main being H.265 — a black screen in every browser, and
     recordings that cannot be played back at all
 
-The ranking under test: H.264 as a hard requirement, then the largest
-resolution at or below the preferred height, then (if all are taller) the
-smallest of them.
+The ranking under test: H.264 as a hard requirement, then the resolution
+NEAREST the preferred height. "Nearest" and not "largest at or below" is
+load-bearing: asked for 1080p, a camera offering 1440p and 360p must give
+1440p — the at-or-below rule hands back 360p and destroys the picture.
+A tie goes to the LARGER profile, because that is the choice that keeps the
+camera on ONE pull (see tests/test_stream_roles.py).
 
 No camera, no network — Profile records only.
 
@@ -94,9 +97,13 @@ check("does NOT fall back to the sub-stream (the original bug)",
 
 # --------------------------------------------------------------------------
 print("\n5. a lower target still picks the largest that fits")
+# 1440p and 720p are EQUIDISTANT from 1080. The tie goes to the larger, and
+# that is not arbitrary: the AI always wants the biggest stream, so choosing it
+# for viewers too means one profile serves both and the camera is dialled ONCE.
+# Preferring the smaller here would force a second pull for no benefit.
 best, _ = recommend_profile(C260_H264, preferred_height=1080)
-check("1080 target -> the 720p profile (nothing between)",
-      (best.width, best.height) == (1280, 720))
+check("an exact tie goes to the larger, which keeps the camera on one pull",
+      (best.width, best.height) == (2560, 1440))
 best, _ = recommend_profile(C260_H264, preferred_height=4000)
 check("a target above everything -> the biggest H.264",
       (best.width, best.height) == (2560, 1440))
@@ -106,7 +113,7 @@ print("\n6. every H.264 profile is above the target -> the smallest of them")
 tall = [prof("a", "H264", 3840, 2160), prof("b", "H264", 2560, 1440)]
 best, why = recommend_profile(tall, preferred_height=720)
 check("takes 1440p, not 4K", (best.width, best.height) == (2560, 1440))
-check("explains that nothing fit", "smallest" in why)
+check("explains that nothing smaller was usable", "nothing smaller" in why)
 
 # --------------------------------------------------------------------------
 print("\n7. no H.264 anywhere -> pick the best available and say it is broken")

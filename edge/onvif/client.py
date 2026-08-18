@@ -305,7 +305,7 @@ class OnvifCamera:
 </AbsoluteMove>""")
 
 
-# ---- choosing which profile to consume ----------------------------------
+# ---- choosing which profiles to consume ---------------------------------
 
 def usable_profiles(profiles: list[Profile]) -> list[Profile]:
     """The profiles that can carry live video, largest first. JPEG profiles are
@@ -315,27 +315,24 @@ def usable_profiles(profiles: list[Profile]) -> list[Profile]:
 
 
 def recommend_profile(profiles: list[Profile],
-                      preferred_height: int = 1440) -> tuple[Profile | None, str]:
-    """Pick the profile this camera should be consumed on, and say why.
+                      preferred_height: int = 1080) -> tuple[Profile | None, str]:
+    """Pick the profile every VIEWER consumes — live links, /ui tiles, recording.
 
-    Ranked by what actually breaks the product, in order:
+    Two rules, in order:
 
-    1. **H.264, as a hard requirement.** No browser decodes HEVC over WebRTC, so
-       an H.265 profile is a black screen on the /ui pages, the public links and
-       the cloud alike — and recordings are remuxed as-is, so its clips are
+    1. **H.264, non-negotiable.** No browser decodes HEVC over WebRTC, so an
+       H.265 profile is a black screen on the /ui pages, the public links and the
+       cloud alike — and recordings are remuxed as-is, so its clips are
        unplayable too. A smaller H.264 profile beats a bigger unplayable one
-       every time. (These cameras hide this: the ONVIF ver10 encoder schema has
-       no H.265 element, so the reported `encoding` can read H264 while the
-       stream is HEVC — so this ranks on Profile.codec, which prefers the codec
-       VERIFIED off the wire over anything the camera claims.)
-    2. **The largest resolution at or below `preferred_height`.** More pixels is
-       more reach for ReID and pose, but the whole system shares this ONE stream,
-       so it also costs camera WiFi, decode and disk on every consumer.
-    3. If every H.264 profile is taller than that, the smallest of them — closest
-       to the target from above rather than the biggest thing on offer.
+       every time. (Cameras hide this: the ONVIF ver10 encoder schema has no
+       H.265 element, so `encoding` reads H264 on an HEVC stream. Profile.codec
+       prefers the codec VERIFIED off the wire, which is what this ranks on.)
+    2. **NEAREST to `preferred_height`**, not "largest at or below it". The
+       difference is not academic: a camera offering 1440p and 360p, asked for
+       1080p, must give 1440p — "largest at or below" hands back 360p and quietly
+       destroys the picture. Ties go to the larger profile, which has more reach.
 
-    Returns (profile, reason). The profile is None only when the camera exposes
-    nothing but JPEG."""
+    Returns (profile, reason). None only when nothing but JPEG is on offer."""
     candidates = usable_profiles(profiles)
     if not candidates:
         return None, "camera exposes no video profile"
@@ -346,15 +343,54 @@ def recommend_profile(profiles: list[Profile],
         return best, (f"no H.264 profile — {best.codec or 'this codec'} cannot "
                       f"play in a browser, so live view and recordings will not work")
 
-    at_or_below = [p for p in h264 if p.height <= preferred_height]
-    if at_or_below:
-        best = at_or_below[0]
-        note = ("the target" if best.height == preferred_height
-                else f"the closest below {preferred_height}p")
-        return best, f"{best.width}x{best.height} H.264 — {note}"
-    best = h264[-1]
-    return best, (f"{best.width}x{best.height} H.264 — every H.264 profile is "
-                  f"above {preferred_height}p, so this is the smallest")
+    # Nearest to target; on a tie the bigger one wins (-area sorts larger first).
+    best = min(h264, key=lambda p: (abs(p.height - preferred_height),
+                                    -(p.width * p.height)))
+    if best.height == preferred_height:
+        note = "the target exactly"
+    elif best.height > preferred_height:
+        note = f"the closest to {preferred_height}p (nothing smaller is usable)"
+    else:
+        note = f"the closest to {preferred_height}p"
+    return best, f"{best.width}x{best.height} H.264 — {note}"
+
+
+def recommend_streams(profiles: list[Profile], view_height: int = 1080
+                      ) -> tuple[Profile | None, Profile | None, str]:
+    """Pick BOTH roles a camera plays, and say whether they need separate pulls.
+
+    The two consumers genuinely want different things, and on some cameras no
+    single profile satisfies both:
+
+      * VIEWERS (live links, /ui tiles, recording) need **H.264** — everything
+        downstream is a browser or a remux into a browser-played container.
+      * The **AI** wants the most pixels it can get, and does not care about the
+        codec at all: it decodes on NVDEC, which handles HEVC natively. Pixels
+        are reach — how far across a room a person survives being cropped for
+        ReID and pose.
+
+    So: view = the nearest H.264 profile to `view_height`; ai = the largest
+    usable profile of any codec.
+
+    Crucially, the second pull only happens when it EARNS itself. If the same
+    profile wins both roles, or the AI candidate is no bigger than the view one,
+    this returns ai=None and the camera is dialled ONCE — because a second
+    stream on a WiFi camera is bandwidth taken straight from the first, and that
+    is what destabilised this system before. A camera whose main profile is
+    already H.264 (the C220) keeps one connection; only a camera whose best
+    stream is unplayable (the C260's HEVC main) pays for two.
+
+    Returns (view, ai_or_None, reason)."""
+    view, reason = recommend_profile(profiles, view_height)
+    if view is None:
+        return None, None, reason
+    candidates = usable_profiles(profiles)
+    ai = candidates[0] if candidates else None
+    if ai is None or ai.token == view.token or             (ai.width * ai.height) <= (view.width * view.height):
+        return view, None, f"{reason}; one stream serves the AI too"
+    return view, ai, (f"{reason}; the AI additionally reads {ai.width}x{ai.height} "
+                      f"{ai.codec} — unplayable in a browser but more reach for "
+                      f"tracking, and NVDEC decodes it")
 
 
 # ---- probe: everything the wizard needs in one call ----------------------
@@ -410,30 +446,38 @@ def probe(xaddr: str, username: str, password: str,
     profiles_out = [{**vars(p), "uri": uris[p.token], "codec": p.codec}
                     for p in profs]
 
-    best, reason = recommend_profile(profs, preferred_height)
-    chosen = next((p for p in profiles_out
-                   if best is not None and p["token"] == best.token), None)
+    view, ai, reason = recommend_streams(profs, preferred_height)
+    by_token = {p["token"]: p for p in profiles_out}
+    chosen = by_token.get(view.token) if view else None
+    ai_out = by_token.get(ai.token) if ai else None
 
     # PTZ is supported if the camera exposes a PTZ service (reliable) OR a
     # profile embeds a PTZConfiguration. Drive it with a PTZ-bound profile when
     # one exists, else the chosen one (single-config cameras accept any).
     ptz = cam.has_ptz_service() or any(p.has_ptz for p in profs)
     ptz_token = next((p.token for p in profs if p.has_ptz),
-                     best.token if best else profs[0].token)
+                     view.token if view else profs[0].token)
 
     return {
         "device": info,
-        "profiles": profiles_out,           # [{token,name,encoding,w,h,fps,has_ptz,uri}]
+        "profiles": profiles_out,           # [{token,name,encoding,codec,w,h,fps,uri}]
+        # What every VIEWER gets: live links, /ui tiles, recording. H.264 always.
         "recommended": {
             "token": chosen["token"] if chosen else "",
             "uri": chosen["uri"] if chosen else "",
-            "resolution": f"{best.width}x{best.height}" if best else "",
-            # The VERIFIED codec where ffprobe could read the stream, else
-            # the camera's claim. `profiles[].encoding` keeps the raw claim so
-            # the two can be compared.
-            "encoding": best.codec if best else "",
+            "resolution": f"{view.width}x{view.height}" if view else "",
+            "encoding": view.codec if view else "",
             "reason": reason,
             "preferred_height": preferred_height,
+        },
+        # A SECOND stream for the AI, present ONLY when no single profile can
+        # serve both roles — i.e. the biggest stream is unplayable in a browser.
+        # Empty means one pull serves everything, which is the normal case.
+        "ai": {
+            "token": ai_out["token"] if ai_out else "",
+            "uri": ai_out["uri"] if ai_out else "",
+            "resolution": f"{ai.width}x{ai.height}" if ai else "",
+            "encoding": ai.codec if ai else "",
         },
         "ptz": ptz,
         "ptz_token": ptz_token,

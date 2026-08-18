@@ -76,56 +76,62 @@ Set `EDGE_ID`, `DEVICE_STREAM_BASE=https://<domain>` and `MEDIAMTX_STUN_SERVER`
 in `infra/env/jetson.env`, then re-sync cameras. Blank `EDGE_ID`/`DEVICE_STREAM_BASE`
 = LAN-direct: links hit MediaMTX's WebRTC port on the device directly.
 
-## One stream per camera — and how its profile is chosen
+## One stream per camera — and the one case that needs two
 
-MediaMTX dials each camera **once**, on its main profile, and fans that single
-compressed stream out to four consumers:
+MediaMTX dials each camera **once** and fans that pull out to four consumers:
 
-| consumer | how it reads | why it wants what it wants |
+| consumer | how it reads | what it needs |
 |---|---|---|
-| AI pipeline | loopback RTSP `127.0.0.1:8554` | resolution is *reach* — a distant person must survive being cropped for ReID and pose |
-| public live links | WebRTC/WHEP through the cloud tunnel | native quality, untouched |
-| `/ui` pages | the **same** WebRTC stream (`static/live-view.js`) | whatever the viewer's browser can decode |
-| recorder | MediaMTX writes the packets to disk | native quality, remux only |
+| public live links | WebRTC/WHEP through the cloud tunnel | **H.264** — browsers cannot decode HEVC |
+| `/ui` pages | the **same** WebRTC stream (`static/live-view.js`) | **H.264**, same reason |
+| recorder | MediaMTX writes the packets to disk | **H.264** — clips are remuxed, then played in a browser |
+| AI pipeline | loopback RTSP `127.0.0.1:8554` | **pixels**, any codec — it decodes on NVDEC, which handles HEVC |
 
-They share one stream, so **they share one resolution**. There is no way to give
-the recorder 1440p while the AI keeps 4K without a second connection to the
-camera — and a second pull on a WiFi camera takes bandwidth straight from the
-first, which starves the AI reader and destabilises live view. That is the
-failure this design exists to prevent, so the second pull is not coming back.
+Three of the four need H.264. The fourth wants the most pixels and does not care
+about the codec. Usually one profile satisfies everyone and the camera stays on a
+single connection.
 
-**Which profile a camera is consumed on is decided ONCE, at registration.** The
-setup wizard reads every profile the camera exposes, pre-selects the one we
-recommend, and stores that profile's RTSP URL and token. Nothing on the camera is
-ever rewritten — we only choose among what it already offers.
+**A camera whose biggest stream is H.265 is the exception**, and it is real: the
+bench C260 offers 2560×1440 HEVC and 1280×720 H.264, nothing else. Forcing
+everyone onto 720p throws away the AI's reach; forcing everyone onto 1440p is a
+black screen everywhere. So that camera — and only that camera — is dialled
+twice: viewers get `rtsp_url` (720p H.264), the AI additionally reads
+`ai_rtsp_url` (1440p HEVC) on its own `<cam>-ai` path.
 
-`onvif.client.recommend_profile()` is that policy, as a pure function, ranked by
-what actually breaks the product:
+`onvif.client.recommend_streams()` decides, at registration, and the second pull
+must **earn itself**: if the same profile wins both roles, or the AI candidate is
+no bigger than the viewers', `ai_rtsp_url` stays empty and nothing changes. A
+second stream on a WiFi camera is bandwidth taken straight from the first — that
+is what destabilised this system before, so it is never opened speculatively. A
+camera that later gains a usable H.264 main drops back to one connection with no
+manual step.
 
-1. **H.264, as a hard requirement.** No browser decodes HEVC over WebRTC, so an
-   H.265 profile is a black screen on the /ui pages, the public links and the
-   cloud alike — and recordings are remuxed as-is, so its clips are unplayable
-   too. A smaller H.264 profile beats a bigger unplayable one, every time.
-2. **The largest resolution at or below `CAMERA_PREFERRED_HEIGHT`** (default
-   1440). More pixels is more reach for ReID and pose at distance; it also costs
-   camera WiFi, decode on every viewer, and disk.
-3. If every H.264 profile is taller than that, the smallest of them.
+The viewer profile is the H.264 one **nearest** `CAMERA_PREFERRED_HEIGHT`
+(default 1080) — nearest, not "largest at or below". Asked for 1080p, a camera
+offering 1440p and 360p must give 1440p; the at-or-below rule hands back 360p and
+destroys the picture. An exact tie goes to the larger, because that is the choice
+that keeps the camera on one pull.
 
-The operator can override the pick in the wizard, and H.265 rows are marked
-unusable rather than merely listed.
-
-Two traps this design exists to avoid, both of which cost real weeks:
+Two traps this exists to avoid, both of which cost real weeks:
 
 - **A stored sub-stream URL is invisible.** A 4K camera saved with its 720p
-  `/stream2` URL reports running, steady fps and zero reconnects forever, while
-  the AI, the recordings and every viewer quietly run on a fraction of the
-  pixels. `/system/status` now measures the LIVE resolution and alarms below
-  720p, so the choice is verified rather than assumed.
-- **ONVIF lies about the codec.** The ver10 encoder schema has no H.265 element,
-  so an HEVC camera reports `H264`. The profile list shows what the camera claims;
-  `/system/status` reports the codec **observed** off the live stream, and alarms
-  on anything that is not H.264. Claims are for the picker, evidence is for the
-  alarm.
+  `/stream2` URL reports running, steady fps and zero reconnects forever while
+  everything downstream runs on a fraction of the pixels. `/system/status`
+  measures the LIVE resolution and alarms below 720p.
+- **ONVIF lies about the codec.** Its ver10 encoder schema has no H.265 element,
+  so an HEVC camera reports `H264` — the C260 does exactly this, and reported
+  profile `Main` on a stream ffprobe read as `High`. So every codec decision
+  reads the **bitstream** (`common.rtsp.observe_stream`), never the label.
+
+```bash
+python -m tools.camera --camera LIVING_ROOM   # claim vs reality, per profile
+```
+
+```
+PROFILE     RESOLUTION    ONVIF SAYS  REALLY IS   PLAYS?
+  profile_1 2560x1440     H264        H265        NO      <-- the claim is WRONG
+* profile_2 1280x720      H264        H264        yes
+```
 
 ### Viewing on the device itself
 

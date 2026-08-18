@@ -30,7 +30,7 @@ from config.settings import settings
 from configuration.camera_config import CameraConfig
 from integration import call_log
 from livestream.mediamtx_client import (
-    aac_republish_cmd, audio_transcode_active, is_up,
+    aac_republish_cmd, audio_transcode_active, is_up, path_name,
     record_path_name, record_source_name, stream_path, tls_enabled,
 )
 
@@ -254,6 +254,18 @@ class MediaMTXSupervisor:
                     "    sourceOnDemand: no",
                     "    record: no",         # flipped at runtime on person detection
                 ]
+                # The AI's own pull, ONLY where the biggest stream is
+                # unplayable in a browser so viewers had to take a smaller one.
+                # Empty on every other camera = one connection, as before.
+                ai_url = getattr(cam, "ai_rtsp_url", "")
+                if ai_url:
+                    lines += [
+                        f"  {path_name(cam.camera_id)}-ai:",
+                        f"    source: {normalize_rtsp_url(ai_url)}",
+                        "    sourceOnDemand: no",
+                        "    record: no",       # viewers' stream is what we record
+                    ]
+
                 # AAC republish — the slash-free path that actually gets recorded.
                 # MediaMTX spawns + auto-restarts the FFmpeg (runOnInit); it copies
                 # the video untouched (native quality, no encode, no second camera

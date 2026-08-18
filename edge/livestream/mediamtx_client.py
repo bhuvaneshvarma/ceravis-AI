@@ -16,13 +16,18 @@ here. The control API is bound to localhost by the generated config — nothing
 here is reachable from the network. All calls are short-timeout and raise
 MediaMTXError on failure so callers can degrade gracefully.
 
-ONE camera connection, one stream. MediaMTX dials each camera exactly once, on
-its MAIN profile, and that single pull feeds everything: the AI (loopback RTSP),
-the live links (WebRTC), the UI pages (the same WebRTC) and the disk recorder.
-Nothing here ever opens a second stream on a camera — on the WiFi links these
-cameras sit on, a second pull is bandwidth taken directly from the first, which
-degrades the AI and live view together. Recording therefore keeps the camera's
-NATIVE quality (remux only, no device encode) instead of a cut-down sub-stream.
+ONE camera connection by default, and a second only when it earns itself.
+MediaMTX dials the camera's chosen H.264 profile once, and that pull feeds the
+live links (WebRTC), the UI pages (the same WebRTC), the disk recorder AND the
+AI (loopback RTSP). A second pull is bandwidth taken straight from the first on
+the WiFi links these cameras sit on, so it is never opened speculatively.
+
+The one case that justifies it: a camera whose BIGGEST stream is H.265. Browsers
+cannot decode HEVC and recordings are remuxed into a browser-played container,
+so viewers must have H.264 — while the AI decodes on NVDEC, handles HEVC fine,
+and gains real reach from the extra pixels. Only then does `ai_path_name` become
+a separate '<cam>-ai' path. Every other camera stays on a single connection, and
+one that later gains a usable H.264 main drops back to one automatically.
 
 Fleet routing (live links): every public live link is
 `https://<domain>/<edge_id>/<cam>/whep`. The `<edge_id>` first segment is what
@@ -123,6 +128,25 @@ def aac_republish_cmd(src_path: str, out_path: str) -> str:
             f"-map 0:v:0 -map 0:a:0? -c:v copy "
             f"-c:a aac -ar 16000 -ac 1 -b:a 32k "
             f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:{port}/{out_path}")
+
+
+def ai_path_name(camera) -> str:
+    """The path the AI reads: the slash-free '<cam>-ai' when this camera needs a
+    SECOND stream, else the live path itself.
+
+    Almost every camera returns the live path here — one pull, exactly as before.
+    The second path exists only where no single profile can serve both roles: the
+    viewer side must be H.264 (browsers, and recordings remuxed for browsers)
+    while the AI wants the most pixels regardless of codec. See
+    schemas.cameras.Camera.ai_rtsp_url and onvif.client.recommend_streams."""
+    if getattr(camera, "ai_rtsp_url", ""):
+        return f"{path_name(camera.camera_id)}-ai"
+    return stream_path(camera.camera_id)
+
+
+def ai_local_rtsp_url(camera) -> str:
+    """The loopback URL the AI ingestion pulls for this camera."""
+    return f"rtsp://127.0.0.1:{settings.mediamtx_rtsp_port}/{ai_path_name(camera)}"
 
 
 def record_source_name(camera) -> str:
@@ -310,6 +334,15 @@ def sync_camera(camera) -> None:
     _sync_named_path(stream_path(camera.camera_id), camera.rtsp_url)
 
     base = path_name(camera.camera_id)                 # slash-free recording base
+    # The AI's own pull, ONLY when this camera needs one. Removed again the
+    # moment it does not, so a camera that gains a usable H.264 main profile
+    # drops back to a single connection with no manual step.
+    ai_url = getattr(camera, "ai_rtsp_url", "")
+    if ai_url:
+        _sync_named_path(f"{base}-ai", ai_url)
+    else:
+        _drop_quietly(f"{base}-ai")
+
     if audio_transcode_active():
         aac = record_path_name(camera)
         _sync_path_config(aac, _aac_path_config(record_source_name(camera), aac),
@@ -323,7 +356,7 @@ def sync_camera(camera) -> None:
 def remove_camera(camera_id: str) -> None:
     _remove_named_path(stream_path(camera_id))
     base = path_name(camera_id)
-    for suffix in ("-aac",) + _LEGACY_SUFFIXES:
+    for suffix in ("-aac", "-ai") + _LEGACY_SUFFIXES:
         _drop_quietly(f"{base}{suffix}")
 
 

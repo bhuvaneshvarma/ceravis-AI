@@ -38,6 +38,21 @@ class Camera(BaseModel):
     model: str = ""
     serial: str = ""
 
+    # An OPTIONAL second stream, read by the AI alone. Empty on almost every
+    # camera, and that is the good case: it means one profile serves both roles
+    # and the camera is dialled ONCE.
+    #
+    # It exists because the two consumers can genuinely conflict. Viewers need
+    # H.264 (browsers do not decode HEVC, and recordings are remuxed into a
+    # browser-played container). The AI wants pixels and does not care about the
+    # codec — it decodes on NVDEC, which handles HEVC natively. On a camera whose
+    # biggest stream is HEVC, `rtsp_url` above carries the playable H.264 one and
+    # this carries the bigger one, so tracking keeps its reach without making
+    # live view a black screen. Set by the setup wizard; see
+    # onvif.client.recommend_streams for when it is populated at all.
+    ai_rtsp_url: str = ""
+    ai_profile_token: str | None = None
+
     # RESERVED — always empty. There is no second recording stream any more (the
     # main stream is what gets recorded, see livestream/mediamtx_client), but the
     # key stays because the app-server saveCamera contract carries recordRtspUrl

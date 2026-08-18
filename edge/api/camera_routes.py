@@ -67,10 +67,12 @@ def list_cameras():
 
 
 def _normalize_urls(camera: Camera) -> None:
-    """Credential-encode the camera's RTSP URL before it's stored or handed to
+    """Credential-encode the camera's RTSP URLs before they're stored or handed to
     MediaMTX, so a password with '@' (or an operator who un-encoded %40 by hand)
     can't produce a URL that FFmpeg mis-parses. Idempotent."""
     camera.rtsp_url = normalize_rtsp_url(camera.rtsp_url)
+    if camera.ai_rtsp_url:
+        camera.ai_rtsp_url = normalize_rtsp_url(camera.ai_rtsp_url)
 
 
 def _enrich_device_info(camera: Camera) -> None:

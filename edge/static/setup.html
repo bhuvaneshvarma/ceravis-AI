@@ -620,11 +620,16 @@ function selectProfile(token) {
     el.classList.toggle("sel", el.dataset.token === token));
   // p.codec is VERIFIED off the wire where ffprobe could read it, falling back
   // to p.encoding (which ONVIF lies about for HEVC). Never show the claim.
+  const ai = r.ai || {};
+  const aiNote = ai.uri && ai.token !== token
+    ? `<br><span class="muted">The AI will additionally read
+       ${ai.resolution} ${ai.encoding} — more reach for tracking. This camera is
+       the only kind that gets two streams.</span>` : "";
   const enc = (p.codec || p.encoding || "").toUpperCase();
   document.getElementById("d-profile-why").innerHTML = enc && enc !== "H264"
     ? `<span class="bad">${enc} cannot play in any browser — live view will be
        black and its recordings unplayable.</span>`
-    : `<span class="muted">${(r.recommended || {}).reason || ""}</span>`;
+    : `<span class="muted">${(r.recommended || {}).reason || ""}</span>${aiNote}`;
 }
 
 function renderProfiles(r) {
@@ -695,6 +700,12 @@ document.getElementById("c-save").onclick = async () => {
     // The profile we chose above IS the one the pipeline consumes — store its
     // token so PTZ and any later re-read address the same stream.
     cam.onvif_profile_token = picked.token || null;
+    // A SECOND stream for the AI, only when the camera needs one: kept only if
+    // it is genuinely a different profile from the one viewers get.
+    const ai = DISC.probed.ai || {};
+    const wantsAi = ai.uri && ai.token && ai.token !== picked.token;
+    cam.ai_rtsp_url = wantsAi ? ai.uri : "";
+    cam.ai_profile_token = wantsAi ? ai.token : null;
     cam.ptz_supported = !!DISC.probed.ptz;
   }
   if (!cam.room_name || !cam.rtsp_url)
