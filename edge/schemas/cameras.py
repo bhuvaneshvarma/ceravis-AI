@@ -38,6 +38,15 @@ class Camera(BaseModel):
     model: str = ""
     serial: str = ""
 
+    # RESERVED — always empty. There is no second recording stream any more (the
+    # main stream is what gets recorded, see livestream/mediamtx_client), but the
+    # key stays because the app-server saveCamera contract carries recordRtspUrl
+    # and every stored record must have the SAME shape. Nothing reads it, and the
+    # validator below forces it empty, so it can never quietly resurrect a second
+    # pull on a camera. Fields get added to this record over time; none are
+    # removed out from under the backend.
+    record_rtsp_url: str = ""
+
     # ONVIF control endpoint + credentials (filled by discovery; cameras.json is
     # gitignored). Enables PTZ and future re-probing / 2-way audio.
     onvif_xaddr: str | None = None
@@ -68,4 +77,8 @@ class Camera(BaseModel):
             self.camera_id = room_id(self.room_name)
         if not (self.camera_name or "").strip():
             self.camera_name = self.room_name
+        # Reserved field, held empty on every load and save — so a value left in
+        # an older cameras.json (or posted by a client) converges away instead of
+        # lingering as a second, contradictory idea of which stream we record.
+        self.record_rtsp_url = ""
         return self

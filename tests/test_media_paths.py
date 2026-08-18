@@ -60,8 +60,18 @@ c = cam()
 mtx.edge_prefix = lambda: ""                    # LAN device: no fleet prefix
 check("the record source IS the live path (no second camera pull)",
       mtx.record_source_name(c) == mtx.stream_path(c.camera_id) == "LIVING_ROOM")
-check("a camera model has no second-stream field at all",
-      not hasattr(c, "record_rtsp_url"))
+# record_rtsp_url survives as a RESERVED key (the app-server saveCamera contract
+# carries recordRtspUrl, and every stored record must keep one shape) but it is
+# inert: held empty, read by nothing. What matters is that it cannot bring the
+# second camera pull back — so assert the behaviour, not the field's absence.
+check("the reserved second-stream field is empty",
+      getattr(c, "record_rtsp_url", "") == "")
+check("and setting it changes NOTHING about what we record",
+      mtx.record_source_name(
+          cam_with_legacy_url := Camera(room_name="LIVING ROOM",
+                                        rtsp_url=c.rtsp_url,
+                                        record_rtsp_url="rtsp://old/stream2")
+      ) == mtx.stream_path(cam_with_legacy_url.camera_id) == "LIVING_ROOM")
 
 _real_audio = mtx.audio_transcode_active
 mtx.audio_transcode_active = lambda: True

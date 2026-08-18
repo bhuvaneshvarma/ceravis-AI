@@ -73,10 +73,9 @@ def _cloud_camera(c, base: str) -> dict:
         "room": room_to_enum(c.room_name),     # -> server CameraName enum
         "url": link,
         "rtspUrl": c.rtsp_url,
-        # Kept in the saveCamera shape (the backend contract is unchanged) but
-        # always empty now: there is no separate recording stream — the main
-        # stream above is what gets recorded, at native quality.
-        "recordRtspUrl": "",
+        # Reserved: the contract keeps the key, and it is always empty because
+        # the main stream above is what gets recorded (no second stream exists).
+        "recordRtspUrl": c.record_rtsp_url or "",
         "hlsUrl": c.hls_url or "",
         "onvifXaddr": c.onvif_xaddr or "",
         "onvifUsername": c.onvif_username or "",
