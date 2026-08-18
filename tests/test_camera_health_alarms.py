@@ -89,6 +89,34 @@ check("no codec reported yet -> silent, never a false alarm",
       codec_warning("X", None) is None)
 
 # --------------------------------------------------------------------------
+print("\n5. the recorder REFUSES a codec nobody can play back")
+# Writing HEVC segments is worse than writing nothing: hundreds of MB an hour of
+# footage that looks present in the timeline and shows a black player the moment
+# somebody actually needs it.
+import recording.controller as rc                            # noqa: E402
+from recording.controller import RecordingController         # noqa: E402
+
+ctrl = RecordingController.__new__(RecordingController)
+ctrl._codec_seen = {}
+live_codec = {"LOUNGE": "h264", "LIVING_ROOM": "h265", "STARTING": None}
+rc.path_codec = lambda cid: live_codec[cid]
+
+check("an h264 camera records", ctrl._recordable("LOUNGE") is True)
+check("an h265 camera is refused", ctrl._recordable("LIVING_ROOM") is False)
+check("a camera whose path is not ready yet is NOT withheld",
+      ctrl._recordable("STARTING") is True)
+
+calls = []
+rc.path_codec = lambda cid: (calls.append(cid), live_codec[cid])[1]
+ctrl._recordable("LOUNGE"); ctrl._recordable("LOUNGE")
+check("the answer is cached, not re-asked every tick", calls == [])
+
+ctrl._codec_seen["LIVING_ROOM"] = (0.0, False)      # stale -> forces a recheck
+live_codec["LIVING_ROOM"] = "h264"
+check("a camera fixed at the camera end recovers with no restart",
+      ctrl._recordable("LIVING_ROOM") is True)
+
+# --------------------------------------------------------------------------
 print()
 if FAILURES:
     print(f"{len(FAILURES)} check(s) FAILED:")

@@ -41,6 +41,10 @@ _EDGE_ROOT = Path(__file__).resolve().parents[1]
 # a detection result older than this is stale — its camera counts as empty
 _FRESH_SECS = 3.0
 
+# how often to re-ask what codec a camera is really sending, so a camera
+# reconfigured while we run starts (or stops) being recorded on its own
+_CODEC_RECHECK_SECS = 60.0
+
 
 def _record_root() -> Path:
     root = Path(settings.record_dir)
@@ -55,6 +59,9 @@ class RecordingController:
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
         self._last_person: dict[str, float] = {}   # camera_id -> monotonic time
+        # camera_id -> (checked_at_monotonic, is_h264). Recording is a REMUX, so
+        # the clip inherits the camera's codec; see _recordable().
+        self._codec_seen: dict[str, tuple[float, bool]] = {}
         # Runtime ON/OFF (monitor button) — persisted so a deliberate "stop
         # filling the disk" choice survives restarts. Default from the env.
         self._lock = threading.Lock()
@@ -112,6 +119,8 @@ class RecordingController:
                 "camera_id": cam.camera_id,
                 "path": path,
                 "recording": recording,
+                # False = deliberately NOT recording: the codec is unplayable
+                "recordable": self._codec_seen.get(cam.camera_id, (0, True))[1],
                 "newest_segment_age_secs": round(age, 1) if age is not None else None,
                 "segments_last_hour": count_1h,
                 "megabytes_last_hour": round(bytes_1h / 1e6, 1),
@@ -158,23 +167,39 @@ class RecordingController:
             except OSError as exc:
                 logger.warning("could not prune %s: %s", folder.name, exc)
 
-    def _warn_unplayable_codecs(self) -> None:
-        """Recording is a straight remux of the camera's main stream, so the
-        clips carry whatever codec the camera sends. Browsers play H.264 and not
-        H.265, and playback is in-browser — so a non-H.264 camera is a real
-        product fault, not a detail. Say so loudly at start-up (and
-        /system/status reports the live codec per camera) instead of letting the
-        reviewer discover a black player."""
-        for cam in self._cameras.get_all():
-            if not getattr(cam, "is_enabled", True):
-                continue
-            codec = path_codec(cam.camera_id)
-            if codec and codec != "h264":
+    def _recordable(self, camera_id: str) -> bool:
+        """Whether footage from this camera would be PLAYABLE if we wrote it.
+
+        Recording is a straight remux, so a clip inherits the camera's codec —
+        and playback is in-browser, where H.265 does not decode. Writing HEVC
+        segments is worse than writing nothing: it burns disk (hundreds of MB an
+        hour) and leaves an operator believing there is footage to review, right
+        up until the moment they need it and get a black player. So a camera we
+        cannot play back is simply not recorded, loudly, and /system/status
+        already alarms on the codec.
+
+        The codec is re-checked periodically rather than once at start-up: a
+        camera can be reconfigured while we are running, and the answer should
+        follow it without a restart. An unknown codec (path not ready yet) counts
+        as recordable — never withhold footage on missing information."""
+        now = time.monotonic()
+        seen = self._codec_seen.get(camera_id)
+        if seen and (now - seen[0]) < _CODEC_RECHECK_SECS:
+            return seen[1]
+        codec = path_codec(camera_id)
+        ok = codec is None or codec == "h264"
+        if not seen or seen[1] != ok:
+            if ok:
+                logger.info("camera=%s codec=%s — recording enabled",
+                            camera_id, codec or "unknown")
+            else:
                 logger.warning(
-                    "camera=%s streams %s — recordings are remuxed as-is and %s "
-                    "does NOT play in a browser. Set this camera's main profile "
-                    "to H.264 in its own app.",
-                    cam.camera_id, codec.upper(), codec.upper())
+                    "camera=%s streams %s — NOT recording it. Clips are remuxed "
+                    "as-is and no browser can play %s, so the footage would be "
+                    "unreviewable. Point this camera at an H.264 profile.",
+                    camera_id, codec.upper(), codec.upper())
+        self._codec_seen[camera_id] = (now, ok)
+        return ok
 
     @staticmethod
     def _segment_stats(folder: Path) -> tuple[float | None, int, int]:
@@ -202,7 +227,7 @@ class RecordingController:
         return (newest or None), count, total
 
     def start(self) -> None:
-        for step in (self._prune_orphans, self._warn_unplayable_codecs):
+        for step in (self._prune_orphans,):
             try:
                 step()
             except Exception:                  # housekeeping never blocks start
@@ -252,6 +277,8 @@ class RecordingController:
             last = self._last_person.get(cam)
             want = last is not None and \
                 (now - last) <= settings.record_post_roll_secs
+            if want and not self._recordable(cam):
+                want = False               # unplayable codec — see _recordable
             if want != self._recording.get(cam, False):
                 self._set(cam, want)
 

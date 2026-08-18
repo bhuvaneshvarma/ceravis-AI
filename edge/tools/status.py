@@ -66,6 +66,8 @@ def _fmt(d: dict) -> str:
         age = c.get("newest_segment_age_secs")
         age_s = f"{age}s ago" if age is not None else "no segments yet"
         flag = "" if c.get("writing_ok", True) else "   <-- NOT WRITING"
+        if not c.get("recordable", True):
+            flag = "   <-- BLOCKED: unplayable codec"
         out.append(_line(c.get("camera_id", ""),
                          f"{'REC' if c.get('recording') else 'idle'}  last={age_s}  "
                          f"{c.get('segments_last_hour')} seg/h  "
