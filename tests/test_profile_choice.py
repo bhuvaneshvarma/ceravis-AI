@@ -44,9 +44,11 @@ def check(label: str, cond: bool) -> None:
         FAILURES.append(label)
 
 
-def prof(token, enc, w, h, fps=20, ptz=False) -> Profile:
+def prof(token, enc, w, h, fps=20, ptz=False, observed="") -> Profile:
+    """`enc` is what ONVIF CLAIMS; `observed` is what ffprobe read off the wire."""
     return Profile(token=token, name=token, encoding=enc, width=w, height=h,
-                   fps=fps, encoder_token="enc", has_ptz=ptz)
+                   fps=fps, encoder_token="enc", has_ptz=ptz,
+                   observed_codec=observed)
 
 
 # The bench cameras as they really are.
@@ -118,6 +120,30 @@ print("\n8. a camera with only JPEG -> no choice at all")
 best, why = recommend_profile([prof("a", "JPEG", 640, 360)], preferred_height=1440)
 check("returns None", best is None)
 check("says the camera has no video profile", "no video profile" in why)
+
+# --------------------------------------------------------------------------
+print("\n9. the camera LIES about its codec - evidence beats the claim")
+# The real C260, exactly as the bench found it: ONVIF reports H264 for both the
+# 4K and the 1440p profile, and ffprobe shows both are actually HEVC. Ranking on
+# the claim picked the 1440p one and produced a black tile; ranking on the
+# observed codec must reject both.
+liar = [prof("profile_1", "H264", 3840, 2160, observed="hevc"),
+        prof("profile_1b", "H264", 2560, 1440, observed="hevc"),
+        prof("profile_2", "H264", 1280, 720, observed="h264")]
+check("hevc normalises to H265 regardless of the claim",
+      liar[0].codec == "H265" and liar[1].codec == "H265")
+best, why = recommend_profile(liar, preferred_height=1440)
+check("REFUSES the 1440p profile ONVIF called H264",
+      best.token != "profile_1b")
+check("picks the only genuinely playable stream",
+      best.token == "profile_2" and best.codec == "H264")
+
+# --------------------------------------------------------------------------
+print("\n10. with no ffprobe the claim is all we have, and is used")
+blind = [prof("a", "H264", 2560, 1440), prof("b", "H264", 1280, 720)]
+best, _ = recommend_profile(blind, preferred_height=1440)
+check("falls back to the claimed encoding", best.token == "a")
+check("codec reads through from the claim", best.codec == "H264")
 
 # --------------------------------------------------------------------------
 print()

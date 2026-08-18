@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote, urlparse, urlunparse
 from xml.etree import ElementTree
 
+from common.rtsp import observe_stream
 from onvif.soap import OnvifError, call
 
 
@@ -43,6 +44,21 @@ class Profile:
     fps: float
     encoder_token: str     # VideoEncoderConfiguration token (reported, never written)
     has_ptz: bool
+    # What the stream ACTUALLY carries, read off the wire (common.rtsp
+    # .observe_stream). Empty when ffprobe is unavailable or the stream could not
+    # be reached. `encoding` above is only what ONVIF CLAIMS, and on this camera
+    # family it lies: the ver10 schema has no H.265 element, so an HEVC stream is
+    # reported as "H264". Every decision uses `codec` below when it is known.
+    observed_codec: str = ""
+    observed_width: int = 0
+    observed_height: int = 0
+
+    @property
+    def codec(self) -> str:
+        """The codec to make decisions on: verified if we have it, else the
+        camera's claim. Upper-case, so 'hevc'/'h265' both normalise."""
+        raw = (self.observed_codec or self.encoding or "").upper()
+        return "H265" if raw in ("HEVC", "H265") else raw
 
 
 def with_credentials(rtsp_url: str, username: str, password: str) -> str:
@@ -294,7 +310,7 @@ class OnvifCamera:
 def usable_profiles(profiles: list[Profile]) -> list[Profile]:
     """The profiles that can carry live video, largest first. JPEG profiles are
     dropped — they exist for stills, not for a stream."""
-    return sorted((p for p in profiles if p.encoding.upper() != "JPEG"),
+    return sorted((p for p in profiles if p.codec != "JPEG"),
                   key=lambda p: p.width * p.height, reverse=True)
 
 
@@ -310,7 +326,8 @@ def recommend_profile(profiles: list[Profile],
        unplayable too. A smaller H.264 profile beats a bigger unplayable one
        every time. (These cameras hide this: the ONVIF ver10 encoder schema has
        no H.265 element, so the reported `encoding` can read H264 while the
-       stream is HEVC. Hence the caller verifies against the live stream.)
+       stream is HEVC — so this ranks on Profile.codec, which prefers the codec
+       VERIFIED off the wire over anything the camera claims.)
     2. **The largest resolution at or below `preferred_height`.** More pixels is
        more reach for ReID and pose, but the whole system shares this ONE stream,
        so it also costs camera WiFi, decode and disk on every consumer.
@@ -323,10 +340,10 @@ def recommend_profile(profiles: list[Profile],
     if not candidates:
         return None, "camera exposes no video profile"
 
-    h264 = [p for p in candidates if p.encoding.upper() == "H264"]
+    h264 = [p for p in candidates if p.codec == "H264"]
     if not h264:
         best = candidates[0]
-        return best, (f"no H.264 profile — {best.encoding or 'this codec'} cannot "
+        return best, (f"no H.264 profile — {best.codec or 'this codec'} cannot "
                       f"play in a browser, so live view and recordings will not work")
 
     at_or_below = [p for p in h264 if p.height <= preferred_height]
@@ -365,13 +382,33 @@ def probe(xaddr: str, username: str, password: str,
 
     # Every profile with its own stream URI — the wizard renders these as a
     # picker. One SOAP call each; a camera has only a handful of profiles.
-    profiles_out: list[dict] = []
+    uris: dict[str, str] = {}
     for p in profs:
         try:
-            uri = cam.stream_uri(p.token)
+            uris[p.token] = cam.stream_uri(p.token)
         except OnvifError:
-            uri = ""
-        profiles_out.append({**vars(p), "uri": uri})
+            uris[p.token] = ""
+
+    # VERIFY each candidate against its actual bitstream. This is the one place
+    # the camera's word is not good enough: ONVIF reports "H264" for an HEVC
+    # stream (the ver10 schema has no H.265 element), and picking an H.265 profile
+    # means a black screen in every browser plus recordings nobody can play. A
+    # brief sequential ffprobe per video profile at onboarding is a cheap price
+    # for choosing on evidence. JPEG profiles are skipped — never candidates.
+    for p in profs:
+        if not uris[p.token] or (p.encoding or "").upper() == "JPEG":
+            continue
+        seen = observe_stream(uris[p.token])
+        if not seen:
+            continue                       # no ffprobe / unreachable: keep the claim
+        p.observed_codec = seen["codec"]
+        p.observed_width, p.observed_height = seen["width"], seen["height"]
+        if p.codec != (p.encoding or "").upper():
+            logger.warning("profile %s: camera claims %s but streams %s",
+                           p.token, p.encoding or "?", p.codec)
+
+    profiles_out = [{**vars(p), "uri": uris[p.token], "codec": p.codec}
+                    for p in profs]
 
     best, reason = recommend_profile(profs, preferred_height)
     chosen = next((p for p in profiles_out
@@ -391,9 +428,10 @@ def probe(xaddr: str, username: str, password: str,
             "token": chosen["token"] if chosen else "",
             "uri": chosen["uri"] if chosen else "",
             "resolution": f"{best.width}x{best.height}" if best else "",
-            # ONVIF's word, not evidence — an HEVC camera reports H264 here
-            # because the ver10 schema has no H.265 element.
-            "encoding": best.encoding if best else "",
+            # The VERIFIED codec where ffprobe could read the stream, else
+            # the camera's claim. `profiles[].encoding` keeps the raw claim so
+            # the two can be compared.
+            "encoding": best.codec if best else "",
             "reason": reason,
             "preferred_height": preferred_height,
         },

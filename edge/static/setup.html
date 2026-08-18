@@ -618,7 +618,9 @@ function selectProfile(token) {
   document.getElementById("c-url").value = p.uri || "";
   document.querySelectorAll(".prof-row").forEach(el =>
     el.classList.toggle("sel", el.dataset.token === token));
-  const enc = (p.encoding || "").toUpperCase();
+  // p.codec is VERIFIED off the wire where ffprobe could read it, falling back
+  // to p.encoding (which ONVIF lies about for HEVC). Never show the claim.
+  const enc = (p.codec || p.encoding || "").toUpperCase();
   document.getElementById("d-profile-why").innerHTML = enc && enc !== "H264"
     ? `<span class="bad">${enc} cannot play in any browser — live view will be
        black and its recordings unplayable.</span>`
@@ -633,13 +635,13 @@ function renderProfiles(r) {
   // so they are not offered. Matches usable_profiles() on the edge, so the list
   // the operator sees and the list the recommendation ranked are the same list.
   const profiles = (r.profiles || [])
-    .filter(p => p.uri && (p.encoding || "").toUpperCase() !== "JPEG");
+    .filter(p => p.uri && (p.codec || p.encoding || "").toUpperCase() !== "JPEG");
   if (!profiles.length) {
     wrap.hidden = true;
     return;
   }
   list.innerHTML = profiles.map(p => {
-    const enc = (p.encoding || "").toUpperCase();
+    const enc = (p.codec || p.encoding || "").toUpperCase();
     const bad = enc && enc !== "H264";
     return `<div class="prof-row" data-token="${p.token}">
       <span class="res">${p.width}×${p.height}</span>

@@ -60,6 +60,49 @@ def grab_one_frame(url: str, timeout_secs: float = 8.0):
     return frame
 
 
+def observe_stream(url: str, timeout_secs: float = 8.0) -> dict | None:
+    """What a stream REALLY carries: {"codec", "width", "height"}, or None.
+
+    The single owner of "don't take the camera's word for it". ONVIF cannot be
+    trusted on the codec: its ver10 encoder schema has no H.265 element, so a
+    camera streaming HEVC reports "H264" — and H.265 is not a detail, it is a
+    black screen in every browser and recordings nobody can play. So before a
+    profile is chosen, its actual bitstream is read.
+
+    ffprobe rather than OpenCV: it reports codec_name directly, exits on its own,
+    and never has to decode a frame. Missing ffprobe (or an unreachable stream)
+    returns None, and the caller falls back to the ONVIF claim — /system/status
+    still catches a bad choice from the live path afterwards."""
+    import shutil
+    import subprocess
+
+    from config.settings import settings
+
+    url = normalize_rtsp_url(url)
+    if not url:
+        return None
+    exe = settings.ffmpeg_binary.replace("ffmpeg", "ffprobe")
+    if not shutil.which(exe):
+        return None
+    cmd = [exe, "-v", "error", "-rtsp_transport", "tcp",
+           "-select_streams", "v:0",
+           "-show_entries", "stream=codec_name,width,height",
+           "-of", "default=nw=1:nk=1", url]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True,
+                             timeout=max(2.0, timeout_secs))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = [ln.strip() for ln in (out.stdout or "").splitlines() if ln.strip()]
+    if out.returncode != 0 or len(lines) < 3:
+        return None
+    codec, width, height = lines[0], lines[1], lines[2]
+    try:
+        return {"codec": codec.lower(), "width": int(width), "height": int(height)}
+    except ValueError:
+        return None
+
+
 def normalize_rtsp_url(url: str) -> str:
     """Percent-encode the userinfo of an RTSP URL so it parses correctly.
     Splits credentials from host on the LAST '@' (a compliant host has none) and
