@@ -36,12 +36,13 @@ recorder and its runtime record-toggle never depend on slash-paths.
 import logging
 import re
 import shutil
+import time
 from pathlib import Path
 from urllib.parse import quote
 
 import requests
 
-from common.rtsp import normalize_rtsp_url
+from common.rtsp import normalize_rtsp_url, observe_stream
 from config.settings import settings
 
 
@@ -364,13 +365,59 @@ def path_info(camera_id: str) -> dict | None:
         return None
 
 
-def path_codec(camera_id: str) -> str | None:
-    """'h264' / 'h265' as reported by the path's live tracks, else None."""
+_CODEC_CACHE: dict[str, tuple[float, str | None]] = {}
+_CODEC_TTL = 60.0
+
+# Exactly the codec labels MediaMTX uses for a video track. Matched WHOLE, never
+# as a substring: the previous version asked `"265" in str(track)`, which reads
+# "h265" out of any payload that happens to carry 265 in an unrelated field.
+_VIDEO_CODECS = {"h264": "h264", "avc": "h264", "h265": "h265", "hevc": "h265",
+                 "av1": "av1", "vp8": "vp8", "vp9": "vp9"}
+
+
+def _codec_from_api(camera_id: str) -> str | None:
+    """The codec MediaMTX LABELS the path's video track with. Tolerates the
+    track list being strings or objects, and matches the label exactly."""
     info = path_info(camera_id)
-    for t in (info or {}).get("tracks", []):
-        tl = str(t).lower()
-        if "265" in tl:
-            return "h265"
-        if "264" in tl:
-            return "h264"
+    for track in (info or {}).get("tracks", []):
+        if isinstance(track, dict):
+            label = str(track.get("codec") or track.get("type") or "")
+        else:
+            label = str(track)
+        hit = _VIDEO_CODECS.get(label.strip().lower().replace("-", "").replace(".", ""))
+        if hit:
+            return hit
     return None
+
+
+def path_codec(camera_id: str) -> str | None:
+    """The codec this camera is REALLY sending — 'h264', 'h265', … or None.
+
+    Read off the bitstream with ffprobe, not from a label, because every label
+    in this system has already lied at least once: ONVIF reports H264 for an
+    HEVC camera (its ver10 schema has no H.265 element) and reported Main
+    profile for a stream ffprobe showed as High. This answer gates recording and
+    raises the /system/status alarm, so it has to be evidence.
+
+    Falls back to MediaMTX's own track label when ffprobe is unavailable — worse
+    information, but better than none. Cached briefly so the recorder's periodic
+    re-check and the status surface share one RTSP probe rather than one each."""
+    now = time.monotonic()
+    hit = _CODEC_CACHE.get(camera_id)
+    if hit and (now - hit[0]) < _CODEC_TTL:
+        return hit[1]
+
+    seen = observe_stream(local_rtsp_url(camera_id), timeout_secs=6.0)
+    codec = (seen or {}).get("codec")
+    if codec:
+        codec = _VIDEO_CODECS.get(codec, codec)
+    else:
+        codec = _codec_from_api(camera_id)
+    _CODEC_CACHE[camera_id] = (now, codec)
+    return codec
+
+
+def path_stream_info(camera_id: str) -> dict | None:
+    """Everything ffprobe can tell us about the live path — codec, profile and
+    real resolution — for the status surface. None when it cannot be read."""
+    return observe_stream(local_rtsp_url(camera_id), timeout_secs=6.0)

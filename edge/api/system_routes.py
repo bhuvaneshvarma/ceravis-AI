@@ -127,7 +127,7 @@ def _camera_status(manager=None) -> list[dict]:
     measure — running, good fps, no reconnects — while feeding the AI, the
     recordings and every live link a fraction of the pixels. Reporting the real
     number is the only thing that makes that visible."""
-    from livestream.mediamtx_client import path_codec, path_info
+    from livestream.mediamtx_client import path_info, path_stream_info
     live = manager.get_status() if manager is not None else {}
     cams = []
     for cam in CameraConfig().get_all():
@@ -135,13 +135,18 @@ def _camera_status(manager=None) -> list[dict]:
         st = live.get(cam.camera_id)
         w = getattr(st, "frame_width", 0) or 0
         h = getattr(st, "frame_height", 0) or 0
+        # Read off the wire, so codec/profile are evidence rather than a label.
+        wire = path_stream_info(cam.camera_id) or {}
         cams.append({
             "camera_id": cam.camera_id,
             "name": getattr(cam, "camera_name", ""),
             "room": getattr(cam, "room_name", ""),
             "enabled": bool(getattr(cam, "is_enabled", True)),
             "path_ready": bool(info.get("ready")),
-            "codec": path_codec(cam.camera_id),
+            "codec": wire.get("codec"),
+            # H.264 has profiles a decoder can refuse; ONVIF claimed "Main" on a
+            # stream ffprobe read as "High", so report what is really there.
+            "profile": wire.get("profile"),
             "resolution": f"{w}x{h}" if w and h else None,
             "width": w,
             "height": h,

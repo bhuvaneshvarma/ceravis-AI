@@ -146,6 +146,27 @@ check("falls back to the claimed encoding", best.token == "a")
 check("codec reads through from the claim", best.codec == "H264")
 
 # --------------------------------------------------------------------------
+print("\n11. path_codec parses a track LABEL exactly, never by substring")
+# The old test was `"265" in str(track)`, which reads "h265" out of any payload
+# carrying 265 in an unrelated field. This gates recording, so it must be exact.
+import livestream.mediamtx_client as mtx                      # noqa: E402
+
+check("a plain H264 track", mtx._VIDEO_CODECS.get("h264") == "h264")
+check("hevc and h265 are one answer",
+      mtx._VIDEO_CODECS.get("hevc") == mtx._VIDEO_CODECS.get("h265") == "h265")
+check("an audio label is not mistaken for video",
+      mtx._VIDEO_CODECS.get("lpcm") is None and mtx._VIDEO_CODECS.get("g711") is None)
+
+mtx.path_info = lambda cid: {"tracks": [{"type": "H264", "id": 265}, "LPCM"]}
+check("a payload carrying 265 in an unrelated field is NOT read as h265",
+      mtx._codec_from_api("X") == "h264")
+mtx.path_info = lambda cid: {"tracks": ["LPCM", "H265"]}
+check("a real h265 track is still found behind an audio track",
+      mtx._codec_from_api("X") == "h265")
+mtx.path_info = lambda cid: {"tracks": ["LPCM"]}
+check("audio only -> no video codec", mtx._codec_from_api("X") is None)
+
+# --------------------------------------------------------------------------
 print()
 if FAILURES:
     print(f"{len(FAILURES)} check(s) FAILED:")

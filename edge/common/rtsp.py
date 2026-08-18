@@ -61,7 +61,8 @@ def grab_one_frame(url: str, timeout_secs: float = 8.0):
 
 
 def observe_stream(url: str, timeout_secs: float = 8.0) -> dict | None:
-    """What a stream REALLY carries: {"codec", "width", "height"}, or None.
+    """What a stream REALLY carries: {"codec", "profile", "width", "height"},
+    or None.
 
     The single owner of "don't take the camera's word for it". ONVIF cannot be
     trusted on the codec: its ver10 encoder schema has no H.265 element, so a
@@ -86,7 +87,7 @@ def observe_stream(url: str, timeout_secs: float = 8.0) -> dict | None:
         return None
     cmd = [exe, "-v", "error", "-rtsp_transport", "tcp",
            "-select_streams", "v:0",
-           "-show_entries", "stream=codec_name,width,height",
+           "-show_entries", "stream=codec_name,profile,width,height",
            "-of", "default=nw=1:nk=1", url]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True,
@@ -94,11 +95,12 @@ def observe_stream(url: str, timeout_secs: float = 8.0) -> dict | None:
     except (OSError, subprocess.SubprocessError):
         return None
     lines = [ln.strip() for ln in (out.stdout or "").splitlines() if ln.strip()]
-    if out.returncode != 0 or len(lines) < 3:
+    if out.returncode != 0 or len(lines) < 4:
         return None
-    codec, width, height = lines[0], lines[1], lines[2]
+    codec, profile, width, height = lines[0], lines[1], lines[2], lines[3]
     try:
-        return {"codec": codec.lower(), "width": int(width), "height": int(height)}
+        return {"codec": codec.lower(), "profile": profile,
+                "width": int(width), "height": int(height)}
     except ValueError:
         return None
 
