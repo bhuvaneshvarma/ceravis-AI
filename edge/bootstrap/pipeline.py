@@ -214,7 +214,7 @@ class Pipeline:
         # ---- cloud forward (recipient falls -> saveAlert/saveSnapshot) ----
         # Two halves of ONE path: the publisher decides what to send and writes
         # it to the durable outbox; the sender is the only thing that touches
-        # the network, draining the queue in order. Split this way, an internet
+        # the network, draining the queue urgent-first. Split this way, an internet
         # outage costs delivery time and nothing else — the incident is on disk
         # the instant it is detected, and leaves as soon as the link is back.
         outbox = None

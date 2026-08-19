@@ -15,9 +15,11 @@ Why a queue and not a retry loop:
   * The whole system keeps working offline (streams, AI, recording, LAN live
     view). Only the cloud hop is down, and it comes back — so an alert must
     survive the gap, not be logged-and-lost.
-  * Order is clinical information. A fall, its still, and its clip must reach
-    the server in the order they happened, and a later NO_MOTION must not
-    overtake an earlier FALL. The queue is strict FIFO by `seq`.
+  * Order is clinical information. A fall, its still and its clip must reach
+    the server in the order they happened. The queue is FIFO by `seq` WITHIN a
+    priority tier, and a fall outranks every tier — so an incident is never
+    scrambled, and a fall raised behind an hour of posture snapshots still
+    leaves the device first.
   * A restart (or a power cut) in the middle of an outage must not lose the
     backlog, so the queue is SQLite rows + spooled media files on disk, in the
     same data/ceravis.db everything else uses.
@@ -36,6 +38,16 @@ SLIDING WINDOW
   first — the ambient posture/room snapshots go, the FALL and NO_MOTION alerts
   and their media stay. A window that drops the emergency to keep the wallpaper
   would be worse than no window at all.
+
+RECLAIMING THE DISK
+  The bytes are the media, and a job's media is deleted THE MOMENT ITS CALL
+  SUCCEEDS (mark_sent) — and equally when it is given up on, so nothing is held
+  by a job that will never be sent. What survives is the row, which is a receipt
+  for the sync console, capped by both age (`outbox_history_secs`) and count.
+  Steady state on a delivering device is therefore an empty spool directory and
+  a table that does not grow. A slow orphan sweep backstops the one case the
+  row-driven deletes cannot see: a crash between writing the file and
+  committing the row that owns it.
 
 LAYOUT
   outbox rows   -> data/ceravis.db, table `outbox`
@@ -62,14 +74,31 @@ logger = logging.getLogger("outbox")
 
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
 
-# Job priority. Eviction takes the lowest number first, so an emergency is the
-# last thing a full queue gives up.
-PRIORITY_ALERT = 2      # a fall / no-motion alert and the media that proves it
+# ONE priority scale, read from both ends, so urgency means the same thing
+# everywhere:
+#   delivery  takes the HIGHEST first — a fall leaves the device before anything
+#             else, however long the ambient backlog in front of it is;
+#   eviction  takes the LOWEST first — a full queue surrenders wallpaper, never
+#             the emergency.
+# Within one tier the order is strictly oldest-first, so a fall never overtakes
+# an earlier fall and an incident's alert, still and clip stay in sequence.
+PRIORITY_FALL = 3       # a fall alert and the still + clip that prove it
+PRIORITY_ALERT = 2      # every other alert (no-motion) and its media
 PRIORITY_AMBIENT = 1    # posture, room and dwell snapshots (nice to have)
 
 STATE_PENDING = "pending"
 STATE_DONE = "done"
 STATE_DEAD = "dead"
+
+# Finished jobs are receipts for the sync console, not data. They are capped by
+# age (outbox_history_secs) AND by count, so a busy day cannot grow the table
+# without bound between age sweeps.
+_HISTORY_MAX_ROWS = 500
+# The orphan-media sweep walks a directory, so it runs on a slow beat rather
+# than on every enqueue, and ignores anything written in the last few minutes
+# (that is a job mid-enqueue, not an orphan).
+_SPOOL_SWEEP_SECS = 600.0
+_SPOOL_ORPHAN_GRACE_SECS = 300.0
 
 
 _SCHEMA = """
@@ -93,8 +122,9 @@ CREATE TABLE IF NOT EXISTS outbox (
     sent_at       TEXT,
     result_id     INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(state, seq);
+CREATE INDEX IF NOT EXISTS idx_outbox_next ON outbox(state, priority DESC, seq);
 CREATE INDEX IF NOT EXISTS idx_outbox_dep ON outbox(depends_on);
+DROP INDEX IF EXISTS idx_outbox_state;
 """
 
 _COLS = ("seq", "job_id", "kind", "label", "priority", "state", "created_at",
@@ -120,6 +150,7 @@ class OutboxStore:
             if stmt:
                 self._store.execute(stmt)
         self._spool = self._spool_dir()
+        self._swept_at = 0.0
         self._recover()
 
     def set_drop_listener(self,
@@ -138,26 +169,51 @@ class OutboxStore:
         return spool
 
     def _recover(self) -> None:
-        """Startup: report the backlog we inherited and delete spooled media
-        with no row left pointing at it (a crash between file and INSERT)."""
+        """Startup: report the backlog we inherited, and reclaim any spooled
+        media the rows no longer account for."""
         pending = self.stats()["pending"]
         if pending:
             logger.info("outbox: %d upload(s) waiting from a previous run",
                         pending)
+        self._sweep_spool(force=True)
+
+    def _sweep_spool(self, force: bool = False) -> None:
+        """Delete spooled media no row points at any more.
+
+        A job's media is released the moment it is delivered (or given up on),
+        so in normal running this finds nothing — it exists for the case nothing
+        else covers: a crash between writing the file and committing its row,
+        which would otherwise leave bytes on disk that no code will ever look at
+        again. Rate-limited because it walks the directory.
+
+        Only files older than the grace period are touched. A job being queued
+        right now has written its bytes and not yet committed its row, so to
+        this sweep it is indistinguishable from an orphan — and deleting a fall
+        clip a millisecond before its row lands would be far worse than leaving
+        a few stale bytes for one more pass."""
+        now = time.monotonic()
+        if not force and now - self._swept_at < _SPOOL_SWEEP_SECS:
+            return
+        self._swept_at = now
         known = {row[0] for row in self._store.fetchall(
             "SELECT blob_path FROM outbox WHERE blob_path IS NOT NULL")}
-        orphans = 0
+        settled = time.time() - _SPOOL_ORPHAN_GRACE_SECS
+        freed = files = 0
         for f in self._spool.glob("*"):
-            if not f.is_file():
+            if not f.is_file() or f.name in known:
                 continue
-            if str(f.relative_to(self._spool)) not in known:
-                try:
-                    f.unlink()
-                    orphans += 1
-                except OSError:
-                    pass
-        if orphans:
-            logger.info("outbox: cleared %d orphaned media file(s)", orphans)
+            try:
+                stat = f.stat()
+                if stat.st_mtime > settled:
+                    continue                 # still being queued — leave it
+                f.unlink()
+                freed += stat.st_size
+                files += 1
+            except OSError:
+                pass
+        if files:
+            logger.info("outbox: reclaimed %d orphaned media file(s), %.1f MB",
+                        files, freed / 1e6)
 
     # ---- enqueue -----------------------------------------------------
     def enqueue(self, kind: str, payload: dict, *, label: str = "",
@@ -176,6 +232,7 @@ class OutboxStore:
         job_id = uuid.uuid4().hex
         blob_rel = None
         blob_len = 0
+        priority = self._capped_priority(priority, depends_on)
         try:
             if blob:
                 f = self._spool / f"{job_id}.{blob_ext}"
@@ -201,9 +258,23 @@ class OutboxStore:
         self.trim()
         return job_id
 
+    def _capped_priority(self, priority: int, depends_on: str | None) -> int:
+        """A job never outranks the job it depends on.
+
+        Delivery is priority-first, so a snapshot that outranked its own alert
+        would be sent before the server had issued the alertId to link it to.
+        Clamping here makes that impossible by construction instead of relying
+        on every caller passing matching priorities."""
+        if not depends_on:
+            return int(priority)
+        rows = self._store.fetchall(
+            "SELECT priority FROM outbox WHERE job_id=?", (depends_on,))
+        return min(int(priority), int(rows[0][0])) if rows else int(priority)
+
     # ---- domain wrappers ---------------------------------------------
     def enqueue_alert(self, patient_id, alert_type: str, message: str,
-                      *, label: str = "") -> str | None:
+                      *, label: str = "",
+                      priority: int = PRIORITY_ALERT) -> str | None:
         """Queue one saveAlert. Its job_id is the local stand-in for the
         alertId the server has not issued yet: snapshots that belong to this
         alert pass it as `depends_on`, and the sender substitutes the real
@@ -213,7 +284,7 @@ class OutboxStore:
             {"patient_id": patient_id, "alert_type": alert_type,
              "message": message},
             label=label or f"{alert_type} · {message}",
-            priority=PRIORITY_ALERT)
+            priority=priority)
 
     def enqueue_snapshot(self, patient_id, text: str, camera_number: str, *,
                          image: bytes | None = None,
@@ -251,13 +322,27 @@ class OutboxStore:
         return job
 
     def head(self) -> dict | None:
-        """The oldest pending job. STRICT FIFO: the sender always looks at this
-        one and never reaches past it, so delivery order is exactly creation
-        order. A job that is backing off holds the line on purpose — during an
-        outage nothing behind it would have succeeded either."""
+        """The next job to send: highest priority, then oldest.
+
+        The sender looks at this one and never reaches past it. So within a
+        tier delivery order is exactly creation order — an incident's alert,
+        still and clip stay in sequence, and an earlier fall is never overtaken
+        by a later one — while a fall raised during a backlog of ambient
+        snapshots goes out FIRST, not after them.
+
+        A job that is backing off holds the line on purpose: during an outage
+        nothing behind it would have succeeded either. But a fall queued while
+        an ambient job is mid-backoff becomes the head immediately and is sent
+        at once, because it is due and it outranks what is waiting.
+
+        Starvation is bounded by the age window rather than by a fairness rule:
+        an ambient snapshot that never gets its turn expires at
+        `outbox_window_secs`, and by then it was worthless anyway. Continuous
+        falls for a whole day is not a queueing problem."""
         rows = self._store.fetchall(
             "SELECT " + ", ".join(_COLS) +
-            " FROM outbox WHERE state=? ORDER BY seq LIMIT 1", (STATE_PENDING,))
+            " FROM outbox WHERE state=? ORDER BY priority DESC, seq ASC LIMIT 1",
+            (STATE_PENDING,))
         return self._row(rows[0] if rows else None)
 
     def job(self, job_id: str) -> dict | None:
@@ -282,6 +367,7 @@ class OutboxStore:
         """The queue at a glance — what the status surface and the sync console
         render, and what makes an outage visible while it is happening."""
         out = {"pending": 0, "sent": 0, "dropped": 0, "pending_bytes": 0,
+               "pending_alerts": 0, "next_priority": None,
                "oldest_pending_at": None, "oldest_pending_age_secs": None,
                "attempts_on_head": 0, "last_error": None,
                "window_hours": round(settings.outbox_window_secs / 3600.0, 1),
@@ -297,11 +383,25 @@ class OutboxStore:
                     out["sent"] = n
                 elif state == STATE_DEAD:
                     out["dropped"] = n
+            # Two different questions, deliberately answered separately now that
+            # delivery is priority-ordered: `oldest_*` is how far the BACKLOG
+            # stretches (what says "we are offline"), while the head is simply
+            # what goes next — under priority ordering a fresh fall, not the
+            # oldest row.
+            rows = self._store.fetchall(
+                "SELECT COUNT(*) FROM outbox WHERE state=? AND priority>=?",
+                (STATE_PENDING, PRIORITY_ALERT))
+            out["pending_alerts"] = rows[0][0] if rows else 0
+            rows = self._store.fetchall(
+                "SELECT created_at, created_epoch FROM outbox WHERE state=? "
+                "ORDER BY created_epoch ASC LIMIT 1", (STATE_PENDING,))
+            if rows:
+                out["oldest_pending_at"] = rows[0][0]
+                out["oldest_pending_age_secs"] = round(
+                    max(0.0, time.time() - rows[0][1]), 1)
             head = self.head()
             if head:
-                out["oldest_pending_at"] = head["created_at"]
-                out["oldest_pending_age_secs"] = round(
-                    max(0.0, time.time() - head["created_epoch"]), 1)
+                out["next_priority"] = head["priority"]
                 out["attempts_on_head"] = head["attempts"]
                 out["last_error"] = head["last_error"]
         except Exception:
@@ -367,13 +467,18 @@ class OutboxStore:
 
     # ---- the sliding window ------------------------------------------
     def trim(self) -> None:
-        """Hold the queue inside its window. Runs on every enqueue (cheap: three
-        indexed statements on a table that is normally empty) so the caps are
-        enforced continuously rather than at some later sweep."""
+        """Hold the queue inside its window and give the disk back.
+
+        Runs on every enqueue (cheap: a few indexed statements on a table that
+        is normally empty) and on a slow beat from the sender, so the caps are
+        enforced continuously rather than at some later sweep. Nothing here
+        touches a pending job's media — that is released the instant its call
+        succeeds, in mark_sent."""
         try:
             self._expire_old()
             self._enforce_caps()
             self._prune_history()
+            self._sweep_spool()
         except Exception:
             logger.exception("outbox: trim failed")
 
@@ -428,13 +533,27 @@ class OutboxStore:
                 return rows[0][0]
         return None
 
+    # A finished job is deletable unless a job still waiting to be sent depends
+    # on it — that row is carrying the alertId its snapshots have not used yet.
+    _DELETABLE = ("state IN (?,?) AND job_id NOT IN "
+                  "(SELECT depends_on FROM outbox "
+                  " WHERE state=? AND depends_on IS NOT NULL)")
+
     def _prune_history(self) -> None:
-        """Forget finished jobs once they are older than the console needs them.
-        A `done` row a pending job still depends on is kept regardless — it is
-        carrying that job's alertId."""
+        """Forget finished jobs — by age first, then by count.
+
+        Their media is already gone (released on delivery); this is the row
+        itself, kept only so the sync console can show what happened. The count
+        cap is the backstop: a device that raises thousands of events inside one
+        history window would otherwise carry every receipt until the window
+        rolled."""
         cutoff = time.time() - max(60.0, settings.outbox_history_secs)
+        base = (STATE_DONE, STATE_DEAD, STATE_PENDING)
         self._store.execute(
-            "DELETE FROM outbox WHERE state IN (?,?) AND created_epoch<? "
-            "AND job_id NOT IN (SELECT depends_on FROM outbox "
-            "                   WHERE state=? AND depends_on IS NOT NULL)",
-            (STATE_DONE, STATE_DEAD, cutoff, STATE_PENDING))
+            f"DELETE FROM outbox WHERE {self._DELETABLE} AND created_epoch<?",
+            base + (cutoff,))
+        self._store.execute(
+            f"DELETE FROM outbox WHERE {self._DELETABLE} AND seq NOT IN "
+            f"(SELECT seq FROM outbox WHERE {self._DELETABLE} "
+            f" ORDER BY seq DESC LIMIT ?)",
+            base + base + (_HISTORY_MAX_ROWS,))

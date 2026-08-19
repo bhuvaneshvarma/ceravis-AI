@@ -3,11 +3,14 @@ from __future__ import annotations
 """
 The one thread that talks to the app server on the event path.
 
-It walks the outbox from the head and delivers each job in creation order. That
-single-consumer, strict-FIFO shape is the whole point: the fall alert, the still
-that shows it and the clip that proves it arrive in the order they happened, and
-a NO_MOTION raised at 09:05 can never overtake a FALL raised at 09:04 just
-because the fall's clip took longer to build.
+It walks the outbox from the head and delivers one job at a time. Single
+consumer, so ordering is decided entirely by the queue: highest priority first,
+oldest first within a tier.
+
+That means a FALL leaves the device before anything else in the queue, however
+much ambient traffic was raised ahead of it — and within the incident, the
+alert, the still that shows it and the clip that proves it still arrive in the
+order they happened, because they share a tier.
 
 WHAT HAPPENS WHEN THE LINK IS DOWN
     A send fails with a transport error -> the job stays at the head, its
@@ -49,7 +52,7 @@ from integration import call_log
 from integration.ceravis_api import (
     CeravisApiError, alert_id_of, is_configured, save_alert, save_snapshot,
 )
-from storage.outbox_store import PRIORITY_AMBIENT, OutboxStore
+from storage.outbox_store import PRIORITY_ALERT, PRIORITY_AMBIENT, OutboxStore
 
 
 logger = logging.getLogger("outbox")
@@ -67,7 +70,7 @@ def _retriable(exc: CeravisApiError) -> bool:
 
 
 class OutboxSender:
-    """Drains OutboxStore -> the CERAVIS app server, in order, forever."""
+    """Drains OutboxStore -> the CERAVIS app server, urgent-first, forever."""
 
     def __init__(self, outbox: OutboxStore) -> None:
         self._outbox = outbox
@@ -103,10 +106,12 @@ class OutboxSender:
     # ---- what producers call -----------------------------------------
     # Queue, then wake the loop, so an upload on a healthy link goes out in the
     # same breath it was raised — the queue adds durability, not latency.
-    def queue_alert(self, patient_id, alert_type: str, message: str) -> str | None:
+    def queue_alert(self, patient_id, alert_type: str, message: str, *,
+                    priority: int = PRIORITY_ALERT) -> str | None:
         """Queue one saveAlert; the returned job_id is what its snapshots link
         to until the server issues the real alertId."""
-        job_id = self._outbox.enqueue_alert(patient_id, alert_type, message)
+        job_id = self._outbox.enqueue_alert(patient_id, alert_type, message,
+                                            priority=priority)
         self._queued("saveAlert", job_id, f"{alert_type} · {message}")
         return job_id
 

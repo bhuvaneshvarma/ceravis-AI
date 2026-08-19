@@ -8,8 +8,9 @@ can be switched offline, made to reject, or made to fail once, driven through th
 real OutboxStore + OutboxSender.
 
 Covered:
-  FIFO       — a backlog raised offline is delivered in creation order, and a
-               later alert never overtakes an earlier one.
+  Order      — a FALL is delivered before everything else in the queue even
+               when it was raised last, while within a tier delivery is strictly
+               oldest-first so an incident is never scrambled.
   Durability — the backlog survives a process restart (rows + spooled media).
   Linkage    — a snapshot queued before any alertId existed still carries the
                real alertId once the alert lands.
@@ -18,7 +19,8 @@ Covered:
   Window     — over the cap, ambient snapshots are evicted and alerts are not;
                past the age window a job is given up on; and an alert another
                queued job depends on is never the one evicted.
-  Media      — spooled bytes are released once a job leaves the queue.
+  Reclaim    — a delivered upload gives its disk back at once, crash-orphaned
+               media is swept, and finished receipts are capped by count.
   Console    — an upload shows as QUEUED at once, and a discarded one is always
                reported rather than silently lost.
 
@@ -46,8 +48,9 @@ from config.settings import settings                             # noqa: E402
 from integration import outbox_sender                            # noqa: E402
 from integration.ceravis_api import CeravisApiError              # noqa: E402
 from integration.outbox_sender import OutboxSender               # noqa: E402
+from storage import outbox_store                                 # noqa: E402
 from storage.outbox_store import (PRIORITY_ALERT, PRIORITY_AMBIENT,  # noqa: E402
-                                  OutboxStore)
+                                  PRIORITY_FALL, OutboxStore)
 from storage.sqlite_store import SqliteStore                     # noqa: E402
 
 FAILURES: list[str] = []
@@ -124,21 +127,28 @@ store, outbox, sender = build(server, DB)
 # --------------------------------------------------------------------------
 print("\n1. the link is down — nothing is sent, nothing is lost")
 server.online = False
-alert_job = sender.queue_alert(7, "FALL", "CRITICAL · Fall detected · Kitchen")
+STILL = b"\xff\xd8jpeg-still"
+CLIP = b"mp4-incident-clip"
+alert_job = sender.queue_alert(7, "FALL", "CRITICAL · Fall detected · Kitchen",
+                               priority=PRIORITY_FALL)
 snap_job = sender.queue_snapshot(7, "CRITICAL · Fall detected · Kitchen",
-                                 "KITCHEN", image=b"\xff\xd8jpeg-still",
+                                 "KITCHEN", image=STILL,
                                  depends_on=alert_job, category="FALL",
-                                 priority=PRIORITY_ALERT)
+                                 priority=PRIORITY_FALL)
 clip_job = sender.queue_snapshot(7, "CRITICAL · Fall detected · Kitchen",
-                                 "KITCHEN", video=b"mp4-incident-clip",
+                                 "KITCHEN", video=CLIP,
                                  depends_on=alert_job, category="FALL",
-                                 priority=PRIORITY_ALERT)
+                                 priority=PRIORITY_FALL)
 sender.queue_alert(7, "NO_MOTION", "CRITICAL · No movement · Lounge")
 pump(sender, outbox, rounds=3)      # a few retries, still no link
 check("nothing reached the server", server.received == [])
 check("all four uploads are queued", outbox.stats()["pending"] == 4)
 check("the head is the fall alert, not the newest event",
       outbox.head()["job_id"] == alert_job)
+check("the alert-grade backlog is counted",
+      outbox.stats()["pending_alerts"] == 4)
+check("the media it is holding is accounted for",
+      outbox.stats()["pending_bytes"] == len(STILL) + len(CLIP))
 check("the queue reports the outage", bool(outbox.stats()["last_error"]))
 
 # --------------------------------------------------------------------------
@@ -146,9 +156,10 @@ print("\n2. the device restarts mid-outage — the backlog is still there")
 store.close()
 store, outbox, sender = build(server, DB)
 check("all four survived the restart", outbox.stats()["pending"] == 4)
-check("still oldest-first", outbox.head()["job_id"] == alert_job)
+check("the fall alert is still first in line",
+      outbox.head()["job_id"] == alert_job)
 check("the spooled media survived too",
-      outbox.blob(outbox.job(snap_job)) == b"\xff\xd8jpeg-still")
+      outbox.blob(outbox.job(snap_job)) == STILL)
 
 # --------------------------------------------------------------------------
 print("\n3. the link comes back — the queue drains itself, in order")
@@ -247,7 +258,71 @@ check("the later unrelated alert is untouched",
       outbox.job(spare)["state"] == "pending")
 
 # --------------------------------------------------------------------------
-print("\n10. the sync console sees both states")
+print("\n10. a fall raised behind a backlog is sent FIRST")
+settings.outbox_max_items = 2000
+server.online = True
+pump(sender, outbox)                     # start from an empty queue
+server.online = False
+# An hour of ambient traffic piles up while the link is down…
+ambient = [sender.queue_snapshot(7, f"posture {i}", "LOUNGE", image=b"jpg",
+                                 priority=PRIORITY_AMBIENT) for i in range(5)]
+lull = sender.queue_alert(7, "NO_MOTION", "no movement")
+# …then someone falls. It is the NEWEST job in the queue and must still go out
+# before every one of them.
+fall = sender.queue_alert(7, "FALL", "someone fell", priority=PRIORITY_FALL)
+fall_pic = sender.queue_snapshot(7, "someone fell", "LOUNGE", image=b"fall-jpg",
+                                 depends_on=fall, priority=PRIORITY_FALL)
+check("the fall is at the head despite being queued last",
+      outbox.head()["job_id"] == fall)
+server.received.clear()
+server.online = True
+pump(sender, outbox)
+order = [r[1] for r in server.received]
+check("the fall alert went out first", order[0] == "someone fell")
+check("its photo went second, still after its own alert",
+      order[1] == "someone fell")
+check("the no-motion alert outranked the ambient snapshots",
+      order[2] == "no movement")
+check("and the ambient backlog followed, oldest first",
+      order[3:] == [f"posture {i}" for i in range(5)])
+check("the fall's photo carried the alertId the fall had just been given",
+      server.received[1][2] == outbox.job(fall)["result_id"])
+check("nothing was lost to the reordering",
+      len(server.received) == len(ambient) + 3)
+
+# --------------------------------------------------------------------------
+print("\n11. a delivered upload gives its disk back")
+check("the queue is empty", outbox.stats()["pending"] == 0)
+check("it is holding no media", outbox.stats()["pending_bytes"] == 0)
+check("and the spool directory is empty", list(spool.glob("*")) == [])
+# The one case row-driven deletes cannot see: bytes written, then the crash
+# before the row that owns them was committed.
+orphan = spool / "orphan-from-a-crash.jpg"
+orphan.write_bytes(b"x" * 4096)
+outbox._swept_at = 0.0                   # due for its next slow sweep
+outbox.trim()
+check("a file still being queued is NOT mistaken for an orphan",
+      orphan.exists())
+os.utime(orphan, (0, 0))                 # …now it is genuinely old
+outbox._swept_at = 0.0
+outbox.trim()
+check("but a settled crash-orphan is reclaimed",
+      list(spool.glob("*")) == [])
+# Receipts are capped by count as well as age, so the table cannot grow without
+# bound between age sweeps. Age is pushed out of reach so the COUNT cap is what
+# is under test, and the cap itself is lowered rather than queueing 500 jobs.
+settings.outbox_history_secs = 86400.0
+outbox_store._HISTORY_MAX_ROWS = 10
+for i in range(30):
+    sender.queue_alert(7, "FALL", f"receipt {i}", priority=PRIORITY_FALL)
+pump(sender, outbox)
+outbox.trim()                            # the sender's own slow beat
+rows = outbox._store.fetchall("SELECT COUNT(*) FROM outbox")[0][0]
+check(f"finished rows are capped by count, not just age ({rows} kept of 30+)",
+      rows == 10)
+
+# --------------------------------------------------------------------------
+print("\n12. the sync console sees both states")
 import json                                                      # noqa: E402
 lines = [json.loads(ln) for ln in
          (_TMP / "cloud_calls.jsonl").read_text(encoding="utf-8").splitlines()]

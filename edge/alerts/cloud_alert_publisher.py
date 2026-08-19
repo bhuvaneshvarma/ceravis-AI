@@ -38,7 +38,8 @@ from integration.ceravis_api import is_configured, room_to_enum
 from integration.outbox_sender import OutboxSender
 from livestream.mediamtx_client import record_path_name
 from recording.incident_clip import build_incident_clip
-from storage.outbox_store import PRIORITY_ALERT, PRIORITY_AMBIENT
+from storage.outbox_store import (PRIORITY_ALERT, PRIORITY_AMBIENT,
+                                  PRIORITY_FALL)
 
 
 logger = logging.getLogger("alerts")
@@ -47,6 +48,18 @@ logger = logging.getLogger("alerts")
 # deliberate contract, not an artifact of upper-casing the internal event name
 # (fall -> FALL, no_motion -> NO_MOTION). Anything unmapped falls back to upper().
 _ALERT_TYPE = {"fall": "FALL", "no_motion": "NO_MOTION"}
+
+
+def _priority_of(etype: str, is_alert: bool) -> int:
+    """How urgently this event's uploads leave the device.
+
+    A fall is the reason the product exists, so it and the media that proves it
+    outrank everything else in the queue: raised during a backlog it is sent
+    FIRST, not after the posture snapshots that happen to be older. Other alerts
+    (no-motion) come next, ambient snapshots last."""
+    if etype == "fall":
+        return PRIORITY_FALL
+    return PRIORITY_ALERT if is_alert else PRIORITY_AMBIENT
 
 
 def _category_of(event) -> str:
@@ -137,13 +150,15 @@ class CloudAlertPublisher:
                     error="not sent — no verified account (run setup step 1)")
                 continue
             message = self._format(event)
-            # The alert is queued FIRST, so it is ahead of its own snapshots in
-            # the FIFO and the server always sees the alert before the media
-            # that belongs to it — offline or on.
+            # The alert is queued FIRST and its media is queued against it, so
+            # the server always sees the alert before the media that belongs to
+            # it: same priority tier, lower sequence number — offline or on.
             alert_job = None
+            priority = _priority_of(etype, is_alert)
             if is_alert:
                 alert_job = self._sender.queue_alert(
-                    pid, _ALERT_TYPE.get(etype, etype.upper()), message)
+                    pid, _ALERT_TYPE.get(etype, etype.upper()), message,
+                    priority=priority)
                 if etype == "no_motion" and event.recipient_id:
                     self._slot_alert_job[event.recipient_id] = alert_job
             elif etype == "no_motion_snapshot" and event.recipient_id:
@@ -151,10 +166,9 @@ class CloudAlertPublisher:
                 alert_job = self._slot_alert_job.get(event.recipient_id)
             # Snapshot goes with both alert and snapshot-only events (Phase B will
             # populate snapshot_paths with the first/middle/last 3-frame nest).
-            # Alert media outranks ambient media when the queue has to shed load.
-            self._queue_snapshots(
-                pid, event, message, alert_job,
-                PRIORITY_ALERT if is_alert else PRIORITY_AMBIENT)
+            # The media inherits the event's urgency, so a fall's still leaves
+            # with the fall rather than behind the ambient backlog.
+            self._queue_snapshots(pid, event, message, alert_job, priority)
             # A FALL also gets the moving footage: merge the recorded segments
             # around the instant and send that clip through the SAME saveSnapshot,
             # linked by the same alertId + annotation. Deferred (the post-roll
@@ -240,7 +254,7 @@ class CloudAlertPublisher:
             return
         self._sender.queue_snapshot(pid, text, camera_number, video=clip,
                                     depends_on=alert_job, category="FALL",
-                                    priority=PRIORITY_ALERT)
+                                    priority=PRIORITY_FALL)
         logger.info("fall clip queued: %d bytes, alert job=%s", len(clip),
                     alert_job)
 

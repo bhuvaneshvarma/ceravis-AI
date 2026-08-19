@@ -91,10 +91,14 @@ def _fmt(d: dict) -> str:
     q = cl.get("outbox")
     if q:
         age = q.get("oldest_pending_age_secs")
-        waiting = (f"{q['pending']} waiting, oldest {age / 60:.0f} min "
-                   f"({q.get('attempts_on_head', 0)} attempts)"
+        waiting = (f"{q['pending']} waiting ({q.get('pending_alerts', 0)} alert-grade, "
+                   f"sent first), oldest {age / 60:.0f} min, "
+                   f"{q.get('attempts_on_head', 0)} attempts on the next one"
                    if q.get("pending") and age is not None else "empty (all delivered)")
         out += [_line("upload queue", waiting),
+                # Media held on disk. 0 B with an empty queue is the proof that
+                # a delivered upload gives its bytes back.
+                _line("media held", f"{(q.get('pending_bytes') or 0) / 1e6:.1f} MB"),
                 _line("window", f"{q.get('window_hours')}h / {q.get('max_items')} jobs, "
                                 f"{q.get('sent', 0)} sent, {q.get('dropped', 0)} dropped")]
         if q.get("pending") and q.get("last_error"):

@@ -381,9 +381,12 @@ async function pollCloud() {
   const qEl = document.getElementById("cs-queue");
   if (q.pending) {
     const mins = Math.round((q.oldest_pending_age_secs || 0) / 60);
+    const mb = (q.pending_bytes || 0) / 1e6;
     qEl.hidden = false;
     qEl.textContent = `⏳ ${q.pending} upload${q.pending > 1 ? "s" : ""} queued`
+      + (q.pending_alerts ? ` (${q.pending_alerts} alert${q.pending_alerts > 1 ? "s" : ""} first)` : "")
       + ` · oldest ${mins < 1 ? "just now" : mins + " min"} old`
+      + (mb >= 0.1 ? ` · ${mb.toFixed(1)} MB held` : "")
       + ` · ${q.last_error ? "retrying — " + q.last_error.slice(0, 70) : "sending"}`;
   } else { qEl.hidden = true; }
 

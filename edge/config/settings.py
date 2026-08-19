@@ -375,10 +375,12 @@ class Settings(BaseSettings):
         "area_transition,room_transition")
     # ---- Cloud outbox (the offline-safe upload queue) ---------------
     # Every event-path upload (saveAlert + its saveSnapshot stills and fall
-    # clips) is queued in SQLite and sent from there in strict FIFO order, so a
-    # network outage delays delivery instead of losing the incident. The device
-    # keeps working offline throughout; the queue drains itself, oldest first,
-    # the moment the link is back.
+    # clips) is queued in SQLite and sent from there FALLS FIRST, then oldest
+    # first, so a network outage delays delivery instead of losing the incident.
+    # The device keeps working offline throughout; the queue drains itself the
+    # moment the link is back, and a fall goes ahead of whatever ambient backlog
+    # piled up in front of it. Media is deleted as each call succeeds, so a
+    # delivering device holds no spool at all.
     #
     # The queue is a SLIDING WINDOW, not an unbounded spool — an appliance that
     # was offline for a week must not fill its disk or flood the server with
