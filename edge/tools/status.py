@@ -78,6 +78,9 @@ def _fmt(d: dict) -> str:
     out += ["", "STORAGE",
             _line("recordings", f"{s.get('recordings_gb')} GB "
                                 f"(rolling {s.get('retention_hours')}h window)"),
+            _line("event snapshots", f"{s.get('event_snapshots_gb')} GB in "
+                                     f"{s.get('event_snapshots')} files "
+                                     f"(rolling {s.get('event_retention_days')}d window)"),
             _line("disk", f"{s.get('disk_used_gb')}/{s.get('disk_total_gb')} GB used "
                           f"({s.get('disk_used_pct')}%), {s.get('disk_free_gb')} GB free"),
             _line("span", f"{s.get('oldest_segment') or '-'}  ->  "

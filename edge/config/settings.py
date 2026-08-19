@@ -337,6 +337,23 @@ class Settings(BaseSettings):
     # name contains one of these is treated as intentional lying (not an alarm).
     events_dir: str = "data/events"
     event_snapshot_quality: int = 80
+    # Rolling retention for the device's own record of what happened: the rows
+    # in the `events` table AND the snapshot JPEGs they point at, both expired
+    # once they are older than this many days (0 = keep forever).
+    #
+    # Snapshots were the last unbounded writer on the data volume. Recordings
+    # self-expire after RECORD_RETENTION_HOURS and the upload spool is capped by
+    # OUTBOX_MAX_BLOB_MB, but a still is written for EVERY event — including the
+    # once-a-minute welfare bursts, which alone can be ~300 frames a day — and
+    # nothing ever deleted one. At ~200 KB a frame that is a few hundred MB a
+    # month, growing until the disk the recordings live on is full.
+    #
+    # 14 days is far longer than anything reviews these locally (the cloud has
+    # its own copy of every frame that mattered within seconds of the event) and
+    # far longer than the 24h upload window, so an expiring snapshot is never
+    # one a queued upload is still waiting on — and could not be anyway: the
+    # outbox spools its own copy of the bytes. See EventStore.sweep_retention.
+    event_retention_days: int = 14
     rest_zone_keywords: str = "bed,couch,sofa,recliner,chair,bench,lounge"
     # Room-to-room moves (LocationRule): after the recipient leaves view,
     # the previous room stays valid as the transition origin for this long (an

@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from common import clock
+from common import clock, event_snapshots
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from ingestion.camera_status import codec_warning, substream_warning
@@ -101,8 +101,10 @@ def _time_status() -> dict:
 
 
 def _storage_status() -> dict:
-    """Disk headroom on the recordings volume + the actual footage footprint and
-    its time span (should never exceed the retention window)."""
+    """Disk headroom on the recordings volume + the actual footprint of the two
+    things that occupy it — footage and event snapshots — each with the window
+    that bounds it. A footprint drifting past its window is the visible symptom
+    of a retention sweep that has stopped running."""
     rec = Path(settings.record_dir)
     rec = rec if rec.is_absolute() else (_EDGE_ROOT / rec)
     out = {"path": str(rec), "retention_hours": settings.record_retention_hours}
@@ -133,7 +135,27 @@ def _storage_status() -> dict:
     out["recordings_gb"] = round(total_bytes / 1e9, 2)
     out["oldest_segment"] = _iso(oldest)
     out["newest_segment"] = _iso(newest)
+    out.update(_event_snapshot_footprint())
     return out
+
+
+def _event_snapshot_footprint() -> dict:
+    """What data/events is costing, and the window it is held to. The stills are
+    small individually and written on every event, which is exactly the shape of
+    growth nobody notices until the disk the footage needs is full."""
+    root = event_snapshots.events_root()
+    count = 0
+    nbytes = 0
+    if root.exists():
+        for f in root.rglob("*.jpg"):
+            count += 1
+            try:
+                nbytes += f.stat().st_size
+            except OSError:
+                pass
+    return {"event_snapshots": count,
+            "event_snapshots_gb": round(nbytes / 1e9, 2),
+            "event_retention_days": settings.event_retention_days}
 
 
 def _camera_status(manager=None) -> list[dict]:
