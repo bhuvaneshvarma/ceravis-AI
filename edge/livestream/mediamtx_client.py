@@ -41,6 +41,7 @@ recorder and its runtime record-toggle never depend on slash-paths.
 import logging
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -398,8 +399,14 @@ def path_info(camera_id: str) -> dict | None:
         return None
 
 
-_CODEC_CACHE: dict[str, tuple[float, str | None]] = {}
-_CODEC_TTL = 60.0
+# What each camera is REALLY sending, keyed by camera_id:
+#   {camera_id: (checked_at_monotonic, {"codec","profile","width","height"} | None)}
+# ONE probe fills every consumer — the recorder's playability gate and the status
+# surface — so a camera is never ffprobed twice for the same answer.
+_WIRE_CACHE: dict[str, tuple[float, dict | None]] = {}
+_WIRE_TTL = 60.0
+_WIRE_LOCK = threading.Lock()
+_WIRE_INFLIGHT: set[str] = set()
 
 # Exactly the codec labels MediaMTX uses for a video track. Matched WHOLE, never
 # as a substring: the previous version asked `"265" in str(track)`, which reads
@@ -423,34 +430,59 @@ def _codec_from_api(camera_id: str) -> str | None:
     return None
 
 
+def _probe_wire(camera_id: str) -> dict | None:
+    """ffprobe the live path and store the result. Blocking — callers choose."""
+    seen = observe_stream(local_rtsp_url(camera_id), timeout_secs=6.0)
+    if seen and seen.get("codec"):
+        seen["codec"] = _VIDEO_CODECS.get(seen["codec"], seen["codec"])
+    elif seen is None:
+        # ffprobe unavailable or the stream unreadable — MediaMTX's own label is
+        # worse information, but better than none.
+        label = _codec_from_api(camera_id)
+        seen = {"codec": label} if label else None
+    with _WIRE_LOCK:
+        _WIRE_CACHE[camera_id] = (time.monotonic(), seen)
+        _WIRE_INFLIGHT.discard(camera_id)
+    return seen
+
+
+def _wire_info(camera_id: str, blocking: bool) -> dict | None:
+    """The cached truth about a camera's stream, refreshed at most once per TTL.
+
+    `blocking=False` is what any REQUEST HANDLER must use. ffprobe opens an RTSP
+    session and can take seconds; doing that inline once per camera made
+    /system/status slower than its own client timeout, so the health endpoint
+    timed out precisely when someone was trying to diagnose the device. Now a
+    stale entry triggers ONE background refresh and the caller gets the previous
+    answer (or None) immediately."""
+    now = time.monotonic()
+    hit = _WIRE_CACHE.get(camera_id)
+    if hit and (now - hit[0]) < _WIRE_TTL:
+        return hit[1]
+    if blocking:
+        return _probe_wire(camera_id)
+    with _WIRE_LOCK:
+        if camera_id in _WIRE_INFLIGHT:
+            return hit[1] if hit else None
+        _WIRE_INFLIGHT.add(camera_id)
+    threading.Thread(target=_probe_wire, args=(camera_id,), daemon=True,
+                     name=f"wire-probe-{camera_id}").start()
+    return hit[1] if hit else None
+
+
 def path_codec(camera_id: str) -> str | None:
     """The codec this camera is REALLY sending — 'h264', 'h265', … or None.
 
-    Read off the bitstream with ffprobe, not from a label, because every label
-    in this system has already lied at least once: ONVIF reports H264 for an
-    HEVC camera (its ver10 schema has no H.265 element) and reported Main
-    profile for a stream ffprobe showed as High. This answer gates recording and
-    raises the /system/status alarm, so it has to be evidence.
-
-    Falls back to MediaMTX's own track label when ffprobe is unavailable — worse
-    information, but better than none. Cached briefly so the recorder's periodic
-    re-check and the status surface share one RTSP probe rather than one each."""
-    now = time.monotonic()
-    hit = _CODEC_CACHE.get(camera_id)
-    if hit and (now - hit[0]) < _CODEC_TTL:
-        return hit[1]
-
-    seen = observe_stream(local_rtsp_url(camera_id), timeout_secs=6.0)
-    codec = (seen or {}).get("codec")
-    if codec:
-        codec = _VIDEO_CODECS.get(codec, codec)
-    else:
-        codec = _codec_from_api(camera_id)
-    _CODEC_CACHE[camera_id] = (now, codec)
-    return codec
+    Read off the bitstream, not from a label, because every label in this system
+    has already lied at least once: ONVIF reports H264 for an HEVC camera (its
+    ver10 schema has no H.265 element) and reported Main profile for a stream
+    ffprobe showed as High. This gates recording, so it has to be evidence — and
+    it is called from a background thread, so it may wait for the probe."""
+    return (_wire_info(camera_id, blocking=True) or {}).get("codec")
 
 
 def path_stream_info(camera_id: str) -> dict | None:
-    """Everything ffprobe can tell us about the live path — codec, profile and
-    real resolution — for the status surface. None when it cannot be read."""
-    return observe_stream(local_rtsp_url(camera_id), timeout_secs=6.0)
+    """Codec, profile and real resolution of the live path, for the status
+    surface. NON-BLOCKING: returns the cached answer and refreshes in the
+    background, so a health endpoint never waits on an RTSP session."""
+    return _wire_info(camera_id, blocking=False)

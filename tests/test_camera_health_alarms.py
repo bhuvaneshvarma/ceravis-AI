@@ -19,6 +19,10 @@ Asserted here:
     recordings, and naming the fix
   * a camera with no frames or no codec yet (starting up, offline) is silent,
     never a false alarm
+  * the recorder refuses a codec nobody can play back
+  * and the status surface NEVER blocks on the RTSP probe that reads the codec —
+    doing it inline made the health endpoint time out on the device, so
+    `tools.status` said UNREACHABLE while the service was running fine
 
     python tests/test_camera_health_alarms.py
 """
@@ -115,6 +119,46 @@ ctrl._codec_seen["LIVING_ROOM"] = (0.0, False)      # stale -> forces a recheck
 live_codec["LIVING_ROOM"] = "h264"
 check("a camera fixed at the camera end recovers with no restart",
       ctrl._recordable("LIVING_ROOM") is True)
+
+# --------------------------------------------------------------------------
+print("\n6. the status surface never blocks on an RTSP probe")
+# /system/status reads each camera's real codec, and reading it means ffprobe,
+# which opens an RTSP session and can take seconds. Doing that inline once per
+# camera made the health endpoint slower than its own client timeout — so
+# `tools.status` reported the service UNREACHABLE while it was running fine,
+# precisely when somebody was trying to diagnose the device.
+import time                                                  # noqa: E402
+import livestream.mediamtx_client as mtx                     # noqa: E402
+
+probes = []
+def slow_ffprobe(url, timeout_secs=8.0):
+    probes.append(url)
+    time.sleep(1.0)                       # stands in for a real RTSP handshake
+    return {"codec": "h265", "profile": "Main", "width": 2560, "height": 1440}
+
+mtx.observe_stream = slow_ffprobe
+mtx.local_rtsp_url = lambda cid: f"rtsp://127.0.0.1:8554/{cid}"
+mtx._WIRE_CACHE.clear(); mtx._WIRE_INFLIGHT.clear()
+
+t0 = time.perf_counter()
+first = mtx.path_stream_info("LIVING_ROOM")
+elapsed = time.perf_counter() - t0
+check("returns immediately on a cold cache", elapsed < 0.2)
+check("and admits it does not know yet, rather than guessing", first is None)
+
+time.sleep(1.4)                            # the background refresh lands
+check("the background probe fills the cache",
+      (mtx.path_stream_info("LIVING_ROOM") or {}).get("codec") == "h265")
+
+for _ in range(20):
+    mtx.path_stream_info("LIVING_ROOM")
+check("one probe serves every reader, not one per call", len(probes) == 1)
+
+mtx._WIRE_CACHE.clear(); mtx._WIRE_INFLIGHT.clear()
+t0 = time.perf_counter()
+codec = mtx.path_codec("LOUNGE")
+check("the recorder's gate MAY wait - it runs off the request path",
+      codec == "h265" and (time.perf_counter() - t0) > 0.8)
 
 # --------------------------------------------------------------------------
 print()
