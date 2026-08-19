@@ -10,6 +10,7 @@ WebRTC. Kept here so main.py is just app wiring.
 
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -100,11 +101,33 @@ def _time_status() -> dict:
     return info
 
 
+# Both footprints below are measured by walking the disk, and this endpoint is
+# polled on a timer (the Video Console asks every 15s). Retention makes those
+# walks bounded but not small — a fortnight of event stills is thousands of
+# files — so the answer is cached briefly. It changes on the scale of minutes;
+# stat'ing every file again for each poll would be the one part of the status
+# surface that costs real I/O on the device it is reporting on.
+_STORAGE_TTL_SECS = 60.0
+_storage_cache: tuple[float, dict] | None = None
+
+
 def _storage_status() -> dict:
     """Disk headroom on the recordings volume + the actual footprint of the two
     things that occupy it — footage and event snapshots — each with the window
     that bounds it. A footprint drifting past its window is the visible symptom
-    of a retention sweep that has stopped running."""
+    of a retention sweep that has stopped running.
+
+    Cached for _STORAGE_TTL_SECS; see the note above."""
+    global _storage_cache
+    now = time.monotonic()
+    if _storage_cache is not None and now - _storage_cache[0] < _STORAGE_TTL_SECS:
+        return _storage_cache[1]
+    out = _measure_storage()
+    _storage_cache = (now, out)
+    return out
+
+
+def _measure_storage() -> dict:
     rec = Path(settings.record_dir)
     rec = rec if rec.is_absolute() else (_EDGE_ROOT / rec)
     out = {"path": str(rec), "retention_hours": settings.record_retention_hours}
