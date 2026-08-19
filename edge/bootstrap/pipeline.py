@@ -27,6 +27,7 @@ from reid.faiss_index import FaissGallery
 from events.event_bus import EventBus
 from storage.sqlite_store import SqliteStore
 from storage.event_store import EventStore
+from storage.outbox_store import OutboxStore
 from events.event_writer import EventWriter
 from monitoring.pipeline_metrics import MetricsRegistry
 from monitoring.system_monitor import SystemMonitor
@@ -211,13 +212,30 @@ class Pipeline:
                 logger.exception("RuleEngine disabled")
 
         # ---- cloud forward (recipient falls -> saveAlert/saveSnapshot) ----
+        # Two halves of ONE path: the publisher decides what to send and writes
+        # it to the durable outbox; the sender is the only thing that touches
+        # the network, draining the queue in order. Split this way, an internet
+        # outage costs delivery time and nothing else — the incident is on disk
+        # the instant it is detected, and leaves as soon as the link is back.
+        outbox = None
+        outbox_sender = None
         cloud_alert_publisher = None
         try:
-            from alerts.cloud_alert_publisher import CloudAlertPublisher
-            cloud_alert_publisher = CloudAlertPublisher(event_bus)
-            cloud_alert_publisher.start()
+            from integration.outbox_sender import OutboxSender
+            outbox = OutboxStore(sqlite_store)
+            outbox_sender = OutboxSender(outbox)
+            outbox_sender.start()
         except Exception:
-            logger.exception("CloudAlertPublisher disabled")
+            logger.exception("Cloud outbox disabled — alerts will NOT reach "
+                             "the app server")
+        if outbox_sender is not None:
+            try:
+                from alerts.cloud_alert_publisher import CloudAlertPublisher
+                cloud_alert_publisher = CloudAlertPublisher(event_bus,
+                                                            outbox_sender)
+                cloud_alert_publisher.start()
+            except Exception:
+                logger.exception("CloudAlertPublisher disabled")
 
         # ---- expose to the API layer -------------------------------
         self._state = {
@@ -238,13 +256,18 @@ class Pipeline:
             "system_monitor": system_monitor,
             "mediamtx_active": via_mediamtx,
             "recording_controller": recording_controller,
+            "outbox": outbox,
         }
         # stopped in this order on shutdown (reverse of dependency). The
         # recording controller goes first so open segments are closed while
         # MediaMTX is still up; MediaMTX itself stops last (see stop()).
+        # The publisher stops before the sender, so nothing new is queued while
+        # the sender makes its last pass; whatever is still queued stays on disk
+        # and goes out on the next start.
         self._shutdown = [
-            recording_controller, cloud_alert_publisher, rule_engine, event_writer,
-            enroll_worker, reid_runner, pose_runner, tracking_runner, detection_runner,
+            recording_controller, cloud_alert_publisher, outbox_sender,
+            rule_engine, event_writer, enroll_worker, reid_runner, pose_runner,
+            tracking_runner, detection_runner,
         ]
 
         for url in lan_urls():

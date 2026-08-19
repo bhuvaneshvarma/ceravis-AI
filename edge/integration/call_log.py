@@ -52,6 +52,19 @@ def _clip(v) -> str | None:
 SOURCE = "live"
 
 
+# Per-thread switch that silences repeat FAILURE records. Set by the outbox
+# sender while it retries a queued upload: the link being down is one piece of
+# news, not one per attempt, and thousands of identical FAILED lines would push
+# every real detection out of this (rotating) file and off the console. The
+# outage is reported once — the first failure, then the queue's own state.
+_QUIET = threading.local()
+
+
+def quiet_retries(on: bool) -> None:
+    """Silence failure records on THIS thread (successes still record)."""
+    _QUIET.on = bool(on)
+
+
 def _file() -> Path:
     base = settings.data_path
     base = base if base.is_absolute() else (_EDGE_ROOT / base)
@@ -79,18 +92,30 @@ def record(endpoint: str, ok: bool, *, status: int | None = None,
            latency_ms: float | None = None, label: str | None = None,
            alert_id=None, link: str | None = None,
            error: str | None = None, request=None, response=None,
-           direction: str | None = None) -> None:
+           direction: str | None = None, state: str | None = None) -> None:
     """Append one call record. Never raises.
 
     `request`/`response` are the (already base64-redacted) bodies — what we sent
     or received — so the console can show the full exchange, like the wire log;
     both are size-capped. `direction` = "out" (edge → app server) or "in" (app
-    server → this edge), so the console can tell them apart."""
+    server → this edge), so the console can tell them apart.
+
+    `state` is where an event-path upload is in its life: "queued" the moment it
+    is written to the outbox, then nothing (a plain sent/failed call) once it
+    actually goes out, or "dropped" if the sliding window gave up on it. So one
+    fall during an outage reads on the console as QUEUED at 09:04 and then the
+    real CALL HIT when the link came back — the same mechanism, two states."""
+    # A retry of an already-reported failure is not news. An upload the queue
+    # GAVE UP on always is — it is the only case where a detection never reaches
+    # the cloud at all, so it is never silenced.
+    if not ok and state != "dropped" and getattr(_QUIET, "on", False):
+        return
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "endpoint": endpoint,   # userDetails|saveCamera|saveAlert|saveSnapshot|event
         "source": SOURCE,                # "live" (real pipeline) | "test" (test_cloud)
         "direction": direction,          # "out" | "in" | None
+        "state": state,                  # "queued" | "dropped" | None (sent now)
         "ok": bool(ok),
         "status": status,
         "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,

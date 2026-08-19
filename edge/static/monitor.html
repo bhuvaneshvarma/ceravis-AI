@@ -44,6 +44,7 @@
               border-radius: 9px; padding: 8px 10px; background: var(--panel-2);
               font-size: 12px; }
   .cs-entry.err { border-left-color: #f87171; background: rgba(248,113,113,.06); }
+  .cs-entry.queued { border-left-color: #fbbf24; background: rgba(251,191,36,.05); }
   .cs-top { display: flex; align-items: center; gap: 7px; }
   .cs-ep { font-size: 10px; font-weight: 700; letter-spacing: .6px;
            padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
@@ -54,6 +55,10 @@
   .cs-ep.evt   { color: #fbbf24; border-color: rgba(251,191,36,.45); }
   .cs-ep.test  { color: #c084fc; border-color: rgba(192,132,252,.45); }
   .cs-ok  { font-weight: 700; color: #34d399; font-size: 11px; }
+  .cs-wait { font-weight: 700; color: #fbbf24; font-size: 11px; }
+  .cs-queue { margin-top: 8px; padding: 7px 9px; border-radius: 9px; font-size: 11.5px;
+              border: 1px solid rgba(251,191,36,.4); background: rgba(251,191,36,.08);
+              color: #fbbf24; }
   .cs-bad { font-weight: 700; color: #f87171; font-size: 11px; }
   .cs-time { margin-left: auto; color: var(--muted); font-size: 10.5px; }
   .cs-label { margin-top: 4px; word-break: break-word; }
@@ -134,7 +139,10 @@ action:&quot;revert&quot; is untouched.">🗑</button>
           (fall, room change, posture, stillness) and every call it fires at the
           CERAVIS server — with HTTP result, latency, alertId and the uploaded
           snapshot link. An amber EVENT with “not sent” tells you exactly why a
-          detection never reached the cloud.</div>
+          detection never reached the cloud. With the internet down, uploads show
+          as QUEUED and wait on disk in order — they send themselves the moment
+          the link is back.</div>
+        <div class="cs-queue" id="cs-queue" hidden></div>
         <div class="cs-log" id="cs-log">
           <div class="faint" id="cs-empty" style="font-size:12.5px">Nothing yet —
             trigger a test (fall, room change, stillness) and the detection plus
@@ -360,7 +368,25 @@ async function pollCloud() {
   document.getElementById("cs-stats").textContent =
     calls.length ? `${okN} ✓ · ${calls.length - okN} ✗` : "";
   const dot = document.getElementById("cs-dot");
-  dot.className = "cs-dot" + (calls.length ? (calls[0].ok ? " ok" : " err") : "");
+  // Red while the queue is stuck retrying — a green dot over a backlog would
+  // say "cloud fine" during an outage.
+  const stalled = (r.outbox || {}).pending && (r.outbox || {}).last_error;
+  dot.className = "cs-dot" + (stalled ? " err"
+    : calls.length ? (calls[0].ok ? " ok" : " err") : "");
+
+  // The upload queue. Depth 0 = everything raised has been delivered; anything
+  // else names the backlog and how long the head has been waiting, so a network
+  // outage is legible as "held, not lost" while it is happening.
+  const q = r.outbox || {};
+  const qEl = document.getElementById("cs-queue");
+  if (q.pending) {
+    const mins = Math.round((q.oldest_pending_age_secs || 0) / 60);
+    qEl.hidden = false;
+    qEl.textContent = `⏳ ${q.pending} upload${q.pending > 1 ? "s" : ""} queued`
+      + ` · oldest ${mins < 1 ? "just now" : mins + " min"} old`
+      + ` · ${q.last_error ? "retrying — " + q.last_error.slice(0, 70) : "sending"}`;
+  } else { qEl.hidden = true; }
+
   if (!calls.length || calls[0].ts === CS.lastTs) return;   // nothing new — keep scroll
   CS.lastTs = calls[0].ts;
 
@@ -373,9 +399,16 @@ async function pollCloud() {
     ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE" }[e]
     || (e || "?").toUpperCase());
   // Pipeline detections aren't HTTP calls — word their status accordingly.
-  const okTxt = c => c.endpoint === "event"
-    ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
+  // An upload has three states, not two: QUEUED the moment the event fires,
+  // then CALL HIT when it actually reaches the server (a second line, so an
+  // outage reads as a gap between the two), or DROPPED if the sliding window
+  // gave up on it.
+  const okTxt = c => c.state === "queued" ? "⏳ QUEUED"
+    : c.state === "dropped" ? "✗ DROPPED"
+    : c.endpoint === "event" ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
     : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
+  const stateCls = c => c.state === "queued" ? "cs-wait"
+    : c.ok ? "cs-ok" : "cs-bad";
   // Direction: OUT = this edge → app server; IN = app server → this edge.
   const dirBadge = c => c.direction === "in" ? `<span class="cs-dir in">↓ IN</span>`
     : c.direction === "out" ? `<span class="cs-dir out">↑ OUT</span>` : "";
@@ -387,12 +420,12 @@ async function pollCloud() {
     return csEsc(s);
   };
   document.getElementById("cs-log").innerHTML = calls.map(c => `
-    <div class="cs-entry ${c.ok ? "" : "err"}">
+    <div class="cs-entry ${c.state === "queued" ? "queued" : c.ok ? "" : "err"}">
       <div class="cs-top">
         <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
         ${dirBadge(c)}
         ${c.source === "test" ? `<span class="cs-ep test">TEST</span>` : ""}
-        <span class="${c.ok ? "cs-ok" : "cs-bad"}">${okTxt(c)}</span>
+        <span class="${stateCls(c)}">${okTxt(c)}</span>
         <span class="cs-time">${new Date(c.ts).toLocaleTimeString([], { hour12: false })}</span>
       </div>
       ${c.label ? `<div class="cs-label">${csEsc(c.label)}</div>` : ""}

@@ -34,6 +34,10 @@ edge/data/recordings/
 # Cloud call log (monitor sync console runtime state)
 edge/data/cloud_calls.jsonl
 
+# Cloud outbox media spool — stills and incident clips waiting for the link to
+# come back. Runtime state, sometimes large, never committed.
+edge/data/outbox/
+
 # Recording on/off runtime state (monitor button)
 edge/data/recording_mode.json
 
@@ -61,6 +65,7 @@ Thumbs.db
 /MEMORY.md
 /data/
 /recording-playback-api.md
+/ai-pipeline-reference.md
 # Local ONVIF capability dumps (tools/onvif_dump) — camera-specific, may contain
 # usernames/network details; a review artifact, never committed.
 camerainfo/

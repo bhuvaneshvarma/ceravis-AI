@@ -5,13 +5,20 @@ Forwards actionable alerts to the CERAVIS app server.
 
 Subscribes to the same EventBus the MQTT publisher uses. For every enriched
 event whose severity is in CLOUD_ALERT_SEVERITIES (default critical + warning),
-it calls saveAlert with:
+it queues saveAlert with:
     patientUserId = the verified account's ceravisUserId (account.json)
     alertType     = the event type, upper-cased (e.g. "FALL")
     messageText   = the operator-facing message the enricher built
 
-Fire-and-forget per event (errors are logged, never block the pipeline). Stays
-silent if the app server isn't configured or no account has been verified yet.
+It does not talk to the network itself. Every upload is handed to the cloud
+outbox (storage/outbox_store.py) and delivered by the one sender thread, in
+order — so an alert raised while the internet is down is kept and sent when it
+returns, instead of being logged and lost. Detection, streaming, recording and
+LAN live view are unaffected either way; only the cloud hop waits.
+
+Queueing never blocks this loop and never raises: if the queue itself cannot
+persist a job it says so and the event loop carries on. Stays silent if the app
+server isn't configured or no account has been verified yet.
 """
 
 import logging
@@ -27,12 +34,11 @@ from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
 from events.event_bus import EventBus
 from integration import call_log
-from integration.ceravis_api import (
-    CeravisApiError, alert_id_of, is_configured, room_to_enum, save_alert,
-    save_snapshot,
-)
+from integration.ceravis_api import is_configured, room_to_enum
+from integration.outbox_sender import OutboxSender
 from livestream.mediamtx_client import record_path_name
 from recording.incident_clip import build_incident_clip
+from storage.outbox_store import PRIORITY_ALERT, PRIORITY_AMBIENT
 
 
 logger = logging.getLogger("alerts")
@@ -51,8 +57,11 @@ def _category_of(event) -> str:
 
 
 class CloudAlertPublisher:
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(self, bus: EventBus, sender: OutboxSender) -> None:
         self._queue = bus.subscribe()
+        # The ONLY way out of this process to the app server. No direct-send
+        # fallback: one path means "raised" and "delivered" can never disagree.
+        self._sender = sender
         self._account = AccountConfig()
         self._cameras = CameraConfig()
         self._severities = {s.strip().lower()
@@ -68,10 +77,13 @@ class CloudAlertPublisher:
         self._running = False
         self._thread: threading.Thread | None = None
         self._warned_no_account = False
-        # recipient_id -> alertId of that recipient's current no_motion slot, so
-        # the follow-up no_motion_snapshot burst (fired minute-by-minute over the
-        # rest of the slot) links back to the alert that opened it.
-        self._slot_alert_id: dict = {}
+        # recipient_id -> the outbox JOB id of that recipient's current
+        # no_motion alert, so the follow-up no_motion_snapshot burst (fired
+        # minute-by-minute over the rest of the slot) links back to the alert
+        # that opened it. A job id, not an alertId, because offline the server
+        # has not issued one yet — the sender substitutes the real alertId when
+        # the alert lands, so the linkage survives an outage of any length.
+        self._slot_alert_job: dict = {}
         # camera_id -> monotonic time of its last fall clip, so a burst of fall
         # events for one incident yields a single clip (fall_clip_cooldown_secs).
         self._fall_clip_at: dict = {}
@@ -125,35 +137,37 @@ class CloudAlertPublisher:
                     error="not sent — no verified account (run setup step 1)")
                 continue
             message = self._format(event)
-            alert_id = None
+            # The alert is queued FIRST, so it is ahead of its own snapshots in
+            # the FIFO and the server always sees the alert before the media
+            # that belongs to it — offline or on.
+            alert_job = None
             if is_alert:
-                try:
-                    resp = save_alert(pid, _ALERT_TYPE.get(etype, etype.upper()),
-                                      message)
-                    alert_id = alert_id_of(resp)
-                    if etype == "no_motion" and event.recipient_id:
-                        self._slot_alert_id[event.recipient_id] = alert_id
-                except CeravisApiError as exc:
-                    logger.warning("saveAlert failed (%s): %s", etype, exc)
-                except Exception:
-                    logger.exception("saveAlert unexpected error")
+                alert_job = self._sender.queue_alert(
+                    pid, _ALERT_TYPE.get(etype, etype.upper()), message)
+                if etype == "no_motion" and event.recipient_id:
+                    self._slot_alert_job[event.recipient_id] = alert_job
             elif etype == "no_motion_snapshot" and event.recipient_id:
-                # a follow-up snap in the no_motion slot -> reuse the slot's alertId
-                alert_id = self._slot_alert_id.get(event.recipient_id)
+                # a follow-up snap in the no_motion slot -> the slot's alert job
+                alert_job = self._slot_alert_job.get(event.recipient_id)
             # Snapshot goes with both alert and snapshot-only events (Phase B will
             # populate snapshot_paths with the first/middle/last 3-frame nest).
-            self._send_snapshots(pid, event, message, alert_id)
+            # Alert media outranks ambient media when the queue has to shed load.
+            self._queue_snapshots(
+                pid, event, message, alert_job,
+                PRIORITY_ALERT if is_alert else PRIORITY_AMBIENT)
             # A FALL also gets the moving footage: merge the recorded segments
             # around the instant and send that clip through the SAME saveSnapshot,
             # linked by the same alertId + annotation. Deferred (the post-roll
             # must finish writing) and best-effort — it never blocks this event.
             if is_alert and etype == "fall":
-                self._schedule_fall_clip(pid, event, message, alert_id)
+                self._schedule_fall_clip(pid, event, message, alert_job)
 
-    def _send_snapshots(self, pid, event, text: str, alert_id=None) -> None:
-        """POST each still snapshot tied to this alert as the multipart `image`
-        file, linking it to alert_id when the event has one. One today; the
-        first/middle/last nest once Phase B fills snapshot_paths."""
+    def _queue_snapshots(self, pid, event, text: str, alert_job=None,
+                         priority: int = PRIORITY_AMBIENT) -> None:
+        """Queue each still tied to this alert as the multipart `image` file,
+        linked to the alert's outbox job so the server-issued alertId is stamped
+        on it at delivery. One today; the first/middle/last nest once Phase B
+        fills snapshot_paths."""
         paths = list(event.snapshot_paths or [])
         if not paths and event.snapshot_path:
             paths = [event.snapshot_path]
@@ -167,16 +181,12 @@ class CloudAlertPublisher:
             if not img:
                 continue
             label = text if n == 1 else f"{text} · frame {i + 1}/{n}"
-            try:
-                save_snapshot(pid, label, camera_number, image=img,
-                              alert_id=alert_id, category=category)
-            except CeravisApiError as exc:
-                logger.warning("saveSnapshot failed: %s", exc)
-            except Exception:
-                logger.exception("saveSnapshot unexpected error")
+            self._sender.queue_snapshot(pid, label, camera_number, image=img,
+                                        depends_on=alert_job, category=category,
+                                        priority=priority)
 
     # ---- fall incident clip ------------------------------------------
-    def _schedule_fall_clip(self, pid, event, text: str, alert_id) -> None:
+    def _schedule_fall_clip(self, pid, event, text: str, alert_job) -> None:
         """Kick off the deferred fall-clip build for this event (once per camera
         per incident). Returns immediately — the merge + upload run on a daemon
         thread so the event loop is never blocked."""
@@ -200,15 +210,19 @@ class CloudAlertPublisher:
         except Exception:
             at = datetime.now().astimezone()
         threading.Thread(
-            target=self._build_and_send_fall_clip,
+            target=self._build_and_queue_fall_clip,
             args=(pid, record_path_name(cam), at, text,
-                  room_to_enum(event.room_name), alert_id),
+                  room_to_enum(event.room_name), alert_job),
             daemon=True, name="fall-clip").start()
 
-    def _build_and_send_fall_clip(self, pid, rec_path, at, text, camera_number,
-                                  alert_id) -> None:
-        """Wait for the post-roll footage to flush, merge the clip, and POST it
-        via saveSnapshot with the same alertId + annotation as the alert."""
+    def _build_and_queue_fall_clip(self, pid, rec_path, at, text, camera_number,
+                                   alert_job) -> None:
+        """Wait for the post-roll footage to flush, merge the clip, and queue it
+        as a saveSnapshot linked to the same alert as the still.
+
+        The clip is built from LOCAL recordings, so it is produced normally
+        during an outage — the footage never depended on the internet. Only its
+        upload waits in the queue."""
         # The segment covering at+post is still being written when the alert
         # fires; wait it out (post window + one segment + a small margin).
         time.sleep(settings.fall_clip_post_secs + settings.record_segment_secs + 2.0)
@@ -220,18 +234,15 @@ class CloudAlertPublisher:
             clip = None
         if not clip:
             call_log.record(
-                "saveSnapshot", False, label=f"{text} · clip", alert_id=alert_id,
+                "saveSnapshot", False, label=f"{text} · clip",
                 error="fall clip not sent — no footage (recording off or nobody "
                       "in frame at the incident)")
             return
-        try:
-            save_snapshot(pid, text, camera_number, video=clip, alert_id=alert_id,
-                          category="FALL")
-            logger.info("fall clip sent: %d bytes, alert=%s", len(clip), alert_id)
-        except CeravisApiError as exc:
-            logger.warning("fall clip saveSnapshot failed: %s", exc)
-        except Exception:
-            logger.exception("fall clip saveSnapshot unexpected error")
+        self._sender.queue_snapshot(pid, text, camera_number, video=clip,
+                                    depends_on=alert_job, category="FALL",
+                                    priority=PRIORITY_ALERT)
+        logger.info("fall clip queued: %d bytes, alert job=%s", len(clip),
+                    alert_job)
 
     def _image_bytes(self, rel_path: str) -> bytes | None:
         # Shared resolver (common.event_snapshots) — same one the enricher

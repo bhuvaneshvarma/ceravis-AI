@@ -43,11 +43,29 @@ async def health():
 
 
 @router.get("/api/v1/cloud/activity")
-def cloud_activity(limit: int = 100):
+def cloud_activity(request: Request, limit: int = 100):
     """Rolling log of app-server calls (saveAlert/saveSnapshot/…) — feeds the
-    monitor's Cloud Sync Console so end-to-end tests are verifiable on screen."""
+    monitor's Cloud Sync Console so end-to-end tests are verifiable on screen.
+
+    `outbox` rides along on the same poll: how many uploads are queued and how
+    old the oldest is. That is what turns "the cloud is quiet" into either
+    "nothing happened" or "we are offline and holding N incidents"."""
     from integration.call_log import recent
-    return {"calls": recent(limit=min(int(limit), 300))}
+    ob = getattr(request.app.state, "outbox", None)
+    return {"calls": recent(limit=min(int(limit), 300)),
+            "outbox": ob.stats() if ob is not None else None}
+
+
+@router.get("/api/v1/cloud/outbox")
+def cloud_outbox(request: Request, limit: int = 50):
+    """The upload queue itself — every job with its state, attempts and last
+    error, newest first. The detail level behind the console's queue counter,
+    for answering "what exactly is stuck, and why"."""
+    ob = getattr(request.app.state, "outbox", None)
+    if ob is None:
+        return {"available": False, "jobs": []}
+    return {"available": True, **ob.stats(),
+            "jobs": ob.recent(limit=min(int(limit), 300))}
 
 
 # =====================================================================
@@ -156,7 +174,7 @@ def _camera_status(manager=None) -> list[dict]:
     return cams
 
 
-def _cloud_status() -> dict:
+def _cloud_status(outbox=None) -> dict:
     try:
         from integration.call_log import recent
         from integration.ceravis_api import is_configured
@@ -166,6 +184,9 @@ def _cloud_status() -> dict:
             "recent_calls": len(calls),
             "recent_errors": sum(1 for c in calls if not c.get("ok", True)),
             "last_call": calls[0] if calls else None,
+            # The upload queue: depth 0 means everything raised has been
+            # delivered. Anything else is a backlog with an age.
+            "outbox": outbox.stats() if outbox is not None else None,
         }
     except Exception:
         return {"configured": False}
@@ -210,6 +231,17 @@ def system_status(request: Request):
         problems.append(f"recordings disk {storage.get('disk_used_pct')}% full")
     if time_info.get("ntp_synchronized") is False:
         problems.append("system clock is not NTP-synced")
+    cloud = _cloud_status(getattr(st, "outbox", None))
+    queue = cloud.get("outbox") or {}
+    stuck = queue.get("oldest_pending_age_secs") or 0
+    # A brief blip drains itself and is not worth reporting; an upload that has
+    # been waiting a quarter of an hour means the link to the cloud is really
+    # down, and the operator should hear it from the device, not from a missing
+    # alert on their phone.
+    if stuck >= 900:
+        problems.append(
+            f"cloud uploads backing up — {queue.get('pending')} waiting, oldest "
+            f"{stuck / 60:.0f} min old ({queue.get('last_error') or 'no response'})")
 
     return {
         "status": "ok" if not problems else "degraded",
@@ -222,5 +254,5 @@ def system_status(request: Request):
         "cameras": cameras,
         "recording": recording,
         "storage": storage,
-        "cloud": _cloud_status(),
+        "cloud": cloud,
     }

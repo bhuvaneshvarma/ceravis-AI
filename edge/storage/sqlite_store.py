@@ -28,11 +28,17 @@ class SqliteStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA temp_store=MEMORY")
+        # A writer that finds the file locked waits instead of raising — the
+        # outbox writes from the event thread while the sender updates rows.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         logger.info("SQLite store: %s", self._path)
 
-    def execute(self, sql: str, params: tuple = ()) -> None:
+    def execute(self, sql: str, params: tuple = ()) -> int:
+        """Run one statement. Returns the new rowid for an INSERT (0 otherwise),
+        which is what gives the outbox its FIFO sequence number."""
         with self._lock:
-            self._conn.execute(sql, params)
+            cur = self._conn.execute(sql, params)
+            return cur.lastrowid or 0
 
     def fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
         with self._lock:

@@ -373,6 +373,36 @@ class Settings(BaseSettings):
         "standing_up,sitting_down,walking_started,walking_stopped,"
         "no_motion_snapshot,no_transition_snapshot,"
         "area_transition,room_transition")
+    # ---- Cloud outbox (the offline-safe upload queue) ---------------
+    # Every event-path upload (saveAlert + its saveSnapshot stills and fall
+    # clips) is queued in SQLite and sent from there in strict FIFO order, so a
+    # network outage delays delivery instead of losing the incident. The device
+    # keeps working offline throughout; the queue drains itself, oldest first,
+    # the moment the link is back.
+    #
+    # The queue is a SLIDING WINDOW, not an unbounded spool — an appliance that
+    # was offline for a week must not fill its disk or flood the server with
+    # stale ambient snapshots on reconnect. Three caps bound it, and eviction is
+    # always lowest-priority-oldest first, so falls and no-motion alerts are the
+    # last thing surrendered.
+    outbox_window_secs: float = 86400.0      # 24h: older than this, drop it
+    outbox_max_items: int = 2000             # pending jobs
+    outbox_max_blob_mb: float = 512.0        # spooled stills + clips on disk
+    # Retry policy. Transport errors and 5xx/408/429 are retried on an
+    # exponential backoff; the cap keeps recovery inside half a minute of the
+    # link returning. Other 4xx are the server rejecting the request itself —
+    # retried never, dropped at once, so one bad upload can't block the queue
+    # behind it. How long we keep TRYING is owned by outbox_window_secs above;
+    # max_attempts is only the backstop that catches a job failing far faster
+    # than the backoff expects.
+    outbox_max_attempts: int = 5000
+    outbox_backoff_base_secs: float = 2.0
+    outbox_backoff_max_secs: float = 30.0
+    outbox_poll_secs: float = 1.0
+    # How long a finished (sent or dropped) job stays as a receipt for the sync
+    # console before the row is pruned.
+    outbox_history_secs: float = 21600.0     # 6h
+
     # ---- Long-dwell welfare checks (StillnessRule) ------------------
     # A 75-min slot: WINDOW minutes quiet, then one snapshot per minute for
     # (COUNT) minutes, then the slot resets and repeats.

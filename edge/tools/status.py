@@ -88,6 +88,17 @@ def _fmt(d: dict) -> str:
             _line("configured", "yes" if cl.get("configured") else "no"),
             _line("recent errors",
                   f"{cl.get('recent_errors', 0)} of {cl.get('recent_calls', 0)} calls")]
+    q = cl.get("outbox")
+    if q:
+        age = q.get("oldest_pending_age_secs")
+        waiting = (f"{q['pending']} waiting, oldest {age / 60:.0f} min "
+                   f"({q.get('attempts_on_head', 0)} attempts)"
+                   if q.get("pending") and age is not None else "empty (all delivered)")
+        out += [_line("upload queue", waiting),
+                _line("window", f"{q.get('window_hours')}h / {q.get('max_items')} jobs, "
+                                f"{q.get('sent', 0)} sent, {q.get('dropped', 0)} dropped")]
+        if q.get("pending") and q.get("last_error"):
+            out.append(_line("last error", str(q["last_error"])[:70]))
     return "\n".join(out)
 
 

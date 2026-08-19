@@ -115,7 +115,16 @@ def room_to_enum(room_name: str) -> str:
 
 
 class CeravisApiError(Exception):
-    """Transport / configuration / server error talking to the app server."""
+    """Transport / configuration / server error talking to the app server.
+
+    `status` is the HTTP status when the server answered, and None when it never
+    did (DNS, refused, timeout, TLS — i.e. the network is down). That one
+    distinction is what lets the outbox tell "try again when the link is back"
+    from "the server rejected this and always will"."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def is_configured() -> bool:
@@ -175,7 +184,8 @@ def get_user_details(email: str) -> dict | None:
     if resp.status_code >= 400:
         logger.warning("userDetails error body: %s", resp.text[:300])
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}")
+            f"app server returned HTTP {resp.status_code}",
+            status=resp.status_code)
     try:
         data = _unwrap(resp.json())
     except ValueError as exc:
@@ -228,7 +238,8 @@ def save_cameras(patient_user_id, cameras: list[dict]):
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
     try:
         return _unwrap(resp.json())
     except ValueError:
@@ -294,7 +305,8 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
                         status=resp.status_code, latency_ms=lat,
                         error=resp.text[:200])
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
     try:
         result = _unwrap(resp.json())
     except ValueError:
@@ -380,7 +392,8 @@ def save_snapshot(patient_id, text: str, camera_number: str, *,
                         status=resp.status_code, latency_ms=lat,
                         error=resp.text[:200])
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
     try:
         result = _unwrap(resp.json())
     except ValueError:
@@ -431,7 +444,8 @@ def get_patient_postures(user_id) -> list[dict]:
         return []
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
     try:
         data = _unwrap(resp.json())
     except ValueError as exc:
@@ -482,7 +496,8 @@ def upload_embedding_file(file_category: str, user_id, file_name: str,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}")
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
     try:
         return _unwrap(resp.json())
     except ValueError:
