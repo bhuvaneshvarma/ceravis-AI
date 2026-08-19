@@ -8,8 +8,10 @@ segments named with their own start time; recording.index reads that
 directory and this API hands the frontend a playlist that points straight at
 those files. Nothing is re-cut, re-encoded or duplicated for playback.
 
-    GET /api/v1/recordings/{camera}/timeline      -> where footage exists over the
-                                                     retention window (scrub bar)
+    GET /api/v1/recordings/timeline               -> where footage exists over the
+                                                     retention window, for EVERY
+                                                     camera in one call
+    GET /api/v1/recordings/{camera}/timeline      -> the same, for ONE camera
     GET /api/v1/recordings/{camera}/playback.m3u8 -> ONE seekable HLS playlist
                                                      over the STORED segments;
                                                      stays open, so the player
@@ -92,32 +94,84 @@ def recording_toggle(request: Request):
 
 # ---- timeline (availability for the scrub bar) ----------------------
 
-@router.get("/{camera}/timeline")
-def recording_timeline(camera: str, edge_id: str | None = None):
-    """The availability data for the scrub bar: which stretches of the last
-    `retention_hours` actually have footage (i.e. someone was present) — read
-    straight off the stored segments. The frontend draws a bar from
-    window_start→now and shades these `segments`; a click on a shaded point
-    becomes a /playback.m3u8?ts=… call. Re-fetch anytime to reflect the rolling
-    window (oldest aged out, newest added)."""
-    check_edge_id(edge_id)
-    cam = _resolve_camera(camera)
+def _window() -> tuple[datetime, datetime]:
+    """(now, window_start) on the ONE edge clock every timestamp here shares —
+    read once per request so every camera in a multi-camera answer is measured
+    against the SAME instant."""
     now = clock.now()
-    window_start = now - timedelta(hours=settings.record_retention_hours)
-    out = []
-    for start, end in recording_index.ranges(record_path_name(cam)):
-        if end <= window_start:
-            continue
-        start = max(start, window_start)
-        out.append({"start": start.isoformat(), "end": end.isoformat(),
-                    "seconds": round((end - start).total_seconds(), 1)})
+    return now, now - timedelta(hours=settings.record_retention_hours)
+
+
+def _camera_timeline(cam, window_start: datetime) -> dict:
+    """One camera's availability block — the SAME computation behind both the
+    all-cameras and the single-camera response, so the two can never drift.
+
+    A stretch that began before the window is clipped to it, so `segments`
+    describes exactly what is still on disk. A camera whose segment directory
+    can't be read reports `error` rather than a silently empty timeline: on a
+    multi-camera answer, one unreadable camera must not look like "nobody was
+    home"."""
+    try:
+        segs = []
+        for start, end in recording_index.ranges(record_path_name(cam)):
+            if end <= window_start:
+                continue
+            start = max(start, window_start)
+            segs.append({"start": start.isoformat(), "end": end.isoformat(),
+                         "seconds": round((end - start).total_seconds(), 1)})
+    except OSError as exc:
+        return {"camera_id": cam.camera_id, "label": cam.camera_name,
+                "recorded_seconds": 0.0, "segments": [], "error": str(exc)}
+    return {"camera_id": cam.camera_id, "label": cam.camera_name,
+            "recorded_seconds": round(sum(s["seconds"] for s in segs), 1),
+            "segments": segs}
+
+
+@router.get("/timeline")
+def recording_timeline_all(edge_id: str | None = None):
+    """EVERY camera's availability in ONE call — no camera in the path.
+
+    Same window, same segment shape and same auth as the per-camera form below;
+    the app draws the whole review screen (one bar per camera) from a single
+    request instead of one request per camera. Cameras with no footage are
+    included with an empty `segments`, so this is also the complete "what can I
+    review right now" answer.
+
+    `label` on each entry is what you pass back as `cameraLabel` / `{camera}` to
+    playback, snapshot and PTZ — one addressing rule everywhere."""
+    check_edge_id(edge_id)
+    now, window_start = _window()
+    cameras = [_camera_timeline(cam, window_start)
+               for cam in sorted(CameraConfig().get_all(),
+                                 key=lambda c: c.camera_id)]
     return {
-        "camera_id": cam.camera_id,
         "now": now.isoformat(),
         "window_start": window_start.isoformat(),
         "retention_hours": settings.record_retention_hours,
-        "recorded_seconds": round(sum(x["seconds"] for x in out), 1),
-        "segments": out,
+        "camera_count": len(cameras),
+        "recorded_seconds": round(sum(c["recorded_seconds"] for c in cameras), 1),
+        "cameras": cameras,
+    }
+
+
+@router.get("/{camera}/timeline")
+def recording_timeline(camera: str, edge_id: str | None = None):
+    """ONE camera's availability data for the scrub bar: which stretches of the
+    last `retention_hours` actually have footage (i.e. someone was present) —
+    read straight off the stored segments. The frontend draws a bar from
+    window_start→now and shades these `segments`; a click on a shaded point
+    becomes a seek in the already-loaded playlist. Re-fetch anytime to reflect
+    the rolling window (oldest aged out, newest added).
+
+    Drop the `{camera}` segment to get every camera in one response instead."""
+    check_edge_id(edge_id)
+    cam = _resolve_camera(camera)
+    now, window_start = _window()
+    return {
+        "now": now.isoformat(),
+        "window_start": window_start.isoformat(),
+        "retention_hours": settings.record_retention_hours,
+        **_camera_timeline(cam, window_start),
     }
 
 

@@ -1,124 +1,236 @@
-# Recording playback — integration guide
+# Recorded playback & timeline — complete call manual
 
-How the ceravishealth app (web **and** mobile) plays back **recorded footage**
-with a real review player — pause, scrub, seek to any second, roll across gaps —
-and a CCTV-style timeline. Same authentication as the Cloud PTZ controls, so if
-PTZ works this is a short add.
+How the ceravishealth app (web **and** mobile) reviews **recorded footage**: what
+exists (`timeline`) and how to play it back with a real review player — pause,
+scrub, seek to any second, roll across gaps (`playback.m3u8`).
 
-There are exactly **two endpoints**, and one idea that makes it professional:
-**the recording carries its own wall-clock time, so the player seeks by _date_.**
+Same authentication as the Cloud PTZ call, so if PTZ works this is a short add.
+
+```
+   Browser / App  ──►  your backend  ──►  frp tunnel  ──►  edge device
+                       (adds nothing)      (per-home URL)   (reads its own disk)
+```
+
+Source of truth: [edge/api/recording_routes.py](edge/api/recording_routes.py),
+[edge/recording/index.py](edge/recording/index.py).
 
 ---
 
-## 1. What it does, in one line
+## 1. The calls
 
-Every time the AI sees a person, the edge records that camera's **main stream
-at its full native resolution** (H.264 + AAC audio) — the very same stream the
-live link plays — kept for a **rolling 12 hours**. To review it, the app asks the edge
-**“where is there footage?”** (draws a timeline bar) and loads **one playlist for
-the whole 12 h** into a video player. The player then **seeks to any moment by
-date** — all on the client, no more calls.
-
-Because recording is person-triggered, most of the 12 h is empty — you only ever
-store and see the stretches where someone was actually present. The player jumps
-across the empty gaps on its own.
-
----
-
-## 2. The connection (identical to PTZ)
-
-**Give the player this URL and nothing else:**
-
-```
-https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/<CAMERA>/playback.m3u8?edge_id=<edge_id>
-```
-
-| Where you call from | Full URL |
+| Call | What it answers |
 |---|---|
-| **Cloud / app (the real one)** | `https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/…` |
+| `GET /api/v1/recordings/timeline` | **Where footage exists, for EVERY camera — one call.** |
+| `GET /api/v1/recordings/{camera}/timeline` | The same, for one camera. |
+| `GET /api/v1/recordings/{camera}/playback.m3u8` | One seekable playlist for that camera's whole window. |
+| `GET /api/v1/recordings/{camera}/segment/{file}` | One stored clip (the player fetches these itself). |
+
+| Where you call from | Base |
+|---|---|
+| **Cloud / backend (the real one)** | `https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/…` |
 | **Inside the home LAN** | `http://<jetson-ip>:8000/api/v1/recordings/…` |
 
-There is **no** `X-Ceravis-Control-Token`, no API key and **no header of any
-kind** on these calls. That legacy header was removed for good; **the `edge_id`
-in the URL is the whole authentication** (`edge/api/control_auth.py`) — exactly
-like the PTZ call. The `/<edge_id>` prefix is also how the fleet tunnel picks
-the house: frps routes by URL only, never by a request body, and the edge strips
-its own prefix internally.
+The `/<edge_id>` prefix is how the fleet tunnel picks the house — **frps routes by
+URL only**. The edge strips its own prefix internally, so the path it serves is
+identical in both rows.
 
-Everything the player needs is therefore already in a plain URL:
-
-- **HTTPS** with a real Let's Encrypt certificate (Caddy on EC2) — satisfies iOS ATS.
-- **No login.** Caddy's Basic-Auth covers only the admin pages at
-  `/<edge_id>/ui/…`; `/<edge_id>/api/…` is open and self-authenticating.
-- **CORS `*`** on the edge API, so even a browser can fetch it cross-origin.
-- The playlist's `segment/…` URIs are **relative**, so they resolve against that
-  same HTTPS URL and inherit both the `/<edge_id>/api/…` prefix and the
-  `edge_id` query — every segment is an HTTPS URL that authenticates itself.
-
-> ### ⚠ Do NOT fetch-and-rewrite the playlist into a `blob:` URL
-> There is nothing to inject, so there is no reason to download the manifest in
-> JavaScript, rewrite its URIs and hand a `blob:` to the player. That pattern
-> **works on web and is impossible on iOS** — `AVPlayer` cannot open a `blob:`
-> URL and cannot attach headers to its own segment fetches — and it silently
-> throws away the self-updating behaviour in §4a. Point every player at the URL
-> above directly.
->
-> If you still want the stream to appear under your own domain, front it with a
-> **transparent pass-through reverse proxy**: forward
-> `/<edge_id>/api/v1/recordings/*` (playlist **and** `segment/*`) unchanged,
-> preserving the query string, `If-None-Match`/`ETag`, and the response
-> `Content-Type`. Rewrite nothing. A proxy that only serves the `.m3u8` and not
-> the segment path under the same base will break playback.
-
-**Addressing a camera:** the `{camera}` slot takes the SAME label as PTZ —
-`KITCHEN`, `BEDROOM`, `LIVING_ROOM`, `LOUNGE`, … (case-insensitive) — or the raw
-`camera_id`. `edge_id` (the home) is the same value PTZ uses.
+**One idea makes the whole thing work: the recording carries its own wall-clock
+time, so the player seeks by _date_.**
 
 ---
 
-## 3. Endpoint A — the timeline (where footage exists)
+## 2. What it does, in one line
+
+Every time the AI sees a person, the edge records that camera as **1080p H.264 +
+AAC audio** in **15-second segments**, kept for a **rolling 12 hours**. To review
+it, the app asks **"where is there footage?"** (draws the bars) and loads **one
+playlist per camera** into a video player, which then **seeks to any moment by
+date** — all client-side, no more calls.
+
+Because recording is person-triggered, most of the 12 h is empty — you only store
+and see the stretches where someone was actually present. The player jumps across
+the empty gaps on its own.
+
+---
+
+## 3. Authentication — the edgeId match, nothing else
+
+Every call carries this device's `edgeId` as the **`edge_id` query parameter**,
+and the edge verifies it MATCHES the value provisioned for it (the `deviceToken`
+from `userDetails`). Only the app server that provisioned the device knows it, so
+**the match IS the authentication** ([edge/api/control_auth.py](edge/api/control_auth.py)).
 
 ```
-GET  /api/v1/recordings/{camera}/timeline?edge_id={homeId}
+…/api/v1/recordings/timeline?edge_id=NrPq8xxxxxxx
 ```
 
-**Sample response**
+| Device state | `edge_id` sent | Result |
+|---|---|---|
+| Provisioned | matches | proceed |
+| Provisioned | missing | **401** `edgeId required` |
+| Provisioned | different | **409** `edge_id mismatch: …` |
+| Not provisioned (LAN dev box) | anything | accepted |
+
+> **There is NO `X-Ceravis-Control-Token`.** That header was removed for good —
+> if an older note told you to inject it, delete that rule. There is no header to
+> add on any of these calls, which is what makes the playlist and its segments
+> playable by a native player that cannot attach headers.
+
+---
+
+## 4. Timeline — ALL cameras in one call
+
+```
+GET /api/v1/recordings/timeline?edge_id={edgeId}
+```
+
+| Parameter | In | Type | Required | Meaning |
+|---|---|---|---|---|
+| `edge_id` | query | string | yes (provisioned device) | This home's edge_id. |
+
+That is the entire request — **no camera parameter**. Dropping the camera from
+the path is what switches the endpoint into all-cameras mode; everything else
+(auth, window, segment shape) is identical to the single-camera form.
+
+### Sample call
+
+```bash
+curl "https://edgeai.ceravishealth.in/NrPq8xxxxxxx/api/v1/recordings/timeline?edge_id=NrPq8xxxxxxx"
+```
+
+### Sample response — `200`
+
 ```json
 {
-  "camera_id": "cam_001",
-  "now":            "2026-07-16T20:00:00+05:30",
-  "window_start":   "2026-07-16T08:00:00+05:30",
+  "now":             "2026-08-19T20:00:00+05:30",
+  "window_start":    "2026-08-19T08:00:00+05:30",
   "retention_hours": 12,
-  "recorded_seconds": 5520.0,
-  "segments": [
-    { "start": "2026-07-16T09:15:00+05:30", "end": "2026-07-16T09:47:00+05:30", "seconds": 1920.0 },
-    { "start": "2026-07-16T14:30:00+05:30", "end": "2026-07-16T15:30:00+05:30", "seconds": 3600.0 }
+  "camera_count":    3,
+  "recorded_seconds": 7320.0,
+  "cameras": [
+    {
+      "camera_id": "BEDROOM",
+      "label":     "BEDROOM",
+      "recorded_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "camera_id": "KITCHEN",
+      "label":     "KITCHEN",
+      "recorded_seconds": 3720.0,
+      "segments": [
+        { "start": "2026-08-19T09:15:00+05:30", "end": "2026-08-19T09:47:00+05:30", "seconds": 1920.0 },
+        { "start": "2026-08-19T18:30:00+05:30", "end": "2026-08-19T19:00:00+05:30", "seconds": 1800.0 }
+      ]
+    },
+    {
+      "camera_id": "LIVING_ROOM",
+      "label":     "LIVING ROOM",
+      "recorded_seconds": 3600.0,
+      "segments": [
+        { "start": "2026-08-19T08:00:00+05:30", "end": "2026-08-19T08:30:00+05:30", "seconds": 1800.0 },
+        { "start": "2026-08-19T18:00:00+05:30", "end": "2026-08-19T18:30:00+05:30", "seconds": 1800.0 }
+      ]
+    }
   ]
 }
 ```
 
-**How to use it:** draw a bar spanning `window_start` → `now`. Shade each
-`segments[i]` block — those shaded blocks are the only places with video and the
-only clickable spots. This bar is your *availability* view; the player’s own
-scrubber is a *different* axis (see §6).
+### Every field
 
-**Call it ONCE, when the camera is opened — do not poll it.** Once the player
-has the playlist, the playlist itself tells you where footage is, and it is
-already being kept current for you (§4a/§4b). Polling this endpoint on a timer
-is a second, slower copy of an answer you already hold.
+| Field | Meaning |
+|---|---|
+| `now` | The edge's clock at the instant it answered. The right edge of every bar. |
+| `window_start` | `now − retention_hours`. The left edge. Anything older is deleted. |
+| `retention_hours` | How far back footage is kept (**12**). |
+| `camera_count` | How many cameras are configured on this device. |
+| `recorded_seconds` (top level) | Total footage across all cameras in the window. |
+| `cameras[]` | **One entry per configured camera, sorted by `camera_id`** — including cameras with no footage. |
+| `cameras[].camera_id` | The camera's id (`LIVING_ROOM`). |
+| `cameras[].label` | The addressing label — **pass this back** as `{camera}` to playback/snapshot, or as `cameraLabel` to PTZ. |
+| `cameras[].recorded_seconds` | Total footage for that camera in the window. |
+| `cameras[].segments[]` | The stretches with footage, oldest first: `start`, `end` (ISO-8601, edge-local) and `seconds`. |
+| `cameras[].error` | **Only present when that camera's storage could not be read.** Its `segments` is empty because we *don't know*, not because nobody was home. |
+
+**The window is stated once, not per camera** — every camera in one response is
+measured against the same `now`, so the bars line up exactly.
+
+### The two guarantees worth knowing
+
+1. **A camera with no footage is still listed** (empty `segments`). So this one
+   response is also the complete "what can I review right now" answer — you never
+   need a second call to discover a camera exists.
+2. **One broken camera never fails the call.** It comes back with `error` set
+   while every other camera answers normally. Show that row as *unavailable*, not
+   as *empty* — the difference matters when someone is checking on a relative.
 
 ---
 
-## 4. Endpoint B — the playback timeline (ONE call, seek by date)
+## 5. Timeline — ONE camera
 
 ```
-GET  /api/v1/recordings/{camera}/playback.m3u8?edge_id={homeId}
+GET /api/v1/recordings/{camera}/timeline?edge_id={edgeId}
 ```
 
-Returns **one HLS playlist for the entire retention window** (Content-Type
-`application/vnd.apple.mpegurl`, HTTP 200 — no redirect). It lists the recorded
-segments by their real files, **tags each recorded stretch with its true
-wall-clock time**, and **joins the stretches across the empty gaps**:
+| Parameter | In | Type | Required | Meaning |
+|---|---|---|---|---|
+| `camera` | path | string | yes | `camera_id` **or** the label (`KITCHEN`, `LIVING ROOM`, `living_room` — case-insensitive, spaces = underscores). |
+| `edge_id` | query | string | yes (provisioned device) | This home's edge_id. |
+
+```bash
+curl "https://edgeai.ceravishealth.in/NrPq8xxxxxxx/api/v1/recordings/LIVING_ROOM/timeline?edge_id=NrPq8xxxxxxx"
+```
+
+```json
+{
+  "now":             "2026-08-19T20:00:00+05:30",
+  "window_start":    "2026-08-19T08:00:00+05:30",
+  "retention_hours": 12,
+  "camera_id":       "LIVING_ROOM",
+  "label":           "LIVING ROOM",
+  "recorded_seconds": 3600.0,
+  "segments": [
+    { "start": "2026-08-19T08:00:00+05:30", "end": "2026-08-19T08:30:00+05:30", "seconds": 1800.0 },
+    { "start": "2026-08-19T18:00:00+05:30", "end": "2026-08-19T18:30:00+05:30", "seconds": 1800.0 }
+  ]
+}
+```
+
+Identical to one `cameras[]` entry above, with the window fields flattened
+alongside it. **Unchanged from before** — every previous key is still there;
+`label` was added so both forms describe a camera the same way.
+
+**Which to use:** the all-cameras call for a review screen or any multi-camera
+view (one request instead of N); the per-camera call when the user is already
+inside one camera.
+
+### How to draw the bar
+
+Draw a rail from `window_start` → `now`, then shade each `segments[i]`. Those
+shaded blocks are the only places with video and the only clickable spots. A
+click maps to a wall-clock instant → `seekToDate(...)` in the player (§8).
+
+**Call it when the screen opens — do not poll it hard.** Once a player holds the
+playlist, the playlist itself keeps the bar current for free (§7). A slow refresh
+(~30 s) of the all-cameras call is fine for a multi-camera overview where no
+player is running.
+
+---
+
+## 6. Playback — one seekable playlist per camera
+
+```
+GET /api/v1/recordings/{camera}/playback.m3u8?edge_id={edgeId}
+```
+
+| Parameter | In | Type | Required | Meaning |
+|---|---|---|---|---|
+| `camera` | path | string | yes | Same addressing as the timeline. |
+| `edge_id` | query | string | yes (provisioned device) | Also copied onto every segment URI, so segment fetches authenticate themselves. |
+| `ts` | query | ISO-8601 | no | The instant of interest (e.g. an alert). Accepted and ignored for selection — the whole window is served and the client seeks. |
+
+Returns **one HLS playlist for the entire retention window** (`200`,
+`application/vnd.apple.mpegurl` — no redirect):
 
 ```
 #EXTM3U
@@ -126,154 +238,111 @@ wall-clock time**, and **joins the stretches across the empty gaps**:
 #EXT-X-TARGETDURATION:15
 #EXT-X-MEDIA-SEQUENCE:119095844        ← where this window starts in the stream
 #EXT-X-DISCONTINUITY-SEQUENCE:0        ← how many gaps already scrolled past it
-#EXT-X-PROGRAM-DATE-TIME:2026-07-16T14:30:00+05:30     ← the wall-clock anchor
+#EXT-X-PROGRAM-DATE-TIME:2026-08-19T18:00:00+05:30     ← the wall-clock anchor
 #EXTINF:15.000,
-segment/2026-07-16_14-30-00-000000.ts
+segment/2026-08-19_18-00-00-000000.ts?edge_id=NrPq8xxxxxxx
 #EXTINF:15.000,
-segment/2026-07-16_14-30-15-000000.ts
+segment/2026-08-19_18-00-15-000000.ts?edge_id=NrPq8xxxxxxx
 #EXT-X-DISCONTINUITY                                    ← nobody was present here
-#EXT-X-PROGRAM-DATE-TIME:2026-07-16T15:10:00+05:30     ← next stretch re-anchored
+#EXT-X-PROGRAM-DATE-TIME:2026-08-19T18:30:00+05:30     ← next stretch re-anchored
 #EXTINF:15.000,
-segment/2026-07-16_15-10-00-000000.ts
+segment/2026-08-19_18-30-00-000000.ts?edge_id=NrPq8xxxxxxx
                                         ← and NO #EXT-X-ENDLIST, ever
 ```
 
-Four things make this professional and are the whole reason it works:
+Four things make this work:
 
-1. **`#EXT-X-PROGRAM-DATE-TIME`** = the real time of each stretch. This is what
-   lets the player **seek to an exact instant by date** and show real wall-clock
-   time on the scrubber. Without it, a player can only seek by “seconds from the
-   start” and cannot map “14:30:15” to a position.
-2. **`#EXT-X-DISCONTINUITY`** between stretches = the player **rolls across the
-   empty gaps by itself** (jump-cut to the next time someone was present) in the
-   same stream — **no new call**.
-3. **No `#EXT-X-ENDLIST` — ever.** This is the tag that would tell a player “this
-   recording is finished, stop asking”. We never send it, because an NVR archive
-   is never finished: the next person can walk in a second from now. So **every
-   HLS player re-fetches this URL by itself every few seconds, forever**, and
-   **clips recorded after the link was opened appear in the already-loaded
-   player automatically** — see §4a.
-4. **`#EXT-X-MEDIA-SEQUENCE` / `#EXT-X-DISCONTINUITY-SEQUENCE`** = the stream’s
-   own numbering, so when the oldest footage ages out of the 12 h window the
-   player knows *exactly* which segments were dropped and keeps everything it
-   already holds correctly aligned. Ignore these two numbers — they are for the
-   player, not for you — but never cache or rewrite them.
+1. **`EXT-X-PROGRAM-DATE-TIME`** = the real time of each stretch. This is what
+   lets the player **seek to an exact instant by date** and show true wall-clock
+   time on the scrubber.
+2. **`EXT-X-DISCONTINUITY`** between stretches = the player **rolls across the
+   empty gaps by itself**, in the same stream, with **no new call**.
+3. **No `EXT-X-ENDLIST` — ever.** That tag would mean "this recording is
+   finished". An NVR archive never is, so every HLS player re-fetches this URL by
+   itself, forever, and **footage recorded after the link was opened appears in
+   the already-loaded player automatically** (§7).
+4. **`EXT-X-MEDIA-SEQUENCE` / `EXT-X-DISCONTINUITY-SEQUENCE`** = the stream's own
+   numbering, so when the oldest footage ages out the player knows exactly what
+   was dropped. Ignore both numbers — never cache or rewrite them.
 
-There is **no `ts` parameter** anymore. Seeking is the client’s job (the player
-already knows every segment’s time), which keeps this one URL the single source
-of a camera’s whole timeline.
+Segment URIs are **relative**, so they resolve against the playlist's own URL and
+inherit the `/<edge_id>/api/…` prefix automatically. There is no
+`/recordings/hls/...` path — if an old note mentions one, ignore it.
 
 ---
 
-## 4a. It keeps itself current — you do not re-request it
-
-**The playlist auto-updates. One call is the whole session.**
+## 7. It keeps itself current — you do not re-request it
 
 | When | What happens | Calls your app makes |
 |---|---|---|
-| A new 15 s clip is recorded | The player’s own reload picks it up within seconds and appends it to the same timeline | **none** |
-| The camera starts recording again after an hour of nobody | Same — the new stretch appears with an `EXT-X-DISCONTINUITY` before it | **none** |
-| Footage passes 12 h and expires | It drops off the front of the playlist; the player follows via the sequence numbers | **none** |
+| A new 15 s clip is recorded | The player's own reload appends it to the same timeline | **none** |
+| Recording resumes after an hour of nobody | Same, with an `EXT-X-DISCONTINUITY` before it | **none** |
+| Footage passes 12 h and expires | It drops off the front; the player follows via the sequence numbers | **none** |
 | The user drags to another time | Client-side `seekToDate(...)` | **none** |
-| You want to redraw the availability bar | `…/timeline` poll (~30 s) — cosmetic, the player does not need it | 1 small JSON |
 
-**Why it works:** an HLS player treats a playlist with no `EXT-X-ENDLIST` as
-still growing and re-requests it on a timer (roughly the target duration, ~7–15 s
-here). That is a **standard player behaviour**, not something you implement —
-hls.js, AVPlayer and ExoPlayer all do it out of the box. Load the URL once and
-leave the player alone.
+**Why:** a playlist with no `EXT-X-ENDLIST` is "still growing" to every HLS
+player, so hls.js, AVPlayer and ExoPlayer all re-request it on a timer (~7–15 s)
+out of the box. Load the URL once and leave the player alone.
 
-**Those reloads are nearly free.** The playlist body carries a strong `ETag` and
-`Cache-Control: no-cache`. A reload that finds nothing new gets **`304 Not
-Modified` with no body**, so a viewer parked on a camera all day costs a few
-hundred bytes a minute over the tunnel instead of a full manifest each time.
+**Those reloads are nearly free.** The body carries a strong `ETag` and
+`Cache-Control: no-cache`; a reload with nothing new gets **`304 Not Modified`,
+no body**. A viewer parked on a camera all day costs a few hundred bytes a minute.
 
-> **Backend requirement (one line):** the proxy must forward the `If-None-Match`
-> request header and the `ETag`/`Cache-Control` response headers untouched, and
-> must **not** cache `playback.m3u8` itself. Cache the manifest and every viewer
-> freezes at the moment of the first cache fill — the one way to break this.
+> **Backend requirement (one line):** the proxy must pass `If-None-Match`,
+> `ETag` and `Cache-Control` through untouched, and must **never cache the
+> `.m3u8` body**. Cache the manifest and every viewer freezes at the moment of
+> the first cache fill — the one way to break this.
 
-The only case that still needs a call from your app is a camera that had **no
-footage at all** when the user opened it: that returns `404`, and there is no
-playlist to reload. Retry the playlist call on a slow timer (~30 s) until it
-answers `200`; from that moment the player takes over for good (the edge’s own
-console does exactly this).
+The only case needing another call is a camera with **no footage at all** when
+opened: that is a `404`, and there is no playlist to reload. Retry on a slow timer
+(~30 s), or wait until the timeline first reports footage; from that moment the
+player takes over for good.
 
-### Why you see repeated `playback.m3u8` requests — and why that is correct
+### Drawing the bar with no polling at all
 
-A player asking for the playlist again **is** the update. HLS has no “send me
-the new segments” call: the manifest is the index, the player re-reads it,
-diffs it against what it already holds, and downloads **only the `.ts` files it
-does not have**. It is not restarting playback and not re-downloading footage.
-One small request every few seconds per viewer, and with the `ETag` the
-unchanged ones are `304`s carrying no body at all.
-
----
-
-## 4b. Drawing the availability bar with NO polling at all
-
-You do not need `…/timeline` on a timer to keep the bar fresh — **the playlist
-the player is already reloading contains the same information**. Every fragment
-carries its wall-clock time, so consecutive fragments merge into exactly the
-recorded stretches, and the bar updates in the same beat as the video.
+The playlist the player is already reloading contains the same information the
+timeline gives. Every fragment carries its wall-clock time, so consecutive
+fragments merge into exactly the recorded stretches:
 
 ```js
-// hls.js — fires on the first load AND on every self-initiated reload
 hls.on(Hls.Events.LEVEL_LOADED, (_, data) => {
-  const runs = [];
-  let cur = null;
+  const runs = []; let cur = null;
   for (const f of data.details.fragments) {
     if (f.programDateTime == null) continue;
     const end = f.programDateTime + f.duration * 1000;
     if (cur && Math.abs(f.programDateTime - cur.end) <= 1500) cur.end = end;
-    else runs.push(cur = { start: f.programDateTime, end });     // gap -> new stretch
+    else runs.push(cur = { start: f.programDateTime, end });   // gap -> new stretch
   }
-  drawBar(runs);                       // same shape as timeline's `segments[]`
+  drawBar(runs);                       // same shape as timeline's segments[]
 });
 ```
 
-That leaves the whole review screen at **one `…/timeline` call per camera
-opened** (for `retention_hours` and the window bounds) and **zero polling of
-your API**. The window itself slides on the local clock — `winEnd = now`,
-`winStart = now − retention_hours` — which is a clock read, not a request.
-
-iOS/Android have the same data: `AVPlayerItem.seekableTimeRanges` +
-`currentDate()`, and ExoPlayer’s `HlsMediaPlaylist.segments` (each with
-`relativeStartTimeUs` and the playlist’s `startTimeUs`).
-
-The relative `segment/...` URIs resolve to
-`/api/v1/recordings/{camera}/segment/<file>` — **the same path**, so your one
-proxy rule already covers them. (There is **no** `/recordings/hls/...` path — if
-you saw that in an old note, ignore it.)
+iOS/Android expose the same data: `AVPlayerItem.seekableTimeRanges` +
+`currentDate()`, and ExoPlayer's `HlsMediaPlaylist.segments`.
 
 ---
 
-## 5. How to hit it — load once, then seek by date
+## 8. How to hit it — load once, then seek by date
 
-The pattern is identical on every client: **load the playlist once**, then
-**seek by date** whenever the user clicks the timeline. You never re-request for
-a new moment.
-
-### Web (hls.js — Chrome/Firefox/Android browsers; also works on desktop Safari)
+### Web (hls.js — Chrome/Firefox/Android browsers; also desktop Safari)
 
 ```js
 import Hls from "hls.js";
 
-const url = `/api/v1/recordings/${cameraLabel}/playback.m3u8?edge_id=${homeId}`;
-// The whole URL, exactly as in §2 — no headers, no rewrite, no blob.
+const url = `${BASE}/api/v1/recordings/${cameraLabel}/playback.m3u8?edge_id=${edgeId}`;
 
 let ready = false, pending = null;
 const hls = new Hls({ backBufferLength: 90 });
 hls.loadSource(url);
 hls.attachMedia(videoEl);
-hls.on(Hls.Events.LEVEL_LOADED, () => {         // playlist parsed
+hls.on(Hls.Events.LEVEL_LOADED, () => {
   if (ready) return;                            // only the first load
   ready = true;
   if (pending != null) { seekToDate(pending); pending = null; }
   else jumpToLatest();                          // default view = newest footage
 });
 
-// Seek playback to a wall-clock instant (ms since epoch) using PROGRAM-DATE-TIME.
+// Seek to a wall-clock instant (ms since epoch) using PROGRAM-DATE-TIME.
 function seekToDate(ms) {
   if (!ready) { pending = ms; return; }
   const frags = hls.levels[hls.currentLevel]?.details?.fragments || [];
@@ -291,151 +360,123 @@ function seekToDate(ms) {
   videoEl.currentTime = Math.max(0, t);
   videoEl.play();
 }
-// Default view: open the newest recorded STRETCH from its START (use the last
-// `segments[i].start` from the /timeline call). Do NOT open at the very end of
-// the footage: on a camera that isn't recording right now the last frame IS the
-// end — you'd play a blink and stop, which looks like "playback doesn't work".
-// Starting at the stretch's beginning always plays forward (and rolls straight
-// on into whatever gets recorded next, since the playlist stays open).
+
+// Default view: open the newest recorded STRETCH from its START — use the last
+// segments[i].start from the timeline call.
 function jumpToLatest() {
   if (latestSegmentStartMs) seekToDate(latestSegmentStartMs + 200);
 }
-
-// The real wall-clock time on screen (for the "Viewing HH:MM:SS" readout + playhead):
-//   hls.playingDate  ->  a Date, exact, even across gaps.
+// The real time on screen: hls.playingDate -> a Date, exact, even across gaps.
 ```
 
-> **The one mistake to avoid:** never open playback at the live edge / very end.
-> On a camera that isn't recording at that instant the footage is finite, so the
-> end is the last frame — the player stops immediately. Always **seek to a real
-> moment** (the alert time, or the start of the newest recorded stretch).
+> **Mistake to avoid #1:** never open playback at the very end. On a camera that
+> isn't recording at that instant the end *is* the last frame — the player stops
+> immediately and it looks broken. Always seek to a real moment (the alert time,
+> or the start of the newest stretch).
+>
+> **Mistake to avoid #2:** do **not** re-create the player or re-call
+> `loadSource()` to "get the new clips". The player already does that (§7), and
+> tearing it down throws away the user's position and buffer.
 
-> **The second mistake to avoid:** do **not** re-create the player, re-call
-> `loadSource()`, or add a timer that re-downloads the playlist to “get the new
-> clips”. The player is already doing that (§4a), and tearing it down throws away
-> the user’s position and buffer. Load once per camera, and poll nothing — the
-> bar rides on the player’s own reloads (§4b).
-
-Wire it up: call `…/timeline` once, draw the availability bar, and on a click
-compute the clicked wall-clock time and call `seekToDate(thatTime)`. Nothing else.
-
-### iOS app (AVPlayer — the easy one)
-
-iOS speaks HLS natively **and** understands `PROGRAM-DATE-TIME`, so seeking by
-time is a one-liner:
+### iOS (AVPlayer)
 
 ```swift
-// The WHOLE integration. The URL from §2 — nothing else, no headers, no proxy,
-// no AVAssetResourceLoaderDelegate, no downloading and rewriting the manifest.
-let url = URL(string:
-  "https://edgeai.ceravishealth.in/\(edgeId)/api/v1/recordings/\(cameraLabel)"
-  + "/playback.m3u8?edge_id=\(edgeId)")!
-let item = AVPlayerItem(url: url)
+let item = AVPlayerItem(url: playbackURL)          // same playback.m3u8 URL
 let player = AVPlayer(playerItem: item)
-
-// ... later, when the user taps 14:30:15 on the timeline:
-let target = ISO8601DateFormatter().date(from: "2026-07-16T14:30:15+05:30")!
-item.seek(to: target, completionHandler: nil)      // seekToDate — needs PDT (we send it)
+// when the user taps 18:30:15 on the timeline:
+let target = ISO8601DateFormatter().date(from: "2026-08-19T18:30:15+05:30")!
+item.seek(to: target, completionHandler: nil)      // works because of PROGRAM-DATE-TIME
 ```
 
-`item.seek(to: Date)` **only works because** the playlist carries
-`EXT-X-PROGRAM-DATE-TIME`.
+No custom networking is needed: the `edge_id` travels in the URL, so AVPlayer
+fetches the manifest and every segment on its own.
 
-> **If iOS is failing today, check these three before anything else:** the URL
-> must be `https://` (ATS), it must be a real `.m3u8` URL and **not** a `blob:`
-> or `file:` one (AVPlayer cannot open those — this is the single most common
-> cause), and it must carry `?edge_id=…` (else `401`). AVPlayer needs no
-> intermediary endpoint to reach us.
+### Android (ExoPlayer)
 
-### Android app (ExoPlayer)
-
-ExoPlayer plays the same HLS URL and parses `PROGRAM-DATE-TIME`. Load once with
-an `HlsMediaSource`; to seek by wall-clock, map the target date onto the window
-using the manifest’s program-date-time (each `HlsMediaPlaylist.Segment` exposes
-`relativeStartTimeUs` + the playlist’s `startTimeUs`), then `player.seekTo(...)`.
+Load the same URL once with an `HlsMediaSource`; to seek by wall-clock, map the
+target date onto the window using the manifest's program-date-time (each
+`HlsMediaPlaylist.Segment` exposes `relativeStartTimeUs` plus the playlist's
+`startTimeUs`), then `player.seekTo(...)`.
 
 ---
 
-## 6. Two different bars — don’t confuse them
+## 9. Two different bars — don't confuse them
 
-- **The timeline bar (Endpoint A)** shows **where** footage is across the whole
-  12 h. You draw it; you shade `segments[i]`; a click on it becomes a
-  `seekToDate(...)`.
-- **The player’s own scrubber** seeks **within** the footage currently loaded.
-  With `PROGRAM-DATE-TIME` it now reads true wall-clock time, and both bars agree.
+- **The timeline bar (§4/§5)** shows **where** footage is across the whole 12 h.
+  You draw it; you shade `segments[i]`; a click becomes a `seekToDate(...)`.
+- **The player's own scrubber** seeks **within** the loaded footage. With
+  `PROGRAM-DATE-TIME` it reads true wall-clock time, so both bars agree.
 
 ---
 
-## 7. Where the video lives, and what it costs
+## 10. Responses & errors
 
-- Recordings live **only on the edge device’s disk** — never uploaded to the
-  cloud, S3, or the app server.
+| Status | Where | Meaning | What to do |
+|---|---|---|---|
+| `200` | all | Timeline JSON, or the playlist. | Normal. |
+| `200` + `error` on a camera | all-cameras timeline | That camera's storage was unreadable. | Show it as *unavailable*, not *empty*. |
+| `304` | playlist | Unchanged since your `If-None-Match`. | Nothing — the player handles it. Proxies must pass it through. |
+| `401` | all | `edgeId required`. | Always send `?edge_id=`. |
+| `404` | `{camera}/timeline`, playback, snapshot | Unknown camera (`no camera for 'X'`), or no footage in the window yet. | Check the label; for playback, show "no footage" and retry slowly. |
+| `409` | all | `edge_id mismatch`. | Wrong device addressed. |
+| `503` | state/toggle | Recording backbone down (MediaMTX not running). | Transient — retry; alert ops if it persists. |
+
+The all-cameras timeline does **not** 404 when there are no cameras or no
+footage: it answers `200` with `"cameras": []` or empty `segments`. "Nothing to
+review" is an answer, not an error.
+
+---
+
+## 11. Where the video lives, and what it costs
+
+- Recordings live **only on the edge device's disk** — never uploaded to the
+  cloud, S3 or the app server.
 - The recorder writes 15-second MPEG-TS segments named with their own start time
-  (`2026-07-16_14-30-15-000000.ts`). **Those exact files are what playback
-  serves** — the playlist just lists them. Nothing is re-cut, re-encoded or
-  copied, so playback costs no CPU and no extra disk, and the playlist returns
-  instantly.
-- Segments older than the retention window delete themselves.
-- **Cloud cost:** storage = zero. The only cost is the EC2 tunnel relaying bytes
-  **while someone is watching** (~2 Mbps ≈ 1 GB/hour ≈ $0.09 egress). Watching
-  from inside the home LAN touches the cloud not at all.
+  (`2026-08-19_18-30-15-000000.ts`). **Those exact files are what playback
+  serves** — nothing is re-cut, re-encoded or copied, so playback costs no CPU
+  and no extra disk, and the playlist returns instantly.
+- Segments older than the window delete themselves.
+- **Cloud cost:** storage = zero. The only cost is the tunnel relaying bytes
+  **while someone is watching** (~2 Mbps ≈ 1 GB/hour). Watching from inside the
+  home LAN never touches the cloud.
 
 ---
 
-## 8. The timestamp rule (prevents every “wrong footage” bug)
+## 12. The timestamp rule (prevents every "wrong footage" bug)
 
-The whole edge runs on **one clock: the device’s local time** — alerts,
-snapshots and recordings all share it, and the playlist’s `PROGRAM-DATE-TIME`
-uses it too. So when you turn an **alert** into a playback seek, convert its
-timestamp to a `Date`/epoch and hand it to `seekToDate(...)` — the player lands
-on the right instant regardless of the viewer’s timezone.
-
----
-
-## 9. Responses & errors
-
-| Status | Meaning | What to do |
-|---|---|---|
-| `200` | Timeline JSON, or the playlist. | Normal. |
-| `304` | Playlist unchanged since your `If-None-Match`. | Nothing — the player handles it. Proxies must pass it through. |
-| `401` | `edgeId required` — the request carried no `edge_id`. | Add `?edge_id=<home>` to the URL. There is no token to send. |
-| `404` | No footage in the 12 h window yet. | Show “no footage”, and re-issue the playlist call when `…/timeline` first reports footage (§4a). |
-| `409` | `edge_id` didn’t match this home. | Wrong device addressed. |
-| `503` | Recording backbone down. | Transient — retry; alert ops if it persists. |
+The whole edge runs on **one clock: the device's local time** — alerts, snapshots
+and recordings all share it, and the playlist's `PROGRAM-DATE-TIME` uses it too.
+So when you turn an **alert** into a playback seek, convert its timestamp to a
+`Date`/epoch and hand it to `seekToDate(...)`; the player lands on the right
+instant regardless of the viewer's timezone.
 
 ---
 
-## 10. What to tell each team (copy-paste)
+## 13. Copy-paste for each team
 
 **Backend team**
-> **There is nothing to build.** Hand the app this URL and you are done:
-> `https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/<CAMERA>/playback.m3u8?edge_id=<edge_id>`
-> — HTTPS, no header, no token, no login, no `hls-proxy`, no playlist rewriting.
-> The `edge_id` in the URL is the authentication, and the playlist's relative
-> `segment/...` URIs resolve back under the same path automatically. Two
-> endpoints matter: `GET …/{cameraLabel}/timeline?edge_id=` (JSON) and
-> `GET …/{cameraLabel}/playback.m3u8?edge_id=` (an HLS playlist, HTTP 200). No
-> redirects, no `ts` param, no `/recordings/hls/...` path — those were removed.
-> **Only if you insist on your own domain in front of it:** a transparent
-> pass-through reverse proxy for the whole `/<edge_id>/api/v1/recordings/*` path
-> — playlist AND `segment/*.ts` — preserving the query string and rewriting
-> nothing. Pass `If-None-Match` / `ETag` / `Cache-Control` straight through
-> (that turns the player's own polling into empty `304`s), and **never cache the
-> `.m3u8` body** — the playlist is live and a cached copy freezes every viewer's
-> footage at the moment it was cached.
+> Forward the whole `/api/v1/recordings/*` path to the edge through the existing
+> frp tunnel, at `https://edgeai.ceravishealth.in/<edge_id>/api/v1/recordings/…`.
+> **No headers, no token** — the legacy `X-Ceravis-Control-Token` is removed; auth
+> is the `?edge_id=<edge_id>` query parameter, and the same value goes in the URL
+> path so the tunnel finds the house. Three endpoints matter:
+> `GET …/timeline?edge_id=` (**all cameras, one call**),
+> `GET …/{cameraLabel}/timeline?edge_id=` (one camera) and
+> `GET …/{cameraLabel}/playback.m3u8?edge_id=` (an HLS playlist, `200`, whose
+> relative `segment/...` URIs resolve back under the same path — one proxy rule
+> covers them). **Two rules on the playlist:** pass `If-None-Match`/`ETag`/
+> `Cache-Control` straight through, and **never cache the `.m3u8` body**.
 
 **Frontend / mobile team**
-> Build a review panel with two pieces. (1) Call `…/timeline` **once** when the
-> camera is opened and draw a bar from `window_start`→`now`, shading each
-> `segments[i]` — then keep that bar fresh from the player's own playlist
-> (§4b), not by polling. (2) Give the **full HTTPS URL** from §2 straight to an
-> HLS player, **once** — `hls.js` on web, `AVPlayer` on iOS, ExoPlayer on
-> Android. No headers, no `fetch()`, no rewriting the manifest, no `blob:` URL:
-> iOS cannot play a blob and needs no proxy to play ours. When the user clicks a time on the bar,
-> **seek by date** — `seekToDate(...)` (web, via `programDateTime`) or
-> `AVPlayerItem.seek(to: Date)` (iOS). The player pauses/scrubs, rolls across
-> gaps on its own, and follows live — with **no further calls per moment**. Use
-> the stream’s own time (`hls.playingDate`) for the “now viewing” readout.
-> **The playlist stays current by itself** (§4a): newly recorded clips show up in
-> the player you already loaded, so never re-create the player or re-download the
-> manifest to “refresh”, and nothing needs polling at all. That’s the whole feature.
+> Build the review screen from **one** `…/timeline?edge_id=` call: it returns
+> every camera with its `label` and `segments[]`, plus the shared
+> `window_start`/`now`/`retention_hours`. Draw one rail per camera from
+> `window_start`→`now` and shade the segments. A camera with an `error` field is
+> *unavailable*, not empty. When the user opens a camera, load
+> `…/{label}/playback.m3u8?edge_id=` into an HLS player **once** (hls.js on web,
+> AVPlayer on iOS, ExoPlayer on Android) and thereafter **seek by date** — the
+> player pauses, scrubs, rolls across gaps and picks up newly recorded clips
+> **with no further calls**, so never re-create the player or re-download the
+> manifest to "refresh". Keep the bar fresh from the player's own playlist
+> reloads (§7) rather than polling. Never open playback at the very end of the
+> footage — seek to the alert time or the start of the newest stretch.
