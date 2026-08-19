@@ -31,7 +31,15 @@ _MIGRATIONS = [
 
 
 class EventStore:
-    """Persists Events for offline buffering until cloud sync."""
+    """Persists every Event the rules raise — the device's own record of what
+    happened, independent of the cloud.
+
+    It is NOT the delivery mechanism: getting an event to the app server is the
+    cloud outbox's job (storage/outbox_store.py), which tracks its own state per
+    upload. This table answers "what did this device see", the outbox answers
+    "did it get out". The `synced` column is a leftover of an earlier design that
+    was never wired up; it is left in the schema so existing device databases
+    still open unchanged, and is no longer read or written."""
 
     def __init__(self, store: SqliteStore) -> None:
         self._store = store
@@ -54,8 +62,8 @@ class EventStore:
             """INSERT OR REPLACE INTO events
                (event_id, event_type, camera_id, room_name, zone_name,
                 recipient_id, timestamp, snapshot_path, video_path,
-                track_id, severity, title, message, synced)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                track_id, severity, title, message)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 event.event_id, event.event_type, event.camera_id,
                 event.room_name, event.zone_name, event.recipient_id,
@@ -67,7 +75,7 @@ class EventStore:
     # ---- read --------------------------------------------------------
     _COLS = ("event_id", "event_type", "camera_id", "room_name", "zone_name",
              "recipient_id", "timestamp", "snapshot_path", "track_id",
-             "severity", "title", "message", "synced")
+             "severity", "title", "message")
 
     def recent(self, limit: int = 50,
                camera_id: str | None = None) -> list[dict]:
@@ -86,15 +94,3 @@ class EventStore:
         rows = self._store.fetchall(
             "SELECT snapshot_path FROM events WHERE event_id=?", (event_id,))
         return rows[0][0] if rows and rows[0][0] else None
-
-    def unsynced(self, limit: int = 100) -> list[tuple]:
-        return self._store.fetchall(
-            "SELECT * FROM events WHERE synced=0 ORDER BY timestamp LIMIT ?",
-            (limit,),
-        )
-
-    def mark_synced(self, event_id: str) -> None:
-        self._store.execute(
-            "UPDATE events SET synced=1 WHERE event_id=?",
-            (event_id,),
-        )
