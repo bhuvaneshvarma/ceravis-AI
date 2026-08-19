@@ -142,12 +142,15 @@ class TrackingRunner:
 
     def _reid_ready(self) -> bool:
         """Whether any target is enrolled — the gate for the whole AI chain below
-        detection. size() is the gallery's live embedding count, so this flips on
+        detection. FaissGallery.size is a PROPERTY (the live embedding count), so
+        it is read, never called: `size()` raises TypeError on every tick and
+        takes tracking, ReID, pose and every rule down with it while YOLO keeps
+        running, which looks exactly like "no target is ever found". It flips on
         the moment enrollment finishes and off if the gallery is emptied."""
-        ready = self._gallery is not None and self._gallery.size() > 0
+        ready = self._gallery is not None and self._gallery.size > 0
         if ready and not self._enrolled:
             logger.info("Tracking ENABLED — %d enrolled embedding(s) present",
-                        self._gallery.size())
+                        self._gallery.size)
             self._enrolled = True
         elif not ready and (self._enrolled or self._gate_logged == 0.0
                             or time.monotonic() - self._gate_logged > 60):
@@ -172,9 +175,9 @@ class TrackingRunner:
     def _tick(self) -> None:
         if not self._reid_ready():
             return                              # gated: stop at YOLO detection
-        active = self._active_cameras()         # empty => searching (all cameras)
+        active_cams = self._active_cameras()    # empty => searching (all cameras)
         for camera_id, det_result in self._detections.get_all().items():
-            if active and camera_id not in active:
+            if active_cams and camera_id not in active_cams:
                 continue                        # recipient is elsewhere; skip (recording still runs)
             if self._last_seen_frame.get(camera_id) == det_result.frame_id:
                 continue
@@ -196,11 +199,11 @@ class TrackingRunner:
             scores = np.array([d.confidence for d in persons], dtype=np.float32)
 
             feats = self._maybe_embed(camera_id, persons)
-            active = self._tracker(camera_id).update(dets_xywh, scores, feats)
+            stracks = self._tracker(camera_id).update(dets_xywh, scores, feats)
 
             out: list[Track] = []
             alive: set[int] = set()
-            for st in active:
+            for st in stracks:
                 x1, y1, x2, y2 = st.xyxy
                 out.append(Track(
                     track_id=int(st.track_id), camera_id=camera_id,
