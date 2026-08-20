@@ -240,6 +240,20 @@ class Settings(BaseSettings):
     reid_adaptive_min_interval_secs: float = 4.0  # min seconds between capture attempts
     reid_adaptive_rebuild_secs: float = 5.0  # min seconds between gallery rebuilds
 
+    # ---- Recency memory (short-term "how they look RIGHT NOW") ------
+    # The gallery is general (every outfit we ever stored) and therefore blunt at
+    # reacquisition: two people can both clear a general threshold. This keeps the
+    # target's last N confident, non-occluded embeddings so acquire/reacquire can
+    # (a) BOOST the true target, who still looks exactly like they did seconds
+    # ago, and (b) VETO a look-alike who squeaks over the gallery threshold but
+    # matches nothing in the live recent window. Vectors only — no frames.
+    reid_recency_enabled: bool = True
+    reid_recency_max: int = 12               # embeddings kept per recipient
+    reid_recency_ttl_secs: float = 120.0     # older looks stop counting as "recent"
+    reid_recency_weight: float = 0.45        # blend: (1-w)*gallery + w*recency
+    reid_recency_min_score: float = 0.45     # VETO floor — only when memory exists
+    reid_recency_min_push_score: float = 0.65  # only remember confident sightings
+
     # ---- Pipeline focus / efficiency --------------------------------
     crop_padding_frac: float = 0.08          # margin around a person box for crops
     target_only_pose: bool = True            # once ReID locks the target, pose that crop only

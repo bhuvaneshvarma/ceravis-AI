@@ -10,6 +10,7 @@ from enrollment.enrollment_manager import EnrollmentManager
 from reid.faiss_index import FaissGallery
 from reid.identity_buffer import IdentityBuffer
 from reid.identity_schema import Identity
+from reid.recency_buffer import RecencyBuffer
 from reid.target_lock import TargetLockManager
 from reid.target_registry import TargetRegistry
 from tracking.track_buffer import TrackBuffer
@@ -50,7 +51,11 @@ class ReIDRunner:
         self._targets = target_registry or TargetRegistry()
         self._postures = posture_buffer
         self._enroll_mgr = enroll_manager or EnrollmentManager()
-        self._manager = TargetLockManager(gallery)
+        # Short-term memory of how the target looks RIGHT NOW. Feeds the
+        # acquire/reacquire fusion so a look-alike can't take the ID while a
+        # live recent window exists. See reid/recency_buffer.py.
+        self._recency = RecencyBuffer()
+        self._manager = TargetLockManager(gallery, recency=self._recency)
 
         self._running = False
         self._thread: threading.Thread | None = None
@@ -128,15 +133,22 @@ class ReIDRunner:
                     track_id=tid, camera_id=camera_id, frame_id=fid, timestamp=ts,
                     recipient_id=rid if is_target else None,
                     is_target=is_target, confidence=float(score),
-                    view_label=view if is_target else None))
+                    view_label=view if is_target else None,
+                    recency_score=(outcome.recency if is_target else None)))
 
             # Adaptive capture — ONLY for a confidently-matched, NON-occluded
             # target (the manager already gated occlusion), so we never learn an
             # intruder's appearance into the recipient's gallery.
+            # outcome.adaptive is set exactly on a CONFIRMED, NON-OCCLUDED
+            # sighting — the only look we are willing to remember as "this is
+            # the target right now". Recency is pushed on every one of them;
+            # the adaptive store keeps its own slower throttle underneath.
             if outcome.adaptive is not None:
                 tid, rid, score = outcome.adaptive
                 rec = self._features.get(camera_id, tid)
                 if rec is not None:
+                    if score >= settings.reid_recency_min_push_score:
+                        self._recency.push(rid, rec.curr)
                     self._queue_adapt(camera_id, tid, rid, score, rec.curr)
 
     # ---- adaptive online learning (off the inference tick) -----------

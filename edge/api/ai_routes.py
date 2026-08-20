@@ -60,6 +60,11 @@ def ai_state(request: Request, camera_id: str | None = None):
                 "is_target": identity.is_target if identity else False,
                 "reid_score": round(identity.confidence, 3) if identity else None,
                 "view_label": identity.view_label if identity else None,
+                # Recency cosine behind the (re)acquire — lets the monitor show
+                # WHY this track won the ID, not just that it did.
+                "recency_score": (round(identity.recency_score, 3)
+                                  if identity and identity.recency_score is not None
+                                  else None),
             })
         out[cam] = {
             "frame_id": (result.frame_id if result

@@ -61,12 +61,18 @@ class LockOutcome:
     # track_id -> (recipient_id|None, is_target, score, view_label)
     identities: dict = field(default_factory=dict)
     adaptive: tuple | None = None        # (track_id, recipient_id, score) or None
+    recency: float | None = None         # recency score behind an acquire/reacquire
     released: bool = False               # lock was dropped this tick
 
 
 class TargetLockManager:
-    def __init__(self, gallery) -> None:
+    def __init__(self, gallery, recency=None) -> None:
         self._gallery = gallery
+        # Short-term appearance memory of the confirmed target. Used ONLY on the
+        # acquire / reacquire paths — steady-state verification stays on the
+        # gallery, so a drifting recent memory can never quietly redefine who the
+        # recipient is. See reid/recency_buffer.py.
+        self._recency = recency
         self._state: dict[str, _CamState] = {}
 
     def forget(self, camera_id: str) -> None:
@@ -134,6 +140,7 @@ class TargetLockManager:
                                     spatial_from=st)
             if cand is not None:
                 tid, score, view, box = cand
+                out.recency = self._last_recency
                 st.track_id = tid
                 st.mismatch_streak = 0
                 st.last_score = score
@@ -150,6 +157,7 @@ class TargetLockManager:
         if cand is not None:
             tid, score, view, box = cand
             rid = self._last_match_rid
+            out.recency = self._last_recency
             st.recipient_id = rid
             st.track_id = tid
             st.mismatch_streak = 0
@@ -164,13 +172,22 @@ class TargetLockManager:
 
     # ---- helpers -----------------------------------------------------
     _last_match_rid: str | None = None
+    _last_recency: float | None = None
 
     def _best_match(self, boxes, feat_for, want, spatial_from):
-        """Return (track_id, score, view, box) of the best gallery match, or None.
-        `want` restricts to one recipient; `spatial_from` adds a distance gate."""
+        """Return (track_id, score, view, box) of the best match, or None.
+        `want` restricts to one recipient; `spatial_from` adds a distance gate.
+
+        The score is the gallery score FUSED with short-term recency whenever a
+        live memory exists (see _fuse). Candidates are ranked on the fused score,
+        so a look-alike who merely scrapes over the general gallery bar loses to
+        — and can be vetoed outright by — whoever actually matches the target's
+        last few seconds. This is the acquire/reacquire path only; steady-state
+        verification above stays on the gallery alone."""
         best = None
         best_score = -1.0
         self._last_match_rid = None
+        self._last_recency = None
         for tid, box in boxes.items():
             feat = feat_for(tid)
             if feat is None:
@@ -182,11 +199,32 @@ class TargetLockManager:
                 continue
             if spatial_from is not None and not self._within(spatial_from, box):
                 continue
-            if m.score > best_score:
-                best_score = m.score
-                best = (tid, m.score, m.view_label, box)
+            score, rec = self._fuse(m.recipient_id, m.score, feat)
+            if score is None:
+                continue                      # vetoed — see _fuse
+            if score > best_score:
+                best_score = score
+                best = (tid, score, m.view_label, box)
                 self._last_match_rid = m.recipient_id
+                self._last_recency = rec
         return best
+
+    def _fuse(self, rid, gallery_score: float, feat):
+        """(fused_score, recency_score), or (None, recency) when recency VETOES.
+
+        With NO live memory — cold start, or the target has been gone longer than
+        reid_recency_ttl_secs — the gallery score stands unchanged. That fallback
+        is deliberate and load-bearing: recency must never be able to block the
+        very first lock, which is exactly when no memory can exist yet."""
+        if self._recency is None or not rid:
+            return gallery_score, None
+        rec = self._recency.score(rid, feat)
+        if rec is None:
+            return gallery_score, None        # no memory — gallery alone
+        if rec < settings.reid_recency_min_score:
+            return None, rec                  # nothing like the last sighting
+        w = settings.reid_recency_weight
+        return (1.0 - w) * gallery_score + w * rec, rec
 
     @staticmethod
     def _occlusion(boxes: dict[int, tuple]) -> dict[int, float]:

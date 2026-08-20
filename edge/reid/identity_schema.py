@@ -16,3 +16,6 @@ class Identity(BaseModel):
     confidence: float       # cosine similarity, [-1, 1] (we clamp to [0, 1])
     view_label: str | None = None   # label of the best-matching enrolled view
                                      # (e.g. "left/sitting") — for snapshot notes
+    # Cosine against the target's short-term recency window at the moment the
+    # lock was (re)acquired. None = steady-state verify, or no live memory.
+    recency_score: float | None = None
