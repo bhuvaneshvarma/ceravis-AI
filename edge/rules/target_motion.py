@@ -80,6 +80,7 @@ class MotionVerdict:
     still_secs: float
     moved_joints: int | None = None       # pose channel: joints over threshold
     pixel_diff: float | None = None       # pixel channel: normalised MAD
+    pixel_thresh: float | None = None     # the SELF-CALIBRATED trigger level
     pose_ready: bool = False
     pixel_ready: bool = False
 
@@ -103,6 +104,8 @@ class TargetMotionDetector:
         # pixel channel
         self._roi: tuple[int, int, int, int] | None = None
         self._ref_sig: np.ndarray | None = None
+        self._mad_hist: deque = deque(maxlen=max(8, settings.pixel_noise_window))
+        self._last_thr: float | None = None
 
         # fusion hysteresis
         self._window: deque = deque(maxlen=max(1, settings.motion_confirm_n))
@@ -116,6 +119,9 @@ class TargetMotionDetector:
         self._anchor = None
         self._roi = None
         self._ref_sig = None
+        # NOTE: _mad_hist deliberately survives a reset. It characterises the
+        # CAMERA and the lighting, not the person, so relearning it from scratch
+        # after every movement would leave the channel permanently un-calibrated.
         self._window.clear()
 
     def update(self, camera_id: str, keypoints, bbox, frame, now: datetime
@@ -145,6 +151,7 @@ class TargetMotionDetector:
             return MotionVerdict(
                 moving=True, reason=f"moved ({reason or 'fused'})", still_secs=0.0,
                 moved_joints=moved_joints, pixel_diff=pixel_diff,
+                pixel_thresh=self._last_thr,
                 pose_ready=pose_ready, pixel_ready=pixel_ready)
 
         # no_motion is a CRITICAL alert, so stillness is only ever claimed on a
@@ -179,7 +186,8 @@ class TargetMotionDetector:
         return MotionVerdict(
             moving=False, reason="still", still_secs=self._still_accum,
             moved_joints=moved_joints, pixel_diff=pixel_diff,
-            pose_ready=pose_ready, pixel_ready=pixel_ready)
+            pixel_thresh=self._last_thr, pose_ready=pose_ready,
+            pixel_ready=pixel_ready)
 
     # ---- pose channel ------------------------------------------------
     def _pose_channel(self, keypoints, bbox):
@@ -266,7 +274,26 @@ class TargetMotionDetector:
         if sig is None or self._ref_sig is None or sig.shape != self._ref_sig.shape:
             return None, False, False
         mad = float(np.mean(np.abs(sig - self._ref_sig)))
-        return mad, mad > settings.pixel_move_thresh, True
+
+        # SELF-CALIBRATING threshold. A fixed absolute MAD cannot be right for
+        # every camera: real sensors carry H.264 blocking artifacts, auto-exposure
+        # micro-adjustments and mains flicker that a clean synthetic model badly
+        # underestimates. So measure THIS scene's own noise instead of assuming
+        # one — the floor is the 20th percentile of recent samples, which reflects
+        # the quiet moments even during an active stretch, and rises with slow
+        # illumination drift so only a STEP change reads as motion.
+        self._mad_hist.append(mad)
+        if len(self._mad_hist) < settings.pixel_noise_min_samples:
+            # Still learning this scene. Report NOT READY rather than "not
+            # moving": an un-calibrated channel cannot refute movement, so the
+            # caller must HOLD the clock instead of accruing stillness we have
+            # not actually verified.
+            self._last_thr = None
+            return mad, False, False
+        floor = float(np.percentile(np.asarray(self._mad_hist), 20.0))
+        thr = max(settings.pixel_move_thresh, floor * settings.pixel_move_ratio)
+        self._last_thr = thr
+        return mad, mad > thr, True
 
     @staticmethod
     def _roi_from_bbox(bbox, frame) -> tuple[int, int, int, int] | None:

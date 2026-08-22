@@ -31,7 +31,8 @@ class RuleEngine:
         self._ctx = context
         self._bus = bus
         self._enricher = enricher          # EventEnricher | None
-        self._rules = [FallRule(), PostureRule(), StillnessRule(),
+        self.stillness = StillnessRule()      # held by name for /ai/stillness
+        self._rules = [FallRule(), PostureRule(), self.stillness,
                        LocationRule()]
         self._running = False
         self._thread: threading.Thread | None = None

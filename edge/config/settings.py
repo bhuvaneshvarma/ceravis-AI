@@ -469,9 +469,17 @@ class Settings(BaseSettings):
     pixel_still_size: int = 32               # signature is size×size, area-downscaled
     pixel_still_pad_frac: float = 0.10       # ROI padding around the anchor bbox
     pixel_still_min_roi_px: int = 24         # below this the ROI is too small to judge
-    pixel_move_thresh: float = 0.0075        # normalised MAD. Measured: still ≤0.0038
-                                             # (incl. 8% light flicker), an 8 px hand
-                                             # movement 0.0175 — a 2.3× margin.
+    # SELF-CALIBRATING trigger: max(pixel_move_thresh, p20(recent MAD) × ratio).
+    # A fixed absolute MAD cannot suit every camera — real sensors carry H.264
+    # blocking, auto-exposure micro-adjustments and mains flicker that a clean
+    # synthetic model badly underestimates, which is exactly how the first
+    # attempt shipped a threshold far below a real scene's noise floor and left
+    # the channel asserting motion on every tick. pixel_move_thresh is now only
+    # an absolute MINIMUM; the ratio does the real work.
+    pixel_move_thresh: float = 0.0030        # absolute floor, deliberately low
+    pixel_move_ratio: float = 3.0            # × the measured scene noise floor
+    pixel_noise_window: int = 120            # samples in the noise estimate
+    pixel_noise_min_samples: int = 20        # never fire before the scene is learnt
     # FUSION — M of the last N ticks, not M CONSECUTIVE. Real movement is
     # intermittent (hand moves, pauses, moves) and consecutive-tick hysteresis is
     # blind to exactly that, while a sliding window still cancels noise.

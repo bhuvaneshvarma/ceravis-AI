@@ -256,6 +256,7 @@ class Pipeline:
             "system_monitor": system_monitor,
             "mediamtx_active": via_mediamtx,
             "recording_controller": recording_controller,
+            "rule_engine": rule_engine,   # /ai/stillness reads its live verdict
             "outbox": outbox,
         }
         # stopped in this order on shutdown (reverse of dependency). The

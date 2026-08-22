@@ -26,6 +26,10 @@ from config.settings import settings
 settings.stillness_window_secs = 0.8
 settings.stillness_burst_interval_secs = 0.1
 settings.stillness_burst_count = 3
+# The pixel channel self-calibrates against the scene's own noise; shrink its
+# warm-up to test scale too, or every case would spend the whole run holding.
+settings.pixel_noise_min_samples = 5
+settings.pixel_noise_window = 40
 
 from detection.detection_schema import BoundingBox            # noqa: E402
 from ingestion.frame_buffer import FrameBuffer                 # noqa: E402
@@ -155,9 +159,16 @@ def test_frozen_fires_no_motion():
     kinds = [e.event_type for e in events]
     print(f"[frozen] events={kinds}")
     assert "no_motion" in kinds, "a frozen skeleton must raise the CRITICAL no_motion"
-    assert kinds[0] == "no_motion", "the slot must OPEN with the alert"
-    assert "no_transition_snapshot" not in kinds, \
-        "no_motion must suppress the routine no_transition"
+    # The no_motion SLOT must open with the alert, not a follow-up snapshot.
+    # Leading no_transition events are legitimate: the pixel channel HOLDS the
+    # motion clock while it calibrates against the scene, and on this test's
+    # compressed window that warm-up is a large fraction of the run. In
+    # production it is ~20 s against a 3600 s window.
+    nm = [k for k in kinds if k.startswith("no_motion")]
+    assert nm[0] == "no_motion", "the no_motion slot must OPEN with the alert"
+    tail = kinds[kinds.index("no_motion"):]
+    assert "no_transition_snapshot" not in tail, \
+        "once no_motion is active it must suppress the routine no_transition"
     print("[frozen] PASS")
 
 
@@ -228,7 +239,8 @@ def test_pose_jitter_alone_never_blocks_no_motion():
     assert "no_motion" in kinds, (
         "keypoint jitter on a motionless person must NOT reset the clock — "
         "this is the max-over-keypoints regression")
-    assert "no_transition_snapshot" not in kinds
+    tail = kinds[kinds.index("no_motion"):]
+    assert "no_transition_snapshot" not in tail
     print(f"[jitter guard] no_motion survived realistic jitter  PASS")
 
 
