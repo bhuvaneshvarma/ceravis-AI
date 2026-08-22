@@ -450,6 +450,34 @@ class Settings(BaseSettings):
     stillness_burst_count: int = 15              # for 15 minutes (-> 75-min slot)
     pose_move_frac: float = 0.15                 # keypoint drift (×torso length) = MOTION
 
+    # ---- Target motion detector (rules/target_motion.py) -------------
+    # Replaces the old max-over-keypoints statistic, which called 72.9% of ticks
+    # "motion" on a genuinely motionless person and made no_motion unreachable.
+    # POSE channel — gross body movement only. Pose cannot resolve a seated
+    # person's hand movement (the wrist sits near 0.44 confidence with ~13 px of
+    # jitter while the hand moves 18-34 px), so it is not asked to; the pixel
+    # channel carries sensitivity.
+    pose_still_window: int = 5               # frames in the robust median (both sides)
+    pose_still_min_conf: float = 0.35        # below this a joint is ignored entirely
+    pose_still_conf_weight: float = 2.0      # thr × (1 + k(1-conf)) — mirrors the noise
+    pose_still_min_joints: int = 3           # joints that must move together
+    pose_still_scale_bbox_frac: float = 0.25  # scale floor — torso foreshortens when seated
+    # PIXEL channel — the primary, sensitive one. ROI is anchored in FRAME
+    # coordinates and never follows the tracker box: 3 px of box jitter measures
+    # 0.047, MORE than a real 25 px hand movement at 0.040.
+    pixel_still_enabled: bool = True
+    pixel_still_size: int = 32               # signature is size×size, area-downscaled
+    pixel_still_pad_frac: float = 0.10       # ROI padding around the anchor bbox
+    pixel_still_min_roi_px: int = 24         # below this the ROI is too small to judge
+    pixel_move_thresh: float = 0.0075        # normalised MAD. Measured: still ≤0.0038
+                                             # (incl. 8% light flicker), an 8 px hand
+                                             # movement 0.0175 — a 2.3× margin.
+    # FUSION — M of the last N ticks, not M CONSECUTIVE. Real movement is
+    # intermittent (hand moves, pauses, moves) and consecutive-tick hysteresis is
+    # blind to exactly that, while a sliding window still cancels noise.
+    motion_confirm_m: int = 2
+    motion_confirm_n: int = 3
+
     # ---- Cloud / MQTT ----------------------------------------------
     mqtt_endpoint: str = ""
     mqtt_port: int = 8883
