@@ -13,7 +13,6 @@ from api import ptz_control
 from api.control_auth import canon, check_edge_id, field
 from common import clock
 from common.rtsp import normalize_rtsp_url
-from config.settings import settings
 from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager

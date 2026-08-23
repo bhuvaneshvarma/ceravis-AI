@@ -305,7 +305,6 @@ class Settings(BaseSettings):
     # size) and temporally confirmed, so a chair-swivel near the camera is no
     # longer mistaken for walking. The legacy pixel threshold is retained for
     # back-compat but no longer drives the decision.
-    walking_motion_threshold_pixels: float = 25.0   # legacy (superseded)
     walking_motion_window_secs: float = 1.5
     walking_motion_body_fraction: float = 0.6       # body-lengths / sec to qualify
     walking_confirm_frames: int = 3                 # consecutive frames before WALKING
@@ -486,10 +485,6 @@ class Settings(BaseSettings):
     motion_confirm_m: int = 2
     motion_confirm_n: int = 3
 
-    # ---- Cloud / MQTT ----------------------------------------------
-    mqtt_endpoint: str = ""
-    mqtt_port: int = 8883
-    mqtt_topic_prefix: str = "ceravis/edge"
     device_id: str = "edge-0001"
 
     model_config = SettingsConfigDict(

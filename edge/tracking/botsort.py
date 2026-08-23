@@ -37,11 +37,6 @@ class TrackState(IntEnum):
     REMOVED = 3
 
 
-def _xyxy_to_xywh(x1, y1, x2, y2) -> np.ndarray:
-    return np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0, x2 - x1, y2 - y1],
-                    dtype=np.float32)
-
-
 class STrack:
     """One tracklet. Detections are also wrapped as STracks for distance calc."""
 

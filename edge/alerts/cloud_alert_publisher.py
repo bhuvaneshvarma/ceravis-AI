@@ -281,7 +281,7 @@ class CloudAlertPublisher:
 
     def _head(self, event) -> str:
         """The leading segment: 'CRITICAL · Fall detected' for an alert, the
-        posture arrow for a transition, 'No movement N/15 min' for inactivity."""
+        posture arrow for a transition, 'No motion N/15 min' for inactivity."""
         et = (event.event_type or "").lower()
         if et in self._ARROWS:
             return self._ARROWS[et]
@@ -294,7 +294,7 @@ class CloudAlertPublisher:
             return det or ("Changed room" if et == "room_transition"
                            else "Moved area")
         if et == "no_motion_snapshot":
-            return f"No movement {det} min" if det else "No movement"
+            return f"No motion {det} min" if det else "No motion"
         if et == "no_transition_snapshot":
             return f"No transition {det} min" if det else "No transition"
         # fall, the critical no_motion alert, and anything else -> SEV · Title

@@ -176,9 +176,6 @@ class EnrollmentManager:
     # Stored SEPARATELY from the enrolled set (which is never overwritten),
     # capped FIFO (newest kept), and included in the gallery so they help match
     # the recipient through appearance/clothing changes.
-    def _adaptive_file(self, recipient_id: str) -> Path:
-        return self.create_recipient_folder(recipient_id) / "body" / "adaptive.npy"
-
     def load_adaptive(self, recipient_id: str) -> np.ndarray:
         root = self.get_recipient_folder(recipient_id)
         f = root / "body" / "adaptive.npy" if root else None
