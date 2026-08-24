@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config.settings import settings
 from bootstrap.pipeline import Pipeline
+from maintenance import reboot
 
 from api.account_routes import router as account_router
 from api.camera_routes import router as camera_router
@@ -59,6 +60,9 @@ async def lifespan(app: FastAPI):
     pipeline.start()
     pipeline.attach(app.state)
     _apply_edge_id_on_boot()          # sync frpc to the account's edge_id
+    # If a reboot brought us down, say so on the way back up — otherwise a
+    # restart is indistinguishable from a crash in the logs and on the console.
+    reboot.boot_report()
     logger.info("CERAVIS edge ready")
     yield
     pipeline.stop()

@@ -44,6 +44,11 @@ edge/data/recording_mode.json
 # Live camera config — contains real RTSP credentials, never commit
 edge/data/cameras.json
 
+# Reboot password HASH + the last-reboot marker. Per-device secrets and
+# runtime state — never committed.
+edge/data/reboot_auth.json
+edge/data/last_reboot.json
+
 # Per-install runtime config — never ship a seeded/example copy
 edge/data/zones.json
 edge/data/account.json

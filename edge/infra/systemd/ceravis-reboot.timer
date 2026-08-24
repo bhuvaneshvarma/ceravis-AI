@@ -1,0 +1,23 @@
+# CERAVIS edge — nightly reboot timer.
+# Installed by setup/install_reboot_timer.sh, which substitutes the real repo
+# path and user. Don't edit the /etc copy by hand; re-run the installer.
+[Unit]
+Description=CERAVIS nightly device reboot (03:00-04:00 local)
+
+[Timer]
+# 03:00 device-local, spread over the following hour. The randomisation is not
+# cosmetic: a fleet that reboots on the same second reconnects to the app server
+# on the same second, and every house would hammer it together. It also means no
+# two houses in the same building go dark simultaneously.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1h
+AccuracySec=1min
+
+# Deliberately NOT Persistent. A device powered off overnight must NOT reboot
+# itself the moment it comes back the next morning to "catch up" a missed run —
+# that turns a normal power cut into a reboot the household witnesses, and in
+# the worst case a loop. A skipped night is simply a skipped night.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

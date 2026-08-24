@@ -1,0 +1,22 @@
+# CERAVIS edge — the unit ceravis-reboot.timer triggers.
+# Installed by setup/install_reboot_timer.sh, which substitutes the real repo
+# path. Don't edit the /etc copy by hand; re-run the installer.
+[Unit]
+Description=CERAVIS nightly reboot (safety-checked)
+# If the network is going down we are already on our way out; don't race it.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root because it ends in `systemctl reboot`. It does NOT need the
+# reboot password: nobody is present at 03:00, and the authorisation here is
+# that root owns the timer. The password guards the MANUAL path, where a caller
+# is asserting they are allowed to take a care device offline.
+User=root
+WorkingDirectory=/home/ceravis/ceravis2/edge
+EnvironmentFile=/home/ceravis/ceravis2/edge/infra/env/jetson.env
+ExecStart=/usr/bin/python3 /home/ceravis/ceravis2/edge/tools/scheduled_reboot.py
+# The script asks the running service whether it is safe, and skips the night if
+# an alert is still queued. A non-zero exit is a real failure worth seeing in
+# `systemctl status`, so no "-" prefix here.
+TimeoutStartSec=120

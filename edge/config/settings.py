@@ -403,6 +403,30 @@ class Settings(BaseSettings):
         "standing_up,sitting_down,walking_started,walking_stopped,"
         "no_motion_snapshot,no_transition_snapshot,"
         "area_transition,room_transition")
+    # ---- Scheduled reboot + reboot authorisation --------------------
+    # A nightly restart clears whatever a 24h run accumulated — leaked handles,
+    # fragmented memory, a wedged driver — at the hour a care home is quietest.
+    # systemd owns the SCHEDULE (infra/systemd/ceravis-reboot.timer); these
+    # values describe it for the status surface and drive the installer, so the
+    # timer and the API never disagree about when it runs.
+    reboot_scheduled_enabled: bool = True
+    reboot_window_start_hour: int = 3        # 03:00 local, randomised over 1h
+    # A reboot must not strand an undelivered fall. The outbox is durable so
+    # nothing is LOST, but delivery is delayed by the boot time — which is
+    # exactly the delay an alert cannot afford. The scheduled run defers to
+    # tomorrow; a human can still override deliberately.
+    reboot_defer_on_pending_alerts: bool = True
+    # Manual reboot is password-gated: the edge_id that authenticates every
+    # other control endpoint travels in the URL of every fleet request, so it
+    # is not a secret. Attempts are rate-limited so the PBKDF2 hash cannot be
+    # ground down online.
+    reboot_max_attempts: int = 5
+    reboot_lockout_secs: float = 300.0
+    # Long enough for the HTTP response and the log line to flush before the
+    # kernel goes down — a reboot nobody was told about looks like a crash.
+    reboot_delay_secs: float = 3.0
+    reboot_command: str = "sudo -n /bin/systemctl reboot"
+
     # ---- Cloud outbox (the offline-safe upload queue) ---------------
     # Every event-path upload (saveAlert + its saveSnapshot stills and fall
     # clips) is queued in SQLite and sent from there FALLS FIRST, then oldest

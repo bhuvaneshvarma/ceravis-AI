@@ -14,13 +14,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from common import clock, event_snapshots
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from ingestion.camera_status import codec_warning, substream_warning
+from integration import call_log
+from maintenance import reboot
 
 
 router = APIRouter()
@@ -301,3 +303,42 @@ def system_status(request: Request):
         "storage": storage,
         "cloud": cloud,
     }
+
+
+# ---- reboot ---------------------------------------------------------
+# Read is open (an operator must be able to see whether tonight's reboot is
+# scheduled); the ACT is password-gated. See maintenance/reboot.py for why the
+# edge_id match that guards every other control endpoint is not enough here.
+
+@router.get("/api/v1/system/reboot")
+def reboot_status(request: Request):
+    """Will this device reboot tonight, and can it be rebooted now."""
+    return reboot.status(getattr(request.app.state, "outbox", None))
+
+
+@router.post("/api/v1/system/reboot")
+async def reboot_now(request: Request):
+    """Manual reboot. Body: {"password": "...", "force": false}.
+
+    `force` overrides only the SAFETY deferral (queued alerts), never the
+    password — a human can decide an undelivered alert is acceptable; nobody
+    gets to skip authenticating.
+    """
+    body = await request.json() if await request.body() else {}
+    ok, err = reboot.verify_password(str(body.get("password") or ""))
+    if not ok:
+        # Deliberately no distinction between "wrong password" and "no password
+        # set" in the STATUS code — both are 401, so probing tells an attacker
+        # nothing. The message is still specific, because it is only returned
+        # over the LAN/tunnel to someone already reaching this endpoint.
+        call_log.record("event", False, label="WARNING · Reboot refused",
+                        error=err or "unauthorised")
+        raise HTTPException(401, err or "unauthorised")
+
+    block = reboot.safety_block(getattr(request.app.state, "outbox", None))
+    if block and not bool(body.get("force")):
+        raise HTTPException(409, f"{block}. Retry with force=true to override.")
+
+    reboot.perform("manual request", "operator (API)")
+    return {"rebooting": True, "in_secs": settings.reboot_delay_secs,
+            "forced_past": block}
