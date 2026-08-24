@@ -323,55 +323,19 @@ Backend integrations should use the label-based `/api/v1/cameras/ptz` exclusivel
 
 ---
 
-## 10. The idle auto-revert add-on (temporary, removable)
-
-Before `action:"revert"` existed, the edge guessed when the viewer was finished:
-after `ptz_revert_secs` (15 s) with no PTZ traffic, it drove the camera home by
-itself. **`revert` supersedes it** — the app now says when it is done, which is
-strictly better than a timer.
-
-It is still shipped, switchable and deletable, all from the **monitor page**:
-
-| Button | Effect |
-|---|---|
-| `↩ Auto-revert: ON/OFF` | Turns the idle timer on/off at runtime. Persisted. OFF drops every pending revert immediately. |
-| `🗑` | **Deletes the feature from the device** — its module, its switch, both buttons and the `ptz_revert_secs` setting. Permanent; git is the only undo. |
-
-Its API, if you need it from a script:
-
-```
-GET    /api/v1/ptz/autorevert            -> {present, enabled, idle_secs, pending}
-POST   /api/v1/ptz/autorevert/toggle     -> {enabled}
-DELETE /api/v1/ptz/autorevert?dry_run=1  -> what the delete WOULD remove
-DELETE /api/v1/ptz/autorevert            -> removes it
-```
-
-The delete validates first: it computes every edit, compiles the result in
-memory and checks the files are writable, and if **anything** would come out
-broken it writes nothing and answers `409`. It never touches
-[edge/api/ptz_control.py](edge/api/ptz_control.py) — the code that drives the
-motors is not part of the surgery. After it runs, `action:"revert"`, moves,
-auto-stop and the rest of PTZ are completely unaffected.
-
-**None of this is on the cloud path** — the buttons are LAN/admin only, and the
-app never calls these endpoints.
-
----
-
-## 11. Tuning (device side)
+## 10. Tuning (device side)
 
 | Setting | Env var | Default | Effect |
 |---|---|---|---|
 | `ptz_max_move_ms` | `PTZ_MAX_MOVE_MS` | `2000` | Hard ceiling on one move; `durationMs` is clamped to it and a missing duration becomes it. |
-| `ptz_revert_secs` | `PTZ_REVERT_SECS` | `15.0` | *(add-on only, §10)* Idle seconds before the automatic revert. `0` disables it. Gone once the add-on is deleted. |
 
-Both live in [edge/config/settings.py:157](edge/config/settings.py:157); override
+It lives in [edge/config/settings.py:157](edge/config/settings.py:157); override
 per-device in `infra/env/jetson.env` or the machine-local `jetson.env`, then
 `sudo systemctl restart ceravis`.
 
 ---
 
-## 12. Copy-paste for each team
+## 11. Copy-paste for each team
 
 **Backend team**
 > One proxy rule: `POST /api/v1/cameras/ptz` on the edge, reached at

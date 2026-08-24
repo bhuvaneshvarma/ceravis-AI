@@ -106,16 +106,6 @@ moment you clicked.">📸 Snapshot</button>
     <button id="rec-toggle" class="btn btn-ghost btn-sm"
             title="Person-triggered video recording. OFF = nothing is saved to disk
 (frees space); alerts &amp; snapshots are unaffected.">⏺ Recording: …</button>
-    <!-- >>> ceravis:ptz-autorevert -->
-    <button id="ar-toggle" class="btn btn-ghost btn-sm" hidden
-            title="Idle auto-revert: after someone pans/tilts a camera, it drives
-back to the framing it had before, once the pad has been left alone. Superseded by
-the PTZ call's own action:&quot;revert&quot;, which the app triggers on demand.">↩ Auto-revert: …</button>
-    <button id="ar-del" class="btn btn-ghost btn-sm" hidden
-            title="Delete the auto-revert feature from this device — its code, this
-switch and this button. Permanent (git is the only undo). The on-demand
-action:&quot;revert&quot; is untouched.">🗑</button>
-    <!-- <<< ceravis:ptz-autorevert -->
   </div>
 
   <div class="mon">
@@ -477,65 +467,6 @@ document.getElementById("rec-toggle").onclick = async () => {
   refreshRec();
 };
 
-/* >>> ceravis:ptz-autorevert */
-/* PTZ idle auto-revert — a REMOVABLE add-on (edge/api/ptz_autorevert.py). The
-   switch turns it off; the 🗑 deletes the feature outright, this panel included.
-   Everything degrades quietly: if the endpoint is gone (404), the buttons never
-   appear, so a purged device shows no trace even before the HTML is re-served. */
-const AR = { toggle: document.getElementById("ar-toggle"),
-             del: document.getElementById("ar-del"), poll: null };
-
-function arHide() {                       // gone for good: no buttons, no polling
-  clearInterval(AR.poll);
-  AR.toggle.remove();
-  AR.del.remove();
-}
-
-async function refreshAutoRevert() {
-  let r;
-  // Raw fetch (fleet-prefix.js still prefixes it) so we can read the STATUS: only
-  // a 404 means the feature is gone. A transient error must not hide the panel.
-  try { r = await fetch("/api/v1/ptz/autorevert"); } catch { return; }
-  if (r.status === 404) { arHide(); return; }
-  if (!r.ok) return;
-  const s = await r.json();
-  AR.toggle.hidden = AR.del.hidden = false;
-  AR.toggle.textContent = s.enabled
-    ? `↩ Auto-revert: ON · ${s.idle_secs}s` : "↩ Auto-revert: OFF";
-  AR.toggle.style.color = s.enabled ? "var(--ok, #34d399)" : "#8fa3bf";
-}
-
-AR.toggle.onclick = async () => {
-  try {
-    const r = await api("/api/v1/ptz/autorevert/toggle", { method: "POST" });
-    toast(r.enabled ? "Auto-revert ON — cameras return to their framing when idle"
-                    : "Auto-revert OFF — a camera stays where it was panned",
-          r.enabled ? "ok" : "warn");
-  } catch (e) { toast((e && e.detail) || "Auto-revert toggle failed", "err"); }
-  refreshAutoRevert();
-};
-
-AR.del.onclick = async () => {
-  if (!confirm("Delete the auto-revert feature from this device?\n\n"
-             + "This removes its code, this switch and this button permanently — "
-             + "git is the only way back. Panning still works, and the app can "
-             + "still recentre a camera with the PTZ call's action:\"revert\".")) return;
-  AR.del.disabled = AR.toggle.disabled = true;
-  try {
-    const r = await api("/api/v1/ptz/autorevert", { method: "DELETE" });
-    arHide();
-    toast(`Auto-revert removed — ${(r.removed || []).length} items`, "ok");
-    console.info("auto-revert purge:", r);
-  } catch (e) {
-    AR.del.disabled = AR.toggle.disabled = false;
-    toast((e && e.detail) || "Delete failed — nothing was changed", "err");
-  }
-};
-
-AR.poll = setInterval(refreshAutoRevert, 5000);
-refreshAutoRevert();
-
-/* <<< ceravis:ptz-autorevert */
 initCamNames();
 setInterval(pollState, 400);
 setInterval(pollCloud, 2000);
