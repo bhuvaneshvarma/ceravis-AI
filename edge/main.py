@@ -59,6 +59,11 @@ async def lifespan(app: FastAPI):
     pipeline = Pipeline()
     pipeline.start()
     pipeline.attach(app.state)
+    # Rescue any runtime value stranded in the TRACKED jetson.env before anything
+    # reads it — a device provisioned before env_writer was corrected has its
+    # edge_id there, which is what makes `git pull` abort on every update.
+    from config.env_writer import migrate_to_local
+    migrate_to_local()
     _apply_edge_id_on_boot()          # sync frpc to the account's edge_id
     # If a reboot brought us down, say so on the way back up — otherwise a
     # restart is indistinguishable from a crash in the logs and on the console.
