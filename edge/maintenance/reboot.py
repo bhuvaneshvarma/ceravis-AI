@@ -41,7 +41,7 @@ import os
 import secrets
 import subprocess
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from common import clock
@@ -122,8 +122,7 @@ def lockout_remaining() -> float:
     if not until:
         return 0.0
     try:
-        left = (datetime.fromisoformat(until) - datetime.now(timezone.utc)
-                ).total_seconds()
+        left = (datetime.fromisoformat(until) - clock.now()).total_seconds()
     except Exception:
         return 0.0
     return max(0.0, left)
@@ -160,7 +159,7 @@ def verify_password(password: str) -> tuple[bool, str | None]:
             a["failures"] = int(a.get("failures") or 0) + 1
             if a["failures"] >= settings.reboot_max_attempts:
                 a["locked_until"] = (
-                    datetime.now(timezone.utc)
+                    clock.now()
                     + timedelta(seconds=settings.reboot_lockout_secs)).isoformat()
                 a["failures"] = 0
                 logger.warning("reboot: locked out after %d failed attempts",

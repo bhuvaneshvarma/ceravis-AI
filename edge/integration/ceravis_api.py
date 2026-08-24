@@ -23,13 +23,13 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 
 from config.settings import settings
 from integration import call_log
+from common import clock
 
 
 logger = logging.getLogger("integration")
@@ -81,7 +81,7 @@ def _wire(endpoint: str, method: str, url: str, request, *,
         base = base if base.is_absolute() else (_EDGE_ROOT / base)
         base.mkdir(parents=True, exist_ok=True)
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": clock.now_iso(),
             "endpoint": endpoint,
             "method": method,
             "url": url,

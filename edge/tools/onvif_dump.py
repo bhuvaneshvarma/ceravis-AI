@@ -26,11 +26,11 @@ Output: camerainfo/<host>.txt at the repo root.
 import argparse
 import sys
 import xml.dom.minidom as minidom
-from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree
 
 from onvif.soap import OnvifError, call
+from common import clock
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -129,7 +129,7 @@ class _Dumper:
 
     # ---- the dump ----------------------------------------------------
     def run(self) -> None:
-        self._section(f"ONVIF DUMP  {self.xaddr}  ({datetime.now(timezone.utc).isoformat()})")
+        self._section(f"ONVIF DUMP  {self.xaddr}  ({clock.now_iso()})")
         self.resolve_services()
 
         for service, ops in NOARG_OPS.items():

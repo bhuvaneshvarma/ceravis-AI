@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from datetime import datetime, timezone
 
 import cv2
 import numpy as np
 
 from enrollment.enrollment_manager import EnrollmentManager
+from common import clock
 
 
 logger = logging.getLogger("enrollment")
@@ -209,7 +209,7 @@ class EnrollmentWorker:
     def _largest_person(self, img: np.ndarray):
         res = self._detector.detect(
             frame=img, camera_id="enroll", frame_id=0,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=clock.now(),
         )
         if not res.detections:
             return None

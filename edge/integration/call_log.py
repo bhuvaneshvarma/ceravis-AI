@@ -21,10 +21,10 @@ everywhere — a logging hiccup must never break a cloud call.
 import json
 import logging
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import settings
+from common import clock
 
 
 logger = logging.getLogger("integration")
@@ -111,7 +111,7 @@ def record(endpoint: str, ok: bool, *, status: int | None = None,
     if not ok and state != "dropped" and getattr(_QUIET, "on", False):
         return
     entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": clock.now_iso(),        # edge-local, like every other timestamp
         "endpoint": endpoint,   # userDetails|saveCamera|saveAlert|saveSnapshot|event
         "source": SOURCE,                # "live" (real pipeline) | "test" (test_cloud)
         "direction": direction,          # "out" | "in" | None

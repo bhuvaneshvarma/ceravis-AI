@@ -507,8 +507,9 @@ def probe_rtsp(body: dict):
     # H.265 must reach a keyframe before the first frame decodes; give it a
     # short window rather than failing on the first empty read.
     frame = None
-    deadline = time.time() + 8.0
-    while time.time() < deadline:
+    # monotonic: a wall-clock deadline breaks if NTP steps the clock
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
         ok, f = cap.read()
         if ok and f is not None:
             frame = f

@@ -22,13 +22,13 @@ import logging
 import shutil
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from detection.detection_buffer import DetectionBuffer
 from livestream import mediamtx_client
+from common import clock
 from livestream.mediamtx_client import (
     MediaMTXError, path_codec, record_path_name, recorded_path_names,
 )
@@ -269,7 +269,7 @@ class RecordingController:
 
     def _tick(self) -> None:
         now = time.monotonic()
-        wall = datetime.now(timezone.utc)
+        wall = clock.now()
         for cam, result in self._detections.get_all().items():
             fresh = (wall - result.timestamp).total_seconds() <= _FRESH_SECS
             if fresh and result.detections:          # YOLO only emits persons

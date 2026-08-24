@@ -33,11 +33,12 @@ treated as missing and their joint contributes only to the absent-flag.
 import math
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 
 from config.settings import settings
 from pose.pose_schema import PoseEstimation
+from common import clock
 
 
 # ---- COCO indices ----------------------------------------------------
@@ -385,7 +386,7 @@ class PostureTracker:
         if st is None or not st.fall_confirmed_pending:
             return False
         st.fall_confirmed_pending = False        # consume the one-shot
-        now = datetime.now(timezone.utc)
+        now = clock.now()
         last = self._last_fall.get(key)
         if last is not None and (now - last).total_seconds() < settings.fall_cooldown_secs:
             return False

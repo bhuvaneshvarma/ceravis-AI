@@ -5,12 +5,13 @@ import logging
 import os
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
 from config.settings import settings
+from common import clock
 
 
 logger = logging.getLogger("enrollment")
@@ -261,7 +262,8 @@ class EnrollmentManager:
         af = root / "body" / "adaptive.npy" if root else None
         last = None
         if af and af.exists():
-            last = datetime.fromtimestamp(af.stat().st_mtime, timezone.utc).isoformat()
+            last = datetime.fromtimestamp(af.stat().st_mtime,
+                                          clock.local_tz()).isoformat()
         return {
             "enrolled": int(enrolled.shape[0]),
             "adaptive": int(adaptive.shape[0]),
@@ -316,7 +318,8 @@ class EnrollmentManager:
         path = root / "status.json"
         cur = self.get_status(recipient_id)
         cur.update(fields)
-        cur["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        cur["updated"] = clock.now_iso()      # was naive: no offset, unlike every
+                                      # other timestamp the device writes
         path.write_text(json.dumps(cur, indent=2))
 
     def get_status(self, recipient_id: str) -> dict:

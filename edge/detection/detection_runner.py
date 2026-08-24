@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from config.settings import settings
 from detection.detection_buffer import DetectionBuffer
 from detection.yolo_detector import YOLODetector
 from ingestion.frame_buffer import FrameBuffer
+from common import clock
 
 
 logger = logging.getLogger("detection")
@@ -126,6 +127,6 @@ class DetectionRunner:
                 self._detection_buffer.update(result)
                 self._frames_processed += 1
                 self._detections_generated += len(result.detections)
-                self._last_inference_time = datetime.now(timezone.utc)
+                self._last_inference_time = clock.now()
             except Exception:
                 logger.exception("Detection failed camera=%s", camera_id)

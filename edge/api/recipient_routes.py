@@ -220,8 +220,9 @@ def enroll_live(recipient_id: str, request: Request, body: dict):
     if not camera_id:
         raise HTTPException(400, "camera_id required")
     mgr = request.app.state.camera_manager
-    captured, deadline, last_fid = 0, time.time() + seconds, -1
-    while time.time() < deadline:
+    # monotonic: a wall-clock deadline breaks if NTP steps the clock
+    captured, deadline, last_fid = 0, time.monotonic() + seconds, -1
+    while time.monotonic() < deadline:
         fd = mgr.get_frame(camera_id)
         if fd is not None and fd.frame_id != last_fid:
             last_fid = fd.frame_id

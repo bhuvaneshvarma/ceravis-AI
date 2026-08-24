@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "edge"))
 
 from config.settings import settings          # noqa: E402
 from recording import index                   # noqa: E402
+from common import clock                       # noqa: E402
 
 
 SEG = int(settings.record_segment_secs)       # nominal segment length
@@ -49,14 +50,14 @@ def write_segment(folder: Path, start: datetime, *, length: float | None = None,
     which is exactly how a segment still being written looks on disk."""
     f = folder / (start.strftime("%Y-%m-%d_%H-%M-%S-") + f"{start.microsecond:06d}.ts")
     f.write_bytes(b"\x47" + b"\0" * 187)      # one TS packet — content is irrelevant
-    closed = (datetime.now().timestamp() if open_now
+    closed = (clock.now().timestamp() if open_now
               else start.timestamp() + (SEG if length is None else length))
     os.utime(f, (closed, closed))
     return f
 
 
 def build(folder: Path) -> str:
-    since = datetime.now().astimezone() - timedelta(hours=settings.record_retention_hours)
+    since = clock.now() - timedelta(hours=settings.record_retention_hours)
     return index.playlist(folder.name, since)
 
 
@@ -83,7 +84,7 @@ def main() -> int:
     folder = root / "cam_test-aac"
     folder.mkdir(parents=True)
 
-    now = datetime.now().astimezone().replace(microsecond=0)
+    now = clock.now().replace(microsecond=0)
     # Run A (~10 min ago): 2 full segments + a third the recorder closed early
     # when the person left. Run B (now): 2 full segments + one still being
     # written this second.
@@ -116,7 +117,7 @@ def main() -> int:
           f"run A's last segment is its REAL length ({durs[2]:.3f}s, not {SEG}s)")
 
     print("\n2. the open segment finishes -> next build picks it up (no new call)")
-    t = datetime.now().timestamp() - 5
+    t = clock.now().timestamp() - 5
     os.utime(open_seg, (t, t))
     body2 = build(folder)
     check(open_seg.name in body2, "the newly finished clip appended by itself")

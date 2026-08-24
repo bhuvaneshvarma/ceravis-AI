@@ -37,6 +37,12 @@ class OnvifError(Exception):
 
 def _security_header(username: str, password: str) -> str:
     nonce = os.urandom(16)
+    # THE ONE DELIBERATE EXCEPTION to common.clock. WS-Security UsernameToken
+    # requires the Created value in UTC with a 'Z' suffix (OASIS wss-1.0), and
+    # the camera folds this exact string into the password digest it verifies.
+    # An edge-local offset here is rejected as a bad digest by every camera, so
+    # this must NOT be routed through clock.now(). Guarded by
+    # tests/test_time_unified.py, which allows this line and no other.
     created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     digest = base64.b64encode(
         hashlib.sha1(nonce + created.encode() + password.encode()).digest()

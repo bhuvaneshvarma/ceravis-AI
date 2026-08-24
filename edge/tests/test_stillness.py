@@ -10,11 +10,10 @@ while no_motion was unreachable in the field for every real camera.
 Run:  PYTHONPATH=edge python edge/tests/test_stillness.py
 
 Uses the REAL buffer classes and shrinks the stillness window to sub-second so
-the whole suite runs in a few seconds of wall clock (the rule reads
-datetime.now() internally, so time is real, just compressed).
+the whole suite runs in a few seconds of wall clock (the rule reads the
+shared clock internally, so time is real, just compressed).
 """
 import time
-from datetime import datetime, timezone
 from itertools import count
 
 import cv2
@@ -43,6 +42,7 @@ from rules.rule_context import RuleContext                    # noqa: E402
 from rules.stillness_rule import StillnessRule                # noqa: E402
 from tracking.track_buffer import TrackBuffer                 # noqa: E402
 from tracking.track_schema import Track, TrackResult          # noqa: E402
+from common import clock                       # noqa: E402
 
 
 _FID = count(1)
@@ -113,7 +113,7 @@ def _tick(bufs, cam: str, tid: int, coords: dict,
           posture: Posture = Posture.SITTING, conf: float = 0.9) -> None:
     """One fresh sighting of the target on `cam` (all buffers stamped now)."""
     _, tracks, idents, poses, postures, frames = bufs
-    now = datetime.now(timezone.utc)
+    now = clock.now()
     fid = next(_FID)
     if frames is not None:
         frames.update(cam, _render(coords), fid, now, 15.0)

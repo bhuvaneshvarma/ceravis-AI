@@ -49,8 +49,9 @@ def grab_one_frame(url: str, timeout_secs: float = 8.0):
     except cv2.error:
         pass
     frame = None
-    deadline = time.time() + max(0.5, timeout_secs)
-    while time.time() < deadline:
+    # monotonic: a wall-clock deadline breaks if NTP steps the clock
+    deadline = time.monotonic() + max(0.5, timeout_secs)
+    while time.monotonic() < deadline:
         ok, f = cap.read()
         if ok and f is not None:
             frame = f

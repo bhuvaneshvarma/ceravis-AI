@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 
 from common.freshness import TRACK_FRESH_SECS, is_fresh
 from config.settings import settings
+from common import clock
 
 
 router = APIRouter(prefix="/api/v1/ai", tags=["AI"])
@@ -32,7 +32,7 @@ def ai_state(request: Request, camera_id: str | None = None):
     # tell "detector sees N people but tracker has 0" (a tracking problem)
     # apart from "detector sees 0" (a detection problem).
     cams = set(tracks_by_cam) | set(detections)
-    now = datetime.now(timezone.utc)
+    now = clock.now()
     out: dict = {}
     for cam in cams:
         if camera_id and cam != camera_id:
@@ -101,7 +101,7 @@ def ai_stillness(request: Request):
     posture_hold = 0.0
     since = getattr(rule, "_posture_since", None)
     if since is not None:
-        posture_hold = max(0.0, (datetime.now(timezone.utc) - since).total_seconds())
+        posture_hold = max(0.0, (clock.now() - since).total_seconds())
 
     out = {
         "available": True,

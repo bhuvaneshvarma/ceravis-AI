@@ -38,6 +38,7 @@ from integration.ceravis_api import is_configured, room_to_enum
 from integration.outbox_sender import OutboxSender
 from livestream.mediamtx_client import record_path_name
 from recording.incident_clip import build_incident_clip
+from common import clock
 from storage.outbox_store import (PRIORITY_ALERT, PRIORITY_AMBIENT,
                                   PRIORITY_FALL)
 
@@ -222,7 +223,7 @@ class CloudAlertPublisher:
             if at.tzinfo is None:
                 at = at.astimezone()                # naive -> device-local
         except Exception:
-            at = datetime.now().astimezone()
+            at = clock.now()
         threading.Thread(
             target=self._build_and_queue_fall_clip,
             args=(pid, record_path_name(cam), at, text,

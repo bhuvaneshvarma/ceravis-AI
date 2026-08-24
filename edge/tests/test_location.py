@@ -5,7 +5,6 @@ room (camera→camera) and area (zone inside the camera).
 Run:  PYTHONPATH=edge python edge/tests/test_location.py
 """
 import sys
-from datetime import datetime, timezone
 from itertools import count
 from types import SimpleNamespace
 
@@ -22,6 +21,7 @@ from rules.location_rule import LocationRule
 from rules.rule_context import RuleContext
 from tracking.track_buffer import TrackBuffer
 from tracking.track_schema import Track, TrackResult
+from common import clock                       # noqa: E402
 
 
 _FID = count(1)
@@ -53,7 +53,7 @@ def _world():
 
 def _tick(bufs, cam: str, tid: int, conf: float = 0.9) -> None:
     ctx, tracks, idents = bufs
-    now = datetime.now(timezone.utc)
+    now = clock.now()
     fid = next(_FID)
     tracks.update(TrackResult(
         camera_id=cam, frame_id=fid, timestamp=now,
