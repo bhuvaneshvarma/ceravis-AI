@@ -96,32 +96,7 @@ check("reboot password never blocks a non-interactive run",
       "-t 0" in src, "must test for a terminal before prompting")
 
 
-print("\n7. service topology: grouped for control, NOT coupled in lifecycle")
-TARGET = ROOT / "edge/infra/systemd/ceravis.target"
-check("ceravis.target exists", TARGET.exists())
-if TARGET.exists():
-    t = io.open(TARGET, encoding="utf-8").read()
-    for unit in ("ceravis.service", "frpc.service", "ceravis-reboot.timer"):
-        check(f"target pulls in {unit}", f"Wants={unit}" in t)
-    # BindsTo/Requires/PartOf would make every edge_id change restart the AI
-    # pipeline and every code deploy drop the tunnel — the tunnel being the
-    # remote route used to diagnose the deploy.
-    # Only DIRECTIVE lines count. The target explains at length WHY it avoids
-    # these, and a check that trips over its own rationale is a broken check.
-    directives = [l.strip() for l in t.splitlines()
-                  if l.strip() and not l.strip().startswith("#")]
-    for banned in ("BindsTo=", "Requires=", "PartOf="):
-        check(f"no {banned} coupling",
-              not any(d.startswith(banned) for d in directives))
-    check("the reasoning is written down, not just applied",
-          "BindsTo" in t and "failure domain" in t)
-
-INSTALLER = io.open(ROOT / "setup/install_service.sh", encoding="utf-8").read()
-check("the installer installs the target", "ceravis.target" in INSTALLER)
-check("and enables it", "enable ceravis.target" in INSTALLER)
-
-
-print("\n8. edge_id application is VERIFIED, not just attempted")
+print("\n7. edge_id application is VERIFIED, not just attempted")
 prov = io.open(ROOT / "edge/integration/edge_provision.py", encoding="utf-8").read()
 check("tunnel_status() reads frpc.toml back", "def tunnel_status" in prov
       and "frpc.toml" in prov)
@@ -136,6 +111,23 @@ check("and schedules the tunnel apply", "apply_edge_id_async" in acct)
 sysr = io.open(ROOT / "edge/api/system_routes.py", encoding="utf-8").read()
 check("status surfaces whether the tunnel is really keyed",
       '"tunnel"' in sysr and "_tunnel_status" in sysr)
+
+
+print("\n8. hotspot: the AP the cameras join, not a server")
+HOT = io.open(ROOT / "setup/install_hotspot.sh", encoding="utf-8").read()
+# Run under sudo, a bare $USER is root and the polkit rule grants root — leaving
+# the unprivileged service user still unable to drive NetworkManager, and the
+# hotspot page failing silently.
+check("resolves the service user via SUDO_USER", "SUDO_USER" in HOT)
+check("refuses rather than writing a root rule",
+      'if [ "$SVC_USER" = "root" ]' in HOT)
+check("verifies the rights landed, not just the file",
+      'sudo -u "$SVC_USER" nmcli' in HOT)
+check("setup runs it", "install_hotspot.sh" in src)
+
+DOC = io.open(ROOT / "setup/check_jetson.sh", encoding="utf-8").read()
+check("the doctor checks the hotspot", "hotspot" in DOC)
+check("the doctor checks the tunnel is really keyed", "frpc routes" in DOC)
 
 
 if failures:

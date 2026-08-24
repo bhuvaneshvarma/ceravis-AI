@@ -151,6 +151,43 @@ else
     warn "ceravis.service not installed" "bash setup/install_service.sh"
 fi
 
+# ---- 10. Fleet tunnel + hotspot ------------------------------------
+echo "-- tunnel + hotspot"
+if systemctl list-unit-files 2>/dev/null | grep -q "^frpc.service"; then
+    TSTATE="$(systemctl is-active frpc 2>/dev/null)"
+    if [ "$TSTATE" = "active" ]; then
+        ok "frpc.service active"
+    else
+        warn "frpc.service installed but $TSTATE" "sudo systemctl restart frpc && journalctl -u frpc -n 30"
+    fi
+    # A tunnel that lost its edge_id routing looks healthy from here right up
+    # until every live link is dead, so check what the config actually carries.
+    EID="$(grep -m1 '^EDGE_ID=' edge/infra/env/jetson.env 2>/dev/null | cut -d= -f2-)"
+    if [ -n "${EID:-}" ]; then
+        if sudo -n grep -q "\"/$EID\"" /etc/frp/frpc.toml 2>/dev/null; then
+            ok "frpc routes /$EID"
+        else
+            warn "frpc.toml does not route /$EID - live links will be dead" "sudo /usr/local/bin/ceravis-apply-edge-id $EID"
+        fi
+    else
+        ok "no edge_id yet (LAN-only until an account is verified)"
+    fi
+else
+    ok "frpc not installed (LAN-only device)"
+fi
+
+if [ -f /etc/polkit-1/rules.d/50-ceravis-network.rules ]; then
+    # The rule parses fine with the WRONG user and simply never matches, so
+    # prove the rights instead of trusting that the file exists.
+    if nmcli -t -f DEVICE,TYPE device >/dev/null 2>&1; then
+        ok "hotspot: NetworkManager reachable by $(id -un)"
+    else
+        warn "hotspot rule present but NetworkManager is not reachable" "bash setup/install_hotspot.sh"
+    fi
+else
+    warn "hotspot not enabled (cameras must use the house WiFi)" "bash setup/install_hotspot.sh"
+fi
+
 # ---- summary -------------------------------------------------------
 echo "======================================================="
 echo "  $PASS ok · $WARN warnings · $FAIL failures"
