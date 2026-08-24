@@ -1,0 +1,31 @@
+# CERAVIS edge — one handle for the whole device.
+#
+#   sudo systemctl restart ceravis.target     everything
+#   sudo systemctl restart ceravis            just the app
+#   sudo systemctl restart frpc               just the tunnel
+#
+# Installed by setup/install_service.sh. Don't edit the /etc copy by hand.
+#
+# Wants=, deliberately NOT Requires=/BindsTo=/PartOf=.
+#
+# Wants pulls each unit in when the target starts and gives one command to
+# manage the set, while leaving every unit its OWN failure domain. Binding them
+# would be actively harmful here, because these units restart for DIFFERENT
+# reasons:
+#
+#   * frpc restarts when the EDGE_ID changes (account verification).
+#   * ceravis restarts on a code deploy or a crash.
+#   * the reboot timer never restarts anything; it fires once a night.
+#
+# Bind them and every edge_id change drops the AI pipeline, while every code
+# deploy drops the tunnel — the tunnel being exactly the remote route you need
+# to diagnose a deploy that went wrong. Independent units, one handle.
+[Unit]
+Description=CERAVIS edge (app + fleet tunnel + nightly reboot)
+Wants=ceravis.service
+Wants=frpc.service
+Wants=ceravis-reboot.timer
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

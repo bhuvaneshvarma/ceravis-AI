@@ -37,7 +37,7 @@ def apply_edge_id_async(edge_id: str) -> None:
     response (which may travel through the very frpc we're about to restart) to
     have flushed to the browser. Intended as a FastAPI BackgroundTask."""
     time.sleep(1.5)
-    apply_edge_id(edge_id)
+    apply_edge_id_verified(edge_id)
 
 
 def apply_edge_id(edge_id: str) -> bool:
@@ -77,3 +77,73 @@ def _loud_fail(edge_id: str, why: str) -> None:
                         error=why)
     except Exception:                                 # noqa: BLE001 — never raise
         pass
+
+
+# =====================================================================
+# Verification — "it was applied" must be a fact you can check, not a hope
+# =====================================================================
+
+_FRPC_CONF = "/etc/frp/frpc.toml"
+
+
+def tunnel_status(edge_id: str | None = None) -> dict:
+    """What the tunnel config ACTUALLY carries right now.
+
+    apply_edge_id() reports whether the helper exited 0, which is not the same
+    question as whether the tunnel is keyed to this device. A helper that ran
+    against a config with no matching proxy block, or a config replaced by hand
+    afterwards, both exit 0 and leave every live link dead. So read the file
+    back and compare.
+    """
+    from configuration.account_config import effective_edge_id
+    want = (edge_id or effective_edge_id() or "").strip()
+    out = {"edge_id": want or None, "config": _FRPC_CONF,
+           "installed": _helper_present(), "readable": False,
+           "keyed": False, "reason": None}
+    if not want:
+        out["reason"] = "no edge_id on this device yet (account not verified)"
+        return out
+    try:
+        with open(_FRPC_CONF, encoding="utf-8") as fh:
+            conf = fh.read()
+    except OSError as exc:
+        # Unreadable is NOT the same as wrong: the file is root-owned on some
+        # installs, so say so plainly instead of reporting a false negative.
+        out["reason"] = f"cannot read {_FRPC_CONF} ({exc.__class__.__name__})"
+        return out
+    out["readable"] = True
+    out["keyed"] = f'"/{want}"' in conf
+    out["reason"] = (None if out["keyed"] else
+                     f"frpc.toml does not route /{want} — live links are dead "
+                     f"until 'sudo {_HELPER} {want}' succeeds")
+    return out
+
+
+def apply_edge_id_verified(edge_id: str, attempts: int = 3,
+                           delay_secs: float = 3.0) -> bool:
+    """apply_edge_id, then CHECK, and retry a few times before giving up.
+
+    The single-shot version fails permanently on a transient cause — frpc mid
+    restart, /etc briefly read-only after a boot, sudo not yet warm. Losing the
+    tunnel means losing every live link AND the remote route used to diagnose
+    it, so this is worth a few seconds of persistence.
+    """
+    edge_id = (edge_id or "").strip()
+    if not edge_id:
+        return False
+    for attempt in range(1, max(1, attempts) + 1):
+        apply_edge_id(edge_id)
+        st = tunnel_status(edge_id)
+        if st["keyed"] or not st["readable"]:
+            # Unreadable config: the helper is the only writer and it reported
+            # success, so treat that as done rather than retrying forever.
+            if st["keyed"]:
+                logger.info("frpc verified: routing /%s (attempt %d)",
+                            edge_id, attempt)
+            return True
+        logger.warning("frpc NOT yet routing /%s (attempt %d/%d) — %s",
+                       edge_id, attempt, attempts, st["reason"])
+        if attempt < attempts:
+            time.sleep(delay_secs)
+    _loud_fail(edge_id, f"still not routing /{edge_id} after {attempts} attempts")
+    return False

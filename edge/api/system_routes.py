@@ -221,6 +221,17 @@ def _camera_status(manager=None) -> list[dict]:
     return cams
 
 
+def _tunnel_status() -> dict:
+    """Is the fleet tunnel ACTUALLY keyed to this device's edge_id. Reported
+    because a tunnel that silently lost its routing looks identical to a
+    healthy one from here — right up until every live link is dead."""
+    try:
+        from integration.edge_provision import tunnel_status
+        return tunnel_status()
+    except Exception:
+        return {"keyed": False, "reason": "tunnel status unavailable"}
+
+
 def _cloud_status(outbox=None) -> dict:
     try:
         from integration.call_log import recent
@@ -302,6 +313,10 @@ def system_status(request: Request):
         "recording": recording,
         "storage": storage,
         "cloud": cloud,
+        # Whether frpc is REALLY routing this device's edge_id. A tunnel that
+        # lost its routing looks identical to a healthy one from in here — right
+        # up until every live link is dead.
+        "tunnel": _tunnel_status(),
     }
 
 

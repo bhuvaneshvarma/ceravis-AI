@@ -96,6 +96,48 @@ check("reboot password never blocks a non-interactive run",
       "-t 0" in src, "must test for a terminal before prompting")
 
 
+print("\n7. service topology: grouped for control, NOT coupled in lifecycle")
+TARGET = ROOT / "edge/infra/systemd/ceravis.target"
+check("ceravis.target exists", TARGET.exists())
+if TARGET.exists():
+    t = io.open(TARGET, encoding="utf-8").read()
+    for unit in ("ceravis.service", "frpc.service", "ceravis-reboot.timer"):
+        check(f"target pulls in {unit}", f"Wants={unit}" in t)
+    # BindsTo/Requires/PartOf would make every edge_id change restart the AI
+    # pipeline and every code deploy drop the tunnel — the tunnel being the
+    # remote route used to diagnose the deploy.
+    # Only DIRECTIVE lines count. The target explains at length WHY it avoids
+    # these, and a check that trips over its own rationale is a broken check.
+    directives = [l.strip() for l in t.splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+    for banned in ("BindsTo=", "Requires=", "PartOf="):
+        check(f"no {banned} coupling",
+              not any(d.startswith(banned) for d in directives))
+    check("the reasoning is written down, not just applied",
+          "BindsTo" in t and "failure domain" in t)
+
+INSTALLER = io.open(ROOT / "setup/install_service.sh", encoding="utf-8").read()
+check("the installer installs the target", "ceravis.target" in INSTALLER)
+check("and enables it", "enable ceravis.target" in INSTALLER)
+
+
+print("\n8. edge_id application is VERIFIED, not just attempted")
+prov = io.open(ROOT / "edge/integration/edge_provision.py", encoding="utf-8").read()
+check("tunnel_status() reads frpc.toml back", "def tunnel_status" in prov
+      and "frpc.toml" in prov)
+check("the apply path retries and verifies",
+      "def apply_edge_id_verified" in prov)
+main_py = io.open(ROOT / "edge/main.py", encoding="utf-8").read()
+check("boot self-heal uses the verified path",
+      "apply_edge_id_verified" in main_py)
+acct = io.open(ROOT / "edge/api/account_routes.py", encoding="utf-8").read()
+check("verification writes EDGE_ID to the env file", "set_env_value" in acct)
+check("and schedules the tunnel apply", "apply_edge_id_async" in acct)
+sysr = io.open(ROOT / "edge/api/system_routes.py", encoding="utf-8").read()
+check("status surfaces whether the tunnel is really keyed",
+      '"tunnel"' in sysr and "_tunnel_status" in sysr)
+
+
 if failures:
     print(f"\n{len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

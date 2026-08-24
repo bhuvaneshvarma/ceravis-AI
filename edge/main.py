@@ -42,11 +42,11 @@ def _apply_edge_id_on_boot() -> None:
     def _run():
         try:
             from configuration.account_config import effective_edge_id
-            from integration.edge_provision import apply_edge_id
+            from integration.edge_provision import apply_edge_id_verified
             eid = effective_edge_id()
             if eid:
                 logger.info("boot: applying edge_id %s to frpc", eid)
-                apply_edge_id(eid)
+                apply_edge_id_verified(eid)
         except Exception:
             logger.warning("edge_id boot-apply skipped", exc_info=True)
 
