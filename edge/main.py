@@ -59,11 +59,6 @@ async def lifespan(app: FastAPI):
     pipeline = Pipeline()
     pipeline.start()
     pipeline.attach(app.state)
-    # Rescue any runtime value stranded in the TRACKED jetson.env before anything
-    # reads it — a device provisioned before env_writer was corrected has its
-    # edge_id there, which is what makes `git pull` abort on every update.
-    from config.env_writer import migrate_to_local
-    migrate_to_local()
     _apply_edge_id_on_boot()          # sync frpc to the account's edge_id
     # If a reboot brought us down, say so on the way back up — otherwise a
     # restart is indistinguishable from a crash in the logs and on the console.
@@ -203,8 +198,18 @@ for _router in (account_router, camera_router, zone_router, recipient_router,
 # delete button. Superseded by the PTZ call's action:"revert"; kept until the
 # app has switched over. Imported HERE rather than at the top so the entire
 # feature is ONE strippable block: DELETE /api/v1/ptz/autorevert removes it.
-from api.ptz_autorevert import router as _ptz_autorevert_router  # noqa: E402
-app.include_router(_ptz_autorevert_router)
+#
+# The import is GUARDED because the add-on deletes its own FILE. Unguarded, a
+# removed add-on takes the whole service down with ModuleNotFoundError at
+# import time — and a `git pull` that touches main.py restores this block
+# while leaving the deleted file deleted, so the crash outlives the removal.
+# An optional feature has to be optional in both directions.
+try:
+    from api.ptz_autorevert import router as _ptz_autorevert_router  # noqa: E402
+    app.include_router(_ptz_autorevert_router)
+except ModuleNotFoundError:
+    logger.info("ptz-autorevert add-on not installed — skipping (removable "
+                "by design; the PTZ action:'revert' supersedes it)")
 
 # <<< ceravis:ptz-autorevert
 # Static UI (dashboard, cameras, zones) served same-origin.

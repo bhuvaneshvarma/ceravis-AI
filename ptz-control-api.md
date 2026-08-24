@@ -366,7 +366,7 @@ app never calls these endpoints.
 | `ptz_revert_secs` | `PTZ_REVERT_SECS` | `15.0` | *(add-on only, §10)* Idle seconds before the automatic revert. `0` disables it. Gone once the add-on is deleted. |
 
 Both live in [edge/config/settings.py:157](edge/config/settings.py:157); override
-per-device in `infra/env/jetson.env` or the machine-local `jetson.local.env`, then
+per-device in `infra/env/jetson.env` or the machine-local `jetson.env`, then
 `sudo systemctl restart ceravis`.
 
 ---
