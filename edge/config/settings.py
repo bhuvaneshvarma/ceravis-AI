@@ -410,8 +410,8 @@ class Settings(BaseSettings):
     # Purely additive and best-effort — a failure here never touches cameras, AI
     # or recording. Identified by edgeId (the app server can map edgeId ->
     # account on its own); ceravisUserId is sent alongside in the BODY (never the
-    # URL — it is account-identifying). The same X-API-Key as every other call
-    # authenticates it. Blank url = feature OFF (device runs standalone).
+    # URL — it is account-identifying). No X-API-Key on this call — the status
+    # endpoint is unauthenticated. Blank url = feature OFF (device standalone).
     status_heartbeat_url: str = "https://app.ceravishealth.in/api/v1/status"
     status_heartbeat_interval_secs: float = 60.0
 

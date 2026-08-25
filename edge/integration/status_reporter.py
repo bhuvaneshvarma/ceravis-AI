@@ -64,11 +64,9 @@ _WARMUP_SECS = 15.0
 
 
 def _headers() -> dict[str, str]:
-    h = {"Content-Type": "application/json", "Accept": "application/json"}
-    key = settings.ceravis_api_key.strip()
-    if key:
-        h["X-API-Key"] = key
-    return h
+    # No X-API-Key on this call — the status endpoint is unauthenticated by
+    # design; the beat is identified by edgeId in the body, not a shared secret.
+    return {"Content-Type": "application/json", "Accept": "application/json"}
 
 
 def build_payload() -> dict | None:
