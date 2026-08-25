@@ -502,3 +502,32 @@ def upload_embedding_file(file_category: str, user_id, file_name: str,
         return _unwrap(resp.json())
     except ValueError:
         return True
+
+
+def send_status(payload: dict) -> tuple[bool, int | None, str | None]:
+    """POST the device status heartbeat. Returns (ok, http_status, error); never
+    raises — a heartbeat must never be able to disturb the pipeline.
+
+    Deliberately unlike the /v1/ai/* calls above: it hits settings.
+    status_heartbeat_url (NOT ceravis_api_base_url) and carries NO X-API-Key —
+    the status endpoint is unauthenticated, the device is identified by edgeId in
+    the body. Every beat is written to the forensic WIRE log (so `tail -f
+    data/ceravis_api_wire.jsonl` shows it live), but NOT to call_log: a beat a
+    minute would bury the Cloud Sync Console, so the caller records only the
+    online/offline TRANSITIONS there."""
+    url = settings.status_heartbeat_url.strip()
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    t0 = time.perf_counter()
+    try:
+        resp = requests.post(url, json=payload, headers=headers,
+                             timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        _wire("status", "POST", url, payload, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
+        return False, None, str(exc)
+    lat = (time.perf_counter() - t0) * 1000
+    _wire("status", "POST", url, payload, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
+    if resp.status_code < 400:
+        return True, resp.status_code, None
+    return False, resp.status_code, f"HTTP {resp.status_code}: {resp.text[:120]}"

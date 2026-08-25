@@ -36,22 +36,26 @@ CAMERA on/off IS MEASURED AT THE INGESTION POINT
     the two calls line up on the cloud.
 
 Purely additive and best-effort: every failure is swallowed, so cameras, AI and
-recording never know this exists. Logging is deliberately quiet — a beat every
-minute would bury the Cloud Sync Console, so only STATE CHANGES are recorded
-there (came online / went offline); routine beats are debug-level only.
+recording never know this exists.
+
+WHERE TO SEE IT
+    Every beat is recorded in the forensic wire log by ceravis_api.send_status,
+    so the live per-beat view is:  tail -f data/ceravis_api_wire.jsonl
+    The service log (journalctl) stays quiet on purpose — a line a minute would
+    bury it — so it carries only the STATE CHANGES at INFO/WARNING: the device
+    coming online, going offline, or sitting idle waiting for an edge_id. The
+    Cloud Sync Console (call_log) likewise shows only those transitions.
 """
 
 import logging
 import threading
-
-import requests
 
 from common import clock
 from config.settings import settings
 from configuration.account_config import effective_edge_id, patient_user_id
 from configuration.camera_config import CameraConfig
 from integration import call_log
-from integration.ceravis_api import room_to_enum
+from integration.ceravis_api import room_to_enum, send_status
 from livestream.mediamtx_client import path_info
 
 
@@ -61,12 +65,6 @@ logger = logging.getLogger("integration")
 # very first heartbeat after a boot would report every camera OFF and misdescribe
 # a perfectly healthy device for one interval.
 _WARMUP_SECS = 15.0
-
-
-def _headers() -> dict[str, str]:
-    # No X-API-Key on this call — the status endpoint is unauthenticated by
-    # design; the beat is identified by edgeId in the body, not a shared secret.
-    return {"Content-Type": "application/json", "Accept": "application/json"}
 
 
 def build_payload() -> dict | None:
@@ -104,10 +102,12 @@ class StatusReporter:
         self._thread: threading.Thread | None = None
         self._wake = threading.Event()
         self._interval = max(5.0, float(settings.status_heartbeat_interval_secs))
-        # Was the last beat a failure, and have we ever succeeded? Both drive the
-        # "report the transition, not every identical beat" logging below.
+        # State the transition-only logging tracks, so the service log carries
+        # each CHANGE exactly once instead of a line a minute: last beat failed?
+        # ever succeeded? currently idle (no edge_id)?
         self._offline = False
         self._sent_once = False
+        self._idle = False
 
     # ---- lifecycle ---------------------------------------------------
     def start(self) -> None:
@@ -146,21 +146,17 @@ class StatusReporter:
     def _beat(self) -> None:
         payload = build_payload()
         if payload is None:
-            return                        # account not verified yet
-        url = settings.status_heartbeat_url.strip()
-        try:
-            resp = requests.post(url, json=payload, headers=_headers(),
-                                 timeout=settings.ceravis_api_timeout_secs)
-        except requests.RequestException as exc:
-            self._mark_offline(str(exc))
+            self._mark_idle()             # no edge_id yet — say so, once
             return
-        if resp.status_code < 400:
+        ok, _status, error = send_status(payload)
+        if ok:
             self._mark_online(payload)
         else:
-            self._mark_offline(f"HTTP {resp.status_code}: {resp.text[:120]}")
+            self._mark_offline(error or "no response")
 
-    # ---- transition-only logging (keeps the console readable) --------
+    # ---- transition-only logging (keeps the service log readable) ----
     def _mark_online(self, payload: dict) -> None:
+        self._idle = False
         cams = payload["cameras"]
         on = sum(1 for c in cams if c["status"] == "ON")
         summary = f"device ON · {on}/{len(cams)} cameras ingesting"
@@ -172,9 +168,19 @@ class StatusReporter:
         else:
             logger.debug("status heartbeat ok — %s", summary)
 
+    def _mark_idle(self) -> None:
+        # The device has no edge_id (account not verified), so there is nothing
+        # to attribute a beat to. Logged ONCE on entering this state so the
+        # service log explains the silence instead of just being silent.
+        if not self._idle:
+            self._idle = True
+            logger.info("status heartbeat: idle — no edge_id yet (account not "
+                        "verified); beats will start once the device is verified")
+
     def _mark_offline(self, reason: str) -> None:
         # One piece of news, not one per beat: only the transition into offline
         # is recorded, mirroring how the outbox reports an outage exactly once.
+        self._idle = False
         if not self._offline:
             self._offline = True
             logger.warning("status heartbeat: app server unreachable — %s", reason)
