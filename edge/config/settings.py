@@ -394,6 +394,27 @@ class Settings(BaseSettings):
         "standing_up,sitting_down,walking_started,walking_stopped,"
         "no_motion_snapshot,no_transition_snapshot,"
         "area_transition,room_transition")
+
+    # ---- Device status heartbeat (edge -> app server presence) ------
+    # A tiny periodic POST telling the app server this device is ALIVE and which
+    # of its cameras are actually ingesting into MediaMTX right now. Two truths
+    # it carries that nothing else does:
+    #   1) PRESENCE. The edge can only ever report itself ON — it must be running
+    #      to send at all. A powered-off or internet-cut device is detected by
+    #      the ABSENCE of these beats, never by a message from it, so the app
+    #      server must mark a device OFFLINE after it misses ~3 in a row.
+    #   2) PER-CAMERA on/off, measured at the MediaMTX ingestion point (path
+    #      ready = the camera's video is really reaching the whole application),
+    #      which is the truthful signal: a camera can be pingable yet not
+    #      streaming, and this reports the state that actually feeds the system.
+    # Purely additive and best-effort — a failure here never touches cameras, AI
+    # or recording. Identified by edgeId (the app server can map edgeId ->
+    # account on its own); ceravisUserId is sent alongside in the BODY (never the
+    # URL — it is account-identifying). The same X-API-Key as every other call
+    # authenticates it. Blank url = feature OFF (device runs standalone).
+    status_heartbeat_url: str = "https://app.ceravishealth.in/api/v1/status"
+    status_heartbeat_interval_secs: float = 60.0
+
     # ---- Scheduled reboot + reboot authorisation --------------------
     # A nightly restart clears whatever a 24h run accumulated — leaked handles,
     # fragmented memory, a wedged driver — at the hour a care home is quietest.

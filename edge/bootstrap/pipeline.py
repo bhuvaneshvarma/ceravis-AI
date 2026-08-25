@@ -237,6 +237,18 @@ class Pipeline:
             except Exception:
                 logger.exception("CloudAlertPublisher disabled")
 
+        # ---- device status heartbeat (edge -> app server presence) ----
+        # A tiny periodic POST: "this device is alive" + which cameras are
+        # ingesting. Independent, additive and best-effort — see
+        # integration.status_reporter. Never blocks or affects the pipeline.
+        status_reporter = None
+        try:
+            from integration.status_reporter import StatusReporter
+            status_reporter = StatusReporter()
+            status_reporter.start()
+        except Exception:
+            logger.exception("StatusReporter disabled")
+
         # ---- expose to the API layer -------------------------------
         self._state = {
             "camera_manager": camera_manager,
@@ -266,9 +278,9 @@ class Pipeline:
         # the sender makes its last pass; whatever is still queued stays on disk
         # and goes out on the next start.
         self._shutdown = [
-            recording_controller, cloud_alert_publisher, outbox_sender,
-            rule_engine, event_writer, enroll_worker, reid_runner, pose_runner,
-            tracking_runner, detection_runner,
+            status_reporter, recording_controller, cloud_alert_publisher,
+            outbox_sender, rule_engine, event_writer, enroll_worker, reid_runner,
+            pose_runner, tracking_runner, detection_runner,
         ]
 
         for url in lan_urls():
