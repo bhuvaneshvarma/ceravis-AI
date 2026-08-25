@@ -130,6 +130,24 @@ check("the doctor checks the hotspot", "hotspot" in DOC)
 check("the doctor checks the tunnel is really keyed", "frpc routes" in DOC)
 
 
+print("\n9. a missing generated env file must not brick the service")
+# jetson.env is gitignored and generated, so a fresh clone legitimately has
+# none. systemd treats a BARE EnvironmentFile= as fatal and reports it as
+# "unavailable resources or another system error" — a message that names
+# nothing and sends you hunting the wrong thing.
+for unit in ("ceravis.service", "ceravis-reboot.service"):
+    u = io.open(ROOT / "edge/infra/systemd" / unit, encoding="utf-8").read()
+    envlines = [l.strip() for l in u.splitlines()
+                if l.strip().startswith(("EnvironmentFile=", "-EnvironmentFile="))]
+    check(f"{unit} has an EnvironmentFile", bool(envlines), str(envlines))
+    check(f"{unit} tolerates it missing (leading '-')",
+          all(l.startswith("-") for l in envlines), str(envlines))
+
+INST = io.open(ROOT / "setup/install_service.sh", encoding="utf-8").read()
+check("install_service.sh generates jetson.env when absent",
+      "jetson.env.example" in INST and "jetson.env" in INST)
+
+
 if failures:
     print(f"\n{len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

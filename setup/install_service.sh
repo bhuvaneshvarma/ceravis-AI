@@ -10,6 +10,15 @@ REPO_DIR="$(dirname "$SETUP_DIR")"
 EDGE_DIR="$REPO_DIR/edge"
 UNIT_SRC="$EDGE_DIR/infra/systemd/ceravis.service"
 
+# jetson.env is gitignored and generated, so a fresh clone has none. Create it
+# before the unit exists, so there is no window where the service is installed
+# and enabled but has nothing to read.
+ENV_DIR="$EDGE_DIR/infra/env"
+if [ ! -f "$ENV_DIR/jetson.env" ]; then
+    cp "$ENV_DIR/jetson.env.example" "$ENV_DIR/jetson.env"
+    echo "created $ENV_DIR/jetson.env from the template"
+fi
+
 sed -e "s|/home/ceravis/ceravis2|$REPO_DIR|g" \
     -e "s|^User=.*|User=$USER|" \
     "$UNIT_SRC" | sudo tee /etc/systemd/system/ceravis.service >/dev/null
