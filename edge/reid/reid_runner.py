@@ -67,6 +67,11 @@ class ReIDRunner:
         self._adapt_thread: threading.Thread | None = None
         self._last_adapt_attempt = 0.0
         self._last_adapt_rebuild = 0.0
+        # Event gate: identity is established at TRANSITIONS and propagated
+        # otherwise. Remembering the last track set per camera is what makes
+        # 'did anything change' answerable without a model.
+        self._seen_tracks: dict[str, frozenset] = {}
+        self._last_match: dict[str, float] = {}
 
     @property
     def is_running(self) -> bool:
@@ -105,10 +110,46 @@ class ReIDRunner:
             if sleep > 0:
                 time.sleep(sleep)
 
+    def _identity_event(self, camera_id: str, ids: frozenset) -> str | None:
+        """Why this camera needs a gallery match THIS tick, or None to skip.
+
+        A stable set of tracks carries its identities for free — BoT-SORT
+        already knows which box is which, so re-asking FAISS every tick pays
+        for an answer that cannot have changed. A recipient sitting still
+        for an hour cost ~10,800 matches at a flat 3 Hz.
+
+        The heartbeat is the safety net: a long-held lock is re-checked
+        occasionally so a slow drift onto the wrong person cannot persist."""
+        now = time.monotonic()
+        prev = self._seen_tracks.get(camera_id)
+        self._seen_tracks[camera_id] = ids
+
+        def fire(why: str) -> str:
+            # The heartbeat clock is owned HERE, not by the caller. Reading a
+            # timestamp someone else writes made a fresh camera see 0.0 and
+            # fire 'heartbeat' on its second tick.
+            self._last_match[camera_id] = now
+            return why
+
+        if prev is None:
+            return fire('first sighting')
+        if ids - prev:
+            return fire('new track')    # a track was born or re-entered
+        if prev - ids:
+            return fire('track lost')   # someone left; the lock may be stale
+        if (now - self._last_match.get(camera_id, now)) >= settings.reid_heartbeat_secs:
+            return fire('heartbeat')
+        return None
+
     def _tick(self) -> None:
         for camera_id, track_result in self._tracks.get_all().items():
             if not track_result.tracks:
+                self._seen_tracks.pop(camera_id, None)
                 continue
+            if settings.reid_event_driven:
+                ids = frozenset(t.track_id for t in track_result.tracks)
+                if self._identity_event(camera_id, ids) is None:
+                    continue           # nothing changed — the tracker carries it
             boxes = {t.track_id: (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2)
                      for t in track_result.tracks}
 

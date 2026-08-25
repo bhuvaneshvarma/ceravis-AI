@@ -69,6 +69,7 @@ Thumbs.db
 /MEMORY.md
 /data/
 /recording-playback-api.md
+/identity-architecture.md
 /ai-pipeline-reference.md
 # Local ONVIF capability dumps (tools/onvif_dump) — camera-specific, may contain
 # usernames/network details; a review artifact, never committed.

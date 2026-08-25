@@ -231,6 +231,47 @@ class Settings(BaseSettings):
     reid_adaptive_min_interval_secs: float = 4.0  # min seconds between capture attempts
     reid_adaptive_rebuild_secs: float = 5.0  # min seconds between gallery rebuilds
 
+    # ---- Crop quality gate (reid/crop_quality.py) -------------------
+    # Refuse to embed a crop that cannot support a decision. Most catastrophic
+    # ReID errors are the network embedding garbage CONFIDENTLY — a blurred
+    # smear or half a person returns a perfectly ordinary-looking vector, and
+    # no score threshold can tell that its INPUT was meaningless. Gating before
+    # the model also means a bad crop costs no GPU at all.
+    crop_min_area_px: int = 3000        # ~55x55; below this it is upsampled noise
+    crop_min_aspect: float = 1.2        # h/w — a person is taller than wide
+    crop_max_aspect: float = 5.0        # beyond this it is not one standing person
+    crop_edge_margin_frac: float = 0.01  # box within this of the edge = truncated
+    crop_reject_truncated: bool = True   # half a torso must not become an identity
+    crop_min_sharpness: float = 12.0     # Laplacian variance floor (motion blur)
+    # Saturation points for the RANKING score (not gates): a crop at or above
+    # these is 'as good as it needs to be' on that axis.
+    crop_good_area_px: int = 30000
+    crop_good_sharpness: float = 120.0
+
+    # ---- Best-shot buffer (reid/best_shot.py) -----------------------
+    # Identity questions arrive at awkward moments — mid-stride, mid-doorway.
+    # Keeping the best few recent crops per track lets an identity event embed
+    # the BEST look rather than the latest one, which costs nothing extra
+    # because the crops already exist. Raising the frame rate instead would not
+    # help: a blurred subject at 20 Hz is still blurred.
+    best_shot_capacity: int = 4          # shots kept per track
+    best_shot_max_age_secs: float = 6.0  # older shots are not evidence about now
+
+    # ---- Appearance gating: proximity, not head-count ---------------
+    # OSNet used to run every tick whenever 2+ people were in frame. But two
+    # people at opposite ends of a room need no appearance to associate —
+    # geometry is sufficient. Appearance is only load-bearing when a pair is
+    # close enough to confuse, so gate on the closest pair instead.
+    tracker_appearance_proximity_iou: float = 0.02   # any overlap at all
+    tracker_appearance_proximity_frac: float = 1.5   # centres within N box-widths
+
+    # ---- Event-triggered gallery matching ---------------------------
+    # Identity does not need re-establishing every frame; it needs establishing
+    # at TRANSITIONS and propagating otherwise. A recipient sitting still for an
+    # hour cost ~10,800 matches at a flat 3 Hz. The heartbeat is the safety net
+    # that re-checks a long-held lock occasionally.
+    reid_event_driven: bool = True
+    reid_heartbeat_secs: float = 20.0
     # ---- Recency memory (short-term "how they look RIGHT NOW") ------
     # The gallery is general (every outfit we ever stored) and therefore blunt at
     # reacquisition: two people can both clear a general threshold. This keeps the
@@ -271,11 +312,9 @@ class Settings(BaseSettings):
     tracker_proximity_thresh: float = 0.5    # appearance is vetoed below this IoU
     tracker_appearance_thresh: float = 0.25  # max appearance distance to fuse
     tracker_with_reid: bool = True           # fuse OSNet appearance into association
-    # Appearance is computed for ALL people when ≥ this many are present (the
-    # crossover case that needs it); with one person, OSNet runs only at reid_fps
-    # to refresh the target feature for gallery matching — so the common single-
-    # occupant case stays as cheap as before (no per-frame embedding).
-    tracker_appearance_min_persons: int = 2
+    # (Appearance used to be gated on a HEAD-COUNT here. Superseded by the
+    #  proximity gate above — tracker_appearance_proximity_* — because two
+    #  people at opposite ends of a room need no appearance to associate.)
 
     # ---- Target lock manager (occlusion-safe single-target follow) --
     # IoU above which the target is considered occluded by another person — the

@@ -11,6 +11,7 @@ from config.settings import settings
 from detection.detection_buffer import DetectionBuffer
 from detection.detection_schema import BoundingBox, DetectionClass
 from ingestion.frame_buffer import FrameBuffer
+from reid import crop_quality
 from tracking.botsort import BoTSORT
 from tracking.track_buffer import TrackBuffer
 from tracking.track_feature_buffer import TrackFeatureBuffer
@@ -40,6 +41,7 @@ class TrackingRunner:
         metrics_registry=None,
         gallery=None,
         target_registry=None,
+        best_shots=None,
     ) -> None:
         self._detections = detection_buffer
         self._tracks = track_buffer
@@ -62,6 +64,13 @@ class TrackingRunner:
         self._metrics = (
             metrics_registry.get_or_create("reid_embed") if metrics_registry else None
         )
+
+        # Best crops per track, ready for the moment an identity question
+        # arrives — see reid/best_shot.py. Optional: None simply means no
+        # best-shot capture, never a failure.
+        self._shots = best_shots
+        self._rejected: dict[str, int] = {}   # why crops were refused
+        self._last_shot: dict[str, float] = {}
 
         self._trackers: dict[str, BoTSORT] = {}
         self._last_seen_frame: dict[str, int] = {}
@@ -220,34 +229,119 @@ class TrackingRunner:
                               else st.smooth_feat.copy()),
                         frame_id=det_result.frame_id, timestamp=det_result.timestamp)
 
+            self._capture_shots(camera_id, out, det_result.frame_id)
+
             self._tracks.update(TrackResult(
                 camera_id=camera_id, frame_id=det_result.frame_id,
                 timestamp=det_result.timestamp, tracks=out))
             if self._features is not None:
                 self._features.prune(camera_id, alive)
+            if self._shots is not None:
+                self._shots.prune(camera_id, alive)
+
+    def _capture_shots(self, camera_id: str, tracks, frame_id: int) -> None:
+        """Offer each track's current crop to its best-shot ring.
+
+        Runs AFTER association because that is the first point a crop can be
+        attributed to a track_id — before it, detections have no identity to
+        file under. Rate-limited to reid_fps: these shots answer identity
+        questions that arrive seconds apart, so capturing at the full
+        tracking rate would buy sharpness nobody reads."""
+        if self._shots is None or self._frames is None or not tracks:
+            return
+        now = time.monotonic()
+        if (now - self._last_shot.get(camera_id, 0.0)) < (1.0 / settings.reid_fps):
+            return
+        fd = self._frames.get(camera_id)
+        if fd is None:
+            return
+        self._last_shot[camera_id] = now
+        fh, fw = fd.frame.shape[:2]
+        for t in tracks:
+            crop, _, _ = crop_person(fd.frame, t.bbox.x1, t.bbox.y1,
+                                     t.bbox.x2, t.bbox.y2,
+                                     settings.crop_padding_frac)
+            q = crop_quality.assess(crop, t.bbox, fw, fh, t.confidence)
+            if q.ok:
+                self._shots.offer(camera_id, t.track_id, crop, q, frame_id)
+
+    @property
+    def rejected_crops(self) -> dict:
+        """Why crops were refused, by reason — the observability that makes
+        a silently-degraded camera visible instead of merely quiet."""
+        return dict(self._rejected)
+
+    @staticmethod
+    def _crowded(persons) -> bool:
+        """Is any PAIR close enough that geometry alone could confuse them?
+
+        The old gate was `len(persons) >= 2` — appearance every tick the moment
+        two people shared a room. But two people at opposite ends of a lounge
+        need no appearance to associate: IoU already separates them completely.
+        Appearance is only load-bearing when boxes are near enough to swap, so
+        gate on the CLOSEST PAIR instead of the head-count. Crossover protection
+        is unchanged; the cost of the common far-apart case disappears."""
+        n = len(persons)
+        if n < 2:
+            return False
+        boxes = [(d.bbox.x1, d.bbox.y1, d.bbox.x2, d.bbox.y2) for d in persons]
+        frac = settings.tracker_appearance_proximity_frac
+        for i in range(n):
+            ax1, ay1, ax2, ay2 = boxes[i]
+            aw = max(1.0, ax2 - ax1)
+            acx, acy = (ax1 + ax2) / 2.0, (ay1 + ay2) / 2.0
+            for j in range(i + 1, n):
+                bx1, by1, bx2, by2 = boxes[j]
+                iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+                ih = max(0.0, min(ay2, by2) - max(ay1, by1))
+                inter = iw * ih
+                union = ((ax2 - ax1) * (ay2 - ay1)
+                         + (bx2 - bx1) * (by2 - by1) - inter)
+                if union > 0 and inter / union > settings.tracker_appearance_proximity_iou:
+                    return True
+                bcx, bcy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
+                span = max(aw, max(1.0, bx2 - bx1))
+                if ((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5 <= frac * span:
+                    return True
+        return False
 
     def _maybe_embed(self, camera_id: str, persons) -> np.ndarray | None:
-        """OSNet embeddings for each person, gated to keep the common case cheap."""
+        """OSNet embeddings per person, gated to keep the common case cheap.
+
+        Two gates now, both cheap and both before the model:
+          * PROXIMITY decides whether appearance is needed at all this tick;
+          * CROP QUALITY decides, per person, whether a crop can support a
+            decision. A blurred smear or half a torso embeds as a perfectly
+            ordinary-looking vector that no score threshold can catch, so it is
+            refused BEFORE inference — which also means it costs no GPU.
+        A refused crop still yields a zero row, so the returned array stays
+        aligned 1:1 with `persons`; BoT-SORT reads a zero feature as "no
+        appearance evidence" and falls back to motion for that box.
+        """
         if not self._with_reid or self._extractor is None or self._frames is None:
             return None
         now = time.monotonic()
-        many = len(persons) >= settings.tracker_appearance_min_persons
         due = (now - self._last_embed.get(camera_id, 0.0)) >= (1.0 / settings.reid_fps)
-        if not (many or due):
+        if not (self._crowded(persons) or due):
             return None
         fd = self._frames.get(camera_id)
         if fd is None:
             return None
 
+        fh, fw = fd.frame.shape[:2]
         t = time.perf_counter()
         out = []
+        zero = np.zeros(settings.reid_embedding_dim, dtype=np.float32)
         for d in persons:
             crop, _, _ = crop_person(fd.frame, d.bbox.x1, d.bbox.y1,
                                      d.bbox.x2, d.bbox.y2, settings.crop_padding_frac)
-            if crop.size == 0:
-                out.append(np.zeros(settings.reid_embedding_dim, dtype=np.float32))
-            else:
-                out.append(self._extractor.embed(crop))
+            q = crop_quality.assess(crop, d.bbox, fw, fh, d.confidence)
+            if not q.ok:
+                self._rejected[q.reason.split(" (")[0]] = \
+                    self._rejected.get(q.reason.split(" (")[0], 0) + 1
+                out.append(zero)
+                continue
+            out.append(self._extractor.embed(crop))
         if self._metrics:
             self._metrics.record(time.perf_counter() - t)
         self._last_embed[camera_id] = now

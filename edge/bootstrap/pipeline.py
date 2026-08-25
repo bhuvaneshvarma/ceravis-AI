@@ -126,6 +126,14 @@ class Pipeline:
             except Exception:
                 logger.exception("RecordingController disabled")
 
+        # ---- best-shot buffer --------------------------------------
+        # The best few crops per track, kept ready for the moment an identity
+        # question arrives. Costs no inference: the tracker is already looking
+        # at these crops, this only remembers the good ones. Feeds identity
+        # events now and the visitor motion-snapshots next.
+        from reid.best_shot import BestShotBuffer
+        best_shots = BestShotBuffer()
+
         # ---- reid gallery (shared by tracking gate + ReID + enrollment) ----
         # Built BEFORE tracking so the tracker can gate on it: with no enrolled
         # target embeddings, tracking/ReID/pose/rules stay idle and the pipeline
@@ -143,7 +151,8 @@ class Pipeline:
             tracking_runner = TrackingRunner(
                 detection_buffer, track_buffer, frame_buffer=frames,
                 feature_buffer=feature_buffer, metrics_registry=metrics_registry,
-                gallery=gallery, target_registry=target_registry)
+                gallery=gallery, target_registry=target_registry,
+                best_shots=best_shots)
             tracking_runner.start()
         except Exception:
             logger.exception("TrackingRunner disabled")
@@ -260,6 +269,7 @@ class Pipeline:
             "identity_buffer": identity_buffer,
             "gallery": gallery,
             "target_registry": target_registry,
+            "best_shots": best_shots,
             "enroll_worker": enroll_worker,
             "event_bus": event_bus,
             "event_store": event_store,
