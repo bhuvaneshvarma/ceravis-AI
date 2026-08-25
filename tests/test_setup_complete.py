@@ -56,29 +56,7 @@ for _label, script in REQUIRED:
           hits[0].relative_to(ROOT).as_posix() if hits else "MISSING")
 
 
-print("\n3. the env file is generated BEFORE anything reads it")
-env_at = src.find("jetson.env.example")
-check("setup generates jetson.env from the template", env_at != -1)
-if env_at != -1:
-    for label, script in REQUIRED:
-        pos = src.find(script)
-        check(f"config precedes {script}", pos > env_at,
-              f"env@{env_at} vs {script}@{pos}")
-check("it never clobbers an existing jetson.env",
-      re.search(r'if \[ -f "\$ENV_DIR/jetson\.env" \]', src) is not None)
-
-
-print("\n4. the template is what ships, not a live config")
-example = ROOT / "edge/infra/env/jetson.env.example"
-check("jetson.env.example exists", example.exists())
-if example.exists():
-    body = io.open(example, encoding="utf-8").read()
-    live = [l for l in body.splitlines()
-            if re.match(r"^(EDGE_ID|CERAVIS_API_KEY)=\S", l)]
-    check("template carries no per-device secrets", not live, str(live[:3]))
-
-
-print("\n5. the tunnel installer wires the privileged edge_id helper")
+print("\n3. the tunnel installer wires the privileged edge_id helper")
 # Without this, account verification writes EDGE_ID to jetson.env but can never
 # push it into frpc.toml — the device is provisioned and still unreachable.
 frpc = ROOT / "cloud" / "install_frpc.sh"
@@ -89,14 +67,14 @@ if frpc.exists():
     check("grants it a NOPASSWD sudoers rule", "NOPASSWD" in f and "sudoers.d" in f)
 
 
-print("\n6. setup is re-runnable (idempotence is claimed AND implemented)")
+print("\n4. setup is re-runnable (idempotence is claimed AND implemented)")
 check("documents re-running as the recovery path", "RE-RUN THIS SAME SCRIPT" in src)
 check("aborts on first error", "set -euo pipefail" in src)
 check("reboot password never blocks a non-interactive run",
       "-t 0" in src, "must test for a terminal before prompting")
 
 
-print("\n7. edge_id application is VERIFIED, not just attempted")
+print("\n5. edge_id application is VERIFIED, not just attempted")
 prov = io.open(ROOT / "edge/integration/edge_provision.py", encoding="utf-8").read()
 check("tunnel_status() reads frpc.toml back", "def tunnel_status" in prov
       and "frpc.toml" in prov)
@@ -106,14 +84,15 @@ main_py = io.open(ROOT / "edge/main.py", encoding="utf-8").read()
 check("boot self-heal uses the verified path",
       "apply_edge_id_verified" in main_py)
 acct = io.open(ROOT / "edge/api/account_routes.py", encoding="utf-8").read()
-check("verification writes EDGE_ID to the env file", "set_env_value" in acct)
+check("verification does NOT write the tracked env file",
+      "set_env_value" not in acct)
 check("and schedules the tunnel apply", "apply_edge_id_async" in acct)
 sysr = io.open(ROOT / "edge/api/system_routes.py", encoding="utf-8").read()
 check("status surfaces whether the tunnel is really keyed",
       '"tunnel"' in sysr and "_tunnel_status" in sysr)
 
 
-print("\n8. hotspot: the AP the cameras join, not a server")
+print("\n6. hotspot: the AP the cameras join, not a server")
 HOT = io.open(ROOT / "setup/install_hotspot.sh", encoding="utf-8").read()
 # Run under sudo, a bare $USER is root and the polkit rule grants root — leaving
 # the unprivileged service user still unable to drive NetworkManager, and the
@@ -130,7 +109,7 @@ check("the doctor checks the hotspot", "hotspot" in DOC)
 check("the doctor checks the tunnel is really keyed", "frpc routes" in DOC)
 
 
-print("\n9. a missing generated env file must not brick the service")
+print("\n7. a missing file must not brick the service")
 # jetson.env is gitignored and generated, so a fresh clone legitimately has
 # none. systemd treats a BARE EnvironmentFile= as fatal and reports it as
 # "unavailable resources or another system error" — a message that names
@@ -143,9 +122,6 @@ for unit in ("ceravis.service", "ceravis-reboot.service"):
     check(f"{unit} tolerates it missing (leading '-')",
           all(l.startswith("-") for l in envlines), str(envlines))
 
-INST = io.open(ROOT / "setup/install_service.sh", encoding="utf-8").read()
-check("install_service.sh generates jetson.env when absent",
-      "jetson.env.example" in INST and "jetson.env" in INST)
 
 
 if failures:

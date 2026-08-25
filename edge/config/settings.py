@@ -506,12 +506,10 @@ class Settings(BaseSettings):
         # Resolve relative to the repo, not the process cwd, so the env file
         # is found whether launched by systemd, a shell, or an IDE.
         #
-        # ONE env file. It is GITIGNORED and generated from jetson.env.example
-        # by setup/setup.sh, because the device WRITES to it at runtime (EDGE_ID
-        # at account verification). A tracked file that the device rewrites
-        # leaves every unit with a dirty working tree, and the next commit that
-        # touches it makes `git pull` abort — losing the edge_id is losing both
-        # the routing token and the control-API credential.
+        # ONE env file, tracked in git. Nothing at runtime writes to it:
+        # the edge_id lives in data/account.json (gitignored, and what
+        # effective_edge_id() reads first), so this file stays a pure,
+        # hand-edited config that `git pull` never collides with.
         env_file=str(
             Path(__file__).resolve().parents[1] / "infra" / "env" / "jetson.env"),
         env_file_encoding="utf-8",

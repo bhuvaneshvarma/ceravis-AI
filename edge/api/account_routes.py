@@ -138,8 +138,11 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     # checks read it with no restart — so ceravis itself never needs restarting).
     provisioning = False
     if edge_id:
-        from config.env_writer import set_env_value
-        set_env_value("EDGE_ID", edge_id)                # persist for the next boot
+        # NOT written into jetson.env. account.json already persists it, is
+        # gitignored, and effective_edge_id() reads it FIRST — so copying the
+        # token into a git-TRACKED file bought nothing and cost a merge conflict
+        # on every device at every update, with `git checkout --` as the usual
+        # "fix" silently discarding the routing token. One home for the value.
         # Apply to the frp tunnel (patch frpc.toml locations + restart frpc) AFTER
         # this response is sent, so we never cut the tunnel this reply travels
         # through. Best-effort: the value is already saved, so a manual frpc setup
