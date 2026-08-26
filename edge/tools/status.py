@@ -106,6 +106,12 @@ def _fmt(d: dict) -> str:
                                 f"{q.get('sent', 0)} sent, {q.get('dropped', 0)} dropped")]
         if q.get("pending") and q.get("last_error"):
             out.append(_line("last error", str(q["last_error"])[:70]))
+        attn = q.get("attention")
+        if attn:
+            out.append(_line("NEEDS ATTENTION",
+                             f"server rejecting HTTP {attn.get('code')} "
+                             f"({str(attn.get('reason') or '')[:50]}) — retrying, "
+                             f"not lost"))
     return "\n".join(out)
 
 

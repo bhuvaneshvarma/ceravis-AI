@@ -151,6 +151,13 @@ class OutboxStore:
                 self._store.execute(stmt)
         self._spool = self._spool_dir()
         self._swept_at = 0.0
+        # A "needs attention" note the sender raises when the server rejects an
+        # upload with a code that usually means a human must act (bad API key,
+        # wrong patient, payload too large). In-memory: it re-derives within one
+        # retry cycle after a restart, and clears the moment a delivery succeeds.
+        # None = nothing to look at. Surfaced through stats() so it reaches the
+        # console and /system/status without a second channel.
+        self._attention: dict | None = None
         self._recover()
 
     def set_drop_listener(self,
@@ -158,6 +165,25 @@ class OutboxStore:
         """Register who hears about discarded uploads (the sender wires the sync
         console). One listener: a dropped upload is announced once."""
         self._on_drop = on_drop
+
+    # ---- needs-attention signal --------------------------------------
+    def flag_attention(self, code, reason: str, label: str = "") -> None:
+        """Raise the needs-attention note — the server is rejecting uploads with
+        a code a human should look at. Idempotent while the same code persists,
+        so it does not churn; the timestamp marks when it first appeared."""
+        if self._attention and self._attention.get("code") == code:
+            return
+        self._attention = {"code": code, "reason": (reason or "")[:200],
+                           "label": (label or "")[:120], "since": clock.now_iso()}
+        logger.warning("outbox: NEEDS ATTENTION — server rejecting uploads "
+                       "(HTTP %s): %s", code, reason)
+
+    def clear_attention(self) -> None:
+        """A delivery succeeded, so whatever the server was rejecting it now
+        accepts — the config is good again. Clear the note."""
+        if self._attention is not None:
+            logger.info("outbox: needs-attention cleared — uploads accepted again")
+            self._attention = None
 
     # ---- paths -------------------------------------------------------
     @staticmethod
@@ -322,28 +348,62 @@ class OutboxStore:
         return job
 
     def head(self) -> dict | None:
-        """The next job to send: highest priority, then oldest.
+        """The highest-priority, oldest pending job — for display/stats only.
 
-        The sender looks at this one and never reaches past it. So within a
-        tier delivery order is exactly creation order — an incident's alert,
-        still and clip stay in sequence, and an earlier fall is never overtaken
-        by a later one — while a fall raised during a backlog of ambient
-        snapshots goes out FIRST, not after them.
-
-        A job that is backing off holds the line on purpose: during an outage
-        nothing behind it would have succeeded either. But a fall queued while
-        an ambient job is mid-backoff becomes the head immediately and is sent
-        at once, because it is due and it outranks what is waiting.
-
-        Starvation is bounded by the age window rather than by a fairness rule:
-        an ambient snapshot that never gets its turn expires at
-        `outbox_window_secs`, and by then it was worthless anyway. Continuous
-        falls for a whole day is not a queueing problem."""
+        This is "what is first in line" regardless of whether it is due yet, so
+        the console can show the head of the backlog. It is NOT what the sender
+        delivers (that is next_ready): a job mid-backoff is still the head here,
+        but the sender steps around it so it does not block the ones behind."""
         rows = self._store.fetchall(
             "SELECT " + ", ".join(_COLS) +
             " FROM outbox WHERE state=? ORDER BY priority DESC, seq ASC LIMIT 1",
             (STATE_PENDING,))
         return self._row(rows[0] if rows else None)
+
+    # A snapshot must not be delivered before the alert it belongs to: its
+    # server-issued alertId only exists once that alert has landed. So a job is
+    # eligible only when the job it depends on is no longer PENDING — delivered,
+    # given up on, or already pruned. Encoded once, used by both the picker and
+    # the "when is the next one due" clock so they never disagree.
+    _DEP_READY = ("(depends_on IS NULL OR depends_on NOT IN "
+                  "(SELECT job_id FROM outbox WHERE state=?))")
+
+    def next_ready(self, now: float | None = None) -> dict | None:
+        """The next job to actually SEND: highest priority, oldest, that is DUE
+        (its backoff has elapsed) and whose alert dependency is satisfied.
+
+        This is what gives the queue its "step around a stuck job" behaviour. A
+        job that is failing sits in the future (next_attempt), so it is not due,
+        so the sender skips past it to whatever IS ready — a broken snapshot can
+        never block the fall alert queued behind it. Priority still decides among
+        the due jobs, and seq breaks ties, so an incident stays in order and a
+        fall still goes first."""
+        now = time.time() if now is None else now
+        rows = self._store.fetchall(
+            "SELECT " + ", ".join(_COLS) + " FROM outbox "
+            f"WHERE state=? AND next_attempt<=? AND {self._DEP_READY} "
+            "ORDER BY priority DESC, seq ASC LIMIT 1",
+            (STATE_PENDING, now, STATE_PENDING))
+        return self._row(rows[0] if rows else None)
+
+    def next_due_at(self) -> float | None:
+        """The earliest time any eligible pending job becomes due, so the sender
+        can sleep exactly until then instead of polling. None when the queue has
+        no eligible pending job (empty, or everything is dependency-blocked
+        behind a job that is itself counted here)."""
+        rows = self._store.fetchall(
+            f"SELECT MIN(next_attempt) FROM outbox WHERE state=? AND {self._DEP_READY}",
+            (STATE_PENDING, STATE_PENDING))
+        return rows[0][0] if rows and rows[0][0] is not None else None
+
+    def wake_all(self) -> None:
+        """Clear every pending job's backoff so they are all due NOW. Called when
+        an external signal — the status heartbeat getting a clean response —
+        reports the server reachable, so the queue drains at once instead of
+        waiting out the retry timer."""
+        self._store.execute(
+            "UPDATE outbox SET next_attempt=0 WHERE state=? AND next_attempt>0",
+            (STATE_PENDING,))
 
     def job(self, job_id: str) -> dict | None:
         rows = self._store.fetchall(
@@ -370,6 +430,7 @@ class OutboxStore:
                "pending_alerts": 0, "next_priority": None,
                "oldest_pending_at": None, "oldest_pending_age_secs": None,
                "attempts_on_head": 0, "last_error": None,
+               "attention": self._attention,
                "window_hours": round(settings.outbox_window_secs / 3600.0, 1),
                "max_items": settings.outbox_max_items}
         try:

@@ -68,27 +68,30 @@ def check(label: str, cond: bool) -> None:
 class FakeServer:
     def __init__(self) -> None:
         self.online = True
-        self.reject_texts: set[str] = set()   # texts answered with a hard 400
-        self.received: list[tuple] = []       # ("saveAlert"|"saveSnapshot", …)
+        self.reject_texts: set[str] = set()      # texts answered with a hard 400
+        self.reject_status: dict[str, int] = {}  # text -> a specific HTTP status
+        self.received: list[tuple] = []          # ("saveAlert"|"saveSnapshot", …)
         self._next_alert_id = 100
 
-    def save_alert(self, pid, alert_type, message):
+    def _maybe_reject(self, text: str) -> None:
         if not self.online:
             raise CeravisApiError("cannot reach app server: connection refused")
-        if message in self.reject_texts:
+        if text in self.reject_status:
+            code = self.reject_status[text]
+            raise CeravisApiError(f"app server returned HTTP {code}", status=code)
+        if text in self.reject_texts:
             raise CeravisApiError("app server returned HTTP 400: bad request",
                                   status=400)
+
+    def save_alert(self, pid, alert_type, message):
+        self._maybe_reject(message)
         self._next_alert_id += 1
         self.received.append(("saveAlert", message, None))
         return {"alertId": self._next_alert_id}
 
     def save_snapshot(self, pid, text, camera_number, *, image=None, video=None,
                       alert_id=None, category=None):
-        if not self.online:
-            raise CeravisApiError("cannot reach app server: connection refused")
-        if text in self.reject_texts:
-            raise CeravisApiError("app server returned HTTP 422: unprocessable",
-                                  status=422)
+        self._maybe_reject(text)
         self.received.append(("saveSnapshot", text, alert_id))
         return True
 
@@ -105,19 +108,22 @@ def build(server: FakeServer, db: Path):
     return store, outbox, OutboxSender(outbox)
 
 
-def pump(sender: OutboxSender, outbox: OutboxStore, rounds: int = 500) -> None:
-    """Run the sender's own tick until the queue empties or `rounds` is spent —
-    the production loop with the sleeping fast-forwarded, so the test is
-    deterministic and instant. Offline sections pass a small `rounds` to model
-    "a few retries have gone by and the link is still down"."""
-    import time as _t
+def pump(sender: OutboxSender, outbox: OutboxStore, rounds: int = 4000) -> None:
+    """Drive the REAL sender to a standstill, fast-forwarding its sleeps so the
+    test is instant. Mirrors _run(): tick; if the tick asked to sleep (nothing
+    ready, everything backing off), advance every pending job's backoff by that
+    much and loop. This preserves the RELATIVE ordering that the backoff creates
+    — a job that just failed is further in the future than one that hasn't — so
+    'step around a stuck job' is exercised, not defeated. Returns early once the
+    queue is empty; a permanently-failing job just runs out the rounds."""
     for _ in range(rounds):
-        job = outbox.head()
-        if job is None:
+        if outbox.stats()["pending"] == 0:
             return
-        if job["next_attempt"] > _t.time():
-            outbox.mark_retry(job["job_id"], job["last_error"] or "", 0)
-        sender._tick()
+        wait = sender._tick()
+        if wait and wait > 0:
+            outbox._store.execute(
+                "UPDATE outbox SET next_attempt = next_attempt - ? "
+                "WHERE state='pending' AND next_attempt > 0", (wait,))
 
 
 DB = _TMP / "ceravis.db"
@@ -164,6 +170,13 @@ check("the spooled media survived too",
 # --------------------------------------------------------------------------
 print("\n3. the link comes back — the queue drains itself, in order")
 server.online = True
+# Recovery in production is driven by the status heartbeat: its first clean beat
+# kicks the sender, which clears every backoff so the whole backlog is due at
+# once and drains in strict priority-then-seq order. (Without the kick, jobs
+# that backed off by different amounts would drain as they each come due, which
+# can let a due lower-priority job slip ahead of one still backing off — the
+# 'step around a stuck job' behaviour. The kick is what makes recovery orderly.)
+sender.kick()
 pump(sender, outbox)
 kinds = [r[0] for r in server.received]
 texts = [r[1] for r in server.received]
@@ -191,18 +204,43 @@ check("no media files left on disk",
 check("the rows no longer point at any", outbox.job(clip_job)["blob_path"] is None)
 
 # --------------------------------------------------------------------------
-print("\n6. a rejected upload is dropped, not retried forever")
+print("\n6. a server rejection is NEVER dropped — it retries and steps aside")
+# The policy: the ONLY thing that drops a job is the age window. A 400 (a server
+# mid-DB-swap) keeps retrying, and must not block the good jobs behind it.
 server.received.clear()
-server.reject_texts = {"malformed"}
-bad = sender.queue_alert(7, "FALL", "malformed")
-good = sender.queue_alert(7, "FALL", "the one behind it")
-pump(sender, outbox)
-check("the rejected job is dead", outbox.job(bad)["state"] == "dead")
-check("its reason is recorded",
-      "400" in (outbox.job(bad)["last_error"] or ""))
-check("the job behind it still went out",
-      [r[1] for r in server.received] == ["the one behind it"])
-check("the queue is empty again", outbox.stats()["pending"] == 0)
+server.reject_texts = {"still rejecting"}
+bad = sender.queue_alert(7, "FALL", "still rejecting", priority=PRIORITY_FALL)
+good1 = sender.queue_alert(7, "NO_MOTION", "the one behind it")
+good2 = sender.queue_snapshot(7, "an ambient still", "LOUNGE", image=b"jpg",
+                              priority=PRIORITY_AMBIENT)
+pump(sender, outbox, rounds=200)
+check("the rejected job is NOT dropped — still pending, retried",
+      outbox.job(bad)["state"] == "pending")
+check("it recorded the rejection and kept its attempts up",
+      outbox.job(bad)["attempts"] > 3 and "400" in (outbox.job(bad)["last_error"] or ""))
+check("the good jobs behind it were delivered anyway (stepped around)",
+      set(r[1] for r in server.received) == {"the one behind it", "an ambient still"})
+# Now the server recovers (DB swap done) — the held job finally lands.
+server.reject_texts = set()
+pump(sender, outbox, rounds=200)
+check("once the server accepts it, the held job is delivered",
+      "still rejecting" in [r[1] for r in server.received])
+check("and the queue is finally empty", outbox.stats()["pending"] == 0)
+
+# --------------------------------------------------------------------------
+print("\n6b. an attention-grade rejection is flagged, still not dropped")
+server.received.clear()
+server.reject_status = {"bad key": 401}
+authbad = sender.queue_alert(7, "FALL", "bad key", priority=PRIORITY_FALL)
+pump(sender, outbox, rounds=30)
+check("the 401 job is retried, not dropped", outbox.job(authbad)["state"] == "pending")
+check("and it raised the needs-attention note",
+      (outbox.stats().get("attention") or {}).get("code") == 401)
+# It clears the instant a delivery succeeds again.
+server.reject_status = {}
+pump(sender, outbox, rounds=30)
+check("attention clears once uploads are accepted again",
+      outbox.stats().get("attention") is None)
 
 # --------------------------------------------------------------------------
 print("\n7. the sliding window sheds ambient snapshots, never alerts")
@@ -330,6 +368,26 @@ check("an upload appears as QUEUED the moment the event fires",
       any(c.get("state") == "queued" for c in lines))
 check("and a discarded one is reported, never silently lost",
       any(c.get("state") == "dropped" for c in lines))
+
+# --------------------------------------------------------------------------
+print("\n13. the heartbeat kick drains a backlog held during an outage")
+server.online = False
+server.received.clear()
+held = [sender.queue_alert(7, "FALL", f"outage fall {i}", priority=PRIORITY_FALL)
+        for i in range(4)]
+pump(sender, outbox, rounds=6)               # a few failed retries, still down
+check("nothing delivered while the server is down",
+      outbox.stats()["pending"] == 4 and server.received == [])
+# The server returns; the next clean heartbeat calls kick() (what the pipeline
+# wires StatusReporter(on_online=sender.kick) to do).
+server.online = True
+sender.kick()
+check("the kick made the whole backlog due at once",
+      outbox.next_ready() is not None)
+pump(sender, outbox)
+check("all four held falls delivered right after the beat",
+      len(server.received) == 4)
+check("and the queue is empty", outbox.stats()["pending"] == 0)
 
 # --------------------------------------------------------------------------
 store.close()

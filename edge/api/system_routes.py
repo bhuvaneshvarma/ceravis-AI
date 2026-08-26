@@ -300,6 +300,15 @@ def system_status(request: Request):
         problems.append(
             f"cloud uploads backing up — {queue.get('pending')} waiting, oldest "
             f"{stuck / 60:.0f} min old ({queue.get('last_error') or 'no response'})")
+    # A rejection code that usually means a human must act (bad API key, wrong
+    # patient, clip too big). The upload is NOT lost — it keeps retrying — but
+    # the cause wants fixing, so it surfaces as a degraded reason on its own.
+    attn = queue.get("attention")
+    if attn:
+        problems.append(
+            f"cloud uploads need attention — server rejecting with HTTP "
+            f"{attn.get('code')} ({attn.get('reason') or 'see console'}); still "
+            f"queued and retrying, not lost")
 
     return {
         "status": "ok" if not problems else "degraded",

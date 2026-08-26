@@ -59,6 +59,8 @@
   .cs-queue { margin-top: 8px; padding: 7px 9px; border-radius: 9px; font-size: 11.5px;
               border: 1px solid rgba(251,191,36,.4); background: rgba(251,191,36,.08);
               color: #fbbf24; }
+  .cs-queue.attn { border-color: rgba(248,113,113,.55); background: rgba(248,113,113,.1);
+                   color: #f87171; font-weight: 700; }
   .cs-bad { font-weight: 700; color: #f87171; font-size: 11px; }
   .cs-time { margin-left: auto; color: var(--muted); font-size: 10.5px; }
   .cs-label { margin-top: 4px; word-break: break-word; }
@@ -369,15 +371,23 @@ async function pollCloud() {
   // outage is legible as "held, not lost" while it is happening.
   const q = r.outbox || {};
   const qEl = document.getElementById("cs-queue");
-  if (q.pending) {
+  const attn = q.attention;
+  if (q.pending || attn) {
     const mins = Math.round((q.oldest_pending_age_secs || 0) / 60);
     const mb = (q.pending_bytes || 0) / 1e6;
     qEl.hidden = false;
-    qEl.textContent = `⏳ ${q.pending} upload${q.pending > 1 ? "s" : ""} queued`
-      + (q.pending_alerts ? ` (${q.pending_alerts} alert${q.pending_alerts > 1 ? "s" : ""} first)` : "")
-      + ` · oldest ${mins < 1 ? "just now" : mins + " min"} old`
-      + (mb >= 0.1 ? ` · ${mb.toFixed(1)} MB held` : "")
-      + ` · ${q.last_error ? "retrying — " + q.last_error.slice(0, 70) : "sending"}`;
+    // A needs-attention rejection (bad key / wrong patient / clip too big) is
+    // worded distinctly — the data is NOT lost, it keeps retrying, but a human
+    // should fix the cause.
+    qEl.className = attn ? "cs-queue attn" : "cs-queue";
+    qEl.textContent = attn
+      ? `⚠ NEEDS ATTENTION — server rejecting with HTTP ${attn.code}`
+        + ` (${(attn.reason || "see log").slice(0, 60)}) · ${q.pending || 0} queued & retrying, not lost`
+      : `⏳ ${q.pending} upload${q.pending > 1 ? "s" : ""} queued`
+        + (q.pending_alerts ? ` (${q.pending_alerts} alert${q.pending_alerts > 1 ? "s" : ""} first)` : "")
+        + ` · oldest ${mins < 1 ? "just now" : mins + " min"} old`
+        + (mb >= 0.1 ? ` · ${mb.toFixed(1)} MB held` : "")
+        + ` · ${q.last_error ? "retrying — " + q.last_error.slice(0, 70) : "sending"}`;
   } else { qEl.hidden = true; }
 
   if (!calls.length || calls[0].ts === CS.lastTs) return;   // nothing new — keep scroll

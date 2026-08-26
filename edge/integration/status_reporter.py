@@ -49,6 +49,7 @@ WHERE TO SEE IT
 
 import logging
 import threading
+from typing import Callable
 
 from common import clock
 from config.settings import settings
@@ -97,11 +98,17 @@ class StatusReporter:
     Same lifecycle shape as the cloud outbox sender: a daemon thread woken for a
     clean shutdown via an Event, so stop()/join() return promptly."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_online: Callable[[], None] | None = None) -> None:
         self._running = False
         self._thread: threading.Thread | None = None
         self._wake = threading.Event()
         self._interval = max(5.0, float(settings.status_heartbeat_interval_secs))
+        # Called on each beat that confirms the app server is reachable. The
+        # cloud outbox wires its kick() here, so the moment the heartbeat proves
+        # the server is back the queued uploads drain — the heartbeat is the
+        # reachability probe, the outbox is what acts on it. Best-effort: a
+        # failure here never affects the beat.
+        self._on_online = on_online
         # State the transition-only logging tracks, so the service log carries
         # each CHANGE exactly once instead of a line a minute: last beat failed?
         # ever succeeded? currently idle (no edge_id)?
@@ -151,8 +158,21 @@ class StatusReporter:
         ok, _status, error = send_status(payload)
         if ok:
             self._mark_online(payload)
+            self._notify_online()
         else:
             self._mark_offline(error or "no response")
+
+    def _notify_online(self) -> None:
+        """Tell whoever is listening (the cloud outbox) that the server just
+        answered, so it can drain. Every good beat, not just the first — so a
+        backlog that built up while the server was rejecting uploads gets a push
+        each minute until it clears. Best-effort; never breaks the beat."""
+        if self._on_online is None:
+            return
+        try:
+            self._on_online()
+        except Exception:
+            logger.exception("status heartbeat: on_online hook failed")
 
     # ---- transition-only logging (keeps the service log readable) ----
     def _mark_online(self, payload: dict) -> None:

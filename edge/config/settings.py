@@ -532,26 +532,28 @@ class Settings(BaseSettings):
     # clips) is queued in SQLite and sent from there FALLS FIRST, then oldest
     # first, so a network outage delays delivery instead of losing the incident.
     # The device keeps working offline throughout; the queue drains itself the
-    # moment the link is back, and a fall goes ahead of whatever ambient backlog
-    # piled up in front of it. Media is deleted as each call succeeds, so a
-    # delivering device holds no spool at all.
+    # moment the link is back (the status heartbeat kicks it), and a fall goes
+    # ahead of whatever ambient backlog piled up in front of it. A job's media is
+    # deleted only when its call SUCCEEDS, so nothing generated is ever discarded
+    # before it lands, and a delivering device holds no spool at all.
     #
-    # The queue is a SLIDING WINDOW, not an unbounded spool — an appliance that
-    # was offline for a week must not fill its disk or flood the server with
-    # stale ambient snapshots on reconnect. Three caps bound it, and eviction is
-    # always lowest-priority-oldest first, so falls and no-motion alerts are the
-    # last thing surrendered.
-    outbox_window_secs: float = 86400.0      # 24h: older than this, drop it
-    outbox_max_items: int = 2000             # pending jobs
-    outbox_max_blob_mb: float = 512.0        # spooled stills + clips on disk
-    # Retry policy. Transport errors and 5xx/408/429 are retried on an
-    # exponential backoff; the cap keeps recovery inside half a minute of the
-    # link returning. Other 4xx are the server rejecting the request itself —
-    # retried never, dropped at once, so one bad upload can't block the queue
-    # behind it. How long we keep TRYING is owned by outbox_window_secs above;
-    # max_attempts is only the backstop that catches a job failing far faster
-    # than the backoff expects.
-    outbox_max_attempts: int = 5000
+    # NOTHING IS DROPPED FOR AN ERROR. Every failure — a dead link, a 5xx, a 4xx
+    # (including a server mid-maintenance returning 400), even 401/404 — just
+    # schedules another attempt. The ONLY thing that ever gives up on a job is
+    # the outer age window below: a job undelivered for this long is dropped, the
+    # single safety bound so a server that never returns cannot fill the disk
+    # forever. 48h covers a long weekend of downtime.
+    outbox_window_secs: float = 172800.0     # 48h: the ONLY thing that drops a job
+    # Disk-safety caps — the last-resort valve if the volume genuinely fills
+    # during a long outage. Eviction is lowest-priority-oldest first, so only
+    # AMBIENT wallpaper is shed; a fall or alert is never the victim. Sized for
+    # ~48h of normal traffic so they do not bite in ordinary operation.
+    outbox_max_items: int = 5000             # pending jobs
+    outbox_max_blob_mb: float = 1024.0       # spooled stills + clips on disk
+    # Retry backoff (exponential, jittered) between attempts on a failing job.
+    # The cap keeps a recovered link draining within ~a minute even without the
+    # heartbeat kick. A failing job backs off here while the sender steps around
+    # it to deliver others — it never blocks the queue.
     outbox_backoff_base_secs: float = 2.0
     outbox_backoff_max_secs: float = 30.0
     outbox_poll_secs: float = 1.0

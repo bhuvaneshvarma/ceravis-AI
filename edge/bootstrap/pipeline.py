@@ -254,7 +254,11 @@ class Pipeline:
         status_reporter = None
         try:
             from integration.status_reporter import StatusReporter
-            status_reporter = StatusReporter()
+            # The heartbeat is the reachability probe; when it confirms the
+            # server is up it kicks the outbox so queued uploads drain at once
+            # instead of waiting out their own retry backoff.
+            on_online = outbox_sender.kick if outbox_sender is not None else None
+            status_reporter = StatusReporter(on_online=on_online)
             status_reporter.start()
         except Exception:
             logger.exception("StatusReporter disabled")
