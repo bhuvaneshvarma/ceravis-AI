@@ -19,6 +19,11 @@ from schemas.event import Event
 logger = logging.getLogger("rules")
 
 # event_type -> (severity, human title)
+# Events that are ABOUT somebody who is not the care recipient. Defined here,
+# beside the event vocabulary, and imported by the cloud publisher — two lists
+# of the same thing drift the moment one is edited.
+NON_RECIPIENT_TYPES = {"visitor_motion_snapshot"}
+
 _ALERT_MAP: dict[str, tuple[str, str]] = {
     "fall": ("critical", "Fall detected"),
     "lying_down": ("info", "Lying down"),
@@ -81,13 +86,63 @@ class EventEnricher:
         event.severity = severity
         event.title = title
         loc = event.room_name + (f" / {area}" if area else "")
-        who = self._recipient_name(event.recipient_id) or "person"
+        # A visitor event has no recipient_id BY DESIGN, so resolving a name
+        # would print "person" — or worse, the recipient's name, implying the
+        # snapshot is of them.
+        who = ("a visitor" if event.event_type in NON_RECIPIENT_TYPES
+               else (self._recipient_name(event.recipient_id) or "person"))
+        event.co_present = self._co_present(event, ctx)
         event.message = f"{title} — {who}" + (f" in {loc}" if loc.strip() else "")
+        if event.co_present:
+            event.message += f" · {event.co_present}"
         if event.detail:
             event.message += f" · {event.detail}"
 
         self._write_snapshot(event, ctx, bbox, area)
         return event
+
+    def _co_present(self, event, ctx) -> str | None:
+        """Who ELSE was in this frame, as a phrase — or None when alone.
+
+        A visitor walking past while the recipient stands up produces two
+        events about ONE frame, and describing them separately reads as two
+        unrelated things happening. Naming the co-presence on each turns them
+        into one legible fact: "Ravi stood up, and a visitor was there too."
+
+        Counts fresh tracks only. An idle camera keeps its last TrackResult
+        forever, so an unchecked read would report a visitor who left an hour
+        ago as standing in the room."""
+        tracks = getattr(ctx, "tracks", None)
+        idents = getattr(ctx, "identities", None)
+        if tracks is None or idents is None:
+            return None
+        try:
+            fresh = ctx.fresh_tracks(clock.now())
+        except Exception:
+            return None
+        result = fresh.get(event.camera_id)
+        if result is None:
+            return None
+
+        visitors, target_name = 0, None
+        for t in result.tracks:
+            if t.track_id == event.track_id:
+                continue                      # the subject is not their own company
+            ident = idents.get(event.camera_id, t.track_id)
+            if ident is not None and ident.is_target:
+                target_name = self._recipient_name(ident.recipient_id) or "the recipient"
+            else:
+                visitors += 1
+
+        parts = []
+        if target_name:
+            parts.append(target_name)
+        if visitors == 1:
+            parts.append("a visitor")
+        elif visitors > 1:
+            parts.append(f"{visitors} visitors")
+        return ("with " + " and ".join(parts)) if parts else None
+
 
     # ---- helpers -----------------------------------------------------
     def _track_bbox(self, event: Event, ctx: RuleContext):

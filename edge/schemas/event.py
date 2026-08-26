@@ -32,6 +32,12 @@ class Event(BaseModel):
     # into the message by the enricher. Transient (not persisted).
     detail: str | None = None
 
+    # Who ELSE was in frame at this instant, as an operator-facing phrase
+    # ("with Ravi", "with 2 visitors"). Filled by EventEnricher from the live
+    # track set, so one snapshot can say that the recipient and a visitor were
+    # both there instead of two events describing the same frame separately.
+    co_present: str | None = None
+
     # Filled by EventEnricher: operator-facing alert fields.
     severity: str | None = None         # critical | warning | info
     title: str | None = None

@@ -50,11 +50,12 @@ logger = logging.getLogger("alerts")
 # (fall -> FALL, no_motion -> NO_MOTION). Anything unmapped falls back to upper().
 _ALERT_TYPE = {"fall": "FALL", "no_motion": "NO_MOTION"}
 
-# Events that are ABOUT someone who is not the recipient. The recipient gate
-# exists to stop unidentified detections masquerading as the care recipient —
-# but a visitor snapshot has no recipient_id BY DEFINITION, so the gate would
-# silently drop every one of them with 'not identified as the recipient'.
-_NON_RECIPIENT_TYPES = {"visitor_motion_snapshot"}
+# The recipient gate exists to stop unidentified detections masquerading as the
+# care recipient — but a visitor snapshot has no recipient_id BY DEFINITION, so
+# without this exemption the gate silently drops every one of them with
+# 'not identified as the recipient'. Imported, never re-listed: two copies of
+# the same set drift the moment one is edited.
+from events.event_enricher import NON_RECIPIENT_TYPES as _NON_RECIPIENT_TYPES
 
 
 def _priority_of(etype: str, is_alert: bool) -> int:
@@ -301,6 +302,8 @@ class CloudAlertPublisher:
                 return f"{a.strip().title()} → {b.strip().title()}"
             return det or ("Changed room" if et == "room_transition"
                            else "Moved area")
+        if et == "visitor_motion_snapshot":
+            return "Visitor moving"
         if et == "no_motion_snapshot":
             return f"No motion {det} min" if det else "No motion"
         if et == "no_transition_snapshot":
@@ -314,7 +317,17 @@ class CloudAlertPublisher:
         """Fixed-format line via the shared Format-A builder, e.g.
         'CRITICAL · Fall detected · Camera 1* Kitchen / fridge · Ravi · 11:45 AM, 23 Jun 2026'
         or 'Sitting → Standing · Camera 1 Kitchen · Ravi · 11:45 AM, 23 Jun 2026'."""
-        who = self._account.get().get("firstName") or "recipient"
+        # The account holder is the subject of a RECIPIENT event, not of every
+        # event. Printing their name on a visitor snapshot reads as "Ravi was
+        # here" for a frame Ravi may not be in.
+        if event.event_type in _NON_RECIPIENT_TYPES:
+            who = "visitor"
+            if event.co_present:
+                who = f"visitor ({event.co_present})"
+        else:
+            who = self._account.get().get("firstName") or "recipient"
+            if event.co_present:
+                who = f"{who} ({event.co_present})"
         try:
             cam = self._cameras.get_by_id(event.camera_id)
         except Exception:

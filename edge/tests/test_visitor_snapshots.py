@@ -162,8 +162,11 @@ print("\n7. the event survives the cloud recipient gate")
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 pub = io.open(ROOT / "edge/alerts/cloud_alert_publisher.py", encoding="utf-8").read()
 check("a non-recipient exemption exists", "_NON_RECIPIENT_TYPES" in pub)
-check("visitor_motion_snapshot is in it",
-      '"visitor_motion_snapshot"' in pub.split("_NON_RECIPIENT_TYPES")[1][:200])
+# The set itself lives in the enricher and is IMPORTED here — two copies of the
+# same list drift the moment one is edited, so assert the import, not a literal.
+from events.event_enricher import NON_RECIPIENT_TYPES as _NRT   # noqa: E402
+check("visitor_motion_snapshot is in it", "visitor_motion_snapshot" in _NRT,
+      str(_NRT))
 check("the gate consults it", "etype not in _NON_RECIPIENT_TYPES" in pub)
 
 enr = io.open(ROOT / "edge/events/event_enricher.py", encoding="utf-8").read()
@@ -177,6 +180,71 @@ check("and NOT an alert type",
 
 eng = io.open(ROOT / "edge/rules/rule_engine.py", encoding="utf-8").read()
 check("the rule is actually registered in the engine", "VisitorRule()" in eng)
+
+
+print("\n8. one frame produces ONE snapshot naming BOTH people")
+from rules.rule_engine import RuleEngine                       # noqa: E402
+from schemas.event import Event                                # noqa: E402
+
+
+def _evt(kind, cam="camA", tid=1):
+    return Event(event_id=kind, event_type=kind, camera_id=cam,
+                 room_name="", timestamp=clock.now_iso(), track_id=tid)
+
+
+merged = RuleEngine._merge_same_frame([
+    _evt("standing_up", "camA", 1),
+    _evt("visitor_motion_snapshot", "camA", 7),
+])
+kinds = [e.event_type for e in merged]
+check("the recipient event survives", "standing_up" in kinds, str(kinds))
+check("the duplicate visitor snapshot of the SAME frame is dropped",
+      "visitor_motion_snapshot" not in kinds, str(kinds))
+
+other_cam = RuleEngine._merge_same_frame([
+    _evt("standing_up", "camA", 1),
+    _evt("visitor_motion_snapshot", "camB", 7),
+])
+check("a visitor on ANOTHER camera is kept",
+      len(other_cam) == 2, str([e.event_type for e in other_cam]))
+
+alone = RuleEngine._merge_same_frame([_evt("visitor_motion_snapshot", "camA", 7)])
+check("a visitor alone is never dropped", len(alone) == 1)
+
+
+print("\n9. the annotation names who else was there")
+from events.event_enricher import EventEnricher, NON_RECIPIENT_TYPES  # noqa: E402
+
+ctx9, tracks9, idents9 = _world()
+_tick((ctx9, tracks9, idents9), {1: 100, 7: 400}, targets=(1,))
+enr = EventEnricher.__new__(EventEnricher)
+enr._name_cache, enr._name_cache_at = {"ravi": "Ravi"}, 1e18   # freeze the cache
+
+phrase = enr._co_present(_evt("standing_up", "camA", 1), ctx9)
+check("a recipient event names the visitor", phrase == "with a visitor", str(phrase))
+
+phrase = enr._co_present(_evt("visitor_motion_snapshot", "camA", 7), ctx9)
+check("a visitor event names the recipient", phrase == "with Ravi", str(phrase))
+
+ctx10, tracks10, idents10 = _world()
+_tick((ctx10, tracks10, idents10), {1: 100}, targets=(1,))
+check("alone in frame -> no co-presence phrase",
+      enr._co_present(_evt("standing_up", "camA", 1), ctx10) is None)
+
+ctx11, tracks11, idents11 = _world()
+_tick((ctx11, tracks11, idents11), {1: 100, 7: 400, 8: 500}, targets=(1,))
+check("two visitors are counted, not listed",
+      enr._co_present(_evt("standing_up", "camA", 1), ctx11) == "with 2 visitors")
+
+
+print("\n10. the cloud line no longer calls a visitor by the recipient's name")
+pub2 = io.open(ROOT / "edge/alerts/cloud_alert_publisher.py", encoding="utf-8").read()
+check("the subject depends on the event type",
+      'if event.event_type in _NON_RECIPIENT_TYPES:' in pub2)
+check("a visitor line says 'visitor'", 'who = "visitor"' in pub2)
+check("co-presence rides into the line", "event.co_present" in pub2)
+check("the type set is IMPORTED, not re-listed",
+      "from events.event_enricher import NON_RECIPIENT_TYPES" in pub2)
 
 
 if failures:

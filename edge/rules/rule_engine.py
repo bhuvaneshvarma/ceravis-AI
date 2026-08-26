@@ -54,29 +54,56 @@ class RuleEngine:
         if self._thread:
             self._thread.join(timeout)
 
+    @staticmethod
+    def _merge_same_frame(batch: list) -> list:
+        """Drop a visitor snapshot when the SAME frame already produced a
+        recipient event.
+
+        A visitor walking past while the recipient stands up fires two rules in
+        one tick, and both snapshot the identical frame. Sending both means two
+        near-identical images competing for the outbox's sliding window, and a
+        reader seeing two entries for one moment.
+
+        Only the visitor event is dropped, never the recipient's: the recipient
+        event is the one that can be an ALERT, and its snapshot already contains
+        the visitor — who is now named in its annotation by the enricher's
+        co-presence phrase. One frame, one snapshot, one line naming both."""
+        from events.event_enricher import NON_RECIPIENT_TYPES
+        cams = {e.camera_id for e in batch
+                if e.event_type not in NON_RECIPIENT_TYPES}
+        if not cams:
+            return batch
+        return [e for e in batch
+                if e.event_type not in NON_RECIPIENT_TYPES
+                or e.camera_id not in cams]
+
     def _run(self) -> None:
         interval = 1.0 / self.TICK_HZ
         while self._running:
             t0 = time.perf_counter()
+            batch = []
             for rule in self._rules:
                 try:
-                    for event in rule.evaluate(self._ctx):
-                        if self._enricher is not None:
-                            try:
-                                event = self._enricher.enrich(event, self._ctx)
-                            except Exception:
-                                logger.exception("event enrich failed")
-                        # Every detection lands on the monitor's sync console
-                        # (endpoint "event") — including the ones the cloud
-                        # gate drops later — so a physical test is verifiable
-                        # on screen whether or not it reached the server.
-                        call_log.record(
-                            "event", True,
-                            label=f"{(event.severity or 'info').upper()} · "
-                                  f"{event.message or event.event_type}")
-                        self._bus.publish(event)
+                    batch.extend(rule.evaluate(self._ctx))
                 except Exception:
                     logger.exception("rule failed: %s", rule.__class__.__name__)
+
+            for event in self._merge_same_frame(batch):
+                try:
+                    if self._enricher is not None:
+                        event = self._enricher.enrich(event, self._ctx)
+                    # Every detection lands on the monitor's sync console
+                    # (endpoint "event") — including the ones the cloud gate
+                    # drops later — so a physical test is verifiable on
+                    # screen whether or not it reached the server.
+                    call_log.record(
+                        "event", True,
+                        label=f"{(event.severity or 'info').upper()} · "
+                              f"{event.message or event.event_type}")
+                    self._bus.publish(event)
+                except Exception:
+                    logger.exception("event publish failed: %s",
+                                     event.event_type)
             sleep = interval - (time.perf_counter() - t0)
             if sleep > 0:
                 time.sleep(sleep)
