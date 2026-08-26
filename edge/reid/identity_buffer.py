@@ -28,3 +28,14 @@ class IdentityBuffer:
     def get_all(self) -> dict[str, dict[int, Identity]]:
         with self._lock:
             return {k: dict(v) for k, v in self._identities.items()}
+
+    def prune(self, camera_id: str, alive_ids: set[int]) -> None:
+        """Drop identities of tracks that no longer exist. Without this the map
+        grows forever, keyed on a monotonically rising track_id — the exact leak
+        shape that bit PostureBuffer before. Mirrors TrackFeatureBuffer.prune."""
+        with self._lock:
+            per = self._identities.get(camera_id)
+            if not per:
+                return
+            for tid in [t for t in per if t not in alive_ids]:
+                per.pop(tid, None)

@@ -40,6 +40,10 @@ class RuleContext:
     # to know whether someone is well-imaged right now reads it, and None
     # simply means that gate is unavailable — never a block.
     best_shots: object | None = None
+    # The shared "who is the target right now" lock (reid/target_registry.py).
+    # The visitor rule reads it to hold a snapshot for a beat while the recipient
+    # is being re-found across cameras. Optional: None disables that guard.
+    target_registry: object | None = None
 
     def fresh_tracks(self, now: datetime,
                      max_age_secs: float = TRACK_FRESH_SECS):

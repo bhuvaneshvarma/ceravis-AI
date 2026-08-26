@@ -60,7 +60,8 @@ class ReIDRunner:
         # cross-room search a handful of candidates instead of an open set,
         # and what auto-populates the negative pool. See reid/track_memory.py.
         self.memory = TrackMemory()
-        self._manager = TargetLockManager(gallery, recency=self._recency)
+        self._manager = TargetLockManager(gallery, recency=self._recency,
+                                          memory=self.memory)
 
         self._running = False
         self._thread: threading.Thread | None = None
@@ -150,10 +151,27 @@ class ReIDRunner:
         for camera_id, track_result in self._tracks.get_all().items():
             if not track_result.tracks:
                 self._seen_tracks.pop(camera_id, None)
+                # The room emptied. If the recipient was locked here, they have
+                # left — drop the registry focus so every camera is searched to
+                # re-find them next door, and clear this camera's stale identities.
+                if self._targets.recipient(camera_id) is not None:
+                    self._targets.unlock(camera_id)
+                self._identities.prune(camera_id, set())
                 continue
             if settings.reid_event_driven:
                 ids = frozenset(t.track_id for t in track_result.tracks)
                 if self._identity_event(camera_id, ids) is None:
+                    # Nothing changed — BoT-SORT carries identity, so the gallery
+                    # re-match is skipped. But keep the registry lock FRESH while
+                    # the target's track is still here, or its TTL lapses between
+                    # heartbeats and a STATIONARY recipient reads as "unlocated":
+                    # pose is target-only and would fall back to costly full-frame,
+                    # and the search-grace would trip for no reason.
+                    tid = self._targets.get(camera_id)
+                    if tid is not None and tid in ids:
+                        rid = self._targets.recipient(camera_id)
+                        if rid:
+                            self._targets.lock(camera_id, tid, rid)
                     continue           # nothing changed — the tracker carries it
             boxes = {t.track_id: (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2)
                      for t in track_result.tracks}
@@ -165,7 +183,11 @@ class ReIDRunner:
             outcome = self._manager.update(camera_id, boxes, feat_for)
 
             # Apply the lock decision to the shared registry (pose + UI read it).
-            if outcome.released:
+            # released = confirmed mismatch; lost = the locked track is gone from
+            # this camera and no confident reacquire here. Both drop the focus so
+            # the recipient is searched for on EVERY camera; the manager keeps
+            # who they are for the fast same-camera return.
+            if outcome.released or outcome.lost:
                 self._targets.unlock(camera_id)
             if outcome.target_track_id is not None and outcome.recipient_id:
                 self._targets.lock(camera_id, outcome.target_track_id,
@@ -211,6 +233,9 @@ class ReIDRunner:
             # evidence that recognises them walking into the next room.
             self.memory.prune(camera_id, set(boxes),
                               boxes={t: b for t, b in boxes.items()})
+            # Bound the identity map to the live track set — otherwise it grows
+            # forever on a monotonically rising track_id (the buffer leak shape).
+            self._identities.prune(camera_id, set(boxes))
 
             if outcome.adaptive is not None:
                 tid, rid, score = outcome.adaptive

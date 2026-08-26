@@ -30,6 +30,7 @@ Per TRACK, not per home: two visitors are two subjects, and each gets its own
 session, motion state and cooldown.
 """
 
+import time
 import uuid
 from collections import deque
 
@@ -49,6 +50,7 @@ class VisitorRule:
         self._boxes: dict[tuple, tuple] = {}        # last seen box
         self._moves: dict[tuple, deque] = {}        # recent moving/still verdicts
         self._last_snap: dict[tuple, float] = {}    # monotonic, per track
+        self._first_seen: dict[tuple, float] = {}   # monotonic, per track (identity grace)
         self._hour: deque = deque()                 # global rate cap
 
     # ---- main ---------------------------------------------------------
@@ -70,8 +72,11 @@ class VisitorRule:
 
                 key = (camera_id, track.track_id)
                 seen.add(key)
+                self._first_seen.setdefault(key, time.monotonic())
                 if not self._moving(key, track.bbox):
                     continue
+                if self._identity_hold(ctx, key):
+                    continue                       # could be the recipient arriving
                 if not self._due(key):
                     continue
                 if not self._well_imaged(ctx, camera_id, track.track_id):
@@ -115,9 +120,29 @@ class VisitorRule:
         win.append(1 if moved >= settings.visitor_motion_frac else 0)
         return sum(win) >= settings.visitor_motion_hits
 
+    # ---- identity grace ------------------------------------------------
+    def _identity_hold(self, ctx: RuleContext, key: tuple) -> bool:
+        """Hold this track's FIRST snapshot for a beat while the recipient is
+        being re-found across cameras — a freshly-appeared unidentified person
+        could be the recipient walking into this room, and ReID (running faster
+        than this rule) will claim them within the grace. Only bites during an
+        active search and only for the first grace-seconds of a track's life, so
+        ordinary visitors are unaffected. No registry wired in -> never holds."""
+        reg = getattr(ctx, "target_registry", None)
+        if reg is None:
+            return False
+        try:
+            if not reg.searching():
+                return False
+        except Exception:
+            return False
+        first = self._first_seen.get(key)
+        if first is None:
+            return True
+        return (time.monotonic() - first) < settings.visitor_identity_grace_secs
+
     # ---- rate limits ---------------------------------------------------
     def _due(self, key: tuple) -> bool:
-        import time
         now = time.monotonic()
         if (now - self._last_snap.get(key, -1e9)) < settings.visitor_snapshot_cooldown_secs:
             return False
@@ -129,7 +154,6 @@ class VisitorRule:
         return len(self._hour) < settings.visitor_snapshots_per_hour
 
     def _mark(self, key: tuple) -> None:
-        import time
         now = time.monotonic()
         self._last_snap[key] = now
         self._hour.append(now)
@@ -149,7 +173,7 @@ class VisitorRule:
 
     # ---- housekeeping --------------------------------------------------
     def _prune(self, seen: set) -> None:
-        for store in (self._boxes, self._moves, self._last_snap):
+        for store in (self._boxes, self._moves, self._last_snap, self._first_seen):
             for key in [k for k in store if k not in seen]:
                 store.pop(key, None)
 

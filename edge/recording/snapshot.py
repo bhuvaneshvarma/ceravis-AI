@@ -13,7 +13,7 @@ instant we report lines up with the time painted into the pixels:
     live      -> the freshest decoded frame. The in-memory ingestion FrameBuffer
                  when it is fresh (zero decode, lowest possible latency); else a
                  one-shot grab off the MediaMTX loopback (always live, even for a
-                 camera the AI has idled under active_camera_only). This is what
+                 camera with no fresh AI frame in the buffer). This is what
                  the "snapshot" button calls — it captures ~now.
 
     recording -> a frame-accurate still pulled from the STORED segment that

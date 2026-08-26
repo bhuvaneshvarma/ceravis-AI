@@ -25,10 +25,15 @@ class TargetRegistry:
         self._lock = RLock()
         # camera_id -> (track_id, recipient_id, last_seen_monotonic)
         self._targets: dict[str, tuple[int, str, float]] = {}
+        # The last recipient ever locked — remembered across a lapse so we can
+        # tell "a target is known but currently unlocated" (searching) from
+        # "no target has ever been identified".
+        self._last_recipient: str | None = None
 
     def lock(self, camera_id: str, track_id: int, recipient_id: str) -> None:
         with self._lock:
             self._targets[camera_id] = (track_id, recipient_id, time.monotonic())
+            self._last_recipient = recipient_id
 
     def unlock(self, camera_id: str) -> None:
         """Drop the lock immediately (e.g. confirmed mismatch) instead of
@@ -63,3 +68,15 @@ class TargetRegistry:
             if tid is not None:
                 out[cam] = tid
         return out
+
+    def searching(self) -> bool:
+        """A recipient IS known but is not confirmed-fresh on any camera right
+        now — the pipeline is hunting for the target across cameras (e.g. a
+        room-to-room transition). While this holds, a freshly-appeared
+        unidentified person could be the recipient arriving, so the visitor rule
+        gives ReID a brief moment to claim them before treating them as a
+        visitor. False before any target is ever identified and while one is
+        locked, so it never suppresses ordinary visitors."""
+        with self._lock:
+            known = self._last_recipient is not None
+        return known and not self.all()

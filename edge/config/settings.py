@@ -239,7 +239,7 @@ class Settings(BaseSettings):
     # a contaminated vector raises the neighbour's score, which makes them a
     # better capture candidate next time — and every number involved looks
     # healthy the whole way down.
-    reid_adaptive_solitude_frac: float = 2.5   # no other centre within N box-widths
+    reid_adaptive_solitude_frac: float = 3.0   # no other centre within N box-widths
 
     # ---- Track memory (reid/track_memory.py) ------------------------
     # Body appearance for EVERY track, not just the target: a stranger's look
@@ -278,6 +278,12 @@ class Settings(BaseSettings):
     visitor_motion_hits: int = 2
     visitor_snapshot_cooldown_secs: float = 20.0   # per track
     visitor_snapshots_per_hour: int = 60           # global; protects the outbox
+    # While the recipient is being re-found across cameras (a transition), a
+    # freshly-appeared unidentified person could be the recipient walking in.
+    # Hold their FIRST visitor snapshot this long to let ReID claim them, so the
+    # care recipient is never mislabelled a visitor during a handoff. Only
+    # applies during an active search; ordinary visitors are unaffected.
+    visitor_identity_grace_secs: float = 2.0
 
     # ---- Crop quality gate (reid/crop_quality.py) -------------------
     # Refuse to embed a crop that cannot support a decision. Most catastrophic
@@ -338,14 +344,14 @@ class Settings(BaseSettings):
     crop_padding_frac: float = 0.08          # margin around a person box for crops
     target_only_pose: bool = True            # once ReID locks the target, pose that crop only
     target_lock_ttl_secs: float = 5.0        # keep target lock this long after last sighting
-    # Focus the GPU-HEAVY chain on the recipient's camera: once the target is
-    # locked on a camera, tracking (BoT-SORT + OSNet) / ReID / pose run ONLY
-    # there; the others idle until the lock lapses (target leaves / TTL), when the
-    # tracker scans every camera again to re-find them. Saves GPU on multi-camera
-    # homes. Detection (YOLO) is deliberately NOT scoped by this — it always runs
-    # on every camera so person-triggered recording covers the whole home and the
-    # target can be re-found anywhere; the focus is applied in TrackingRunner.
-    active_camera_only: bool = True
+    # Tracking (BoT-SORT + gated OSNet) runs on EVERY camera, always — the care
+    # recipient must be followable the instant they step into any room, and the
+    # visitor-snapshot stream is an INDEPENDENT mechanism that must see every
+    # camera too. GPU is saved where it actually costs: pose is target-only
+    # (target_only_pose), ReID VERIFIES only the locked track and never re-matches
+    # the bystanders it already knows are not the recipient, and OSNet embedding is
+    # proximity/rate-gated (see _maybe_embed). The old active-camera focus that ran
+    # the whole chain on one camera is gone: it blinded the cross-camera handoff.
 
     # ---- Tracking (clean-room BoT-SORT) -----------------------------
     # Two-stage ByteTrack association + Kalman + OSNet appearance fusion. The
@@ -369,6 +375,14 @@ class Settings(BaseSettings):
     # lock is then FROZEN (identity not updated, adaptive capture paused so the
     # intruder can't poison the gallery) until they separate.
     target_occlusion_iou: float = 0.30
+    # Freeze the lock the moment ANOTHER person is merely NEAR the target, not
+    # only once boxes overlap: a padded crop of the target already contains a
+    # close neighbour's pixels, so verifying / learning / pushing recency then
+    # would file that neighbour under the recipient. While frozen the lock is
+    # HELD on the tracker's own appearance-fused association (BoT-SORT), and
+    # verification resumes the instant they separate. This is the same solitude
+    # radius adaptive capture uses (reid_adaptive_solitude_frac).
+    target_proximity_freeze: bool = True
     # Verified mismatches (target track scores below threshold while NOT occluded)
     # needed before the lock is released — so we drop a bad lock fast instead of
     # riding it until the TTL on the wrong person.
@@ -377,6 +391,22 @@ class Settings(BaseSettings):
     # body-widths of the target's last known position to be eligible (spatial
     # gate) on top of the appearance match.
     target_reacquire_max_dist_frac: float = 6.0
+    # Premium re-find (acquire / reacquire), precision over recall by design:
+    #   * a NEW lock needs a stronger score than steady-state verify (a wrong
+    #     acquire is far more expensive than briefly holding no lock);
+    #   * the winning track must beat the runner-up TRACK by a clear margin, so a
+    #     look-alike scoring the same as the recipient locks NOBODY — we keep
+    #     searching rather than pick one of two;
+    #   * a candidate that looks more like a KNOWN bystander (auto-negative pool)
+    #     than like the recipient is vetoed outright.
+    reid_acquire_min_score: float = 0.60     # bar to take a NEW lock (>= verify bar)
+    reid_target_pick_margin: float = 0.05    # winner must beat 2nd track by this
+    reid_negative_veto_margin: float = 0.05  # veto if neg-score exceeds fused by this
+    # After the target's track is lost on a camera, keep trying the fast
+    # spatially-gated same-camera reacquire for this long; past it, forget the
+    # per-camera memory so a later look-alike near the old spot cannot inherit
+    # the lock — the clean gallery acquire takes over instead.
+    target_reacquire_ttl_secs: float = 8.0
 
     # ---- Posture (sitting / standing / walking / fallen) ------------
     # Walking is scale-normalized (motion relative to the person's own body

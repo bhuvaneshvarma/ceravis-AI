@@ -23,6 +23,7 @@ It is deliberately tracker-agnostic and side-effect-free: `update()` returns a
 plan; the caller applies it to the registry / identity buffer / adaptive queue.
 """
 
+import time
 from dataclasses import dataclass, field
 
 from config.settings import settings
@@ -52,6 +53,7 @@ class _CamState:
     last_w: float = 1.0
     last_score: float = 0.0
     mismatch_streak: int = 0
+    lost_since: float = 0.0              # monotonic when the track went missing; 0 = present
 
 
 @dataclass(slots=True)
@@ -62,17 +64,27 @@ class LockOutcome:
     identities: dict = field(default_factory=dict)
     adaptive: tuple | None = None        # (track_id, recipient_id, score) or None
     recency: float | None = None         # recency score behind an acquire/reacquire
-    released: bool = False               # lock was dropped this tick
+    released: bool = False               # lock was dropped this tick (confirmed mismatch)
+    # The target is locked but NOT confirmed on this camera this tick (its track
+    # is gone and no confident reacquire here). The caller widens the search —
+    # drops the per-camera registry focus so EVERY camera is scanned to re-find
+    # them next door — without forgetting who the recipient is.
+    lost: bool = False
 
 
 class TargetLockManager:
-    def __init__(self, gallery, recency=None) -> None:
+    def __init__(self, gallery, recency=None, memory=None) -> None:
         self._gallery = gallery
         # Short-term appearance memory of the confirmed target. Used ONLY on the
         # acquire / reacquire paths — steady-state verification stays on the
         # gallery, so a drifting recent memory can never quietly redefine who the
         # recipient is. See reid/recency_buffer.py.
         self._recency = recency
+        # Auto-harvested pool of confirmed NON-recipients (reid/track_memory.py).
+        # A re-find candidate that looks more like a known bystander than like the
+        # recipient is vetoed — this is what stops the "same-score other person"
+        # from inheriting the lock. Optional: None simply disables the veto.
+        self._memory = memory
         self._state: dict[str, _CamState] = {}
 
     def forget(self, camera_id: str) -> None:
@@ -95,8 +107,15 @@ class TargetLockManager:
         if st.recipient_id is not None and st.track_id in boxes:
             tid = st.track_id
             box = boxes[tid]
-            if occluded.get(tid, 0.0) >= settings.target_occlusion_iou:
-                # FREEZE — keep the lock, change nothing, learn nothing.
+            st.lost_since = 0.0
+            # FREEZE when another person is OCCLUDING or merely NEAR the target:
+            # a padded crop then contains their pixels, so verifying / learning /
+            # pushing recency off it would file the neighbour under the recipient.
+            # Hold the lock on BoT-SORT's own appearance-fused association and
+            # resume the instant they separate — no foreign pixels, ever.
+            near = (settings.target_proximity_freeze
+                    and not self._alone(boxes, tid))
+            if near or occluded.get(tid, 0.0) >= settings.target_occlusion_iou:
                 self._remember(st, box)
                 out.target_track_id = tid
                 out.recipient_id = st.recipient_id
@@ -138,13 +157,14 @@ class TargetLockManager:
         # ---- locked recipient but its track vanished -> reacquire ----------
         if st.recipient_id is not None:
             cand = self._best_match(boxes, feat_for, want=st.recipient_id,
-                                    spatial_from=st)
+                                    spatial_from=st, acquire=False)
             if cand is not None:
                 tid, score, view, box = cand
                 out.recency = self._last_recency
                 st.track_id = tid
                 st.mismatch_streak = 0
                 st.last_score = score
+                st.lost_since = 0.0
                 self._remember(st, box)
                 out.target_track_id = tid
                 out.recipient_id = st.recipient_id
@@ -152,10 +172,23 @@ class TargetLockManager:
                 if (occluded.get(tid, 0.0) < settings.target_occlusion_iou
                         and self._alone(boxes, tid)):
                     out.adaptive = (tid, st.recipient_id, score)
-            return out                            # still searching otherwise
+                return out
+            # Not on this camera this tick. Widen the search (drop the registry
+            # focus so every camera is scanned) but KEEP who the recipient is for
+            # the fast same-camera reacquire — until it has been too long, when we
+            # forget the per-camera memory so a later look-alike near the old spot
+            # cannot inherit the lock and a clean gallery acquire takes over.
+            now = time.monotonic()
+            if st.lost_since == 0.0:
+                st.lost_since = now
+            out.lost = True
+            if now - st.lost_since > settings.target_reacquire_ttl_secs:
+                self._state.pop(camera_id, None)
+            return out
 
         # ---- no target yet -> acquire the clearest match ------------------
-        cand = self._best_match(boxes, feat_for, want=None, spatial_from=None)
+        cand = self._best_match(boxes, feat_for, want=None, spatial_from=None,
+                                acquire=True)
         if cand is not None:
             tid, score, view, box = cand
             rid = self._last_match_rid
@@ -177,20 +210,25 @@ class TargetLockManager:
     _last_match_rid: str | None = None
     _last_recency: float | None = None
 
-    def _best_match(self, boxes, feat_for, want, spatial_from):
-        """Return (track_id, score, view, box) of the best match, or None.
-        `want` restricts to one recipient; `spatial_from` adds a distance gate.
+    def _best_match(self, boxes, feat_for, want, spatial_from, acquire=False):
+        """Return (track_id, score, view, box) of the best match, or None — the
+        PREMIUM re-find, precision over recall by design.
+
+        `want` restricts to one recipient; `spatial_from` adds a distance gate;
+        `acquire` demands a stronger score for taking a brand-new lock.
 
         The score is the gallery score FUSED with short-term recency whenever a
-        live memory exists (see _fuse). Candidates are ranked on the fused score,
-        so a look-alike who merely scrapes over the general gallery bar loses to
-        — and can be vetoed outright by — whoever actually matches the target's
-        last few seconds. This is the acquire/reacquire path only; steady-state
-        verification above stays on the gallery alone."""
-        best = None
-        best_score = -1.0
+        live memory exists (see _fuse) — so a candidate that clears the general
+        gallery bar but looks nothing like the target's last few seconds is
+        vetoed. On top of that, a candidate that looks more like a KNOWN
+        bystander than like the recipient is vetoed by the negative pool. And the
+        winner must beat the runner-up TRACK by a clear margin: two people who
+        both look like the recipient lock NOBODY — we keep searching rather than
+        gamble on which one is real. Steady-state verification above stays on the
+        gallery alone; all of this applies only to acquire / reacquire."""
         self._last_match_rid = None
         self._last_recency = None
+        scored = []          # (fused_score, tid, view, box, recipient_id, recency)
         for tid, box in boxes.items():
             feat = feat_for(tid)
             if feat is None:
@@ -204,13 +242,25 @@ class TargetLockManager:
                 continue
             score, rec = self._fuse(m.recipient_id, m.score, feat)
             if score is None:
-                continue                      # vetoed — see _fuse
-            if score > best_score:
-                best_score = score
-                best = (tid, score, m.view_label, box)
-                self._last_match_rid = m.recipient_id
-                self._last_recency = rec
-        return best
+                continue                      # recency veto — see _fuse
+            if self._memory is not None:
+                neg = self._memory.negative_score(feat)
+                if (neg >= settings.reid_negative_veto_score
+                        and neg - score >= settings.reid_negative_veto_margin):
+                    continue                  # looks more like a known non-target
+            scored.append((score, tid, m.view_label, box, m.recipient_id, rec))
+        if not scored:
+            return None
+        scored.sort(key=lambda t: t[0], reverse=True)
+        best = scored[0]
+        if (len(scored) > 1
+                and best[0] - scored[1][0] < settings.reid_target_pick_margin):
+            return None                       # a look-alike ties the winner — pick nobody
+        if acquire and best[0] < settings.reid_acquire_min_score:
+            return None                       # not confident enough for a NEW lock
+        self._last_match_rid = best[4]
+        self._last_recency = best[5]
+        return (best[1], best[0], best[2], best[3])
 
     def _fuse(self, rid, gallery_score: float, feat):
         """(fused_score, recency_score), or (None, recency) when recency VETOES.

@@ -104,11 +104,10 @@ class DetectionRunner:
             return
         # Detection runs on EVERY camera: it is the cheap "person present?" signal
         # that (a) drives per-camera recording (RecordingController) and (b) lets
-        # the system (re)find the recipient on whichever camera they are on. The
-        # GPU-heavy focus — one camera once the target is locked — is applied
-        # DOWNSTREAM in TrackingRunner, so tracking / OSNet / pose / ReID stay
-        # cheap while recording still covers the whole home. See
-        # settings.active_camera_only.
+        # the system (re)find the recipient on whichever camera they are on. So
+        # does tracking downstream; the GPU is saved instead by pose being
+        # target-only and ReID verifying only the locked track (not re-matching
+        # the bystanders it already knows are not the recipient).
         for camera_id, fd in frames.items():
             if self._last_seen_frame.get(camera_id) == fd.frame_id:
                 continue
