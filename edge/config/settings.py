@@ -535,7 +535,7 @@ class Settings(BaseSettings):
     # account on its own); ceravisUserId is sent alongside in the BODY (never the
     # URL — it is account-identifying). No X-API-Key on this call — the status
     # endpoint is unauthenticated. Blank url = feature OFF (device standalone).
-    status_heartbeat_url: str = "https://app.ceravishealth.in/api/v1/status"
+    status_heartbeat_url: str = "https://app.ceravishealth.in/ch/v1/ai/edge/status"
     status_heartbeat_interval_secs: float = 60.0
 
     # ---- Scheduled reboot + reboot authorisation --------------------
