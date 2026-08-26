@@ -11,6 +11,7 @@ from reid.faiss_index import FaissGallery
 from reid.identity_buffer import IdentityBuffer
 from reid.identity_schema import Identity
 from reid.recency_buffer import RecencyBuffer
+from reid.track_memory import TrackMemory
 from reid.target_lock import TargetLockManager
 from reid.target_registry import TargetRegistry
 from tracking.track_buffer import TrackBuffer
@@ -55,6 +56,10 @@ class ReIDRunner:
         # acquire/reacquire fusion so a look-alike can't take the ID while a
         # live recent window exists. See reid/recency_buffer.py.
         self._recency = RecencyBuffer()
+        # Body appearance for EVERY track plus exit records — what makes a
+        # cross-room search a handful of candidates instead of an open set,
+        # and what auto-populates the negative pool. See reid/track_memory.py.
+        self.memory = TrackMemory()
         self._manager = TargetLockManager(gallery, recency=self._recency)
 
         self._running = False
@@ -169,6 +174,24 @@ class ReIDRunner:
             # Publish identities.
             ts = track_result.timestamp
             fid = track_result.frame_id
+            # Remember what EVERY track looks like — target or not. A
+            # stranger's appearance is precisely what lets us tell them apart
+            # from the recipient later, and it costs nothing: the embedding
+            # already exists.
+            for tid in boxes:
+                rec = self._features.get(camera_id, tid)
+                if rec is None:
+                    continue
+                self.memory.observe(camera_id, tid, rec.smooth)
+                # While a target is LOCKED, every other track on this camera
+                # is definitively not them — the strongest negative label
+                # available anywhere, and it costs nothing to collect. This
+                # is what bootstraps the negative pool without asking a
+                # family to enrol every visitor they ever have.
+                if (outcome.target_track_id is not None
+                        and tid != outcome.target_track_id):
+                    self.memory.add_negative(rec.smooth)
+
             for tid, (rid, is_target, score, view) in outcome.identities.items():
                 self._identities.update(Identity(
                     track_id=tid, camera_id=camera_id, frame_id=fid, timestamp=ts,
@@ -184,6 +207,11 @@ class ReIDRunner:
             # sighting — the only look we are willing to remember as "this is
             # the target right now". Recency is pushed on every one of them;
             # the adaptive store keeps its own slower throttle underneath.
+            # Tracks that vanished this tick become exit records — the
+            # evidence that recognises them walking into the next room.
+            self.memory.prune(camera_id, set(boxes),
+                              boxes={t: b for t, b in boxes.items()})
+
             if outcome.adaptive is not None:
                 tid, rid, score = outcome.adaptive
                 rec = self._features.get(camera_id, tid)

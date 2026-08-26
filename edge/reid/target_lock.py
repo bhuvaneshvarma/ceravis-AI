@@ -118,7 +118,8 @@ class TargetLockManager:
                 out.target_track_id = tid
                 out.recipient_id = st.recipient_id
                 out.identities[tid] = (st.recipient_id, True, m.score, m.view_label)
-                out.adaptive = (tid, st.recipient_id, m.score)
+                if self._alone(boxes, tid):
+                    out.adaptive = (tid, st.recipient_id, m.score)
                 return out
 
             # mismatch while clearly visible -> count toward release
@@ -148,7 +149,8 @@ class TargetLockManager:
                 out.target_track_id = tid
                 out.recipient_id = st.recipient_id
                 out.identities[tid] = (st.recipient_id, True, score, view)
-                if occluded.get(tid, 0.0) < settings.target_occlusion_iou:
+                if (occluded.get(tid, 0.0) < settings.target_occlusion_iou
+                        and self._alone(boxes, tid)):
                     out.adaptive = (tid, st.recipient_id, score)
             return out                            # still searching otherwise
 
@@ -166,7 +168,8 @@ class TargetLockManager:
             out.target_track_id = tid
             out.recipient_id = rid
             out.identities[tid] = (rid, True, score, view)
-            if occluded.get(tid, 0.0) < settings.target_occlusion_iou:
+            if (occluded.get(tid, 0.0) < settings.target_occlusion_iou
+                    and self._alone(boxes, tid)):
                 out.adaptive = (tid, rid, score)
         return out
 
@@ -225,6 +228,40 @@ class TargetLockManager:
             return None, rec                  # nothing like the last sighting
         w = settings.reid_recency_weight
         return (1.0 - w) * gallery_score + w * rec, rec
+
+    @staticmethod
+    def _alone(boxes: dict[int, tuple], tid: int) -> bool:
+        """Is this track far enough from EVERY other person to learn from safely?
+
+        Adaptive capture used to be gated on the occlusion threshold — actual
+        box overlap (IoU >= target_occlusion_iou). That is far too late. Long
+        before two boxes overlap, a neighbour is already inside the target's
+        crop: crop_person pads by crop_padding_frac, so someone merely STANDING
+        NEAR contributes their pixels to the vector we are about to file under
+        the recipient's name.
+
+        The failure that causes is self-reinforcing and hard to see. A
+        contaminated vector enters the gallery, which raises the neighbour's
+        match score, which makes them a better candidate next time, which
+        captures more of them. The gallery drifts onto the wrong person one
+        confident sample at a time, and every score involved looks healthy
+        throughout.
+
+        So learning requires SOLITUDE, not merely non-overlap: no other track's
+        centre within reid_adaptive_solitude_frac box-widths."""
+        me = boxes.get(tid)
+        if me is None:
+            return False
+        mx, my = _center(me)
+        span = max(1.0, me[2] - me[0])
+        limit = settings.reid_adaptive_solitude_frac * span
+        for other, box in boxes.items():
+            if other == tid:
+                continue
+            ox, oy = _center(box)
+            if ((mx - ox) ** 2 + (my - oy) ** 2) ** 0.5 <= limit:
+                return False
+        return True
 
     @staticmethod
     def _occlusion(boxes: dict[int, tuple]) -> dict[int, float]:

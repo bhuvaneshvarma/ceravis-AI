@@ -231,6 +231,36 @@ class Settings(BaseSettings):
     reid_adaptive_min_interval_secs: float = 4.0  # min seconds between capture attempts
     reid_adaptive_rebuild_secs: float = 5.0  # min seconds between gallery rebuilds
 
+    # ---- Adaptive capture: SOLITUDE, not merely non-overlap ---------
+    # Adaptive learning used to resume the moment boxes stopped overlapping.
+    # Far too late: crop_person pads by crop_padding_frac, so a neighbour who
+    # is merely STANDING NEAR already contributes pixels to the vector about
+    # to be filed under the recipient's name. The drift is self-reinforcing —
+    # a contaminated vector raises the neighbour's score, which makes them a
+    # better capture candidate next time — and every number involved looks
+    # healthy the whole way down.
+    reid_adaptive_solitude_frac: float = 2.5   # no other centre within N box-widths
+
+    # ---- Track memory (reid/track_memory.py) ------------------------
+    # Body appearance for EVERY track, not just the target: a stranger's look
+    # is what lets us tell them apart from the recipient later, and their exit
+    # record turns a cross-room search from open-set into a handful of
+    # candidates. Faces are deliberately not stored for non-targets.
+    track_memory_per_track: int = 3          # embeddings kept per live track
+    track_memory_max_exits: int = 64         # exit records retained
+    track_memory_transit_secs: float = 45.0  # plausible room-to-room walk
+    track_memory_min_score: float = 0.60     # weak continuation is no answer
+    track_memory_edge_frac: float = 0.12     # within this of an edge = left by it
+
+    # ---- Auto-harvested negative pool -------------------------------
+    # Solves the negative-gallery bootstrap: you cannot enrol household
+    # members before you know who they are, and no family enrols every
+    # visitor. Every confidently REJECTED track donates its look anonymously,
+    # so the pool fills with exactly the people who really walk through this
+    # house. Used only to REJECT, never to accept.
+    reid_negative_pool_max: int = 200
+    reid_negative_veto_score: float = 0.70   # looks like a known non-target
+
     # ---- Crop quality gate (reid/crop_quality.py) -------------------
     # Refuse to embed a crop that cannot support a decision. Most catastrophic
     # ReID errors are the network embedding garbage CONFIDENTLY — a blurred
