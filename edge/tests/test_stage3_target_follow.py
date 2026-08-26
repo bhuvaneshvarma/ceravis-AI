@@ -233,6 +233,40 @@ check("an ordinary visitor fires with no delay", bool(normal),
       str([e.event_type for e in normal]))
 
 
+print("\n9. the recipient's OWN recent exit re-finds them in the NEXT room")
+# The recipient left camA looking like E (their clothing seconds ago). On camB
+# two people BOTH match the enrolled gallery equally — a genuine tie the pick
+# margin would refuse to guess. The recipient's exit breaks it: only the real
+# recipient also matches E.
+E = unit(np.array([0.75, 0, 0.66, 0, 0, 0, 0, 0]))          # recipient's exit look
+lookalike = unit(np.array([0.75, 0, 0, 0.66, 0, 0, 0, 0]))  # same gallery score, diff person
+check("both clear the gallery equally (a tie)",
+      abs(_Gallery().match(E).score - _Gallery().match(lookalike).score) < 1e-6
+      and _Gallery().match(E).is_match)
+
+mem9 = TrackMemory()
+mem9.observe("camA", 1, E)
+mem9.retire("camA", 1, recipient_id="ravi")     # tagged exit from camA
+check("target_continuation matches the recipient, not the look-alike",
+      (mem9.target_continuation("camB", E, "ravi") or 0) > 0.99
+      and (mem9.target_continuation("camB", lookalike, "ravi") or 0)
+          < settings.track_memory_min_score)
+check("and it is scoped to the recipient id",
+      mem9.target_continuation("camB", E, "someone_else") is None)
+
+mgr9 = TargetLockManager(_Gallery(), memory=mem9)
+feats9 = {1: E, 2: lookalike}
+out9 = mgr9.update("camB", {1: _box(100), 2: _box(400)}, lambda t: feats9[t])
+check("the exit boost locks the REAL recipient across the camera",
+      out9.target_track_id == 1 and out9.recipient_id == "ravi")
+
+# Without the exit evidence it is an honest tie -> lock nobody (no wrong pick).
+mgr9b = TargetLockManager(_Gallery(), memory=TrackMemory())
+out9b = mgr9b.update("camB", {1: _box(100), 2: _box(400)}, lambda t: feats9[t])
+check("with no exit evidence the tie locks nobody (never the wrong one)",
+      out9b.target_track_id is None)
+
+
 if failures:
     print(f"\n{len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

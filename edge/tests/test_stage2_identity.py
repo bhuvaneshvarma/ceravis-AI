@@ -106,23 +106,25 @@ check("a vanished track becomes an exit record", st["exit_records"] == 1, str(st
 check("the surviving track stays live", st["live_tracks"] == 1, str(st))
 
 
-print("\n4. a new track is matched against RECENT EXITS, not the whole gallery")
-hit = mem.match_candidate("camB", OTHER)
-check("the person who just left camA is found on camB", hit is not None)
-if hit:
-    rec, score = hit
-    check("it is the right record", rec.camera_id == "camA" and rec.track_id == 2)
-    check("with a strong score", score > 0.9, f"{score:.3f}")
-check("a stranger matches nobody", mem.match_candidate("camB", vec((5, 1.0))) is None)
+print("\n4. the RECIPIENT is re-found in the next room by their tagged exit")
+# A recipient-tagged exit from camA (see target_continuation, the only
+# continuation the pipeline uses — generic bystander continuation is deliberately
+# not re-identified).
+mem.observe("camA", 9, TARGET)
+mem.retire("camA", 9, recipient_id="ravi")
+check("the recipient's own exit is matched on camB",
+      (mem.target_continuation("camB", TARGET, "ravi") or 0) > 0.9)
+check("scoped to the recipient id (not just anyone)",
+      mem.target_continuation("camB", TARGET, "someone_else") is None)
 check("the SAME camera is excluded (the tracker owns that case)",
-      mem.match_candidate("camA", OTHER) is None)
+      mem.target_continuation("camA", TARGET, "ravi") is None)
 
 original = settings.track_memory_transit_secs
 try:
     settings.track_memory_transit_secs = 0.05
     time.sleep(0.1)
     check("an exit older than the transit window stops being a candidate",
-          mem.match_candidate("camB", OTHER) is None)
+          mem.target_continuation("camB", TARGET, "ravi") is None)
 finally:
     settings.track_memory_transit_secs = original
 

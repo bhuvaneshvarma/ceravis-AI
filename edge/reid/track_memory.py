@@ -151,24 +151,30 @@ class TrackMemory:
                 out.append(rec)
         return out
 
-    def match_candidate(self, camera_id: str, embedding) -> tuple[ExitRecord, float] | None:
-        """Best recent-exit match for a newly appeared track, or None.
+    def target_continuation(self, camera_id: str, embedding,
+                            recipient_id: str) -> float | None:
+        """Best cosine between this candidate and the RECIPIENT's own recent exit
+        looks from OTHER cameras, within the transit window — or None.
 
-        Deliberately conservative: a weak best is no answer at all. Continuation
-        is a hint for the identity cascade, never an identity on its own."""
+        This is the cross-camera half of re-find: when the recipient leaves one
+        room, their last good looks are filed as a recipient-tagged exit record;
+        when a track appears in the NEXT room, matching those looks is what tells
+        the real recipient apart from a gallery look-alike who merely dresses
+        similarly. Used only to BOOST an already-valid gallery match (never to
+        manufacture one), so it sharpens precision without lowering the bar."""
+        if not recipient_id:
+            return None
         q = _unit(embedding)
         if q is None:
             return None
-        best, best_score = None, -1.0
+        best = -1.0
         for rec in self.candidates(camera_id):
-            if not rec.embeddings:
+            if rec.recipient_id != recipient_id or not rec.embeddings:
                 continue
-            score = float(max(float(e @ q) for e in rec.embeddings))
-            if score > best_score:
-                best, best_score = rec, score
-        if best is None or best_score < settings.track_memory_min_score:
-            return None
-        return best, best_score
+            for e in rec.embeddings:
+                if e.shape[0] == q.shape[0]:
+                    best = max(best, float(e @ q))
+        return best if best >= 0.0 else None
 
     # ---- negative pool -----------------------------------------------
     def add_negative(self, embedding) -> None:

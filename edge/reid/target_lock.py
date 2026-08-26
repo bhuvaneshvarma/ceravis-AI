@@ -157,7 +157,8 @@ class TargetLockManager:
         # ---- locked recipient but its track vanished -> reacquire ----------
         if st.recipient_id is not None:
             cand = self._best_match(boxes, feat_for, want=st.recipient_id,
-                                    spatial_from=st, acquire=False)
+                                    spatial_from=st, acquire=False,
+                                    camera_id=camera_id)
             if cand is not None:
                 tid, score, view, box = cand
                 out.recency = self._last_recency
@@ -188,7 +189,7 @@ class TargetLockManager:
 
         # ---- no target yet -> acquire the clearest match ------------------
         cand = self._best_match(boxes, feat_for, want=None, spatial_from=None,
-                                acquire=True)
+                                acquire=True, camera_id=camera_id)
         if cand is not None:
             tid, score, view, box = cand
             rid = self._last_match_rid
@@ -210,7 +211,8 @@ class TargetLockManager:
     _last_match_rid: str | None = None
     _last_recency: float | None = None
 
-    def _best_match(self, boxes, feat_for, want, spatial_from, acquire=False):
+    def _best_match(self, boxes, feat_for, want, spatial_from, acquire=False,
+                    camera_id=None):
         """Return (track_id, score, view, box) of the best match, or None — the
         PREMIUM re-find, precision over recall by design.
 
@@ -248,6 +250,16 @@ class TargetLockManager:
                 if (neg >= settings.reid_negative_veto_score
                         and neg - score >= settings.reid_negative_veto_margin):
                     continue                  # looks more like a known non-target
+                # Cross-camera boost: does this candidate also match the
+                # recipient's OWN recent exit from another room? If so, lift it
+                # above a gallery look-alike. Boost only — never lowers the bar.
+                if camera_id is not None:
+                    cont = self._memory.target_continuation(
+                        camera_id, feat, m.recipient_id)
+                    if (cont is not None and cont >= settings.track_memory_min_score
+                            and cont > score):
+                        w = settings.reid_continuation_weight
+                        score = (1.0 - w) * score + w * cont
             scored.append((score, tid, m.view_label, box, m.recipient_id, rec))
         if not scored:
             return None

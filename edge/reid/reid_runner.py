@@ -78,6 +78,10 @@ class ReIDRunner:
         # 'did anything change' answerable without a model.
         self._seen_tracks: dict[str, frozenset] = {}
         self._last_match: dict[str, float] = {}
+        # The recipient's current track per camera, so the instant it departs we
+        # file a recipient-TAGGED exit record — the evidence that re-finds them
+        # in the next room (reid/track_memory.target_continuation).
+        self._target_track: dict[str, tuple[int, str]] = {}
 
     @property
     def is_running(self) -> bool:
@@ -152,10 +156,15 @@ class ReIDRunner:
             if not track_result.tracks:
                 self._seen_tracks.pop(camera_id, None)
                 # The room emptied. If the recipient was locked here, they have
-                # left — drop the registry focus so every camera is searched to
-                # re-find them next door, and clear this camera's stale identities.
+                # left — file their tagged exit BEFORE the memory is pruned (so it
+                # can re-find them next door), drop the registry focus so every
+                # camera is searched, and clear this camera's stale state.
+                gone = self._target_track.pop(camera_id, None)
+                if gone is not None:
+                    self.memory.retire(camera_id, gone[0], recipient_id=gone[1])
                 if self._targets.recipient(camera_id) is not None:
                     self._targets.unlock(camera_id)
+                self.memory.prune(camera_id, set())
                 self._identities.prune(camera_id, set())
                 continue
             if settings.reid_event_driven:
@@ -192,6 +201,15 @@ class ReIDRunner:
             if outcome.target_track_id is not None and outcome.recipient_id:
                 self._targets.lock(camera_id, outcome.target_track_id,
                                    outcome.recipient_id)
+                self._target_track[camera_id] = (outcome.target_track_id,
+                                                 outcome.recipient_id)
+            else:
+                # The recipient is no longer confirmed on this camera — file
+                # their tagged exit record (their last looks, for re-finding them
+                # next door) before the generic prune below retires it untagged.
+                gone = self._target_track.pop(camera_id, None)
+                if gone is not None and gone[0] not in boxes:
+                    self.memory.retire(camera_id, gone[0], recipient_id=gone[1])
 
             # Publish identities.
             ts = track_result.timestamp

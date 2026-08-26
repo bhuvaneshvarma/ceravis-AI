@@ -251,6 +251,11 @@ class Settings(BaseSettings):
     track_memory_transit_secs: float = 45.0  # plausible room-to-room walk
     track_memory_min_score: float = 0.60     # weak continuation is no answer
     track_memory_edge_frac: float = 0.12     # within this of an edge = left by it
+    # Cross-camera re-find: when a re-find candidate also matches the recipient's
+    # OWN recent exit looks from another room (their clothing seconds ago), blend
+    # that in to lift the real recipient above a gallery look-alike. BOOST ONLY —
+    # it never lowers the match bar, so precision is preserved.
+    reid_continuation_weight: float = 0.35
 
     # ---- Auto-harvested negative pool -------------------------------
     # Solves the negative-gallery bootstrap: you cannot enrol household
