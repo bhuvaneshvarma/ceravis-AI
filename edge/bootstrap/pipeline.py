@@ -213,7 +213,8 @@ class Pipeline:
                 ctx = RuleContext(
                     frames=frames, detections=detection_buffer, tracks=track_buffer,
                     poses=pose_buffer, postures=posture_buffer,
-                    posture_tracker=posture_tracker, identities=identity_buffer)
+                    posture_tracker=posture_tracker, identities=identity_buffer,
+                    best_shots=best_shots)
                 event_enricher = EventEnricher()
                 rule_engine = RuleEngine(ctx, event_bus, enricher=event_enricher)
                 rule_engine.start()

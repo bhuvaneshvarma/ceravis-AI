@@ -50,6 +50,12 @@ logger = logging.getLogger("alerts")
 # (fall -> FALL, no_motion -> NO_MOTION). Anything unmapped falls back to upper().
 _ALERT_TYPE = {"fall": "FALL", "no_motion": "NO_MOTION"}
 
+# Events that are ABOUT someone who is not the recipient. The recipient gate
+# exists to stop unidentified detections masquerading as the care recipient —
+# but a visitor snapshot has no recipient_id BY DEFINITION, so the gate would
+# silently drop every one of them with 'not identified as the recipient'.
+_NON_RECIPIENT_TYPES = {"visitor_motion_snapshot"}
+
 
 def _priority_of(etype: str, is_alert: bool) -> int:
     """How urgently this event's uploads leave the device.
@@ -132,7 +138,8 @@ class CloudAlertPublisher:
             is_snap = etype in self._snapshot_types         # saveSnapshot only
             if not (is_alert or is_snap):
                 continue
-            if self._recipient_only and not event.recipient_id:
+            if (self._recipient_only and not event.recipient_id
+                    and etype not in _NON_RECIPIENT_TYPES):
                 # Visible on the sync console: the detection happened but the
                 # track wasn't identified as the recipient, so nothing is sent.
                 call_log.record(

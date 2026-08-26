@@ -36,6 +36,10 @@ class RuleContext:
     postures: PostureBuffer
     posture_tracker: PostureTracker
     identities: IdentityBuffer
+    # Best crops per track (reid/best_shot.py). Optional: a rule that wants
+    # to know whether someone is well-imaged right now reads it, and None
+    # simply means that gate is unavailable — never a block.
+    best_shots: object | None = None
 
     def fresh_tracks(self, now: datetime,
                      max_age_secs: float = TRACK_FRESH_SECS):

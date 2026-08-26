@@ -261,6 +261,24 @@ class Settings(BaseSettings):
     reid_negative_pool_max: int = 200
     reid_negative_veto_score: float = 0.70   # looks like a known non-target
 
+    # ---- Visitor motion snapshots (rules/visitor_rule.py) -----------
+    # A snapshot of anyone who is NOT the recipient, while they are MOVING.
+    # v1 fired on a fixed time cadence, so a visitor asleep on the sofa
+    # produced the same burst as one walking around; motion is the trigger now.
+    # A visitor is ANY fresh non-target track INCLUDING an unidentified one —
+    # v1 required an identity record, which made the people it most needed to
+    # capture invisible to it.
+    visitor_snapshots_enabled: bool = True
+    # Box-centre displacement as a fraction of box HEIGHT. Normalising by
+    # height is what lets one threshold work at both ends of a room.
+    visitor_motion_frac: float = 0.04
+    # M-of-N, not N-consecutive: real movement is intermittent (someone pauses
+    # mid-stride) while box jitter is independent tick to tick and cancels.
+    visitor_motion_window: int = 5
+    visitor_motion_hits: int = 2
+    visitor_snapshot_cooldown_secs: float = 20.0   # per track
+    visitor_snapshots_per_hour: int = 60           # global; protects the outbox
+
     # ---- Crop quality gate (reid/crop_quality.py) -------------------
     # Refuse to embed a crop that cannot support a decision. Most catastrophic
     # ReID errors are the network embedding garbage CONFIDENTLY — a blurred
@@ -462,7 +480,8 @@ class Settings(BaseSettings):
     cloud_snapshot_event_types: str = (
         "standing_up,sitting_down,walking_started,walking_stopped,"
         "no_motion_snapshot,no_transition_snapshot,"
-        "area_transition,room_transition")
+        "area_transition,room_transition,"
+        "visitor_motion_snapshot")
 
     # ---- Device status heartbeat (edge -> app server presence) ------
     # A tiny periodic POST telling the app server this device is ALIVE and which

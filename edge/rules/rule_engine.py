@@ -11,6 +11,7 @@ from rules.location_rule import LocationRule
 from rules.posture_rule import PostureRule
 from rules.rule_context import RuleContext
 from rules.stillness_rule import StillnessRule
+from rules.visitor_rule import VisitorRule
 
 
 logger = logging.getLogger("rules")
@@ -33,7 +34,7 @@ class RuleEngine:
         self._enricher = enricher          # EventEnricher | None
         self.stillness = StillnessRule()      # held by name for /ai/stillness
         self._rules = [FallRule(), PostureRule(), self.stillness,
-                       LocationRule()]
+                       LocationRule(), VisitorRule()]
         self._running = False
         self._thread: threading.Thread | None = None
 
