@@ -564,7 +564,17 @@ class Settings(BaseSettings):
     # account on its own); ceravisUserId is sent alongside in the BODY (never the
     # URL — it is account-identifying). Carries the same X-API-Key header as
     # every other app-server call. Blank url = feature OFF (device standalone).
-    status_heartbeat_url: str = "https://app.ceravishealth.in/ch/v1/ai/edge/status"
+    #
+    # TURNED OFF (2026-08-27, by request): blank = the reporter thread never
+    # starts, so the device sends no beat at all. Two consequences to know about
+    # while it is off — (1) the cloud can no longer tell this device is alive,
+    # because absence of beats WAS the liveness signal; (2) the cloud outbox
+    # loses its "server is reachable, drain now" kick and falls back to its own
+    # capped backoff, so a queued upload leaves within <=30s of the link
+    # returning instead of immediately (outbox_backoff_max_secs).
+    # To switch it back on, restore the url below:
+    #   https://app.ceravishealth.in/ch/v1/ai/edge/status
+    status_heartbeat_url: str = ""
     status_heartbeat_interval_secs: float = 60.0
 
     # ---- Scheduled reboot + reboot authorisation --------------------
