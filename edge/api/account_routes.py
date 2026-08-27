@@ -64,10 +64,17 @@ def _cloud_camera(c, base: str) -> dict:
     normalized to the server CameraName enum (KITCHEN, LIVING_ROOM, …)."""
     link = webrtc_url(c.camera_id, base)
     return {
-        # device/model/supplier come from the camera's ONVIF GetDeviceInformation
-        # (filled on save). `supplier` carries the SERIAL number — the backend
-        # renames that key to serialNumber later.
-        "device": c.manufacturer or "",        # ONVIF manufacturer (e.g. Hikvision)
+        # `device` is this camera's STABLE UNIQUE identity on the device —
+        # CAM_01, CAM_02, ... — allocated once by CameraConfig and never reused.
+        # It used to carry the ONVIF manufacturer, which is the same string on
+        # every camera in a house ("tp-link") and so could not tell two of them
+        # apart; the make is still legible from `model`. The camera_id fallback
+        # (the ROOM) only fires if a record somehow escaped label allocation, so
+        # this key is never empty and never duplicated across a house.
+        # model/supplier still come from ONVIF GetDeviceInformation, filled on
+        # save. `supplier` carries the SERIAL number — the backend renames that
+        # key to serialNumber later.
+        "device": c.device_label or c.camera_id,
         "model": c.model or "",                # ONVIF model
         "supplier": c.serial or "",            # ONVIF serial number
         "room": room_to_enum(c.room_name),     # -> server CameraName enum

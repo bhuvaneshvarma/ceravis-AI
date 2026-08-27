@@ -54,8 +54,24 @@ def _apply_edge_id_on_boot() -> None:
     threading.Thread(target=_run, daemon=True, name="edge-id-boot").start()
 
 
+def _ensure_camera_labels_on_boot() -> None:
+    """Make sure every stored camera has its CAM_nn device label before anything
+    reads cameras.json. Idempotent and normally a no-op — it exists so a device
+    upgraded in the field labels its existing cameras once, instead of pushing an
+    empty `device` to the cloud until each one is re-saved by hand. Best-effort:
+    a storage problem here must never stop the API coming up."""
+    try:
+        from configuration.camera_config import CameraConfig
+        changed = CameraConfig().ensure_device_labels()
+        if changed:
+            logger.info("boot: assigned device labels to %d camera(s)", changed)
+    except Exception:
+        logger.warning("camera device-label migration skipped", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _ensure_camera_labels_on_boot()   # cameras.json normalized before any read
     pipeline = Pipeline()
     pipeline.start()
     pipeline.attach(app.state)

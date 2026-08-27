@@ -107,6 +107,73 @@ check(f"no consumer outside the schema + cloud payload {hits or ''}", not hits)
 
 # --------------------------------------------------------------------------
 print()
+print("5. device identity: one stable CAM_nn per camera, never recycled")
+
+import json                                                        # noqa: E402
+import shutil                                                      # noqa: E402
+import tempfile                                                    # noqa: E402
+
+from configuration.camera_config import CameraConfig                # noqa: E402
+
+# `device` used to carry the ONVIF manufacturer — "tp-link" on every camera in
+# the house, so the cloud could not tell two of them apart.
+ret = next(n for n in ast.walk(fn) if isinstance(n, ast.Return)).value
+device_expr = dict(zip([k.value for k in ret.keys],
+                       [ast.unparse(v) for v in ret.values]))["device"]
+check(f"`device` sends the stable label, not the make ({device_expr})",
+      "device_label" in device_expr and "manufacturer" not in device_expr)
+
+# ConfigStore writes ./data — run the storage checks inside a throwaway cwd so
+# a real edge/data/cameras.json is never touched.
+_cwd = os.getcwd()
+_tmp = tempfile.mkdtemp(prefix="ceravis-device-labels-")
+os.chdir(_tmp)
+try:
+    cfg = CameraConfig()
+    cfg.add(Camera(**LOUNGE))
+    cfg.add(Camera(**LIVING))
+    labels = [c.device_label for c in cfg.get_all()]
+    check(f"each camera is allocated its own label {labels}",
+          labels == ["CAM_01", "CAM_02"])
+
+    # Retire, never recycle: a replacement must not inherit the cloud identity
+    # of the camera it replaced.
+    cfg.delete("LOUNGE")
+    cfg.add(Camera(**{**LOUNGE, "room_name": "STUDY"}))
+    by_id = {c.camera_id: c.device_label for c in cfg.get_all()}
+    check(f"a deleted camera's label is retired, not reused {by_id}",
+          by_id.get("STUDY") == "CAM_03")
+
+    # The wizard PUTs only the fields it collects; that must not wipe an
+    # identity the cloud has already seen.
+    cfg.update("STUDY", Camera(**{**LOUNGE, "room_name": "STUDY"}))
+    check("an update that omits the field keeps the stored label",
+          cfg.get_by_id("STUDY").device_label == "CAM_03")
+
+    # A hand-edited file: lower case, a duplicate and a blank. Repairs allocate
+    # ABOVE the high-water mark so nobody adopts another camera's identity.
+    Path("data/cameras.json").write_text(json.dumps([
+        {**LOUNGE, "device_label": "cam_02"},                    # wrong case
+        {**LIVING, "device_label": "CAM_02"},                    # duplicate
+        {**LOUNGE, "room_name": "HALL", "device_label": ""},     # missing
+    ]), encoding="utf-8")
+    changed = CameraConfig().ensure_device_labels()
+    repaired = [c.device_label for c in CameraConfig().get_all()]
+    check(f"blank/duplicate/mis-cased labels all repaired {repaired}",
+          repaired == ["CAM_02", "CAM_03", "CAM_04"] and changed == 3)
+    check("every label is unique after repair",
+          len(repaired) == len(set(repaired)))
+    check("the migration is idempotent — a second run writes nothing",
+          CameraConfig().ensure_device_labels() == 0)
+finally:
+    os.chdir(_cwd)
+    shutil.rmtree(_tmp, ignore_errors=True)
+
+check("the label is never empty on the wire (camera_id is the fallback)",
+      "c.camera_id" in device_expr)
+
+# --------------------------------------------------------------------------
+print()
 if FAILURES:
     print(f"{len(FAILURES)} check(s) FAILED:")
     for f in FAILURES:

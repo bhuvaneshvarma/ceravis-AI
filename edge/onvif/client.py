@@ -149,11 +149,14 @@ class OnvifCamera:
 
     # ---- device ------------------------------------------------------
     def device_info(self) -> dict:
-        """GetDeviceInformation — the camera's hardware identity. Maps onto the
-        saveCamera record: manufacturer -> supplier, model -> model. There is NO
-        friendly "device name" in this call (the ONVIF spec has none), so the
-        edge keeps camera_id (the room) as `device`; firmware/serial/hardware are
-        returned too for onboarding display / future mapping."""
+        """GetDeviceInformation — the camera's hardware identity, all five fields
+        in one call. Stored on the camera record by camera_routes._enrich_device_
+        info; model and serial go on to the cloud as saveCamera's `model` and
+        `supplier`. There is NO friendly "device name" here (the ONVIF spec has
+        none) and `manufacturer` repeats across every camera of a make, which is
+        why saveCamera's `device` carries the edge-allocated device_label instead.
+        firmware/hardware are the fields that explain why two cameras of the same
+        model behave differently."""
         body = self._call(
             self.xaddr,
             '<GetDeviceInformation xmlns="http://www.onvif.org/ver10/device/wsdl"/>')

@@ -518,7 +518,7 @@ async function refreshCameras() {
     : cams.map(c => {
         const s = status[c.camera_id] || {};
         return `<tr>
-          <td><b>${c.room_name}</b><br><span class="faint">${c.camera_id}</span></td>
+          <td><b>${c.room_name}</b><br><span class="faint">${c.device_label ? c.device_label + " · " : ""}${c.camera_id}</span></td>
           <td>${healthPill(s.health_state)}</td>
           <td><button class="btn btn-danger btn-sm" data-del="${c.camera_id}">Remove</button></td>
         </tr>`;

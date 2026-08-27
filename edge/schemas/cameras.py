@@ -29,14 +29,31 @@ class Camera(BaseModel):
     # per-camera tuning fields.
     rtsp_url: str
 
+    # A STABLE, UNIQUE identity for this physical camera — CAM_01, CAM_02, ...
+    # Allocated once by CameraConfig when the record first lands in cameras.json
+    # and never reassigned: a deleted camera's label is retired rather than handed
+    # on, so a replacement can never inherit its predecessor's cloud history.
+    #
+    # This is what the app-server saveCamera call sends as `device`. That key used
+    # to carry the ONVIF manufacturer, which is the SAME string on every camera in
+    # a house ("tp-link") and so could not tell two of them apart. The make is
+    # still readable from `model` ("Tapo C220"), so the key gained an identity
+    # without the cloud losing anything it could act on.
+    device_label: str = ""
+
     # Hardware descriptors, filled best-effort from the camera's ONVIF
     # GetDeviceInformation on save (camera_routes._enrich_device_info). They map
-    # onto the app-server saveCamera shape as: device <- manufacturer,
-    # model <- model, supplier <- serial (the `supplier` KEY carries the serial
-    # number; the backend will rename that key to serialNumber later).
+    # onto the app-server saveCamera shape as: model <- model, supplier <- serial
+    # (the `supplier` KEY carries the serial number; the backend will rename that
+    # key to serialNumber later). manufacturer/firmware/hardware_id stay on the
+    # device: firmware is the one field that explains why two cameras of the same
+    # make behave differently, and all five arrive in the ONE GetDeviceInformation
+    # call we already make, so capturing them costs nothing.
     manufacturer: str = ""
     model: str = ""
     serial: str = ""
+    firmware: str = ""
+    hardware_id: str = ""
 
     # An OPTIONAL second stream, read by the AI alone. Empty on almost every
     # camera, and that is the good case: it means one profile serves both roles

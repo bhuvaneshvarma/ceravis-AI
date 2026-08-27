@@ -1,3 +1,5 @@
+import re
+
 from schemas.cameras import Camera, FILE_EXCLUDE, room_id
 from configuration.config_store import ConfigStore
 
@@ -7,6 +9,35 @@ def _id_of(raw: dict) -> str:
     (not the derived id), so derive it — tolerating older files that still carry
     an explicit camera_id."""
     return str(raw.get("camera_id") or room_id(raw.get("room_name", "")))
+
+
+# ---- device labels -------------------------------------------------------
+# Every camera carries a stable CAM_nn identity, allocated HERE because add() is
+# the single funnel through which a record enters cameras.json and it already
+# holds the whole file — so "what is taken" and "append" happen in one place and
+# two concurrent saves cannot mint the same label. See schemas.cameras.Camera.
+
+DEVICE_LABEL_PREFIX = "CAM"
+_LABEL_RE = re.compile(rf"^{DEVICE_LABEL_PREFIX}_(\d+)$")
+
+
+def _label_index(label: str) -> int:
+    """The number in 'CAM_07' -> 7. Zero when the value isn't one of ours (blank,
+    hand-typed, or a label from some other scheme), which is exactly the set that
+    needs reallocating."""
+    match = _LABEL_RE.match((label or "").strip().upper())
+    return int(match.group(1)) if match else 0
+
+
+def _format_label(index: int) -> str:
+    return f"{DEVICE_LABEL_PREFIX}_{index:02d}"
+
+
+def _highest_index(raws: list[dict]) -> int:
+    """The largest label number present in the file — the high-water mark that
+    allocation counts up from."""
+    return max((_label_index(raw.get("device_label", "")) for raw in raws),
+               default=0)
 
 
 class CameraConfig:
@@ -75,6 +106,55 @@ class CameraConfig:
 
         return None
 
+    def ensure_device_labels(self) -> int:
+        """Give every stored camera a device label, exactly once.
+
+        Two jobs, both idempotent, so this is safe to run on every boot:
+          * BACKFILL — records written before labels existed have none, and a
+            device upgraded in the field would otherwise push an empty `device`
+            to the cloud until each camera happened to be re-saved.
+          * REPAIR — a hand-edited cameras.json can leave two cameras sharing a
+            label, or one in the wrong case. The first record to claim a label
+            keeps it; any later clash is reallocated ABOVE the high-water mark,
+            never into a gap, so no camera silently adopts another's identity.
+
+        Returns the number of records changed — 0 means nothing was written."""
+
+        cameras = self.store.load(
+            "cameras.json"
+        )
+
+        highest = _highest_index(cameras)
+        taken: set[str] = set()
+        changed = 0
+
+        for raw in cameras:
+
+            label = (raw.get("device_label") or "").strip().upper()
+
+            if _label_index(label) and label not in taken:
+
+                if raw.get("device_label") != label:      # normalize casing
+                    raw["device_label"] = label
+                    changed += 1
+
+            else:                       # missing, malformed, or a duplicate
+
+                highest += 1
+                raw["device_label"] = _format_label(highest)
+                changed += 1
+
+            taken.add(raw["device_label"])
+
+        if changed:
+
+            self.store.save(
+                "cameras.json",
+                cameras
+            )
+
+        return changed
+
     def add(
         self,
         camera: Camera
@@ -83,6 +163,12 @@ class CameraConfig:
         cameras = self.store.load(
             "cameras.json"
         )
+
+        if not (camera.device_label or "").strip():
+
+            camera.device_label = _format_label(
+                _highest_index(cameras) + 1
+            )
 
         cameras.append(
             camera.model_dump(exclude=FILE_EXCLUDE)
@@ -111,6 +197,14 @@ class CameraConfig:
                 _id_of(camera)
                 == camera_id
             ):
+
+                # A client that PUTs a record without device_label (the wizard
+                # posts only the fields it collects) must not silently retire
+                # this camera's identity — carry the stored one forward.
+                if not (updated_camera.device_label or "").strip():
+                    updated_camera.device_label = (
+                        camera.get("device_label") or ""
+                    )
 
                 cameras[index] = (
                     updated_camera.model_dump(exclude=FILE_EXCLUDE)

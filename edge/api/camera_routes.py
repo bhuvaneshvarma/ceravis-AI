@@ -74,29 +74,47 @@ def _normalize_urls(camera: Camera) -> None:
         camera.ai_rtsp_url = normalize_rtsp_url(camera.ai_rtsp_url)
 
 
+# The identity fields ONE GetDeviceInformation call fills. All five arrive in
+# that single response, so capturing every one costs nothing beyond the call we
+# already make — and a field left blank is what keeps the call coming back.
+_DEVICE_FIELDS = {
+    "manufacturer": "manufacturer",
+    "model": "model",
+    "serial": "serial",
+    "firmware": "firmware",
+    "hardware_id": "hardware",
+}
+
+
 def _enrich_device_info(camera: Camera) -> None:
     """Best-effort: fill the camera's hardware descriptors from its ONVIF
-    GetDeviceInformation when blank and ONVIF creds exist — so the saveCamera
-    record carries the real make/model/serial without the operator typing them.
-    Runs ONLY when something is missing (once filled, a re-save skips the SOAP
-    call) and NEVER fails the save: a manual camera (no ONVIF) or one unreachable
-    right now just keeps the blank fields.
+    GetDeviceInformation when blank and ONVIF creds exist — so the record carries
+    the real make/model/serial/firmware without the operator typing them.
 
-    Cloud mapping (see account_routes._cloud_camera): device <- manufacturer,
-    model <- model, supplier <- serial."""
-    if not camera.onvif_xaddr or (camera.manufacturer and camera.model
-                                  and camera.serial):
+    Runs ONLY while something is still missing, so a fully-enriched camera makes
+    no SOAP call on re-save; a device upgraded in the field fills its new fields
+    on the next save and then goes quiet again. NEVER fails the save: a manual
+    camera (no ONVIF) or one unreachable right now just keeps the blank fields.
+
+    Cloud mapping (see account_routes._cloud_camera): model <- model,
+    supplier <- serial. `device` is NOT from here — it is the device_label
+    CameraConfig allocates, because the ONVIF manufacturer repeats across every
+    camera of the same make and cannot identify one."""
+    if not camera.onvif_xaddr:
+        return
+    if all(getattr(camera, field) for field in _DEVICE_FIELDS):
         return
     try:
         from onvif.client import OnvifCamera
         info = OnvifCamera(camera.onvif_xaddr, camera.onvif_username or "",
                            camera.onvif_password or "").device_info()
-        camera.manufacturer = camera.manufacturer or info.get("manufacturer", "")
-        camera.model = camera.model or info.get("model", "")
-        camera.serial = camera.serial or info.get("serial", "")
-        logger.info("device-info enriched %s: manufacturer=%r model=%r serial=%r",
-                    camera.camera_id, camera.manufacturer, camera.model,
-                    camera.serial)
+        for field, key in _DEVICE_FIELDS.items():
+            if not getattr(camera, field):
+                setattr(camera, field, info.get(key, ""))
+        logger.info("device-info enriched %s: %s make=%r model=%r serial=%r "
+                    "firmware=%r", camera.camera_id, camera.device_label or "-",
+                    camera.manufacturer, camera.model, camera.serial,
+                    camera.firmware)
     except Exception as exc:                      # noqa: BLE001 — never fail a save
         logger.info("device-info enrich skipped for %s: %s",
                     camera.camera_id, exc)
