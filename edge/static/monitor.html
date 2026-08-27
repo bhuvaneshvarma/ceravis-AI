@@ -281,10 +281,16 @@ function draw() {
   if (M.searching) return;                  // clean preview — no search overlay
   // Mark the target with a single head dot (the box is kept for saved snapshots
   // only). Green = tracked normally, red = fall / needs attention.
-  const best = bestTarget(M.state[M.cam]);
+  const cs = M.state[M.cam] || {};
+  const best = bestTarget(cs);
   if (!best) return;
   const [x1, y1, x2, y2] = best.bbox;
-  const s = w / vw;                          // source pixels -> overlay pixels
+  // Scale by the AI's OWN frame width — the space bboxes live in — not the
+  // <video> width. They differ when the AI decodes a different-resolution
+  // stream than the browser shows, and scaling by the video width then drops
+  // the dot in the wrong place. Same camera => same aspect, so one scale does
+  // both axes. Falls back to the video width when the size isn't reported.
+  const s = w / (cs.frame_w || vw);          // source pixels -> overlay pixels
   const cx = ((x1 + x2) / 2) * s;
   const cy = (y1 + (y2 - y1) * 0.08) * s;    // sit the dot on the head
   const r = Math.max(7, w / 110);            // noticeable but not big

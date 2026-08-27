@@ -27,6 +27,13 @@ def ai_state(request: Request, camera_id: str | None = None):
     identities = state.identity_buffer.get_all()
     detections = state.detection_buffer.get_all()
     target_reg = getattr(state, "target_registry", None)
+    # The AI's OWN decoded frame size — the coordinate space bboxes live in. The
+    # monitor scales the overlay dot by THIS, not by the <video> element's width:
+    # when the AI reads a different-resolution stream than the browser shows
+    # (e.g. a camera whose main stream is HEVC), the two differ and a dot scaled
+    # by the video width lands in the wrong place.
+    cam_mgr = getattr(state, "camera_manager", None)
+    frame_buf = getattr(cam_mgr, "frame_buffer", None) if cam_mgr else None
 
     # Union of cameras seen by detection and tracking, so the monitor can
     # tell "detector sees N people but tracker has 0" (a tracking problem)
@@ -67,6 +74,7 @@ def ai_state(request: Request, camera_id: str | None = None):
                                   if identity and identity.recency_score is not None
                                   else None),
             })
+        fd = frame_buf.get(cam) if frame_buf else None
         out[cam] = {
             "frame_id": (result.frame_id if result
                          else (det.frame_id if det else 0)),
@@ -74,6 +82,11 @@ def ai_state(request: Request, camera_id: str | None = None):
                           else (det.timestamp.isoformat() if det else "")),
             "detections": len(det.detections) if det else 0,
             "target_track_id": target_reg.get(cam) if target_reg else None,
+            # The coordinate space `bbox` is in — the monitor scales the dot by
+            # this so it lands correctly even when the AI and the browser see
+            # different stream resolutions. null falls back to the video width.
+            "frame_w": fd.width if fd else None,
+            "frame_h": fd.height if fd else None,
             "tracks": entries,
         }
     return out
