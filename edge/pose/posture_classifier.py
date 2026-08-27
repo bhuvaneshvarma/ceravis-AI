@@ -20,7 +20,7 @@ Method (deterministic, no ML):
      window, evaluated by PostureTracker (stateful, per track_id).
 
 Why this works for elderly care:
-  - Pose is already FP16 TRT, runs at 2 FPS — almost free downstream.
+  - Pose is already FP16 TRT, runs at settings.pose_fps — almost free downstream.
   - Hysteresis + N-frame confirmation prevents flicker (sitting->fallen
     on a single noisy frame is rejected).
   - Doesn't depend on a perfect bounding box, only on the keypoint
@@ -78,6 +78,13 @@ class PostureResult:
     # the first thing that moves when standing up is the head going up.
     head_y: float = 0.0
     head_x: float = 0.0              # head image-x — for the floor point-in-polygon test
+    legs_visible: bool = True        # a full hip-knee-ankle leg was confidently seen
+    truncated_bottom: bool = False   # the body is CUT OFF at the frame's bottom edge
+    # A POSTURE-INVARIANT scale (shoulder width, fallback head width): unlike the
+    # torso, it does not shorten when the person sits, so its shrinking/growing
+    # cleanly means the person is walking away from / toward the camera. This is
+    # what separates a real sit-down from a recede when the legs are hidden.
+    span_px: float = 1.0
 
 
 # =====================================================================
@@ -123,7 +130,7 @@ def _angle_from_vertical(top: tuple[float, float],
 # Per-frame classification (stateless)
 # =====================================================================
 
-def classify_frame(pose: PoseEstimation) -> PostureResult:
+def classify_frame(pose: PoseEstimation, frame_h: int = 0) -> PostureResult:
     kps = [(k.x, k.y, k.confidence) for k in pose.keypoints]
 
     shoulder = _avg_point([kps[LEFT_SHOULDER], kps[RIGHT_SHOULDER]])
@@ -156,6 +163,20 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
         body_ref = (max(ys) - min(ys)) if ys else 1.0
     body_ref = max(body_ref, 1.0)
 
+    # Posture-invariant scale for the recede/approach guard (see PostureResult):
+    # shoulder width, then head width, and only then the torso as a last resort.
+    def _span(a, b) -> float:
+        return (math.hypot(a[0] - b[0], a[1] - b[1])
+                if a[2] >= _MIN_KP_CONF and b[2] >= _MIN_KP_CONF else 0.0)
+    span = _span(kps[LEFT_SHOULDER], kps[RIGHT_SHOULDER])
+    if span < 1.0:
+        span = _span(kps[LEFT_EAR], kps[RIGHT_EAR])
+    if span < 1.0:
+        span = _span(kps[LEFT_EYE], kps[RIGHT_EYE])
+    if span < 1.0:
+        span = body_ref
+    span = max(span, 1.0)
+
     # Knee angle (hip-knee-ankle) — a JOINT angle, so it is view-invariant: it
     # reads the same whether the camera is level or ceiling-mounted at a tilt.
     # This is the primary sit/stand cue. present[] also tells us whether the
@@ -185,22 +206,34 @@ def classify_frame(pose: PoseEstimation) -> PostureResult:
     # Strong fall: torso is closer to horizontal than to vertical.
     if torso_ang >= fall_thr:
         return PostureResult(Posture.FALLEN, 0.85, torso_ang, knee_ang,
-                             centroid, body_ref, head_y, head_x)
+                             centroid, body_ref, head_y, head_x,
+                             legs_visible=bool(present), span_px=span)
 
     # Decide sit vs stand ONLY when the legs are actually visible (knee joint
     # angle available). Bent knees => sitting, straight => standing.
     if present:
         if knee_ang < 140.0:
             return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang,
-                                 centroid, body_ref, head_y, head_x)
+                                 centroid, body_ref, head_y, head_x,
+                                 legs_visible=True, span_px=span)
         return PostureResult(Posture.STANDING, 0.75, torso_ang, knee_ang,
-                             centroid, body_ref, head_y, head_x)
+                             centroid, body_ref, head_y, head_x,
+                             legs_visible=True, span_px=span)
 
-    # Legs NOT visible (e.g. seated at a desk, legs out of frame): we cannot
-    # tell sit from stand this frame. Return UNKNOWN so the tracker HOLDS the
-    # last confirmed posture instead of wrongly flipping to standing.
+    # Legs NOT visible: two very different reasons, and the tracker must tell
+    # them apart (see PostureTracker.update):
+    #   CUT OFF at the frame's bottom edge (walking out) -> HOLD; never a sit.
+    #   HIDDEN by furniture, body well inside frame       -> a head drop is a sit.
+    # The bottom of the visible body reaching the frame edge is what separates
+    # them; with no frame height known, truncation is simply unclaimed (False)
+    # and the tracker falls back to holding.
+    lowest_y = max(ys) if ys else 0.0
+    truncated = (frame_h > 0
+                 and lowest_y >= frame_h * (1.0 - settings.posture_truncation_margin_frac))
     return PostureResult(Posture.UNKNOWN, 0.40, torso_ang, knee_ang,
-                         centroid, body_ref, head_y, head_x)
+                         centroid, body_ref, head_y, head_x,
+                         legs_visible=False, truncated_bottom=truncated,
+                         span_px=span)
 
 
 # =====================================================================
@@ -216,6 +249,9 @@ class _TrackState:
     walk_streak: int = 0
     stable: Posture = Posture.UNKNOWN   # last CONFIRMED sit/stand/fall posture
     sit_stand_streak: int = 0           # frames of corroborated sit<->stand transition
+    commit_base: Posture = Posture.UNKNOWN   # candidate for the FIRST sit/stand commit
+    commit_streak: int = 0              # agreeing frames toward that first commit
+    occluded_streak: int = 0            # head-only sit/stand (legs hidden) toward a switch
     # ---- the ONE fall machine (label depth = alert depth, no wait) ----
     fall_down: bool = False              # DOWN: streak-confirmed horizontal (label)
     fall_alerted: bool = False           # latch: one alert per fall episode
@@ -251,13 +287,19 @@ class PostureTracker:
         track_id: int,
         pose: PoseEstimation,
         floor_query=None,          # callable(head_x, head_y) -> bool|None, or None
+        frame_h: int = 0,          # AI frame height — lets the classifier see truncation
     ) -> PostureResult:
         st = self._state[(camera_id, track_id)]
-        raw = classify_frame(pose)
+        raw = classify_frame(pose, frame_h)
 
         st.last_postures.append(raw.posture)
         st.last_centroids.append((pose.timestamp, *raw.centroid_xy, raw.body_ref_px))
-        st.last_heads.append((pose.timestamp, raw.head_y, raw.body_ref_px))
+        # Only remember a REAL head reading — a degenerate frame (no torso/head)
+        # reports head_y=0, which would look like the head leaping to the top of
+        # the image and poison the head-shift transition cues.
+        if raw.head_y > 0.0:
+            st.last_heads.append((pose.timestamp, raw.head_y,
+                                  raw.body_ref_px, raw.span_px))
 
         # The ONE fall machine: the DOWN state is the FALLEN label the UI and
         # rules read AND the alert trigger — the moment a fall is detected it is
@@ -283,17 +325,44 @@ class PostureTracker:
         base = raw.posture if raw.posture in (Posture.STANDING, Posture.SITTING) else None
         if base is not None:
             if st.stable in (Posture.UNKNOWN, Posture.FALLEN):
-                st.stable = base                       # first/again-confident read
+                # First commit needs a few AGREEING frames, so one foreshortened
+                # (ceiling-mounted) knee read can't stamp a wrong starting posture
+                # that then has to be corroborated back off.
+                st.commit_streak = (st.commit_streak + 1
+                                    if base == st.commit_base else 1)
+                st.commit_base = base
+                if st.commit_streak >= settings.posture_commit_frames:
+                    st.stable = base
+                    st.commit_streak = 0
                 st.sit_stand_streak = 0
             elif base == st.stable:
                 st.sit_stand_streak = 0
-            elif self._head_supports(st, st.stable, base):
+            elif self._head_supports(st, st.stable, base) and not self._receding(st):
                 st.sit_stand_streak += 1
                 if st.sit_stand_streak >= settings.posture_transition_confirm_frames:
                     st.stable = base
                     st.sit_stand_streak = 0
             else:
-                st.sit_stand_streak = 0                # no head motion -> don't switch
+                st.sit_stand_streak = 0
+            st.occluded_streak = 0
+        elif (raw.legs_visible is False and not raw.truncated_bottom
+                and st.stable in (Posture.STANDING, Posture.SITTING)):
+            # Legs HIDDEN by furniture (a table/desk), body well inside the frame:
+            # the knee cue is gone, so read sit<->stand from the HEAD's vertical
+            # shift alone — the case that was stuck reporting STANDING forever.
+            want = self._occluded_transition(st, raw)
+            if want is not None and want != st.stable:
+                st.occluded_streak += 1
+                if st.occluded_streak >= settings.posture_transition_confirm_frames:
+                    st.stable = want
+                    st.occluded_streak = 0
+            else:
+                st.occluded_streak = 0
+        else:
+            # UNKNOWN because the legs are CUT OFF at the frame edge (walking out)
+            # or no anchor yet: HOLD the confirmed posture, never guess a sit.
+            st.sit_stand_streak = 0
+            st.occluded_streak = 0                # no head motion -> don't switch
 
         stable = st.stable if st.stable != Posture.UNKNOWN else raw.posture
 
@@ -329,8 +398,8 @@ class PostureTracker:
         stand->sit. Normalized by body length so it is distance-independent."""
         if len(st.last_heads) < 2:
             return False
-        t_old, y_old, _ = st.last_heads[0]
-        t_new, y_new, ref_new = st.last_heads[-1]
+        t_old, y_old, _, _ = st.last_heads[0]
+        t_new, y_new, ref_new, _ = st.last_heads[-1]
         dt = (t_new - t_old).total_seconds()
         if dt <= 0 or dt > settings.walking_motion_window_secs:
             return False
@@ -341,6 +410,44 @@ class PostureTracker:
         if from_posture == Posture.STANDING and to_posture == Posture.SITTING:
             return dy_frac >= thr                         # head moved DOWN
         return False
+
+    def _scale_ratio(self, st: _TrackState) -> float:
+        """Body-scale new/old over the head window: >1 approaching the camera,
+        <1 receding. 1.0 when there isn't enough history to tell."""
+        if len(st.last_heads) < 2:
+            return 1.0
+        span_old = st.last_heads[0][3]
+        span_new = st.last_heads[-1][3]
+        return (span_new / span_old) if span_old > 1.0 else 1.0
+
+    def _receding(self, st: _TrackState) -> bool:
+        """The person is walking AWAY — their whole body shrinks and their head
+        slides down the image, which must NOT be read as sitting down."""
+        return self._scale_ratio(st) < (1.0 - settings.posture_recede_shrink_frac)
+
+    def _occluded_transition(self, st: _TrackState,
+                             raw: PostureResult) -> Posture | None:
+        """Sit<->stand inferred from the HEAD alone, for when a table/desk hides
+        the legs so no knee angle exists. Guarded against approach/recede — both
+        move the head vertically without any change of posture."""
+        if len(st.last_heads) < 2:
+            return None
+        t_old, y_old, _, _ = st.last_heads[0]
+        t_new, y_new, ref_new, _ = st.last_heads[-1]
+        dt = (t_new - t_old).total_seconds()
+        if dt <= 0 or dt > settings.walking_motion_window_secs:
+            return None
+        if raw.torso_angle_deg >= settings.fall_torso_angle_deg:
+            return None                                   # not upright — fall owns this
+        dy_frac = (y_new - y_old) / max(ref_new, 1.0)     # +ve = head moved DOWN
+        thr = settings.posture_occluded_sit_head_frac
+        scale = self._scale_ratio(st)
+        recede = settings.posture_recede_shrink_frac
+        if dy_frac >= thr and scale >= (1.0 - recede):    # head DOWN, not receding
+            return Posture.SITTING
+        if dy_frac <= -thr and scale <= (1.0 + recede):   # head UP, not approaching
+            return Posture.STANDING
+        return None
 
     # ---- the ONE fall FSM -------------------------------------------
     def _update_fall_fsm(self, st: _TrackState, raw: PostureResult,

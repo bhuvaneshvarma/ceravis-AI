@@ -159,7 +159,7 @@ class PoseRunner:
         self._poses.update(
             result.model_copy(update={"poses": [shifted]})
         )
-        self._classify(camera_id, track.track_id, shifted)
+        self._classify(camera_id, track.track_id, shifted, frame_h=fd.height)
         return True
 
     @staticmethod
@@ -194,15 +194,16 @@ class PoseRunner:
                     best_iou, best = iou, tr
             if best is None or best_iou < 0.2:
                 continue
-            self._classify(camera_id, best.track_id, pose)
+            self._classify(camera_id, best.track_id, pose, frame_h=fd.height)
 
     # ---- shared posture write ---------------------------------------
     def _classify(self, camera_id: str, track_id: int,
-                  pose: PoseEstimation) -> None:
+                  pose: PoseEstimation, frame_h: int = 0) -> None:
         # "low" = on/near the floor OR below nearby furniture height (table/
         # chair/bed) — the scene-aware fall cue.
         low_q = lambda x, y: self._floor.is_low(camera_id, x, y)  # noqa: E731
-        res = self._tracker.update(camera_id, track_id, pose, floor_query=low_q)
+        res = self._tracker.update(camera_id, track_id, pose,
+                                   floor_query=low_q, frame_h=frame_h)
         self._postures.update(
             PostureRecord(
                 camera_id=camera_id, track_id=track_id,
