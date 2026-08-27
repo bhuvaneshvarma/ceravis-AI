@@ -296,6 +296,31 @@ check("exactly ONE track is the target after a hand-off",
       ib11.get("camA", 3) is None and ib11.get("camA", 9).is_target is True)
 
 
+print("\n11. an id swap during a huddle is corrected the moment they separate")
+mgr11 = TargetLockManager(_Gallery())
+mgr11.update("camA", {1: _box(200)}, lambda t: TARGET)          # lock target = track 1
+# a neighbour comes NEAR -> freeze (hold the lock, learn nothing)
+frz = mgr11.update("camA", {1: _box(200), 2: _box(250)},
+                   lambda t: TARGET if t == 1 else OTHER)
+check("frozen on the target through the huddle", frz.target_track_id == 1)
+check("and learns nothing while they overlap", frz.adaptive is None)
+# they SEPARATE, but BoT-SORT swapped the ids under us: track 1 now carries the
+# OTHER person, track 2 carries the real recipient.
+swp = mgr11.update("camA", {1: _box(200), 2: _box(545)},
+                   lambda t: OTHER if t == 1 else TARGET)
+check("the lock follows the RECIPIENT to the swapped id, not the held id",
+      swp.target_track_id == 2 and swp.recipient_id == "ravi",
+      f"tid={swp.target_track_id}")
+# sanity: with NO swap, the held id is kept (no needless flapping)
+mgr12 = TargetLockManager(_Gallery())
+mgr12.update("camB", {1: _box(200)}, lambda t: TARGET)
+mgr12.update("camB", {1: _box(200), 2: _box(250)},
+             lambda t: TARGET if t == 1 else OTHER)
+keep = mgr12.update("camB", {1: _box(200), 2: _box(545)},
+                    lambda t: TARGET if t == 1 else OTHER)
+check("no swap -> the lock stays put", keep.target_track_id == 1)
+
+
 if failures:
     print(f"\n{len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

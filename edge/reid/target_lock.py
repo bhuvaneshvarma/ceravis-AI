@@ -54,6 +54,7 @@ class _CamState:
     last_score: float = 0.0
     mismatch_streak: int = 0
     lost_since: float = 0.0              # monotonic when the track went missing; 0 = present
+    was_frozen: bool = False            # last tick froze on a neighbour (huddle) — re-verify on exit
 
 
 @dataclass(slots=True)
@@ -116,11 +117,29 @@ class TargetLockManager:
             near = (settings.target_proximity_freeze
                     and not self._alone(boxes, tid))
             if near or occluded.get(tid, 0.0) >= settings.target_occlusion_iou:
+                st.was_frozen = True           # a huddle can swap ids under us
                 self._remember(st, box)
                 out.target_track_id = tid
                 out.recipient_id = st.recipient_id
                 out.identities[tid] = (st.recipient_id, True, st.last_score, None)
                 return out
+
+            # Just came OUT of a freeze — the neighbour separated. BoT-SORT may
+            # have handed our target's id to that other person during the huddle.
+            # Before trusting the held id, re-pick the recipient among the now-
+            # clean, separated tracks by their PRE-huddle appearance (recency,
+            # frozen through the huddle) fused with the gallery, and move the lock
+            # to the winner if the id was swapped. This is the one clean-frame
+            # ReID check the swap needs — no new capture path, recency already
+            # holds the last confident looks.
+            if st.was_frozen:
+                st.was_frozen = False
+                cand = self._best_match(boxes, feat_for, want=st.recipient_id,
+                                        spatial_from=st, acquire=False)
+                if cand is not None and cand[0] in boxes and cand[0] != tid:
+                    tid = st.track_id = cand[0]
+                    box = boxes[tid]
+                    st.mismatch_streak = 0
 
             feat = feat_for(tid)
             if feat is None:                       # no fresh look this tick; hold
