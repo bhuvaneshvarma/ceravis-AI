@@ -239,6 +239,11 @@ class ReIDRunner:
                     is_target=is_target, confidence=float(score),
                     view_label=view if is_target else None,
                     recency_score=(outcome.recency if is_target else None)))
+            # The target flag is sticky, so a released lock (or the target moving
+            # to a new track_id) must have the OLD track's flag cleared — else the
+            # green dot and the recipient rules keep following the wrong person.
+            self._identities.demote_stale_targets(
+                camera_id, {tid for tid, v in outcome.identities.items() if v[1]})
 
             # Adaptive capture — ONLY for a confidently-matched, NON-occluded
             # target (the manager already gated occlusion), so we never learn an
@@ -249,8 +254,7 @@ class ReIDRunner:
             # the adaptive store keeps its own slower throttle underneath.
             # Tracks that vanished this tick become exit records — the
             # evidence that recognises them walking into the next room.
-            self.memory.prune(camera_id, set(boxes),
-                              boxes={t: b for t, b in boxes.items()})
+            self.memory.prune(camera_id, set(boxes))
             # Bound the identity map to the live track set — otherwise it grows
             # forever on a monotonically rising track_id (the buffer leak shape).
             self._identities.prune(camera_id, set(boxes))

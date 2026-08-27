@@ -267,6 +267,35 @@ check("with no exit evidence the tie locks nobody (never the wrong one)",
       out9b.target_track_id is None)
 
 
+print("\n10. a RELEASED lock stops flagging the old track (the green dot follows)")
+# The monitor's dot and the recipient rules both read is_target off the identity
+# buffer. The flag is sticky (only the target is ever published), so a released
+# lock must have the old track's flag actively cleared or the dot sticks to the
+# wrong person.
+from common import clock as _clk                                   # noqa: E402
+ib10 = IdentityBuffer()
+ib10.update(Identity(track_id=3, camera_id="camA", frame_id=1, timestamp=_clk.now(),
+                     recipient_id="ravi", is_target=True, confidence=0.8))
+ib10.update(Identity(track_id=5, camera_id="camA", frame_id=1, timestamp=_clk.now(),
+                     recipient_id=None, is_target=False, confidence=0.4))
+check("the target is flagged", ib10.get("camA", 3).is_target is True)
+# lock released this tick -> no track is the target
+ib10.demote_stale_targets("camA", set())
+check("the released track's target flag is cleared",
+      ib10.get("camA", 3) is None)
+check("a non-target record is left alone", ib10.get("camA", 5) is not None)
+
+# target moved to a NEW track id -> the old flag must not linger alongside it
+ib11 = IdentityBuffer()
+ib11.update(Identity(track_id=3, camera_id="camA", frame_id=1, timestamp=_clk.now(),
+                     recipient_id="ravi", is_target=True, confidence=0.8))
+ib11.update(Identity(track_id=9, camera_id="camA", frame_id=2, timestamp=_clk.now(),
+                     recipient_id="ravi", is_target=True, confidence=0.9))
+ib11.demote_stale_targets("camA", {9})
+check("exactly ONE track is the target after a hand-off",
+      ib11.get("camA", 3) is None and ib11.get("camA", 9).is_target is True)
+
+
 if failures:
     print(f"\n{len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

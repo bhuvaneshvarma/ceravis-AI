@@ -62,10 +62,7 @@ class ExitRecord:
     track_id: int
     left_at: datetime
     embeddings: list = field(default_factory=list)   # L2-normalised
-    last_box: tuple = (0.0, 0.0, 0.0, 0.0)
-    edge: str = ""                # which frame edge they left by
     recipient_id: str | None = None     # set when this was a CONFIRMED target
-    quality: float = 0.0
 
 
 class TrackMemory:
@@ -102,14 +99,13 @@ class TrackMemory:
                 self._live[key] = dq
             dq.append(v)
 
-    def retire(self, camera_id: str, track_id: int, last_box=None,
-               frame_w: int = 0, frame_h: int = 0,
-               recipient_id: str | None = None, quality: float = 0.0) -> None:
+    def retire(self, camera_id: str, track_id: int,
+               recipient_id: str | None = None) -> None:
         """The track is gone. Move what we know into an exit record.
 
         `recipient_id` is set only when this track was a CONFIRMED target, which
-        is what makes the record usable for re-finding them rather than merely
-        for continuation."""
+        is what makes the record usable for re-finding them (target_continuation)
+        rather than merely for anonymous continuation."""
         key = (camera_id, track_id)
         with self._lock:
             dq = self._live.pop(key, None)
@@ -117,20 +113,16 @@ class TrackMemory:
                 return
             self._exits.append(ExitRecord(
                 camera_id=camera_id, track_id=track_id, left_at=clock.now(),
-                embeddings=list(dq), last_box=tuple(last_box or (0, 0, 0, 0)),
-                edge=_exit_edge(last_box, frame_w, frame_h),
-                recipient_id=recipient_id, quality=quality))
+                embeddings=list(dq), recipient_id=recipient_id))
 
-    def prune(self, camera_id: str, alive_ids: set[int], boxes=None,
-              frame_w: int = 0, frame_h: int = 0) -> None:
+    def prune(self, camera_id: str, alive_ids: set[int]) -> None:
         """Retire every track on this camera that no longer exists. Mirrors
         TrackFeatureBuffer.prune — the one buffer in the tree that never leaked."""
         with self._lock:
             gone = [k for k in self._live
                     if k[0] == camera_id and k[1] not in alive_ids]
         for cam, tid in gone:
-            box = (boxes or {}).get(tid)
-            self.retire(cam, tid, box, frame_w, frame_h)
+            self.retire(cam, tid)
 
     # ---- continuation search -----------------------------------------
     def candidates(self, camera_id: str, exclude_self: bool = True) -> list[ExitRecord]:
@@ -211,23 +203,7 @@ class TrackMemory:
                 "negatives": len(self._negatives),
                 "recent_exits": [
                     {"camera": r.camera_id, "track": r.track_id,
-                     "edge": r.edge, "was_target": bool(r.recipient_id),
+                     "was_target": bool(r.recipient_id),
                      "age_secs": round((clock.now() - r.left_at).total_seconds(), 1)}
                     for r in list(self._exits)[-5:]],
             }
-
-
-def _exit_edge(box, frame_w: int, frame_h: int) -> str:
-    """Which frame edge the track was nearest when it vanished.
-
-    A weak signal on its own, but a useful prior: someone who left by the right
-    edge of the hall camera is far more likely to appear on the camera that
-    covers what is to the right of it."""
-    if not box or not frame_w or not frame_h:
-        return ""
-    x1, y1, x2, y2 = box
-    dists = {"left": x1, "right": frame_w - x2,
-             "top": y1, "bottom": frame_h - y2}
-    edge = min(dists, key=dists.get)
-    span = frame_w if edge in ("left", "right") else frame_h
-    return edge if dists[edge] <= span * settings.track_memory_edge_frac else "interior"

@@ -99,8 +99,7 @@ mem.observe("camA", 1, TARGET)
 mem.observe("camA", 2, OTHER)
 check("live tracks held", mem.stats()["live_tracks"] == 2, str(mem.stats()))
 
-mem.prune("camA", {1}, boxes={2: (600.0, 100.0, 690.0, 400.0)},
-          frame_w=640, frame_h=480)
+mem.prune("camA", {1})
 st = mem.stats()
 check("a vanished track becomes an exit record", st["exit_records"] == 1, str(st))
 check("the surviving track stays live", st["live_tracks"] == 1, str(st))
