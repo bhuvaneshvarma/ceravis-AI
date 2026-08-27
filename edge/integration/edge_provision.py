@@ -32,6 +32,15 @@ def _helper_present() -> bool:
     return os.path.isfile(_HELPER) and os.access(_HELPER, os.X_OK)
 
 
+def helper_installed() -> bool:
+    """Whether the privileged frpc helper is installed AND callable via sudo -n —
+    i.e. whether an auto-apply can actually re-key the tunnel, or whether it will
+    silently no-op and the operator must run the manual command. Public so the
+    verify handler can tell the UI the truth instead of promising remote access a
+    device without the helper can't deliver."""
+    return bool(shutil.which("sudo")) and _helper_present()
+
+
 def apply_edge_id_async(edge_id: str) -> None:
     """Run apply_edge_id after a short delay — long enough for the verify HTTP
     response (which may travel through the very frpc we're about to restart) to
@@ -147,3 +156,28 @@ def apply_edge_id_verified(edge_id: str, attempts: int = 3,
             time.sleep(delay_secs)
     _loud_fail(edge_id, f"still not routing /{edge_id} after {attempts} attempts")
     return False
+
+
+def provisioning_report(edge_id: str | None = None) -> dict:
+    """One honest, shared summary of this device's remote-access provisioning:
+    is the privileged helper installed, is frpc REALLY routing this edge_id right
+    now, and — when it isn't — the EXACT commands to fix it by hand. Consumed by
+    the verify response, GET /account and the monitor, so the UI and the operator
+    never see three different stories about whether the tunnel is keyed.
+
+    `fleet` says whether this device even uses the shared tunnel (DEVICE_STREAM_BASE
+    set): a single-LAN device has no frpc to key, so the UI must not nag about it.
+    """
+    from config.settings import settings
+    st = tunnel_status(edge_id)
+    eid = st["edge_id"]
+    return {
+        "edge_id": eid,
+        "fleet": bool(settings.device_stream_base.strip()),
+        "helper_installed": st["installed"],
+        "keyed": st["keyed"],
+        "reason": st["reason"],
+        # The by-hand fallback, ready to copy, when the auto-apply can't run.
+        "install_cmd": "bash cloud/install_frpc.sh",
+        "apply_cmd": (f"sudo {_HELPER} {eid}" if eid else None),
+    }

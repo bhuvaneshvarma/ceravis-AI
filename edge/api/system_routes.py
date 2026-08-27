@@ -19,6 +19,7 @@ from fastapi.responses import RedirectResponse
 
 from common import clock, event_snapshots
 from config.settings import settings
+from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
 from ingestion.camera_status import codec_warning, substream_warning
 from integration import call_log
@@ -315,7 +316,11 @@ def system_status(request: Request):
         "problems": problems,
         "version": settings.app_version,
         "device_id": settings.device_id,
-        "edge_id": settings.edge_id,
+        # The LIVE routing token, resolved the one canonical way: account.json
+        # (written at verify, no restart) wins over jetson.env's EDGE_ID — which
+        # is deliberately never written, so reading settings.edge_id here showed
+        # a blank/stale value and made a freshly-verified device look un-keyed.
+        "edge_id": effective_edge_id(),
         "time": time_info,
         "media_backbone": {"up": backbone_up, "binary": settings.mediamtx_binary},
         "cameras": cameras,

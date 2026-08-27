@@ -431,15 +431,32 @@ function startSpinner(el, label) {
   const t = setInterval(() => { sp.textContent = frames[++i % frames.length]; }, 180);
   return () => clearInterval(t);
 }
-async function waitForBackend(ms = 40000) {
+async function waitForProvisioning(expectKeyed, ms = 40000) {
   await new Promise(r => setTimeout(r, 2500));         // let the frpc restart begin
   const deadline = Date.now() + ms;
+  let last = null;
   while (Date.now() < deadline) {
-    try { const r = await fetch("/api/v1/account", { cache: "no-store" }); if (r.ok) return true; }
-    catch (_) { /* tunnel blip during restart — keep waiting */ }
+    try {
+      const r = await fetch("/api/v1/account", { cache: "no-store" });
+      if (r.ok) {
+        last = await r.json();
+        // Reachable is enough when nothing had to be re-keyed; when a tunnel
+        // apply was scheduled, wait until frpc is REALLY routing this edge_id
+        // (remote.keyed read live from frpc.toml) before calling it done.
+        if (!expectKeyed || (last.remote && last.remote.keyed)) return last;
+      }
+    } catch (_) { /* tunnel blip during restart — keep waiting */ }
     await new Promise(r => setTimeout(r, 2000));
   }
-  return false;
+  return last;
+}
+/* The by-hand fallback, rendered from the device's own provisioning report, for
+   when the tunnel can't auto-update (helper missing, or still not keyed). */
+function provisionManualHtml(rem, lead) {
+  const cmds = rem ? [rem.install_cmd, rem.apply_cmd].filter(Boolean) : [];
+  const block = cmds.map(c => `<code>${c}</code>`).join("<br>");
+  return `<span class="warn">${lead}</span>`
+    + (block ? `<div class="faint" style="margin-top:6px">${block}</div>` : "");
 }
 document.getElementById("a-verify").onclick = async () => {
   const btn = document.getElementById("a-verify");
@@ -455,15 +472,25 @@ document.getElementById("a-verify").onclick = async () => {
       { method: "POST", body: JSON.stringify({ email, phone }) });
     if (r.verified) {
       ACCOUNT.verified = true; ACCOUNT.user = r.user; renderAccount();
+      const rem = r.remote;
       if (r.provisioning) {
-        // The device is writing the edge_id and restarting the tunnel; if you're
-        // remote that briefly drops this connection, so wait it out.
+        // The helper is installed, so the device is re-keying the edge_id and
+        // restarting the tunnel; if you're remote that briefly drops this
+        // connection, so wait until frpc is really routing the new token.
         const stop = startSpinner(out, "Verified — provisioning remote access & restarting the tunnel…");
-        const ok = await waitForBackend();
+        const acct = await waitForProvisioning(true);
         stop();
-        out.innerHTML = ok
+        if (acct && acct.user) ACCOUNT.user = acct.user;   // keep edgeId fresh
+        const keyed = acct && acct.remote && acct.remote.keyed;
+        out.innerHTML = keyed
           ? `<span class="ok">✓ Verified — remote access ready</span>`
-          : `<span class="warn">✓ Verified — the tunnel is still restarting; wait a few seconds and reload.</span>`;
+          : provisionManualHtml(acct && acct.remote,
+              "Verified — the tunnel isn’t routing yet. Wait a few seconds and reload, or apply it on the device:");
+      } else if (rem && rem.fleet && !rem.helper_installed) {
+        // Fleet device, but the privileged helper isn't installed — the tunnel
+        // can't auto-update. Say plainly what to run instead of a false "ready".
+        out.innerHTML = provisionManualHtml(rem,
+          "Verified — remote access needs a one-time setup on this device:");
       } else {
         out.innerHTML = `<span class="ok">✓ Verified</span>`;
       }

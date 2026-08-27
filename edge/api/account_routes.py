@@ -137,6 +137,7 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     # account.json is the authoritative runtime source (live links + control
     # checks read it with no restart — so ceravis itself never needs restarting).
     provisioning = False
+    remote = None
     if edge_id:
         # NOT written into jetson.env. account.json already persists it, is
         # gitignored, and effective_edge_id() reads it FIRST — so copying the
@@ -147,11 +148,28 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         # this response is sent, so we never cut the tunnel this reply travels
         # through. Best-effort: the value is already saved, so a manual frpc setup
         # still works if the privileged helper isn't installed.
-        from integration.edge_provision import apply_edge_id_async
+        from integration.edge_provision import (
+            apply_edge_id_async, helper_installed, provisioning_report,
+        )
         background_tasks.add_task(apply_edge_id_async, edge_id)
-        provisioning = True
-        logger.info("edge_id provisioned: %s (jetson.env written; frpc apply "
-                    "scheduled after response)", edge_id)
+        remote = provisioning_report(edge_id)
+        # `provisioning` drives the UI's "restarting the tunnel…" spinner + the
+        # reconnect wait, so it must mean a tunnel restart is ACTUALLY going to
+        # happen — i.e. the privileged helper is installed. Reporting True on a
+        # device without the helper made the UI promise "remote access ready"
+        # while the auto-apply silently no-op'd and the tunnel stayed on the old
+        # token. Now the UI reflects the honest state (and shows the manual
+        # command from `remote` when the helper is missing).
+        provisioning = remote["helper_installed"]
+        if provisioning:
+            logger.info("edge_id %s saved to account.json; frpc apply scheduled "
+                        "after response (NOT written to jetson.env by design)",
+                        edge_id)
+        else:
+            logger.warning("edge_id %s saved, but the privileged frpc helper is "
+                           "NOT installed — the tunnel will not auto-update. Run "
+                           "'%s' then '%s'", edge_id,
+                           remote["install_cmd"], remote["apply_cmd"])
         # The edge_id is the first segment of every camera live path. When it
         # CHANGES, MediaMTX is still serving the old paths (its config was baked
         # at the last start) and cameras.json still holds the old links — so
@@ -166,7 +184,7 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     logger.info("account verified: user #%s (%s)",
                 account["ceravisUserId"], account["email"])
     return {"verified": True, "user": account, "edgeId": edge_id or None,
-            "provisioning": provisioning}
+            "provisioning": provisioning, "remote": remote}
 
 
 @router.post("/sync-cameras")
@@ -188,17 +206,20 @@ def sync_cameras(request: Request):
         return {"synced": False, "reason": "No cameras registered yet"}
 
     base = _stream_base(request)
-    # Fleet links route on the /<edge_id> path prefix; without EDGE_ID the pushed
-    # URLs have no prefix and frp can't route them to this house.
-    if settings.device_stream_base.strip() and not settings.edge_id.strip():
-        logger.warning("sync-cameras: DEVICE_STREAM_BASE set but EDGE_ID empty — "
-                       "fleet live links need the /<edge_id> prefix to route; set "
-                       "EDGE_ID in jetson.env and re-sync")
+    # Fleet links route on the /<edge_id> path prefix; with no routing token the
+    # pushed URLs have no prefix and frp can't route them to this house. Resolve
+    # the token the ONE canonical way (account.json first, jetson.env fallback) —
+    # reading settings.edge_id here fired this warning on EVERY fleet sync after a
+    # verify, because the verified token lands in account.json, never jetson.env.
+    if settings.device_stream_base.strip() and not effective_edge_id():
+        logger.warning("sync-cameras: DEVICE_STREAM_BASE set but no edge_id — "
+                       "fleet live links need the /<edge_id> prefix to route; "
+                       "verify the account (or set EDGE_ID) and re-sync")
         call_log.record(
             "event", False,
-            label="Live links pushed without EDGE_ID — fleet routing will fail",
-            error="set EDGE_ID (the /<edge_id> routing token) in jetson.env, "
-                  "restart ceravis, then re-sync cameras")
+            label="Live links pushed without an edge_id — fleet routing will fail",
+            error="verify the CERAVIS account so the device receives its "
+                  "deviceToken (or set EDGE_ID in jetson.env), then re-sync cameras")
     cameras = [_cloud_camera(c, base) for c in cams]
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
                 len(cameras), pid, [(c["room"], c["url"]) for c in cameras])
@@ -236,9 +257,15 @@ def get_account():
     build a camera's live-stream path; through the tunnel they already know it
     (it is the URL prefix) and never ask."""
     acct = account_config.get()
+    # `remote` is the SAME provisioning summary the verify response carries, read
+    # live from frpc.toml — so after the background apply runs, the wizard's
+    # reconnect poll can confirm the tunnel is REALLY keyed (remote.keyed) rather
+    # than assuming success, and show the manual command if it isn't.
+    from integration.edge_provision import provisioning_report
     return {
         "verified": bool(acct.get("ceravisUserId")),
         "user": acct or None,
         "edge_id": effective_edge_id(),
         "configured": is_configured(),
+        "remote": provisioning_report(),
     }
