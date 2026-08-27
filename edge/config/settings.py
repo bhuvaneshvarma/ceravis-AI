@@ -109,14 +109,21 @@ class Settings(BaseSettings):
     # destabilises live view and the AI together.
     record_enabled: bool = True
     record_dir: str = "data/recordings"
-    record_segment_secs: int = 15
+    # Segment length. MediaMTX can only cut on a KEYFRAME, so a segment runs
+    # from this target to the next one — real length is >= this and under
+    # (this + one GOP). 5s buys a finer scrub grain, a ~5s wait before the
+    # newest clip is playable, and a tighter fall-clip cut, for 3x the files.
+    record_segment_secs: int = 5
     # Rolling retention: keep only the last N hours of person-clips. Because we
     # record ONLY on person detection, self-expiring each segment N hours after
     # it was written yields exactly a rolling N-hour window of "who was in frame"
     # per camera — a camera that saw nobody stores nothing. MediaMTX does the
     # deletion (recordDeleteAfter).
     record_retention_hours: int = 12
-    record_post_roll_secs: float = 15.0    # keep recording this long after the last person
+    # Keep recording this long after the last person leaves frame: it bridges
+    # detection dropouts and a quick reappearance, so one visit stays ONE
+    # clip. Any absence shorter than this never becomes a gap.
+    record_post_roll_secs: float = 10.0
     record_poll_secs: float = 0.5          # detection-buffer poll cadence
     # Recordings carry AAC AUDIO (video + AAC = the one MP4 combo every player
     # and browser accepts). The cameras speak G.711/PCM, which MP4 can only
@@ -426,6 +433,29 @@ class Settings(BaseSettings):
     # legs leaving the frame, from flipping the label. View-invariant.
     posture_transition_head_frac: float = 0.15      # head move (× body length) to corroborate
     posture_transition_confirm_frames: int = 3      # frames of corroboration to switch
+    # Legs missing has TWO very different meanings, and the classifier must not
+    # confuse them (all body-relative — no camera calibration needed):
+    #   CUT OFF by the frame edge (walking out) -> HOLD, never read as sitting;
+    #   HIDDEN by furniture (a table/desk)       -> read sit<->stand from the HEAD.
+    # Truncation: the lowest confident keypoint sitting within this fraction of
+    # the frame bottom means the legs below are clipped, so their geometry is
+    # unreliable and any sit/stand read from them is suppressed.
+    posture_truncation_margin_frac: float = 0.05
+    # When the legs are HIDDEN (not clipped), a head drop/rise of this many body-
+    # lengths over the motion window is a sit/stand — the cue that still works
+    # behind a desk. Larger than the corroboration frac above because here it is
+    # the ONLY evidence (no knee angle to back it up).
+    posture_occluded_sit_head_frac: float = 0.20
+    # Receding guard: a person walking AWAY shrinks uniformly and their head also
+    # slides down the image — which is NOT a sit. Treat a body-scale change beyond
+    # this fraction over the window as approach/recede and veto a head-only
+    # sit/stand call.
+    posture_recede_shrink_frac: float = 0.15
+    # A hard camera angle (ceiling mount, heavy foreshortening) makes the knee
+    # geometry noisy. Require the FIRST sit/stand commit to agree for this many
+    # frames so one bad frame cannot stamp a wrong posture that then has to be
+    # corroborated away.
+    posture_commit_frames: int = 2
     fall_torso_angle_deg: float = 60.0              # > = horizontal
     fall_confirmation_frames: int = 3
     fall_cooldown_secs: float = 30.0

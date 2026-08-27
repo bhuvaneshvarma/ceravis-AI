@@ -42,7 +42,7 @@ time, so the player seeks by _date_.**
 ## 2. What it does, in one line
 
 Every time the AI sees a person, the edge records that camera as **1080p H.264 +
-AAC audio** in **15-second segments**, kept for a **rolling 12 hours**. To review
+AAC audio** in **5-second segments**, kept for a **rolling 12 hours**. To review
 it, the app asks **"where is there footage?"** (draws the bars) and loads **one
 playlist per camera** into a video player, which then **seeks to any moment by
 date** — all client-side, no more calls.
@@ -235,17 +235,17 @@ Returns **one HLS playlist for the entire retention window** (`200`,
 ```
 #EXTM3U
 #EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:15
+#EXT-X-TARGETDURATION:5
 #EXT-X-MEDIA-SEQUENCE:119095844        ← where this window starts in the stream
 #EXT-X-DISCONTINUITY-SEQUENCE:0        ← how many gaps already scrolled past it
 #EXT-X-PROGRAM-DATE-TIME:2026-08-19T18:00:00+05:30     ← the wall-clock anchor
-#EXTINF:15.000,
+#EXTINF:5.000,
 segment/2026-08-19_18-00-00-000000.ts?edge_id=NrPq8xxxxxxx
-#EXTINF:15.000,
-segment/2026-08-19_18-00-15-000000.ts?edge_id=NrPq8xxxxxxx
+#EXTINF:5.000,
+segment/2026-08-19_18-00-05-000000.ts?edge_id=NrPq8xxxxxxx
 #EXT-X-DISCONTINUITY                                    ← nobody was present here
 #EXT-X-PROGRAM-DATE-TIME:2026-08-19T18:30:00+05:30     ← next stretch re-anchored
-#EXTINF:15.000,
+#EXTINF:5.000,
 segment/2026-08-19_18-30-00-000000.ts?edge_id=NrPq8xxxxxxx
                                         ← and NO #EXT-X-ENDLIST, ever
 ```
@@ -275,13 +275,13 @@ inherit the `/<edge_id>/api/…` prefix automatically. There is no
 
 | When | What happens | Calls your app makes |
 |---|---|---|
-| A new 15 s clip is recorded | The player's own reload appends it to the same timeline | **none** |
+| A new 5 s clip is recorded | The player's own reload appends it to the same timeline | **none** |
 | Recording resumes after an hour of nobody | Same, with an `EXT-X-DISCONTINUITY` before it | **none** |
 | Footage passes 12 h and expires | It drops off the front; the player follows via the sequence numbers | **none** |
 | The user drags to another time | Client-side `seekToDate(...)` | **none** |
 
 **Why:** a playlist with no `EXT-X-ENDLIST` is "still growing" to every HLS
-player, so hls.js, AVPlayer and ExoPlayer all re-request it on a timer (~7–15 s)
+player, so hls.js, AVPlayer and ExoPlayer all re-request it on a timer (~5 s, the target duration)
 out of the box. Load the URL once and leave the player alone.
 
 **Those reloads are nearly free.** The body carries a strong `ETag` and
@@ -431,7 +431,7 @@ review" is an answer, not an error.
 
 - Recordings live **only on the edge device's disk** — never uploaded to the
   cloud, S3 or the app server.
-- The recorder writes 15-second MPEG-TS segments named with their own start time
+- The recorder writes 5-second MPEG-TS segments named with their own start time
   (`2026-08-19_18-30-15-000000.ts`). **Those exact files are what playback
   serves** — nothing is re-cut, re-encoded or copied, so playback costs no CPU
   and no extra disk, and the playlist returns instantly.

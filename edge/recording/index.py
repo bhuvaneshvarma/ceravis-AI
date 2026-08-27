@@ -80,6 +80,14 @@ _OPEN_GRACE_SECS = 2.0
 # where the previous one ended. Tolerance covers rounding + writer jitter.
 _RUN_GAP_SECS = 1.0
 
+# A segment can only be cut on a KEYFRAME, so it overruns its target by up to
+# one GOP: a 5s target on a camera with a 4s GOP writes ~8s files. This is the
+# slack added to the "did this segment run into the next one?" test, so a
+# keyframe-stretched segment is still read as contiguous instead of being
+# mistaken for a gap — which would put a DISCONTINUITY between every clip.
+# Sized for any sane IP-camera GOP; at the old 15s target it changes nothing.
+_KEYFRAME_SLACK_SECS = 4.0
+
 
 @dataclass
 class Segment:
@@ -149,20 +157,35 @@ def segments(rec_path: str) -> list[Segment]:
     found.sort(key=lambda sf: sf[0])
 
     nominal = float(settings.record_segment_secs)
-    contiguous = nominal * 1.5          # bigger gap than this = the run ended
+    # Bigger gap than this = the run ended. Both terms matter: the ratio scales
+    # with long segments, the slack keeps SHORT ones safe from keyframe overrun
+    # (see _KEYFRAME_SLACK_SECS). Still far below a real gap, which cannot be
+    # shorter than the post-roll.
+    contiguous = max(nominal * 1.5, nominal + _KEYFRAME_SLACK_SECS)
     out: list[Segment] = []
     prev_end: datetime | None = None
     for i, (start, f, mtime) in enumerate(found):
         to_next = ((found[i + 1][0] - start).total_seconds()
                    if i + 1 < len(found) else None)
-        duration = to_next if (to_next is not None and to_next <= contiguous) else nominal
-        # A file whose writing stopped well short of that is the LAST segment of
-        # a run that ended early (the person left mid-segment). Its final write
-        # IS its end, so mtime measures it exactly. Without this the run appears
-        # up to a full segment longer than it is and the timeline over-reports.
+        # Its last write is when it stopped growing, so mtime measures the file
+        # exactly — the only reading that survives a keyframe-stretched segment
+        # or one cut short when the person left mid-clip.
         closed = mtime - start.timestamp()
-        if 0.5 <= closed < duration - 1.0:
+        if to_next is not None and to_next <= contiguous:
+            # A successor pins this one's length precisely: it ran until the
+            # next began — unless it stopped well short of that, which makes it
+            # the last clip of a run that ended early.
+            duration = to_next
+            if 0.5 <= closed < duration - 1.0:
+                duration = closed
+        elif 0.5 <= closed <= contiguous:
+            # End of a run (or still being written): no successor to measure
+            # against, so mtime IS the end. Beats assuming the nominal length,
+            # which over-reports a clip cut short and under-reports one the
+            # camera's keyframes stretched.
             duration = closed
+        else:
+            duration = nominal          # no usable mtime — fall back to the target
         duration = round(duration, 3)
         # Run boundaries off the real END of the previous segment (not its
         # start), so a run that ended early is still seen as ended.

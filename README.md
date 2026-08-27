@@ -33,7 +33,7 @@ edge/
                   (WebRTC/WHEP — /ui pages, cloud tunnel) and the recorder; this
                   process never serves video itself (fleet routing — see cloud/)
   recording/      Person-triggered recording of the camera's native main stream
-                  (15s MPEG-TS segments, remux only) + playback index
+                  (5s MPEG-TS segments, remux only) + playback index
   detection/      YOLO TRT + buffer + runner (active-camera gated) + engine wrapper
   tracking/       clean-room BoT-SORT (kalman/matching) + buffers + runner
   pose/           YOLO-Pose TRT + posture/fall classifier + runner
