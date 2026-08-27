@@ -176,14 +176,17 @@ else
     ok "frpc not installed (LAN-only device)"
 fi
 
-if [ -f /etc/polkit-1/rules.d/50-ceravis-network.rules ]; then
-    # The rule parses fine with the WRONG user and simply never matches, so
-    # prove the rights instead of trusting that the file exists.
-    if nmcli -t -f DEVICE,TYPE device >/dev/null 2>&1; then
-        ok "hotspot: NetworkManager reachable by $(id -un)"
-    else
-        warn "hotspot rule present but NetworkManager is not reachable" "bash setup/install_hotspot.sh"
-    fi
+# Ask NM what this user may actually do rather than trust a file path: polkit
+# has two rule formats (rules.d vs .pkla) and either could be the live one, so
+# the grant — not the filename — is what matters. A rule with the wrong user
+# parses fine and never matches, which only shows up as a "no"/"auth" here.
+if nmcli -t -f PERMISSION,VALUE general permissions 2>/dev/null \
+        | grep -q "settings.modify.system:yes"; then
+    ok "hotspot: $(id -un) may drive NetworkManager (AP grant active)"
+elif [ -f /etc/polkit-1/rules.d/50-ceravis-network.rules ] \
+     || [ -f /etc/polkit-1/localauthority/50-local.d/50-ceravis-network.pkla ]; then
+    warn "hotspot rule present but the grant is not active" \
+         "bash setup/install_hotspot.sh   (then: sudo systemctl restart ceravis)"
 else
     warn "hotspot not enabled (cameras must use the house WiFi)" "bash setup/install_hotspot.sh"
 fi
