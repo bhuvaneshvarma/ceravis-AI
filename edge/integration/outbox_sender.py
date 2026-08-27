@@ -69,9 +69,11 @@ import threading
 import time
 
 from config.settings import settings
+from configuration.account_config import effective_edge_id
 from integration import call_log
 from integration.ceravis_api import (
     CeravisApiError, alert_id_of, is_configured, save_alert, save_snapshot,
+    send_recording_event,
 )
 from storage.outbox_store import PRIORITY_ALERT, PRIORITY_AMBIENT, OutboxStore
 
@@ -154,6 +156,36 @@ class OutboxSender:
             patient_id, text, camera_number, image=image, video=video,
             category=category, depends_on=depends_on, priority=priority)
         self._queued("saveSnapshot", job_id, text)
+        return job_id
+
+    def queue_recording_event(self, camera_id: str, status: str, start: str,
+                              *, end: str | None = None,
+                              seconds: float | None = None) -> str | None:
+        """Queue one recordings/event — a camera started or finished recording.
+
+        The wire shape lives HERE (not in the recorder) so the recorder stays
+        domain-level and the payload the backend receives is defined in one
+        place. `edgeId` is resolved NOW, not at delivery: the event is a fact
+        about the device as it was when the footage was recorded, so a
+        re-verification mid-outage must not relabel a queued event.
+
+        Queued at AMBIENT priority: it is a state notification, not evidence, so
+        a fall alert always overtakes it and — under real disk pressure — it is
+        shed before anything that proves an incident. The backend can always
+        recover the same information from /api/v1/recordings/timeline.
+        """
+        edge_id = effective_edge_id()
+        if not edge_id:
+            # Nothing to attribute the event to (unprovisioned/LAN dev box).
+            logger.debug("recordingEvent skipped: no edge_id yet (%s %s)",
+                         camera_id, status)
+            return None
+        payload = {"edgeId": edge_id, "camera_id": camera_id, "status": status,
+                   "segment": {"start": start, "end": end, "seconds": seconds}}
+        job_id = self._outbox.enqueue(
+            "recordingEvent", payload,
+            label=f"{camera_id} {status}", priority=PRIORITY_AMBIENT)
+        self._queued("recordingEvent", job_id, f"{camera_id} {status}")
         return job_id
 
     def _queued(self, kind: str, job_id: str | None, label: str) -> None:
@@ -261,6 +293,9 @@ class OutboxSender:
                 video=media if part == "video" else None,
                 alert_id=self._alert_id_for(job),
                 category=payload.get("category"))
+            return None
+        if job["kind"] == "recordingEvent":
+            send_recording_event(payload)     # payload IS the wire body
             return None
         raise CeravisApiError(f"unknown outbox job kind {job['kind']!r}")
 

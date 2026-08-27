@@ -238,6 +238,12 @@ class Pipeline:
         except Exception:
             logger.exception("Cloud outbox disabled — alerts will NOT reach "
                              "the app server")
+        # The recorder is built long before the outbox, so it is handed the
+        # sender here: every camera start/stop is then reported to the app
+        # server (POST /v1/ai/recordings/event) durably. Without this line the
+        # recorder is unchanged and simply reports nothing.
+        if outbox_sender is not None and recording_controller is not None:
+            recording_controller.set_event_sink(outbox_sender)
         if outbox_sender is not None:
             try:
                 from alerts.cloud_alert_publisher import CloudAlertPublisher

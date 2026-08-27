@@ -405,7 +405,8 @@ async function pollCloud() {
   const epTxt = e => ({ saveAlert: "ALERT", saveSnapshot: "SNAPSHOT",
     saveCamera: "CAMERA", userDetails: "ACCOUNT", event: "EVENT",
     getPatientPostures: "POSTURES", uploadEmbeddingFile: "UPLOAD",
-    ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE" }[e]
+    ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE",
+    recordingEvent: "REC EVENT" }[e]
     || (e || "?").toUpperCase());
   // Pipeline detections aren't HTTP calls — word their status accordingly.
   // An upload has three states, not two: QUEUED the moment the event fires,

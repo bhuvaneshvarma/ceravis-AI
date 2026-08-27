@@ -316,6 +316,61 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
     return result
 
 
+def send_recording_event(payload: dict) -> None:
+    """
+    POST /v1/ai/recordings/event — tell the app server that ONE camera has
+    started, or finished, recording a stretch of footage.
+
+    Body is the backend's TimelineSegmentEvent, key names verbatim (note the
+    deliberate camelCase/snake_case mix — that is what the Java DTO declares):
+
+        { "edgeId": "<edge_id>", "camera_id": "LIVING_ROOM",
+          "status": "started" | "finalized",
+          "segment": { "start": ISO-8601, "end": ISO-8601|null,
+                       "seconds": float|null } }
+
+    `end`/`seconds` are null on "started": the stretch is still open, and the
+    matching "finalized" carries the SAME `start` so the two pair up.
+
+    Raises CeravisApiError on any failure — the caller is the outbox, so a
+    failed event is retried rather than lost.
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/recordings/event"
+    seg = payload.get("segment") or {}
+    label = (f"{payload.get('camera_id')} {payload.get('status')} "
+             f"{seg.get('seconds') if seg.get('seconds') is not None else ''}").strip()
+    logger.info("recordingEvent -> POST %s  camera=%s  status=%s", url,
+                payload.get("camera_id"), payload.get("status"))
+    t0 = time.perf_counter()
+    try:
+        resp = requests.post(url, json=payload, headers=_headers(),
+                             timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("recordingEvent: cannot reach %s — %s", url, exc)
+        call_log.record("recordingEvent", False, label=label, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("recordingEvent", "POST", url, payload, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
+    logger.info("recordingEvent <- HTTP %s  body=%s",
+                resp.status_code, resp.text[:200])
+    _wire("recordingEvent", "POST", url, payload, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
+    if resp.status_code >= 400:
+        call_log.record("recordingEvent", False, label=label,
+                        status=resp.status_code, latency_ms=lat,
+                        error=resp.text[:200])
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
+    call_log.record("recordingEvent", True, label=label,
+                    status=resp.status_code, latency_ms=lat)
+
+
 def _multipart_headers() -> dict[str, str]:
     """Headers for a multipart/form-data upload: the API key + Accept, but NO
     Content-Type — `requests` sets `multipart/form-data` with the correct boundary

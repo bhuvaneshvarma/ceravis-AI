@@ -22,6 +22,7 @@ import logging
 import shutil
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from config.settings import settings
@@ -59,6 +60,14 @@ class RecordingController:
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
         self._last_person: dict[str, float] = {}   # camera_id -> monotonic time
+        # camera_id -> when its OPEN stretch began (edge-local wall clock). The
+        # "finalized" event must repeat the same start the "started" event sent,
+        # so the backend can pair them; this is where that start is held.
+        self._segment_start: dict[str, datetime] = {}
+        # Optional cloud reporter (the outbox sender), attached at boot AFTER
+        # the outbox exists. None = nothing is reported and recording is
+        # completely unaffected — this is a notification, never a dependency.
+        self._event_sink = None
         # camera_id -> (checked_at_monotonic, is_h264). Recording is a REMUX, so
         # the clip inherits the camera's codec; see _recordable().
         self._codec_seen: dict[str, tuple[float, bool]] = {}
@@ -282,6 +291,50 @@ class RecordingController:
             if want != self._recording.get(cam, False):
                 self._set(cam, want)
 
+    def set_event_sink(self, sender) -> None:
+        """Attach the cloud reporter (integration.outbox_sender.OutboxSender).
+        Wired at boot once the outbox exists — the recorder is built before it,
+        and must keep working whether or not this is ever called."""
+        self._event_sink = sender
+
+    def _report(self, camera_id: str, on: bool) -> None:
+        """Tell the app server this camera opened or closed a stretch of
+        footage — ONE call per camera per transition, fired from the single
+        place that knows recording actually changed state.
+
+        It is queued on the durable outbox, never sent inline: this runs on the
+        recording tick, which must not wait on the network, and a stretch that
+        ends during an outage must still be reported when the link returns.
+
+        Best-effort by construction. Any failure here is logged and swallowed —
+        a cloud problem must never stop a camera recording."""
+        sink = self._event_sink
+        if sink is None:
+            return
+        try:
+            if on:
+                start = clock.now()
+                self._segment_start[camera_id] = start
+                sink.queue_recording_event(camera_id, "started",
+                                           start.isoformat())
+                return
+            start = self._segment_start.pop(camera_id, None)
+            if start is None:
+                # No open stretch on record (we never reported its start), so
+                # there is nothing to finalize. Say so rather than invent a
+                # start time the backend would store as fact.
+                logger.warning("recording event: %s stopped with no recorded "
+                               "start — no finalized event sent", camera_id)
+                return
+            end = clock.now()
+            sink.queue_recording_event(
+                camera_id, "finalized", start.isoformat(),
+                end=end.isoformat(),
+                seconds=round((end - start).total_seconds(), 1))
+        except Exception:                     # noqa: BLE001 — never break recording
+            logger.exception("recording event: reporting %s %s failed",
+                             camera_id, "start" if on else "stop")
+
     def _set(self, camera_id: str, on: bool) -> None:
         # One path per camera: the AAC republish of its main stream (or the main
         # stream itself when ffmpeg is absent). Native quality either way.
@@ -296,3 +349,6 @@ class RecordingController:
         self._recording[camera_id] = on
         logger.info("recording %s: %s (path %s)",
                     "started" if on else "stopped", camera_id, path)
+        # After the flip, so the cloud only ever hears what actually happened:
+        # a MediaMTX refusal above returns early and reports nothing.
+        self._report(camera_id, on)
