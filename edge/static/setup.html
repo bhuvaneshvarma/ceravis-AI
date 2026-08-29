@@ -82,69 +82,100 @@
   .rec-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 
   /* =====================================================================
-     LOGIN GATE — full-screen sign-in that mirrors the Ceravis Health app
-     (email → one-time code). Shown until this device has a verified account.
+     LOGIN GATE — full-screen sign-in, matched 1:1 to the Ceravis Health app
+     (email → 5-digit code). Shown until this device has a verified account.
      ===================================================================== */
   .login-wrap {
     position: fixed; inset: 0; z-index: 200; overflow: auto;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 32px 18px;
-    background:
-      linear-gradient(180deg, rgba(18,40,60,.82), rgba(18,40,60,.88)),
-      url("bg.png") center/cover no-repeat, var(--navy);
+    padding: 30px 18px;
   }
+  /* slow-zooming medical backdrop + slate gradient wash (app: bg-cover +
+     from-slate-900/60 gradient + backdrop-blur) */
+  .login-wrap::before {
+    content: ""; position: absolute; inset: 0; z-index: 0;
+    background: url("bg.png") center/cover no-repeat; transform: scale(1.05);
+    animation: lg-drift 20s ease-in-out infinite alternate;
+  }
+  .login-wrap::after {
+    content: ""; position: absolute; inset: 0; z-index: 0;
+    background: linear-gradient(135deg, rgba(15,23,42,.62), rgba(15,23,42,.42) 50%, rgba(15,23,42,.62));
+    backdrop-filter: blur(2px);
+  }
+  @keyframes lg-drift { from { transform: scale(1.05) translate(0,0); }
+                        to   { transform: scale(1.12) translate(-1%, -1%); } }
   .login-card {
-    width: 100%; max-width: 880px;
-    display: grid; grid-template-columns: 1fr 1.15fr;
-    background: #fff; border-radius: 26px; overflow: hidden;
-    box-shadow: 0 30px 80px rgba(6,20,34,.45);
+    position: relative; z-index: 1;
+    width: 100%; max-width: 896px;
+    display: grid; grid-template-columns: 1fr 1.08fr;
+    background: #fff; border-radius: 28px; overflow: hidden;
+    box-shadow: 0 40px 90px rgba(8,15,30,.45), 0 0 0 1px rgba(255,255,255,.06);
+    animation: lg-rise .7s cubic-bezier(.22,1,.36,1) both;
   }
+  @keyframes lg-rise { from { opacity: 0; transform: translateY(16px) scale(.97); }
+                       to   { opacity: 1; transform: none; } }
   .login-brand {
-    padding: 34px 30px; background: linear-gradient(180deg, #fbfdff, #f2f6fb);
-    border-right: 1px solid var(--line);
+    padding: 40px 36px; display: flex; flex-direction: column;
+    background: linear-gradient(180deg, #fdfefe, #f4f8fb);
+    border-right: 1px solid var(--line-soft);
   }
-  .login-logo { height: 34px; width: auto; display: block; margin-bottom: 18px; }
-  .login-hero { width: 100%; border-radius: 14px; display: block; margin-bottom: 20px;
-                box-shadow: 0 10px 26px rgba(16,42,67,.12); }
-  .login-brand-title { margin: 0 0 8px; font-size: 21px; font-weight: 800;
-                       color: var(--navy); line-height: 1.28; }
-  .login-brand-title span { color: var(--teal-dim); }
-  .login-brand-sub { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
-  .login-form { padding: 42px 40px; display: flex; flex-direction: column; justify-content: center; }
-  .login-h1 { margin: 0 0 4px; font-size: 30px; font-weight: 800; color: var(--navy); }
-  .login-lead { margin: 0 0 26px; color: var(--muted); font-size: 13px; }
-  .login-label { display: block; font-size: 12px; font-weight: 600; color: var(--navy);
+  .login-logo { height: 40px; width: auto; display: block; margin-bottom: 22px; }
+  .login-hero { width: 100%; border-radius: 16px; display: block; margin-bottom: 24px;
+                box-shadow: 0 14px 34px rgba(15,23,42,.14);
+                filter: grayscale(.18); transition: filter .7s ease; }
+  .login-hero:hover { filter: grayscale(0); }
+  .login-brand-title { margin: 0 0 10px; font-size: 21px; font-weight: 800;
+                       color: #1e293b; line-height: 1.24; letter-spacing: -.3px; }
+  .login-brand-title span { color: var(--teal); }
+  .login-brand-sub { margin: 0; color: var(--muted); font-size: 12px;
+                     line-height: 1.6; max-width: 290px; }
+  .login-form { padding: 46px 44px; display: flex; flex-direction: column; justify-content: center; }
+  .login-h1 { margin: 0 0 6px; font-size: 30px; font-weight: 900; color: var(--navy);
+              letter-spacing: -.6px; }
+  .login-lead { margin: 0 0 30px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .login-label { display: block; font-size: 13px; font-weight: 600; color: #334155;
                  margin: 0 0 8px; }
   .login-input { position: relative; }
-  .login-input .lg-ic { position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
-                        color: var(--faint); font-size: 15px; pointer-events: none; }
-  .login-input input { padding-left: 38px; height: 48px; border-radius: 12px; }
-  .login-input.readonly input { color: var(--muted); background: var(--panel-2); }
-  .login-input .lg-edit { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-                          background: none; border: 0; color: var(--teal-dim); cursor: pointer;
-                          font-size: 15px; padding: 6px; border-radius: 8px; }
-  .login-input .lg-edit:hover { background: rgba(46,158,143,.1); }
-  .login-cta { width: 100%; justify-content: center; height: 50px; border-radius: 12px;
-               font-size: 15px; margin-top: 22px; }
+  .login-input .lg-ic { position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+                        color: var(--faint); font-size: 16px; line-height: 1; pointer-events: none; }
+  .login-input input { padding-left: 42px; padding-right: 44px; height: 46px; border-radius: 12px;
+                       border-color: var(--line); font-weight: 500; }
+  .login-input.readonly input { color: var(--muted); background: #fbfcfe; }
+  .login-input .lg-edit { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+                          background: none; border: 0; color: var(--teal); cursor: pointer;
+                          font-size: 15px; padding: 7px; border-radius: 50%;
+                          display: inline-flex; transition: background .15s; }
+  .login-input .lg-edit:hover { background: rgba(53,152,157,.08); }
+  .login-cta { width: 100%; justify-content: center; height: 46px; border-radius: 12px;
+               font-size: 14px; margin-top: 8px; box-shadow: 0 6px 18px rgba(53,152,157,.28); }
   .login-otp-head { display: flex; align-items: center; justify-content: space-between;
-                    margin: 22px 0 10px; font-size: 12px; }
-  .otp-boxes { display: flex; gap: 12px; }
-  .otp-boxes input { width: 100%; height: 62px; text-align: center; font-size: 24px;
-                     font-weight: 700; color: var(--navy); border-radius: 12px; padding: 0; }
-  .login-resend { text-align: center; margin-top: 16px; font-size: 12.5px; color: var(--muted); }
-  .login-resend b { color: var(--navy); }
-  .login-resend a { color: var(--teal-dim); font-weight: 600; text-decoration: none; }
-  .login-msg { min-height: 20px; margin-top: 12px; font-size: 12.5px; text-align: center; }
-  .login-foot { margin-top: 22px; color: rgba(255,255,255,.85); font-size: 12px;
-                font-weight: 600; letter-spacing: .4px; }
+                    padding: 0 2px; margin: 26px 0 12px; }
+  .login-otp-head .login-label { margin: 0; }
+  .login-otp-head .faint { font-size: 11px; font-style: italic; color: var(--faint); font-weight: 500; }
+  .otp-boxes { display: flex; justify-content: space-between; gap: 10px; }
+  .otp-boxes input { width: 56px; height: 56px; text-align: center; font-size: 18px;
+                     font-weight: 700; color: var(--navy); border-radius: 10px; padding: 0;
+                     border-color: var(--line); transition: all .2s; }
+  .otp-boxes input:focus { transform: scale(1.05); border-color: var(--teal);
+                           box-shadow: 0 0 0 3px rgba(53,152,157,.1); }
+  .login-actions { margin-top: 26px; display: flex; flex-direction: column; gap: 18px; }
+  .login-resend { text-align: center; font-size: 12px; color: var(--faint); font-weight: 500; }
+  .login-resend b { color: #334155; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .login-resend a { color: var(--teal); font-weight: 700; font-size: 13px; text-decoration: underline;
+                    text-underline-offset: 4px; text-decoration-color: rgba(53,152,157,.3); cursor: pointer; }
+  .login-resend a:hover { color: var(--teal-dim); }
+  .login-msg { min-height: 18px; margin-top: 6px; font-size: 12px; font-weight: 500; text-align: center; }
+  .login-msg .bad { color: var(--bad); }
+  .login-foot { position: relative; z-index: 1; margin-top: 22px; color: rgba(255,255,255,.9);
+                font-size: 12px; font-weight: 600; letter-spacing: .3px; }
   .lg-toast { position: fixed; top: 22px; right: 22px; z-index: 300;
-              background: var(--ok); color: #fff; font-weight: 600; font-size: 13.5px;
-              padding: 11px 18px; border-radius: 11px; box-shadow: 0 10px 30px rgba(0,0,0,.25);
-              display: flex; align-items: center; gap: 10px; animation: slideIn .2s ease; }
-  @media (max-width: 720px) {
-    .login-card { grid-template-columns: 1fr; }
+              background: #00c758; color: #fff; font-weight: 700; font-size: 13.5px;
+              padding: 11px 18px; border-radius: 12px; box-shadow: 0 12px 34px rgba(0,199,88,.3);
+              display: flex; align-items: center; gap: 9px; animation: slideIn .2s ease; }
+  @media (max-width: 760px) {
+    .login-card { grid-template-columns: 1fr; max-width: 460px; }
     .login-brand { display: none; }
-    .login-form { padding: 34px 26px; }
+    .login-form { padding: 38px 28px; }
   }
 </style>
 </head>
@@ -165,7 +196,7 @@
       <div id="lg-email-view">
         <h1 class="login-h1">Login</h1>
         <p class="login-lead">Connect with your care network and care recipients data in seconds.</p>
-        <label class="login-label">Email / Phone / Member ID</label>
+        <label class="login-label">Email/Phone/Member ID</label>
         <div class="login-input">
           <span class="lg-ic">&#9993;</span>
           <input type="email" id="lg-email" placeholder="you@example.com" autocomplete="email" />
@@ -177,7 +208,7 @@
       <div id="lg-otp-view" hidden>
         <h1 class="login-h1">Login</h1>
         <p class="login-lead">Connect with your care network and care recipients data in seconds.</p>
-        <label class="login-label">Email / Phone / Member ID</label>
+        <label class="login-label">Email/Phone/Member ID</label>
         <div class="login-input readonly">
           <span class="lg-ic">&#9993;</span>
           <input type="text" id="lg-email-shown" readonly />
@@ -194,8 +225,10 @@
           <input maxlength="1" inputmode="numeric" />
           <input maxlength="1" inputmode="numeric" />
         </div>
-        <button class="btn btn-teal login-cta" id="lg-verify">Verify Identity</button>
-        <div class="login-resend" id="lg-resend"></div>
+        <div class="login-actions">
+          <button class="btn btn-teal login-cta" id="lg-verify">Verify Identity</button>
+          <div class="login-resend" id="lg-resend"></div>
+        </div>
         <div class="login-msg" id="lg-otp-msg"></div>
       </div>
     </div>
@@ -558,7 +591,7 @@ function startResend(secs) {
   const tick = () => {
     if (left <= 0) {
       clearInterval(resendTimer);
-      box.innerHTML = `<a href="#" id="lg-resend-a">Request new code</a>`;
+      box.innerHTML = `<a id="lg-resend-a">Resend security code</a>`;
       document.getElementById("lg-resend-a").onclick = async (e) => {
         e.preventDefault();
         const email = document.getElementById("lg-email-shown").value.trim();
