@@ -76,14 +76,20 @@
 
   /* ---- top bar ----------------------------------------------------------- */
   .topbar{
-    display:flex; align-items:center; gap:16px; padding:10px 16px;
-    background:linear-gradient(180deg,#ffffff,#f7fafc);
-    border-bottom:1px solid var(--line); flex:0 0 auto; z-index:20;
+    display:flex; align-items:center; gap:16px; padding:9px 16px;
+    background:linear-gradient(180deg,#38a1a5,#2f8d91);
+    border-bottom:1px solid rgba(15,23,42,.06); box-shadow:0 2px 16px rgba(15,23,42,.12);
+    flex:0 0 auto; z-index:20;
   }
-  .brand{display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:.3px}
-  .brand .mark{width:26px; height:26px}
-  .brand .logo-img{height:30px; width:auto; display:block}
-  .brand .tag{display:block; font-size:10.5px; color:var(--muted); font-weight:500; letter-spacing:.4px}
+  .brand{display:flex; align-items:center; gap:11px; font-weight:700; letter-spacing:.3px}
+  .brand .logo-chip{background:#fff; border-radius:11px; padding:5px 12px; display:inline-flex;
+    align-items:center; box-shadow:0 3px 10px rgba(0,0,0,.14)}
+  .brand .logo-img{height:26px; width:auto; display:block}
+  .brand .tag{display:block; font-size:10.5px; color:rgba(255,255,255,.85); font-weight:500; letter-spacing:.4px}
+  .topbar .clock{color:#fff}
+  .topbar .iconbtn{background:rgba(255,255,255,.16); border-color:rgba(255,255,255,.28); color:#fff}
+  .topbar .iconbtn:hover{background:rgba(255,255,255,.26); border-color:rgba(255,255,255,.4); color:#fff}
+  .topbar .pill{background:rgba(255,255,255,.16); border-color:rgba(255,255,255,.28); color:#fff}
   .topbar .spacer{flex:1}
   .pill{
     display:inline-flex; align-items:center; gap:7px; padding:5px 11px; border-radius:999px;
@@ -261,7 +267,7 @@
 <header class="topbar">
   <button class="iconbtn hidden" id="railToggle" title="Cameras">☰</button>
   <div class="brand">
-    <img class="logo-img" src="../Logo.png" alt="Ceravis Health" />
+    <span class="logo-chip"><img class="logo-img" src="../ceravis-logo.png" alt="Ceravis Health" /></span>
     <span class="tag">Video Console &middot; Live &amp; Playback</span>
   </div>
   <div class="spacer"></div>

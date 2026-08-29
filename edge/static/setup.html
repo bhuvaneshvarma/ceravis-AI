@@ -83,53 +83,68 @@
 
   /* =====================================================================
      LOGIN GATE — full-screen sign-in, matched 1:1 to the Ceravis Health app
-     (email → 5-digit code). Shown until this device has a verified account.
+     (email → 5-digit code). Uses the app's own logo / hero / bg assets.
      ===================================================================== */
   .login-wrap {
     position: fixed; inset: 0; z-index: 200; overflow: auto;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     padding: 30px 18px;
   }
-  /* slow-zooming medical backdrop + slate gradient wash (app: bg-cover +
-     from-slate-900/60 gradient + backdrop-blur) */
+  /* the app's own backdrop (loginBgImage) with a slow, gentle zoom-in on mount
+     (app: bg-cover bg-center scale-105 transition-[10s]) + slate wash + blur */
   .login-wrap::before {
     content: ""; position: absolute; inset: 0; z-index: 0;
-    background: url("bg.png") center/cover no-repeat; transform: scale(1.05);
-    animation: lg-drift 20s ease-in-out infinite alternate;
+    background: url("login-bg.png") center/cover no-repeat;
+    transform: scale(1.03); animation: lg-drift 18s ease-in-out infinite alternate;
   }
   .login-wrap::after {
     content: ""; position: absolute; inset: 0; z-index: 0;
-    background: linear-gradient(135deg, rgba(15,23,42,.62), rgba(15,23,42,.42) 50%, rgba(15,23,42,.62));
+    background: linear-gradient(135deg, rgba(15,23,42,.6), rgba(15,23,42,.4) 50%, rgba(15,23,42,.6));
     backdrop-filter: blur(2px);
   }
-  @keyframes lg-drift { from { transform: scale(1.05) translate(0,0); }
-                        to   { transform: scale(1.12) translate(-1%, -1%); } }
+  @keyframes lg-drift { from { transform: scale(1.03); } to { transform: scale(1.06); } }
   .login-card {
     position: relative; z-index: 1;
-    width: 100%; max-width: 896px;
-    display: grid; grid-template-columns: 1fr 1.08fr;
-    background: #fff; border-radius: 28px; overflow: hidden;
-    box-shadow: 0 40px 90px rgba(8,15,30,.45), 0 0 0 1px rgba(255,255,255,.06);
+    width: 100%; max-width: 896px; min-height: 500px;
+    display: grid; grid-template-columns: 42% 58%;
+    background: #fff; border-radius: 40px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.4);
+    box-shadow: 0 40px 100px -15px rgba(0,0,0,.4);
     animation: lg-rise .7s cubic-bezier(.22,1,.36,1) both;
   }
-  @keyframes lg-rise { from { opacity: 0; transform: translateY(16px) scale(.97); }
+  @keyframes lg-rise { from { opacity: 0; transform: translateY(15px) scale(.96); }
                        to   { opacity: 1; transform: none; } }
   .login-brand {
-    padding: 40px 36px; display: flex; flex-direction: column;
-    background: linear-gradient(180deg, #fdfefe, #f4f8fb);
-    border-right: 1px solid var(--line-soft);
+    padding: clamp(32px, 4vw, 48px); display: flex; flex-direction: column;
+    justify-content: space-between; position: relative; overflow: hidden;
+    background: #f8fafc; border-right: 1px solid #f1f5f9;
   }
-  .login-logo { height: 40px; width: auto; display: block; margin-bottom: 22px; }
-  .login-hero { width: 100%; border-radius: 16px; display: block; margin-bottom: 24px;
-                box-shadow: 0 14px 34px rgba(15,23,42,.14);
-                filter: grayscale(.18); transition: filter .7s ease; }
+  /* faint teal wash in the corner (app: from-secondary/5) */
+  .login-brand::before { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(135deg, rgba(53,152,157,.06), transparent 55%); opacity: .6; }
+  .login-logo { height: 44px; width: auto; display: block; position: relative; z-index: 1; }
+  .login-brand-mid { position: relative; z-index: 1; }
+  .login-hero { position: relative; width: 100%; border-radius: 18px; display: block;
+                margin-bottom: 26px; object-fit: cover;
+                box-shadow: 0 20px 44px rgba(53,152,157,.18);
+                filter: grayscale(.2); transition: filter .7s ease; }
   .login-hero:hover { filter: grayscale(0); }
-  .login-brand-title { margin: 0 0 10px; font-size: 21px; font-weight: 800;
-                       color: #1e293b; line-height: 1.24; letter-spacing: -.3px; }
+  .login-brand-title { margin: 0 0 10px; font-size: clamp(19px, 1.6vw, 22px);
+                       font-weight: 800; color: #1e293b; line-height: 1.24; letter-spacing: -.3px; }
   .login-brand-title span { color: var(--teal); }
+  .login-brand-title .ltr { display: inline-block; white-space: pre;
+                            animation: lg-shimmer 4.6s ease-in-out infinite;
+                            animation-delay: var(--d, 0s); }
+  @keyframes lg-shimmer {
+    0%   { opacity: .38; transform: translateY(0); }
+    14%  { opacity: 1;   transform: translateY(-2px); }
+    50%  { opacity: 1;   transform: translateY(0); }
+    86%  { opacity: 1; }
+    100% { opacity: .38; }
+  }
   .login-brand-sub { margin: 0; color: var(--muted); font-size: 12px;
-                     line-height: 1.6; max-width: 290px; }
-  .login-form { padding: 46px 44px; display: flex; flex-direction: column; justify-content: center; }
+                     line-height: 1.6; max-width: 290px; position: relative; z-index: 1; }
+  .login-form { padding: clamp(34px, 3.4vw, 48px); display: flex; flex-direction: column; justify-content: center; }
   .login-h1 { margin: 0 0 6px; font-size: 30px; font-weight: 900; color: var(--navy);
               letter-spacing: -.6px; }
   .login-lead { margin: 0 0 30px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
@@ -137,7 +152,9 @@
                  margin: 0 0 8px; }
   .login-input { position: relative; }
   .login-input .lg-ic { position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
-                        color: var(--faint); font-size: 16px; line-height: 1; pointer-events: none; }
+                        color: var(--faint); font-size: 16px; line-height: 1; pointer-events: none;
+                        transition: opacity .22s ease, transform .22s ease; }
+  .login-input .lg-ic.swap { opacity: 0; transform: translateY(-50%) scale(.8) rotate(10deg); }
   .login-input input { padding-left: 42px; padding-right: 44px; height: 46px; border-radius: 12px;
                        border-color: var(--line); font-weight: 500; }
   .login-input.readonly input { color: var(--muted); background: #fbfcfe; }
@@ -185,11 +202,14 @@
 <div class="login-wrap" id="login-gate">
   <div class="login-card">
     <div class="login-brand">
-      <img class="login-logo" src="Logo.png" alt="Ceravis Health" />
-      <img class="login-hero" src="img.png" alt="" />
-      <h2 class="login-brand-title">Healthcare Management,<br><span>Reimagined.</span></h2>
-      <p class="login-brand-sub">Providing seamless care coordination and intelligent
-        health monitoring for every care recipient.</p>
+      <img class="login-logo" src="ceravis-logo.png" alt="Ceravis Health" />
+      <div class="login-brand-mid">
+        <img class="login-hero" src="login-hero.png" alt="" />
+        <h2 class="login-brand-title" id="lg-title"
+            data-l1="Healthcare Management," data-l2="Reimagined."></h2>
+        <p class="login-brand-sub">Providing seamless care coordination and intelligent
+          health monitoring for every care recipient.</p>
+      </div>
     </div>
     <div class="login-form">
       <!-- EMAIL VIEW -->
@@ -538,7 +558,54 @@ function loginToast(msg) {
   setTimeout(() => t.remove(), 2600);
 }
 
+/* Per-letter shimmer on "Healthcare Management, Reimagined." (app: each glyph
+   fades/rises on a staggered loop). Built once from the element's data-l1/l2. */
+function buildTitleAnim() {
+  const t = document.getElementById("lg-title");
+  if (!t || t.dataset.built) return;
+  t.dataset.built = "1";
+  const add = (text, base, teal) => [...text].forEach((ch, i) => {
+    const s = document.createElement("span");
+    s.className = "ltr"; s.textContent = ch;
+    s.style.setProperty("--d", (base + i * 0.04).toFixed(2) + "s");
+    if (teal) s.style.color = "var(--teal)";
+    t.appendChild(s);
+  });
+  add(t.dataset.l1 || "", 0, false);
+  t.appendChild(document.createElement("br"));
+  add(t.dataset.l2 || "", 0.8, true);
+}
+
+/* The email bar's animated hint — the icon + placeholder cycle through
+   Email / Phone / Member ID exactly like the app, while the field itself stays
+   the account email. Pauses while the field is focused or filled. */
+const LG_HINTS = [
+  { ic: "✉", ph: "name@email.com" },      // envelope
+  { ic: "☎", ph: "Enter Phone Number" },  // phone
+  { ic: "\u{1F464}", ph: "Enter Member ID" },  // person
+];
+let lgCycleTimer = null, lgCycleI = 0;
+function startInputCycle() {
+  const ic = document.querySelector("#lg-email-view .lg-ic");
+  const inp = document.getElementById("lg-email");
+  if (!ic || !inp) return;
+  clearInterval(lgCycleTimer);
+  ic.textContent = LG_HINTS[0].ic; inp.placeholder = LG_HINTS[0].ph;
+  lgCycleTimer = setInterval(() => {
+    if (inp.value) return;   // cycle the hint only while the field is empty
+    lgCycleI = (lgCycleI + 1) % LG_HINTS.length;
+    ic.classList.add("swap");
+    setTimeout(() => {
+      ic.textContent = LG_HINTS[lgCycleI].ic;
+      inp.placeholder = LG_HINTS[lgCycleI].ph;
+      ic.classList.remove("swap");
+    }, 220);
+  }, 2600);
+}
+
 async function initGate() {
+  buildTitleAnim();
+  startInputCycle();
   // Already onboarded on this device? Skip the login and open the wizard.
   try {
     const a = await api("/api/v1/account");

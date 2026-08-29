@@ -29,9 +29,10 @@ function toast(msg, kind = "ok", ms = 2600) {
 }
 
 /* ---- shared top navigation ------------------------------------------ */
-/* The brand mark is the Ceravis Health wordmark (edge/static/Logo.png), so the
-   edge UI carries the same identity as the cloud app. */
-const CERAVIS_LOGO = `<img class="logo-img" src="Logo.png" alt="Ceravis Health" />`;
+/* The brand mark is the Ceravis Health wordmark — the exact asset the cloud app
+   ships (edge/static/ceravis-logo.png), on a white chip so it reads on the teal
+   bar the way the app's logo sits on its teal sidebar. */
+const CERAVIS_LOGO = `<img class="logo-img" src="ceravis-logo.png" alt="Ceravis Health" />`;
 
 /* Put the Ceravis monogram in the browser tab, once, on every page. */
 function ensureFavicon() {
@@ -59,7 +60,7 @@ function renderNav(active) {
   bar.className = "topbar";
   bar.innerHTML = `
     <a class="brand" href="live.html">
-      ${CERAVIS_LOGO}
+      <span class="logo-chip">${CERAVIS_LOGO}</span>
       <span class="tag">Care Intelligence &middot; Edge Surveillance</span>
     </a>
     <nav class="nav">${nav}</nav>

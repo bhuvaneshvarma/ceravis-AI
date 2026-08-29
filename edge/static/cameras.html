@@ -27,6 +27,9 @@
   th { color:var(--faint); font-weight:700; font-size:10.5px;
        text-transform:uppercase; letter-spacing:1.1px; border-bottom:1px solid var(--line); }
   td code { background:var(--panel-2); padding:2px 7px; border-radius:6px; font-size:12px; }
+  tbody tr { transition:background .12s; }
+  tbody tr:hover { background:var(--panel-2); }
+  .mono { font-variant-numeric:tabular-nums; }
   .preview { background:#000; border-radius:12px; aspect-ratio:16/9; margin-top:6px;
              width:100%; object-fit:contain; display:block; border:1px solid var(--line); }
   .err  { color:var(--bad); font-size:12px; margin-top:6px; font-weight:600; }
@@ -138,13 +141,12 @@ async function loadCameras() {
     : cams.map(c => {
         const s = statuses[c.camera_id] || {};
         const state = s.health_state || 'offline';
-        const cls = state === 'running' ? 'ok' : state === 'connecting' ? 'warn' : 'bad';
         return `<tr>
           <td><code>${c.camera_id}</code></td>
-          <td>${c.camera_name}</td>
+          <td><b>${c.camera_name}</b></td>
           <td>${c.room_name}</td>
-          <td><span class="${cls}">${state}</span></td>
-          <td>${(s.current_fps || 0).toFixed(1)}</td>
+          <td>${healthPill(state)}</td>
+          <td class="mono">${(s.current_fps || 0).toFixed(1)}</td>
           <td class="row">
             <button class="ghost" data-action="start" data-id="${c.camera_id}">Start</button>
             <button class="ghost" data-action="stop"  data-id="${c.camera_id}">Stop</button>
