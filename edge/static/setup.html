@@ -132,16 +132,19 @@
   .login-hero:hover { filter: grayscale(0); }
   .login-brand-title { margin: 0 0 10px; font-size: clamp(19px, 1.6vw, 22px);
                        font-weight: 800; color: #1e293b; line-height: 1.24; letter-spacing: -.3px; }
-  .login-brand-title span { color: var(--teal); }
+  /* "Healthcare Management," inherits slate-800 here; the "Reimagined." letters
+     get teal inline from buildTitleAnim(). (No blanket span rule — it would
+     also colour the per-letter spans of the first line.) */
+  .login-brand-title .rei { color: var(--teal); }
+  /* Solid colour at rest (slate-800 / teal) with a gentle rise+brighten wave —
+     the floor stays high so the text never reads as washed-out grey. */
   .login-brand-title .ltr { display: inline-block; white-space: pre;
-                            animation: lg-shimmer 4.6s ease-in-out infinite;
+                            animation: lg-shimmer 4.4s ease-in-out infinite;
                             animation-delay: var(--d, 0s); }
   @keyframes lg-shimmer {
-    0%   { opacity: .38; transform: translateY(0); }
-    14%  { opacity: 1;   transform: translateY(-2px); }
-    50%  { opacity: 1;   transform: translateY(0); }
-    86%  { opacity: 1; }
-    100% { opacity: .38; }
+    0%, 100% { opacity: .88; transform: translateY(0); }
+    45%      { opacity: 1;   transform: translateY(-2.5px); }
+    72%      { opacity: 1;   transform: translateY(0); }
   }
   .login-brand-sub { margin: 0; color: var(--muted); font-size: 12px;
                      line-height: 1.6; max-width: 290px; position: relative; z-index: 1; }
@@ -408,9 +411,11 @@
     <div class="split">
       <div class="card">
         <h2>Face / body enrollment</h2>
-        <div id="enroll-none" class="hint">
-          Save a recipient first — then add enrollment media here so the
-          system can recognize them (Resident → Store media → Embeddings → FAISS).
+        <div id="enroll-none" class="empty">
+          <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div>
+          <div class="empty-title">Pick a recipient to enroll</div>
+          <div class="empty-sub">Add enrollment media — photos, a short video, or live capture —
+            so the system can recognize the recipient (media → embeddings → FAISS).</div>
         </div>
         <div id="enroll-panel" hidden>
           <div class="row" style="justify-content:space-between">
@@ -571,9 +576,8 @@ function buildTitleAnim() {
   t.dataset.built = "1";
   const add = (text, base, teal) => [...text].forEach((ch, i) => {
     const s = document.createElement("span");
-    s.className = "ltr"; s.textContent = ch;
+    s.className = teal ? "ltr rei" : "ltr"; s.textContent = ch;
     s.style.setProperty("--d", (base + i * 0.04).toFixed(2) + "s");
-    if (teal) s.style.color = "var(--teal)";
     t.appendChild(s);
   });
   add(t.dataset.l1 || "", 0, false);
@@ -816,7 +820,11 @@ async function refreshCameras() {
   ]);
   // table
   document.getElementById("c-table").innerHTML = cams.length === 0
-    ? `<tr><td class="faint">No cameras yet — add your first above.</td></tr>`
+    ? `<tr><td><div class="empty">
+         <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg></div>
+         <div class="empty-title">No cameras added yet</div>
+         <div class="empty-sub">Scan the network above, or paste an RTSP URL and save your first camera.</div>
+       </div></td></tr>`
     : cams.map(c => {
         const s = status[c.camera_id] || {};
         return `<tr>

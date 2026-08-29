@@ -68,16 +68,19 @@ function renderNav(active) {
     ["hotspot.html",   "Hotspot",    NAV_ICONS.hotspot],
   ];
   const nav = items.map(([href, label, icon]) =>
-    `<a href="${href}" class="side-item ${active === href ? "active" : ""}">${icon}<span>${label}</span></a>`
+    `<a href="${href}" class="side-item ${active === href ? "active" : ""}" title="${label}">${icon}<span>${label}</span></a>`
   ).join("");
   const aside = document.createElement("aside");
   aside.className = "sidebar";
   aside.innerHTML = `
     <div class="side-top">
       <a class="side-brand" href="live.html"><span class="logo-chip">${CERAVIS_LOGO}</span></a>
+      <button class="side-collapse" id="cv-collapse" aria-label="Collapse sidebar" title="Collapse">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
     </div>
     <nav class="side-nav">${nav}</nav>
-    <div class="side-foot">&copy; 2026 Ceravis Health<span>Edge Surveillance</span></div>`;
+    <div class="side-foot">&copy; 2026 Ceravis Health<span>All Rights Reserved</span></div>`;
 
   const header = document.createElement("header");
   header.className = "app-header";
@@ -98,6 +101,18 @@ function renderNav(active) {
   if (toggle) toggle.onclick = () => aside.classList.toggle("open");
   aside.querySelectorAll(".side-item").forEach(a =>
     a.addEventListener("click", () => aside.classList.remove("open")));
+
+  // Desktop collapse (icon-only rail), remembered per browser like the app's ← .
+  const COLLAPSE_KEY = "cv-sidebar-collapsed";
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(COLLAPSE_KEY) === "1"; } catch (_) {}
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const collapseBtn = document.getElementById("cv-collapse");
+  if (collapseBtn) collapseBtn.onclick = () => {
+    const on = !document.body.classList.contains("sidebar-collapsed");
+    document.body.classList.toggle("sidebar-collapsed", on);
+    try { localStorage.setItem(COLLAPSE_KEY, on ? "1" : "0"); } catch (_) {}
+  };
 
   const tick = () => {
     const el = document.getElementById("cv-clock");

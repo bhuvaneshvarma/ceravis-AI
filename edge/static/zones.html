@@ -111,7 +111,11 @@ async function loadZones(camera_id) {
 
 function renderZoneTable() {
   $('zone-tbody').innerHTML = zones.length === 0
-    ? '<tr><td colspan="4">no zones yet for this camera</td></tr>'
+    ? `<tr><td colspan="4"><div class="empty">
+         <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20 3 17V4l6 3 6-3 6 3v13l-6-3-6 3Z"/><path d="M9 7v13M15 4v13"/></svg></div>
+         <div class="empty-title">No zones on this camera yet</div>
+         <div class="empty-sub">Click on the frame to outline an area, name it, then Add zone.</div>
+       </div></td></tr>`
     : zones.map((z, i) => `
         <tr>
           <td><code>${z.zone_id}</code></td>
