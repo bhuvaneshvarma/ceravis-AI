@@ -92,6 +92,17 @@ if command -v frpc >/dev/null 2>&1; then
 fi
 
 install -m 0644 "$TMP" "$FRPC"
-systemctl restart frpc
+# First setup on a fresh edge device vs. a re-key on a running one: if frpc is
+# already active, restart it onto the new config; if it's installed but stopped
+# (or was never started — the initial verify on a new device), enable + start it
+# so remote access comes up now AND survives a reboot. Either way the tunnel ends
+# up running on the freshly-keyed config with no manual step.
+if systemctl is-active --quiet frpc; then
+    systemctl restart frpc
+    STATE="restarted"
+else
+    systemctl enable --now frpc
+    STATE="started (first run)"
+fi
 echo "frpc: proxies keyed to ${EDGE_ID} (live /${EDGE_ID}, api /${EDGE_ID}/api,"
-echo "      ssh CONNECT host ${EDGE_ID} if enabled); restarted"
+echo "      ssh CONNECT host ${EDGE_ID} if enabled); ${STATE}"

@@ -5,6 +5,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CERAVIS — Setup</title>
+<link rel="icon" type="image/png" href="favicon.png" />
 <link rel="stylesheet" href="ceravis.css" />
 <style>
   .wizard-actions { display: flex; justify-content: space-between; margin-top: 22px; }
@@ -18,7 +19,7 @@
                     border: 1px solid var(--line-soft); border-radius: 9px;
                     margin-bottom: 7px; cursor: pointer; }
   .zone-list-item.sel { border-color: var(--teal-dim);
-                        background: rgba(45,212,191,.07); }
+                        background: rgba(46,158,143,.07); }
   .zone-chip { width: 13px; height: 13px; border-radius: 4px; flex: 0 0 auto; }
   .contact-row { display: grid; grid-template-columns: 1fr 130px 1fr 36px;
                  gap: 8px; margin-bottom: 8px; }
@@ -30,10 +31,10 @@
   .etab { flex: 1; padding: 8px; border-radius: 8px; cursor: pointer;
           background: var(--panel-2); border: 1px solid var(--line);
           color: var(--muted); font-size: 12.5px; font-weight: 600; }
-  .etab.active { background: rgba(45,212,191,.1); border-color: var(--teal-dim);
-                 color: var(--teal); }
+  .etab.active { background: rgba(46,158,143,.1); border-color: var(--teal-dim);
+                 color: var(--teal-dim); }
   .enroll-status { font-size: 12.5px; }
-  .ectx { font-size: 12.5px; color: var(--muted); background: rgba(96,165,250,.07);
+  .ectx { font-size: 12.5px; color: var(--muted); background: rgba(59,130,196,.07);
           border: 1px solid var(--line-soft); border-radius: 9px;
           padding: 9px 12px; margin: 12px 0; }
   .frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
@@ -56,56 +57,182 @@
   .cov-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
   .cov-cell { padding: 7px 9px; border-radius: 8px; font-size: 11.5px; cursor: pointer;
               border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); }
-  .cov-cell.on { border-color: var(--teal-dim); background: rgba(45,212,191,.1); color: var(--teal); }
+  .cov-cell.on { border-color: var(--teal-dim); background: rgba(46,158,143,.1); color: var(--teal-dim); }
   .cov-cell.next { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal-dim) inset; }
   .prof-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
               border: 1px solid var(--line-soft); border-radius: 9px;
               margin-bottom: 6px; cursor: pointer; font-size: 12.5px; }
-  .prof-row.sel { border-color: var(--teal-dim); background: rgba(45,212,191,.07); }
+  .prof-row.sel { border-color: var(--teal-dim); background: rgba(46,158,143,.07); }
   .prof-row .res { font-weight: 700; font-variant-numeric: tabular-nums; }
   .prof-row .tag { font-size: 10px; letter-spacing: .5px; padding: 1px 6px;
                    border-radius: 999px; border: 1px solid var(--line); }
-  .prof-row .tag.bad { color: #f87171; border-color: rgba(248,113,113,.45); }
+  .prof-row .tag.bad { color: var(--bad); border-color: rgba(226,61,83,.45); }
   .prof-row .pick { margin-left: auto; font-size: 10px; letter-spacing: .5px;
-                    color: var(--teal); }
+                    color: var(--teal-dim); }
+
+  /* ---- recipient profile header (step 1) ---- */
+  .rec-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .rec-avatar { width: 58px; height: 58px; border-radius: 14px; flex: 0 0 auto;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 20px; font-weight: 800; color: #fff; letter-spacing: 1px;
+                background: linear-gradient(135deg, var(--orange), var(--orange-dim));
+                box-shadow: 0 6px 16px rgba(242,106,46,.3); }
+  .rec-name { font-size: 18px; font-weight: 700; color: var(--navy);
+              display: flex; align-items: center; gap: 9px; }
+  .rec-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+
+  /* =====================================================================
+     LOGIN GATE — full-screen sign-in that mirrors the Ceravis Health app
+     (email → one-time code). Shown until this device has a verified account.
+     ===================================================================== */
+  .login-wrap {
+    position: fixed; inset: 0; z-index: 200; overflow: auto;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 32px 18px;
+    background:
+      linear-gradient(180deg, rgba(18,40,60,.82), rgba(18,40,60,.88)),
+      url("bg.png") center/cover no-repeat, var(--navy);
+  }
+  .login-card {
+    width: 100%; max-width: 880px;
+    display: grid; grid-template-columns: 1fr 1.15fr;
+    background: #fff; border-radius: 26px; overflow: hidden;
+    box-shadow: 0 30px 80px rgba(6,20,34,.45);
+  }
+  .login-brand {
+    padding: 34px 30px; background: linear-gradient(180deg, #fbfdff, #f2f6fb);
+    border-right: 1px solid var(--line);
+  }
+  .login-logo { height: 34px; width: auto; display: block; margin-bottom: 18px; }
+  .login-hero { width: 100%; border-radius: 14px; display: block; margin-bottom: 20px;
+                box-shadow: 0 10px 26px rgba(16,42,67,.12); }
+  .login-brand-title { margin: 0 0 8px; font-size: 21px; font-weight: 800;
+                       color: var(--navy); line-height: 1.28; }
+  .login-brand-title span { color: var(--teal-dim); }
+  .login-brand-sub { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+  .login-form { padding: 42px 40px; display: flex; flex-direction: column; justify-content: center; }
+  .login-h1 { margin: 0 0 4px; font-size: 30px; font-weight: 800; color: var(--navy); }
+  .login-lead { margin: 0 0 26px; color: var(--muted); font-size: 13px; }
+  .login-label { display: block; font-size: 12px; font-weight: 600; color: var(--navy);
+                 margin: 0 0 8px; }
+  .login-input { position: relative; }
+  .login-input .lg-ic { position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+                        color: var(--faint); font-size: 15px; pointer-events: none; }
+  .login-input input { padding-left: 38px; height: 48px; border-radius: 12px; }
+  .login-input.readonly input { color: var(--muted); background: var(--panel-2); }
+  .login-input .lg-edit { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+                          background: none; border: 0; color: var(--teal-dim); cursor: pointer;
+                          font-size: 15px; padding: 6px; border-radius: 8px; }
+  .login-input .lg-edit:hover { background: rgba(46,158,143,.1); }
+  .login-cta { width: 100%; justify-content: center; height: 50px; border-radius: 12px;
+               font-size: 15px; margin-top: 22px; }
+  .login-otp-head { display: flex; align-items: center; justify-content: space-between;
+                    margin: 22px 0 10px; font-size: 12px; }
+  .otp-boxes { display: flex; gap: 12px; }
+  .otp-boxes input { width: 100%; height: 62px; text-align: center; font-size: 24px;
+                     font-weight: 700; color: var(--navy); border-radius: 12px; padding: 0; }
+  .login-resend { text-align: center; margin-top: 16px; font-size: 12.5px; color: var(--muted); }
+  .login-resend b { color: var(--navy); }
+  .login-resend a { color: var(--teal-dim); font-weight: 600; text-decoration: none; }
+  .login-msg { min-height: 20px; margin-top: 12px; font-size: 12.5px; text-align: center; }
+  .login-foot { margin-top: 22px; color: rgba(255,255,255,.85); font-size: 12px;
+                font-weight: 600; letter-spacing: .4px; }
+  .lg-toast { position: fixed; top: 22px; right: 22px; z-index: 300;
+              background: var(--ok); color: #fff; font-weight: 600; font-size: 13.5px;
+              padding: 11px 18px; border-radius: 11px; box-shadow: 0 10px 30px rgba(0,0,0,.25);
+              display: flex; align-items: center; gap: 10px; animation: slideIn .2s ease; }
+  @media (max-width: 720px) {
+    .login-card { grid-template-columns: 1fr; }
+    .login-brand { display: none; }
+    .login-form { padding: 34px 26px; }
+  }
 </style>
 </head>
 <body>
-<div class="page">
+
+<!-- =================== LOGIN GATE =================== -->
+<div class="login-wrap" id="login-gate">
+  <div class="login-card">
+    <div class="login-brand">
+      <img class="login-logo" src="Logo.png" alt="Ceravis Health" />
+      <img class="login-hero" src="img.png" alt="" />
+      <h2 class="login-brand-title">Healthcare Management,<br><span>Reimagined.</span></h2>
+      <p class="login-brand-sub">Providing seamless care coordination and intelligent
+        health monitoring for every care recipient.</p>
+    </div>
+    <div class="login-form">
+      <!-- EMAIL VIEW -->
+      <div id="lg-email-view">
+        <h1 class="login-h1">Login</h1>
+        <p class="login-lead">Connect with your care network and care recipients data in seconds.</p>
+        <label class="login-label">Email / Phone / Member ID</label>
+        <div class="login-input">
+          <span class="lg-ic">&#9993;</span>
+          <input type="email" id="lg-email" placeholder="you@example.com" autocomplete="email" />
+        </div>
+        <button class="btn btn-teal login-cta" id="lg-continue">Continue</button>
+        <div class="login-msg" id="lg-email-msg"></div>
+      </div>
+      <!-- OTP VIEW -->
+      <div id="lg-otp-view" hidden>
+        <h1 class="login-h1">Login</h1>
+        <p class="login-lead">Connect with your care network and care recipients data in seconds.</p>
+        <label class="login-label">Email / Phone / Member ID</label>
+        <div class="login-input readonly">
+          <span class="lg-ic">&#9993;</span>
+          <input type="text" id="lg-email-shown" readonly />
+          <button class="lg-edit" id="lg-edit" title="Edit email">&#9998;</button>
+        </div>
+        <div class="login-otp-head">
+          <label class="login-label" style="margin:0">5-Digit Code</label>
+          <span class="faint">Check your email</span>
+        </div>
+        <div class="otp-boxes" id="lg-otp">
+          <input maxlength="1" inputmode="numeric" />
+          <input maxlength="1" inputmode="numeric" />
+          <input maxlength="1" inputmode="numeric" />
+          <input maxlength="1" inputmode="numeric" />
+          <input maxlength="1" inputmode="numeric" />
+        </div>
+        <button class="btn btn-teal login-cta" id="lg-verify">Verify Identity</button>
+        <div class="login-resend" id="lg-resend"></div>
+        <div class="login-msg" id="lg-otp-msg"></div>
+      </div>
+    </div>
+  </div>
+  <div class="login-foot">&copy; 2026 Ceravis Health</div>
+</div>
+
+<!-- =================== SETUP WIZARD =================== -->
+<div class="page" id="wizard" hidden>
   <div class="page-head">
-    <h1>Home setup</h1>
-    <div class="sub">Verify your account, then onboard: recipient &rarr; cameras &rarr;
+    <h1>Device setup</h1>
+    <div class="sub">Onboard this care recipient: recipient &rarr; cameras &rarr;
       room zones &rarr; enrollment. Everything saves to the device as you go.</div>
   </div>
 
   <!-- stepper -->
   <div class="stepper" id="stepper"></div>
 
-  <!-- ============ STEP 1 — ACCOUNT ============ -->
-  <section id="step-1" hidden>
+  <!-- ============ STEP 1 — RECIPIENT ============ -->
+  <section id="step-2" hidden>
     <div class="split">
       <div class="card">
-        <h2>Account verification</h2>
-        <div class="hint mb">Enter the email and mobile number registered with your
-          CERAVIS account. They're verified with the CERAVIS server — only a
-          registered account can continue onboarding.</div>
-        <label class="f">Email</label>
-        <input type="email" id="a-email" placeholder="you@example.com" />
-        <label class="f">Mobile number</label>
-        <input type="tel" id="a-phone" placeholder="+91 98765 43210" />
-        <div class="row mt">
-          <button class="btn btn-primary" id="a-verify">Verify &amp; continue</button>
-          <span class="probe-result" id="a-out"></span>
-        </div>
+        <h2>Care recipient</h2>
+        <div class="hint mb">Your verified CERAVIS profile — registered as the care
+          recipient on this device.</div>
+        <div id="r-profile"></div>
       </div>
       <div class="card">
-        <h2>Your account</h2>
-        <div id="a-details" class="hint">Verify above to load your account details.</div>
+        <h2>Registered on this device</h2>
+        <table class="tbl"><tbody id="r-table"></tbody></table>
+        <div class="hint mt">Face/body enrollment is the final step. Falls &amp;
+          posture work without it; enrollment adds identity (recipient vs others).</div>
       </div>
     </div>
   </section>
 
-  <!-- ============ STEP 3 — CAMERAS ============ -->
+  <!-- ============ STEP 2 — CAMERAS ============ -->
   <section id="step-3" hidden>
     <div class="split">
       <div class="card">
@@ -186,7 +313,7 @@
     </div>
   </section>
 
-  <!-- ============ STEP 4 — ZONES ============ -->
+  <!-- ============ STEP 3 — ZONES ============ -->
   <section id="step-4" hidden>
     <div class="split">
       <div class="card">
@@ -218,25 +345,7 @@
     </div>
   </section>
 
-  <!-- ============ STEP 2 — RECIPIENT ============ -->
-  <section id="step-2" hidden>
-    <div class="split">
-      <div class="card">
-        <h2>Care recipient</h2>
-        <div class="hint mb">Your verified CERAVIS profile — registered as the care
-          recipient on this device.</div>
-        <div id="r-profile"></div>
-      </div>
-      <div class="card">
-        <h2>Registered on this device</h2>
-        <table class="tbl"><tbody id="r-table"></tbody></table>
-        <div class="hint mt">Face/body enrollment is the final step. Falls &amp;
-          posture work without it; enrollment adds identity (recipient vs others).</div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ STEP 5 — ENROLLMENT (embeddings) ============ -->
+  <!-- ============ STEP 4 — ENROLLMENT (embeddings) ============ -->
   <section id="step-5" hidden>
     <div class="split">
       <div class="card">
@@ -334,95 +443,12 @@
 <script src="ceravis.js"></script>
 <script src="live-view.js"></script>
 <script>
-renderNav("setup.html");
-
-/* ================= wizard frame ================= */
-const STEPS = ["Account", "Recipient", "Cameras", "Room zones", "Enrollment"];
-let step = 1;
-const streams = {};            // camera_id -> liveView handle (step 1 wall)
-
-function renderStepper() {
-  document.getElementById("stepper").innerHTML = STEPS.map((s, i) => {
-    const n = i + 1;
-    const cls = n === step ? "active" : n < step ? "done" : "";
-    const line = i < STEPS.length - 1
-      ? `<div class="step-line ${n < step ? "done" : ""}"></div>` : "";
-    return `<div class="step ${cls}"><div class="dot">${n < step ? "✓" : n}</div>
-            <div class="lbl">${s}</div></div>${line}`;
-  }).join("");
-}
-function show(n) {
-  step = Math.min(Math.max(n, 1), 5);
-  for (let i = 1; i <= 5; i++)
-    document.getElementById(`step-${i}`).hidden = i !== step;
-  document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
-  document.getElementById("w-next").style.visibility = step === 5 ? "hidden" : "visible";
-  // Step 1 (Account) gates the wizard: no Continue until verified.
-  if (step === 1 && !ACCOUNT.verified)
-    document.getElementById("w-next").style.visibility = "hidden";
-  renderStepper();
-  if (step !== 5) stopEnrollPreview();          // don't keep the WS alive off-step
-  if (step === 1) initAccount();
-  if (step === 2) initRecipient();
-  if (step === 3) refreshCameras();
-  if (step === 4) initZones();
-  if (step === 5) initEnroll();
-}
-document.getElementById("w-back").onclick = () => show(step - 1);
-document.getElementById("w-next").onclick = async () => {
-  if (step === 1 && !ACCOUNT.verified) return toast("Verify your account first", "err");
-  if (step === 3 && ACCOUNT.verified) syncCameras(false);   // push cameras on the way out
-  // Leaving Room zones: write the ONE consolidated zones file to the cloud.
-  // (The posture images are then pulled as the Enrollment step opens.)
-  if (step === 4 && ACCOUNT.verified) await finalizeZones();
-  show(step + 1);
-};
-
-/* Continue from Room zones -> upload the single consolidated zones_<id>.json
-   (all cameras). Best-effort: a cloud hiccup never blocks leaving the step. */
-async function finalizeZones() {
-  try {
-    const z = await api("/api/v1/zones/finalize", { method: "POST" });
-    if (z && z.uploaded)
-      toast(`Zones saved to your account · ${z.cameras} camera(s), ${z.zones} zone(s)`);
-    else if (z && z.reason)
-      toast(`Zones not uploaded: ${z.reason}`, "err");
-  } catch (e) { /* non-fatal */ }
-}
-
-/* ================= STEP 1 — account verification ================= */
+/* ================= account state (shared) ================= */
 const ACCOUNT = { verified: false, user: null };
 let pendingEnrollRid = null;     // recipient to enroll once we reach the last step
 
-async function initAccount() {
-  try {
-    const a = await api("/api/v1/account");
-    if (a && a.user) {
-      document.getElementById("a-email").value = a.user.email || "";
-      document.getElementById("a-phone").value = a.user.phone || "";
-    }
-    if (a && a.verified && a.user) {
-      ACCOUNT.verified = true; ACCOUNT.user = a.user; renderAccount();
-      document.getElementById("w-next").style.visibility = "visible";
-    } else if (a && a.configured === false) {
-      document.getElementById("a-out").innerHTML =
-        `<span class="warn">CERAVIS server not configured on this device yet.</span>`;
-    }
-  } catch {}
-}
-function renderAccount() {
-  const u = ACCOUNT.user; if (!u) return;
-  const name = [u.firstName, u.lastName].filter(Boolean).join(" ") || "—";
-  document.getElementById("a-details").innerHTML = `
-    <div class="review-block"><b>${name}</b>
-      <div class="faint" style="margin-top:6px">
-        ${u.email || ""}${u.phone ? " · " + u.phone : ""}<br>
-        ${u.role ? "Role: " + u.role + " · " : ""}${u.tier ? "Tier: " + u.tier : ""}${u.gender ? " · " + u.gender : ""}<br>
-        <span class="faint">CERAVIS user #${u.ceravisUserId ?? "—"}</span>
-      </div></div>`;
-}
 /* Small spinner + a "backend is reachable again" wait, used while the device
-   saves the edge_id and restarts the frp tunnel — which briefly drops a REMOTE
+   saves the edge_id and re-keys the frp tunnel — which briefly drops a REMOTE
    session, so we poll until it answers again before letting the operator move on. */
 function startSpinner(el, label) {
   const frames = ["◐", "◓", "◑", "◒"]; let i = 0;
@@ -458,56 +484,227 @@ function provisionManualHtml(rem, lead) {
   return `<span class="warn">${lead}</span>`
     + (block ? `<div class="faint" style="margin-top:6px">${block}</div>` : "");
 }
-document.getElementById("a-verify").onclick = async () => {
-  const btn = document.getElementById("a-verify");
-  const email = document.getElementById("a-email").value.trim();
-  const phone = document.getElementById("a-phone").value.trim();
-  const out = document.getElementById("a-out");
-  if (!email || !phone)
-    return out.innerHTML = `<span class="bad">Email and mobile number are required.</span>`;
-  btn.disabled = true;
-  out.innerHTML = `<span class="muted">Verifying…</span>`;
+
+/* ================= LOGIN GATE — email → one-time code ================= */
+/* A care recipient signs in on this edge device exactly like the Ceravis Health
+   app: enter the account email, receive a code, verify. Verifying fetches the
+   full account (get_user_details), assigns this device's edge_id and re-keys the
+   frp tunnel + MediaMTX live paths — then the onboarding wizard opens.
+
+   The one-time code is OPTIONAL for now: request-otp is a stub until the
+   app-server send-OTP call is wired in, so any code is accepted and /verify
+   (email lookup) is what actually gates entry, unchanged from before. */
+let resendTimer = null;
+
+function loginToast(msg) {
+  document.querySelectorAll(".lg-toast").forEach(t => t.remove());
+  const t = document.createElement("div");
+  t.className = "lg-toast";
+  t.innerHTML = `<span>✓</span><span>${msg}</span>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+async function initGate() {
+  // Already onboarded on this device? Skip the login and open the wizard.
+  try {
+    const a = await api("/api/v1/account");
+    if (a && a.verified && a.user) {
+      ACCOUNT.verified = true; ACCOUNT.user = a.user;
+      return enterWizard();
+    }
+    if (a && a.user && a.user.email)
+      document.getElementById("lg-email").value = a.user.email;
+    if (a && a.configured === false)
+      document.getElementById("lg-email-msg").innerHTML =
+        `<span class="warn">CERAVIS server not configured on this device yet.</span>`;
+  } catch (_) { /* offline / fresh device — just show the login */ }
+  document.getElementById("lg-email").focus();
+}
+
+function showOtpView(email) {
+  document.getElementById("lg-email-view").hidden = true;
+  document.getElementById("lg-otp-view").hidden = false;
+  document.getElementById("lg-email-shown").value = email;
+  const boxes = [...document.querySelectorAll("#lg-otp input")];
+  boxes.forEach(b => b.value = "");
+  boxes[0].focus();
+}
+function showEmailView() {
+  clearInterval(resendTimer);
+  document.getElementById("lg-otp-view").hidden = true;
+  document.getElementById("lg-email-view").hidden = false;
+  document.getElementById("lg-email").focus();
+}
+
+/* Trigger the login code for this email. Best-effort while the app-server call
+   is pending: a green {sent:true} (or an unreachable stub) advances to the code
+   screen; only an explicit {sent:false} blocks. */
+async function requestOtp(email) {
+  let r;
+  try {
+    r = await api("/api/v1/account/request-otp",
+      { method: "POST", body: JSON.stringify({ email }) });
+  } catch (_) {
+    r = { sent: true, soft: true };     // stub not deployed — keep OTP optional
+  }
+  return r && r.sent !== false;
+}
+
+function startResend(secs) {
+  clearInterval(resendTimer);
+  let left = secs;
+  const box = document.getElementById("lg-resend");
+  const tick = () => {
+    if (left <= 0) {
+      clearInterval(resendTimer);
+      box.innerHTML = `<a href="#" id="lg-resend-a">Request new code</a>`;
+      document.getElementById("lg-resend-a").onclick = async (e) => {
+        e.preventDefault();
+        const email = document.getElementById("lg-email-shown").value.trim();
+        if (await requestOtp(email)) { loginToast("OTP sent"); startResend(secs); }
+      };
+      return;
+    }
+    box.innerHTML = `Request new code in <b>${left}s</b>`;
+    left--;
+  };
+  tick();
+  resendTimer = setInterval(tick, 1000);
+}
+
+document.getElementById("lg-continue").onclick = async () => {
+  const email = document.getElementById("lg-email").value.trim();
+  const msg = document.getElementById("lg-email-msg");
+  const btn = document.getElementById("lg-continue");
+  if (!email) { msg.innerHTML = `<span class="bad">Enter your email to continue.</span>`; return; }
+  btn.disabled = true; msg.innerHTML = `<span class="muted">Sending code…</span>`;
+  const ok = await requestOtp(email);
+  btn.disabled = false;
+  if (!ok) { msg.innerHTML = `<span class="bad">No CERAVIS account found for this email.</span>`; return; }
+  msg.textContent = "";
+  showOtpView(email);
+  loginToast("OTP sent");
+  startResend(30);
+};
+document.getElementById("lg-email").addEventListener("keydown", e => {
+  if (e.key === "Enter") document.getElementById("lg-continue").click();
+});
+document.getElementById("lg-edit").onclick = showEmailView;
+
+/* OTP boxes: auto-advance on type, hop back on backspace, submit on Enter. */
+(() => {
+  const boxes = [...document.querySelectorAll("#lg-otp input")];
+  boxes.forEach((b, i) => {
+    b.addEventListener("input", () => {
+      b.value = b.value.replace(/\D/g, "").slice(0, 1);
+      if (b.value && i < boxes.length - 1) boxes[i + 1].focus();
+    });
+    b.addEventListener("keydown", e => {
+      if (e.key === "Backspace" && !b.value && i > 0) boxes[i - 1].focus();
+      if (e.key === "Enter") document.getElementById("lg-verify").click();
+    });
+    b.addEventListener("paste", e => {
+      const d = (e.clipboardData.getData("text") || "").replace(/\D/g, "");
+      if (!d) return;
+      e.preventDefault();
+      boxes.forEach((x, k) => x.value = d[k] || "");
+      boxes[Math.min(d.length, boxes.length) - 1].focus();
+    });
+  });
+})();
+
+document.getElementById("lg-verify").onclick = async () => {
+  const email = document.getElementById("lg-email-shown").value.trim();
+  const otp = [...document.querySelectorAll("#lg-otp input")].map(b => b.value).join("");
+  const msg = document.getElementById("lg-otp-msg");
+  const btn = document.getElementById("lg-verify");
+  btn.disabled = true; msg.innerHTML = `<span class="muted">Verifying…</span>`;
   try {
     const r = await api("/api/v1/account/verify",
-      { method: "POST", body: JSON.stringify({ email, phone }) });
-    if (r.verified) {
-      ACCOUNT.verified = true; ACCOUNT.user = r.user; renderAccount();
-      const rem = r.remote;
-      if (r.provisioning) {
-        // The helper is installed, so the device is re-keying the edge_id and
-        // restarting the tunnel; if you're remote that briefly drops this
-        // connection, so wait until frpc is really routing the new token.
-        const stop = startSpinner(out, "Verified — provisioning remote access & restarting the tunnel…");
-        const acct = await waitForProvisioning(true);
-        stop();
-        if (acct && acct.user) ACCOUNT.user = acct.user;   // keep edgeId fresh
-        const keyed = acct && acct.remote && acct.remote.keyed;
-        out.innerHTML = keyed
-          ? `<span class="ok">✓ Verified — remote access ready</span>`
-          : provisionManualHtml(acct && acct.remote,
-              "Verified — the tunnel isn’t routing yet. Wait a few seconds and reload, or apply it on the device:");
-      } else if (rem && rem.fleet && !rem.helper_installed) {
-        // Fleet device, but the privileged helper isn't installed — the tunnel
-        // can't auto-update. Say plainly what to run instead of a false "ready".
-        out.innerHTML = provisionManualHtml(rem,
-          "Verified — remote access needs a one-time setup on this device:");
-      } else {
-        out.innerHTML = `<span class="ok">✓ Verified</span>`;
-      }
-      document.getElementById("w-next").style.visibility = "visible";
-      toast("Account verified — continue to recipient");
-    } else {
-      ACCOUNT.verified = false; ACCOUNT.user = null;
-      document.getElementById("a-details").innerHTML =
-        `<span class="faint">Verify above to load your account details.</span>`;
-      out.innerHTML = `<span class="bad">✗ ${r.reason || "Not verified"}</span>`;
-      document.getElementById("w-next").style.visibility = "hidden";
+      { method: "POST", body: JSON.stringify({ email, otp }) });
+    if (!r.verified) {
+      msg.innerHTML = `<span class="bad">✗ ${r.reason || "Not verified"}</span>`;
+      btn.disabled = false; return;
     }
-  } catch (e) { out.innerHTML = `<span class="bad">✗ verification failed</span>`; }
-  finally { btn.disabled = false; }
+    ACCOUNT.verified = true; ACCOUNT.user = r.user;
+    // Verifying assigned this device's edge_id; the tunnel re-key + MediaMTX
+    // live-path repoint run in the background. If a tunnel apply was scheduled,
+    // wait until frpc is really routing before opening the wizard.
+    if (r.provisioning) {
+      const stop = startSpinner(msg, "Verified — updating remote access…");
+      const acct = await waitForProvisioning(true);
+      stop();
+      if (acct && acct.user) ACCOUNT.user = acct.user;   // keep edgeId fresh
+    }
+    clearInterval(resendTimer);
+    loginToast("Signed in");
+    enterWizard();
+  } catch (e) {
+    msg.innerHTML = `<span class="bad">✗ verification failed</span>`;
+    btn.disabled = false;
+  }
 };
 
-/* ================= STEP 3 — cameras ================= */
+/* ================= wizard frame ================= */
+/* Login is the gate; the wizard is the four onboarding steps below. */
+const STEPS = ["Recipient", "Cameras", "Room zones", "Enrollment"];
+const SECTIONS = ["step-2", "step-3", "step-4", "step-5"];   // wizard step i → section id
+let step = 1;
+const streams = {};            // camera_id -> liveView handle (cameras wall)
+
+function enterWizard() {
+  document.getElementById("login-gate").hidden = true;
+  document.getElementById("wizard").hidden = false;
+  if (!document.querySelector(".topbar")) renderNav("setup.html");
+  show(1);
+}
+
+function renderStepper() {
+  document.getElementById("stepper").innerHTML = STEPS.map((s, i) => {
+    const n = i + 1;
+    const cls = n === step ? "active" : n < step ? "done" : "";
+    const line = i < STEPS.length - 1
+      ? `<div class="step-line ${n < step ? "done" : ""}"></div>` : "";
+    return `<div class="step ${cls}"><div class="dot">${n < step ? "✓" : n}</div>
+            <div class="lbl">${s}</div></div>${line}`;
+  }).join("");
+}
+function show(n) {
+  step = Math.min(Math.max(n, 1), STEPS.length);
+  SECTIONS.forEach((id, i) =>
+    document.getElementById(id).hidden = (i + 1) !== step);
+  document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
+  document.getElementById("w-next").style.visibility = step === STEPS.length ? "hidden" : "visible";
+  renderStepper();
+  if (step !== STEPS.length) stopEnrollPreview();     // don't keep the WS alive off-step
+  if (step === 1) initRecipient();
+  if (step === 2) refreshCameras();
+  if (step === 3) initZones();
+  if (step === 4) initEnroll();
+}
+document.getElementById("w-back").onclick = () => show(step - 1);
+document.getElementById("w-next").onclick = async () => {
+  if (step === 2) syncCameras(false);        // leaving Cameras: push to the account
+  // Leaving Room zones: write the ONE consolidated zones file to the cloud.
+  // (The posture images are then pulled as the Enrollment step opens.)
+  if (step === 3) await finalizeZones();
+  show(step + 1);
+};
+
+/* Continue from Room zones -> upload the single consolidated zones_<id>.json
+   (all cameras). Best-effort: a cloud hiccup never blocks leaving the step. */
+async function finalizeZones() {
+  try {
+    const z = await api("/api/v1/zones/finalize", { method: "POST" });
+    if (z && z.uploaded)
+      toast(`Zones saved to your account · ${z.cameras} camera(s), ${z.zones} zone(s)`);
+    else if (z && z.reason)
+      toast(`Zones not uploaded: ${z.reason}`, "err");
+  } catch (e) { /* non-fatal */ }
+}
+
+/* ================= STEP 2 — cameras ================= */
 async function refreshCameras() {
   const [cams, status] = await Promise.all([
     api("/api/v1/cameras"), api("/api/v1/cameras/status").catch(() => ({})),
@@ -753,7 +950,7 @@ document.getElementById("c-save").onclick = async () => {
     refreshCameras();
   } catch (e) { toast(e.detail || "Save failed", "err"); }
 };
-setInterval(() => { if (step === 3) refreshCameras(); }, 5000);
+setInterval(() => { if (step === 2 && !document.getElementById("wizard").hidden) refreshCameras(); }, 5000);
 
 /* Push registered cameras (room + WebSocket URL) to the CERAVIS account. */
 async function syncCameras(manual) {
@@ -775,7 +972,7 @@ async function syncCameras(manual) {
   } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; }
 }
 
-/* ================= STEP 4 — zones ================= */
+/* ================= STEP 3 — zones ================= */
 const Z = { cam: null, img: null, zones: [], drawing: [], sel: -1, drag: null };
 const zCanvas = document.getElementById("z-canvas");
 const zCtx = zCanvas.getContext("2d");
@@ -907,9 +1104,9 @@ document.getElementById("z-save").onclick = async () => {
   } catch (e) { toast("Save failed", "err"); }
 };
 
-/* ================= STEP 2 — recipient ================= */
+/* ================= STEP 1 — recipient ================= */
 function profRow(k, v) {
-  return `<div style="display:flex;justify-content:space-between;padding:5px 0;
+  return `<div style="display:flex;justify-content:space-between;padding:7px 0;
     border-bottom:1px solid var(--line-soft);font-size:13px">
     <span class="faint">${k}</span><b>${v}</b></div>`;
 }
@@ -917,21 +1114,28 @@ async function initRecipient() {
   const prof = document.getElementById("r-profile");
   const u = ACCOUNT.user;
   if (!u) {
-    if (prof) prof.innerHTML = `<span class="faint">Verify your account first (step 1).</span>`;
+    if (prof) prof.innerHTML = `<span class="faint">Sign in first.</span>`;
     refreshRecipients();
     return;
   }
   const name = [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email || "—";
+  const initials = (name.match(/\b\w/g) || ["C"]).slice(0, 2).join("").toUpperCase();
   if (prof) prof.innerHTML =
-    `<div style="font-size:17px;font-weight:600;margin-bottom:10px">${name}</div>`
-    + profRow("CERAVIS user", "#" + (u.ceravisUserId ?? "—"))
+    `<div class="rec-head">
+       <div class="rec-avatar">${initials}</div>
+       <div>
+         <div class="rec-name">${name} <span class="pill pill-ok">ACTIVE</span></div>
+         <div class="rec-meta">${u.role || "Care Recipient"} · CERAVIS #${u.ceravisUserId ?? "—"}${u.tier ? " · " + u.tier : ""}</div>
+       </div>
+     </div>`
     + profRow("First name", u.firstName || "—")
     + profRow("Last name", u.lastName || "—")
     + profRow("Email", u.email || "—")
     + profRow("Mobile", u.phone || "—")
     + profRow("Gender", u.gender || "—")
     + profRow("Role", u.role || "—")
-    + profRow("Tier", u.tier || "—");
+    + profRow("Tier", u.tier || "—")
+    + profRow("Device edge id", u.edgeId || "—");
   await ensureRecipient(u);
   refreshRecipients();
 }
@@ -962,12 +1166,12 @@ async function refreshRecipients() {
           <td><button class="btn btn-ghost btn-sm" ${attr}="${r.recipient_id}">Enroll</button></td>
         </tr>`;
       }).join("");
-  const t1 = document.getElementById("r-table");        // step 2 (Recipient)
+  const t1 = document.getElementById("r-table");        // step 1 (Recipient)
   if (t1) t1.innerHTML = rows("data-enroll-nav");
-  const t2 = document.getElementById("r-table-en");      // step 5 (Enrollment)
+  const t2 = document.getElementById("r-table-en");      // step 4 (Enrollment)
   if (t2) t2.innerHTML = rows("data-enroll-sel");
   document.querySelectorAll("[data-enroll-nav]").forEach(b =>
-    b.onclick = () => { pendingEnrollRid = b.dataset.enrollNav; show(5); });
+    b.onclick = () => { pendingEnrollRid = b.dataset.enrollNav; show(4); });
   document.querySelectorAll("[data-enroll-sel]").forEach(b =>
     b.onclick = () => selectEnroll(b.dataset.enrollSel));
 }
@@ -1183,7 +1387,7 @@ document.getElementById("en-commit").onclick = async () => {
   } catch (e) { toast(e.detail || "Enroll failed", "err"); }
 };
 
-/* ================= STEP 5 — enrollment ================= */
+/* ================= STEP 4 — enrollment ================= */
 async function initEnroll() {
   refreshRecipients();
   let rid = pendingEnrollRid;
@@ -1216,7 +1420,7 @@ async function initEnroll() {
 }
 
 /* ================= boot ================= */
-show(1);
+initGate();
 </script>
 </body>
 </html>

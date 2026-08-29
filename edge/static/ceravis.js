@@ -29,16 +29,20 @@ function toast(msg, kind = "ok", ms = 2600) {
 }
 
 /* ---- shared top navigation ------------------------------------------ */
-const CERAVIS_LOGO = `
-<svg class="mark" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M16 2 L28 7 V15 C28 23 23 28.5 16 30 C9 28.5 4 23 4 15 V7 Z"
-        stroke="#2dd4bf" stroke-width="2" fill="rgba(45,212,191,.08)"/>
-  <path d="M8 17 H12 L14 12 L17 21 L19 15.5 L20.5 17 H24"
-        stroke="#2dd4bf" stroke-width="1.8" fill="none"
-        stroke-linecap="round" stroke-linejoin="round"/>
-</svg>`;
+/* The brand mark is the Ceravis Health wordmark (edge/static/Logo.png), so the
+   edge UI carries the same identity as the cloud app. */
+const CERAVIS_LOGO = `<img class="logo-img" src="Logo.png" alt="Ceravis Health" />`;
+
+/* Put the Ceravis monogram in the browser tab, once, on every page. */
+function ensureFavicon() {
+  if (document.querySelector('link[rel="icon"]')) return;
+  const link = document.createElement("link");
+  link.rel = "icon"; link.type = "image/png"; link.href = "favicon.png";
+  document.head.appendChild(link);
+}
 
 function renderNav(active) {
+  ensureFavicon();
   const links = [
     ["setup.html",     "Setup"],
     ["live.html",      "Live Wall"],
@@ -56,8 +60,7 @@ function renderNav(active) {
   bar.innerHTML = `
     <a class="brand" href="live.html">
       ${CERAVIS_LOGO}
-      <span><span class="word">CERAVIS</span>
-      <span class="tag">Care Intelligence &middot; Edge Surveillance</span></span>
+      <span class="tag">Care Intelligence &middot; Edge Surveillance</span>
     </a>
     <nav class="nav">${nav}</nav>
     <div class="spacer"></div>
