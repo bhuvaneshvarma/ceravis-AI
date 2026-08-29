@@ -7,6 +7,8 @@
 <!-- Inline icon: the page must never request /favicon.ico, which through the
      fleet tunnel is a 404 on every load. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M8 17h4l2-5 3 9 2-5.5L20.5 17H24' stroke='%232dd4bf' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
 <!--
   ============================================================================
@@ -51,13 +53,13 @@
 -->
 
 <style>
-  /* ---- palette: a dark "control-room" look, CERAVIS teal accent ---------- */
+  /* ---- palette: light Ceravis chrome, dark media surfaces ---------------- */
   :root{
-    --bg:#0b0f14; --panel:#111820; --panel-2:#0e141b; --line:#1e2a36;
-    --text:#e8eef5; --muted:#8aa0b4; --faint:#5b7186;
-    --teal:#2dd4bf; --teal-dim:#164e46; --teal-ink:#062b26;
-    --live:#ef4444; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444;
-    --shadow:0 10px 30px rgba(0,0,0,.45);
+    --bg:#f4f7fb; --panel:#ffffff; --panel-2:#f5f8fc; --line:#e6ecf3;
+    --text:#1e293b; --muted:#475569; --faint:#94a3b8;
+    --teal:#35989d; --teal-dim:#cfe7e4; --teal-ink:#ffffff;
+    --live:#ef4444; --ok:#00b551; --warn:#d98a24; --bad:#fb2c36;
+    --shadow:0 10px 30px rgba(15,23,42,.12);
     --radius:14px;
     font-synthesis:none;
   }
@@ -65,7 +67,7 @@
   html,body{height:100%}
   body{
     margin:0; background:var(--bg); color:var(--text);
-    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-family:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     font-size:14px; -webkit-font-smoothing:antialiased;
     display:flex; flex-direction:column; overflow:hidden;
   }
@@ -75,11 +77,12 @@
   /* ---- top bar ----------------------------------------------------------- */
   .topbar{
     display:flex; align-items:center; gap:16px; padding:10px 16px;
-    background:linear-gradient(180deg,#0f1620,#0b1119);
+    background:linear-gradient(180deg,#ffffff,#f7fafc);
     border-bottom:1px solid var(--line); flex:0 0 auto; z-index:20;
   }
   .brand{display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:.3px}
   .brand .mark{width:26px; height:26px}
+  .brand .logo-img{height:30px; width:auto; display:block}
   .brand .tag{display:block; font-size:10.5px; color:var(--muted); font-weight:500; letter-spacing:.4px}
   .topbar .spacer{flex:1}
   .pill{
@@ -100,7 +103,7 @@
     background:var(--panel-2); color:var(--muted); cursor:pointer; font-size:16px;
     transition:.15s;
   }
-  .iconbtn:hover{color:var(--text); border-color:var(--teal-dim); background:#0d1a20}
+  .iconbtn:hover{color:var(--text); border-color:var(--teal-dim); background:var(--panel-2)}
   .iconbtn.wide{width:auto; padding:0 14px; font-size:13px; font-weight:600}
 
   /* ---- layout ------------------------------------------------------------ */
@@ -115,11 +118,11 @@
     display:flex; align-items:center; gap:11px; padding:11px 12px; border-radius:11px;
     cursor:pointer; border:1px solid transparent; margin-bottom:4px; transition:.12s;
   }
-  .camrow:hover{background:#0d1620; border-color:var(--line)}
-  .camrow.active{background:#0e1c22; border-color:var(--teal-dim)}
+  .camrow:hover{background:var(--panel-2); border-color:var(--line)}
+  .camrow.active{background:rgba(53,152,157,.09); border-color:var(--teal-dim)}
   .camrow.active .cn{color:var(--teal)}
   .camrow .thumb{
-    width:44px; height:32px; flex:0 0 auto; border-radius:7px; background:#0a0e13;
+    width:44px; height:32px; flex:0 0 auto; border-radius:7px; background:var(--bg);
     border:1px solid var(--line); display:flex; align-items:center; justify-content:center;
     font-size:14px; color:var(--faint);
   }
@@ -136,7 +139,7 @@
     display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--line);
     background:var(--panel-2); flex:0 0 auto;
   }
-  .tabs{display:inline-flex; background:#0a0f15; border:1px solid var(--line); border-radius:11px; padding:3px}
+  .tabs{display:inline-flex; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:3px}
   .tab{
     padding:8px 18px; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px; color:var(--muted);
     display:inline-flex; align-items:center; gap:8px; transition:.12s; border:1px solid transparent;
@@ -165,7 +168,7 @@
     padding:9px 16px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
     color:var(--text); font-weight:600; font-size:13px; cursor:pointer; transition:.12s;
   }
-  .btn:hover{border-color:var(--teal-dim); background:#0e1a20}
+  .btn:hover{border-color:var(--teal-dim); background:var(--panel-2)}
   .btn.primary{background:var(--teal); color:var(--teal-ink); border-color:var(--teal)}
   .btn.primary:hover{filter:brightness(1.06)}
 
@@ -196,7 +199,7 @@
   .tl-wrap{position:relative}
   .tl-labels{display:flex; justify-content:space-between; font-size:10.5px; color:var(--faint); margin-bottom:5px}
   .track{
-    position:relative; height:46px; background:#0a0e13; border:1px solid var(--line); border-radius:10px;
+    position:relative; height:46px; background:#0e141b; border:1px solid var(--line); border-radius:10px;
     overflow:hidden; cursor:crosshair;
   }
   .track .hour{position:absolute; top:0; bottom:0; width:1px; background:#152230}
@@ -209,13 +212,13 @@
   .playhead{position:absolute; top:-3px; bottom:-3px; width:2px; background:#fff; box-shadow:0 0 8px rgba(255,255,255,.6); pointer-events:none; z-index:4}
   .playhead::before{content:""; position:absolute; top:-4px; left:-4px; width:10px; height:10px; border-radius:50%; background:#fff}
   .tl-hover{
-    position:absolute; top:-30px; transform:translateX(-50%); background:#0a0e13; border:1px solid var(--line);
-    padding:3px 8px; border-radius:6px; font-size:11px; color:var(--text); pointer-events:none; white-space:nowrap; display:none; z-index:6;
+    position:absolute; top:-30px; transform:translateX(-50%); background:var(--panel); border:1px solid var(--line);
+    padding:3px 8px; border-radius:6px; font-size:11px; color:var(--text); pointer-events:none; white-space:nowrap; display:none; z-index:6; box-shadow:var(--shadow);
   }
   .tl-empty{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:12px; color:var(--faint)}
 
   /* ---- slide-in panels (help / settings) --------------------------------- */
-  .scrim{position:fixed; inset:0; background:rgba(4,7,10,.55); backdrop-filter:blur(2px); z-index:40; display:none}
+  .scrim{position:fixed; inset:0; background:rgba(15,23,42,.35); backdrop-filter:blur(2px); z-index:40; display:none}
   .scrim.open{display:block}
   .panel{
     position:fixed; top:0; right:0; height:100%; width:min(480px,92vw); background:var(--panel);
@@ -237,11 +240,11 @@
   /* ---- toast ------------------------------------------------------------- */
   .toast{
     position:fixed; left:50%; bottom:26px; transform:translateX(-50%); z-index:80;
-    background:#0e1620; border:1px solid var(--line); color:var(--text); padding:12px 18px;
+    background:#ffffff; border:1px solid var(--line); color:var(--text); padding:12px 18px;
     border-radius:11px; box-shadow:var(--shadow); font-size:13px; max-width:min(560px,92vw);
   }
-  .toast.bad{border-color:#5b2323}
-  .toast.warn{border-color:#5b4a23}
+  .toast.bad{border-color:rgba(251,44,54,.4)}
+  .toast.warn{border-color:rgba(217,138,36,.4)}
 
   .hidden{display:none !important}
 
@@ -258,15 +261,8 @@
 <header class="topbar">
   <button class="iconbtn hidden" id="railToggle" title="Cameras">☰</button>
   <div class="brand">
-    <svg class="mark" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M16 2 L28 7 V15 C28 23 23 28.5 16 30 C9 28.5 4 23 4 15 V7 Z"
-            stroke="#2dd4bf" stroke-width="2" fill="rgba(45,212,191,.08)"/>
-      <path d="M8 17 H12 L14 12 L17 21 L19 15.5 L20.5 17 H24"
-            stroke="#2dd4bf" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    <span>CERAVIS
-      <span class="tag">Video Console &middot; Live &amp; Playback</span>
-    </span>
+    <img class="logo-img" src="../Logo.png" alt="Ceravis Health" />
+    <span class="tag">Video Console &middot; Live &amp; Playback</span>
   </div>
   <div class="spacer"></div>
   <span class="pill" id="backbonePill"><span class="dot" id="backboneDot"></span><span id="backboneTxt">checking…</span></span>

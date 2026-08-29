@@ -3,121 +3,89 @@
 <head>
 <script src="fleet-prefix.js"></script>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CERAVIS — Edge Metrics</title>
+<link rel="stylesheet" href="ceravis.css" />
 <style>
-  :root {
-    --bg:#0b0f14; --panel:#131a23; --line:#1f2a37;
-    --text:#dce5f3; --muted:#7a8aa3; --accent:#7ad0ff;
-    --ok:#39d98a; --warn:#f5a623; --bad:#ff6b6b;
-  }
-  body {
-    font-family:-apple-system,BlinkMacSystemFont,"SF Pro",Inter,Segoe UI,sans-serif;
-    background:var(--bg); color:var(--text); margin:0; padding:24px;
-  }
-  h1 { margin:0 0 4px; font-weight:600; }
-  .sub { color:var(--muted); font-size:13px; margin-bottom:24px; }
-  .grid {
-    display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
-    gap:16px;
-  }
-  .card {
-    background:var(--panel); border:1px solid var(--line);
-    border-radius:12px; padding:16px;
-  }
-  .card h2 {
-    margin:0 0 8px; font-size:13px; color:var(--muted);
-    text-transform:uppercase; letter-spacing:1px;
-  }
-  .big { font-size:28px; font-weight:600; }
-  .row { display:flex; justify-content:space-between; padding:4px 0;
-         border-bottom:1px solid var(--line); font-size:13px; }
-  .row:last-child { border-bottom:0; }
-  .pill { padding:2px 8px; border-radius:8px; font-size:11px;
-          background:#1c2330; color:var(--accent); }
-  .ok   { color:var(--ok); }
-  .warn { color:var(--warn); }
-  .bad  { color:var(--bad); }
-  pre {
-    background:#0a0e13; padding:8px; border-radius:6px;
-    font-size:11px; color:var(--muted); overflow-x:auto;
-  }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .big { font-size: 30px; font-weight: 800; color: var(--navy); letter-spacing: -.5px; }
+  .mrow { display: flex; justify-content: space-between; padding: 7px 0;
+          border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+  .mrow:last-child { border-bottom: 0; }
+  .mrow .faint { color: var(--faint); }
 </style>
 </head>
 <body>
-  <h1>CERAVIS Edge — live metrics</h1>
-  <div class="sub" id="ts">connecting…</div>
-  <nav style="margin-bottom:16px">
-    <a href="setup.html"     style="color:#7ad0ff;margin-right:14px;text-decoration:none">Setup</a>
-    <a href="live.html"      style="color:#7ad0ff;margin-right:14px;text-decoration:none">Live Wall</a>
-    <a href="monitor.html"   style="color:#7ad0ff;margin-right:14px;text-decoration:none">AI Monitor</a>
-    <a href="dashboard.html" style="color:#7ad0ff;margin-right:14px;text-decoration:none">Dashboard</a>
-    <a href="cameras.html"   style="color:#7ad0ff;margin-right:14px;text-decoration:none">Cameras</a>
-    <a href="zones.html"     style="color:#7ad0ff;margin-right:14px;text-decoration:none">Zones</a>
-  </nav>
+<div class="page">
+  <div class="page-head">
+    <h1>Edge metrics</h1>
+    <div class="sub" id="ts">connecting…</div>
+  </div>
 
-  <div class="grid">
-    <div class="card"><h2>GPU</h2><div class="big" id="gpu">—</div><div id="gpuTemp" class="row"></div></div>
-    <div class="card"><h2>CPU</h2><div class="big" id="cpu">—</div><div id="cpuTemp" class="row"></div></div>
+  <div class="metrics">
+    <div class="card"><h2>GPU</h2><div class="big" id="gpu">—</div><div id="gpuTemp" class="mrow"></div></div>
+    <div class="card"><h2>CPU</h2><div class="big" id="cpu">—</div><div id="cpuTemp" class="mrow"></div></div>
     <div class="card"><h2>RAM</h2><div class="big" id="ram">—</div></div>
     <div class="card"><h2>Pipelines</h2><div id="pipes"></div></div>
     <div class="card" style="grid-column:1/-1"><h2>Cameras</h2><div id="cams"></div></div>
   </div>
+</div>
 
-  <script>
-    const cls = (v, warn, bad) =>
-      v >= bad ? 'bad' : v >= warn ? 'warn' : 'ok';
+<script src="ceravis.js"></script>
+<script>
+  renderNav("dashboard.html");
+  const cls = (v, warn, bad) => v >= bad ? 'bad' : v >= warn ? 'warn' : 'ok';
 
-    async function refresh() {
-      try {
-        const r = await fetch('/api/v1/metrics');
-        const d = await r.json();
-        document.getElementById('ts').textContent =
-          new Date().toLocaleTimeString();
+  async function refresh() {
+    try {
+      const r = await fetch('/api/v1/metrics');
+      const d = await r.json();
+      document.getElementById('ts').textContent = new Date().toLocaleString();
 
-        const sys = d.system || {};
-        const gpu = sys.gpu_pct ?? '—';
-        document.getElementById('gpu').innerHTML =
-          `<span class="${cls(gpu,70,90)}">${gpu}%</span>`;
-        document.getElementById('gpuTemp').innerHTML =
-          `<span>GPU temp</span><span>${sys.gpu_temp_c ?? '—'} °C</span>`;
+      const sys = d.system || {};
+      const gpu = sys.gpu_pct ?? '—';
+      document.getElementById('gpu').innerHTML =
+        `<span class="${cls(gpu,70,90)}">${gpu}%</span>`;
+      document.getElementById('gpuTemp').innerHTML =
+        `<span class="faint">GPU temp</span><span>${sys.gpu_temp_c ?? '—'} °C</span>`;
 
-        const cpu = sys.cpu_pct_avg ?? '—';
-        document.getElementById('cpu').innerHTML =
-          `<span class="${cls(cpu,70,90)}">${cpu}%</span>`;
-        document.getElementById('cpuTemp').innerHTML =
-          `<span>CPU temp</span><span>${sys.cpu_temp_c ?? '—'} °C</span>`;
+      const cpu = sys.cpu_pct_avg ?? '—';
+      document.getElementById('cpu').innerHTML =
+        `<span class="${cls(cpu,70,90)}">${cpu}%</span>`;
+      document.getElementById('cpuTemp').innerHTML =
+        `<span class="faint">CPU temp</span><span>${sys.cpu_temp_c ?? '—'} °C</span>`;
 
-        const ramPct = sys.ram_pct ?? 0;
-        document.getElementById('ram').innerHTML =
-          `<span class="${cls(ramPct,75,90)}">${ramPct}%</span>
-           <div class="row"><span>${sys.ram_used_mb||0} / ${sys.ram_total_mb||0} MB</span></div>`;
+      const ramPct = sys.ram_pct ?? 0;
+      document.getElementById('ram').innerHTML =
+        `<span class="${cls(ramPct,75,90)}">${ramPct}%</span>
+         <div class="mrow"><span class="faint">${sys.ram_used_mb||0} / ${sys.ram_total_mb||0} MB</span></div>`;
 
-        // pipelines
-        const pipes = d.pipelines || [];
-        document.getElementById('pipes').innerHTML = pipes.length === 0
-          ? '<div class="row"><span class="pill">no data yet</span></div>'
-          : pipes.map(p => `
-              <div class="row">
-                <span>${p.name}</span>
-                <span>${p.fps} fps · ${p.latency_ms_avg} ms</span>
-              </div>`).join('');
-
-        // cameras
-        const cams = d.cameras || {};
-        document.getElementById('cams').innerHTML =
-          Object.entries(cams).map(([cid, s]) => `
-            <div class="row">
-              <span>${cid} <span class="pill">${s.health_state}</span></span>
-              <span>${(s.current_fps||0).toFixed(1)} fps ·
-                    ${s.frames_captured} frames ·
-                    ${s.reconnect_count} reconnects</span>
+      // pipelines
+      const pipes = d.pipelines || [];
+      document.getElementById('pipes').innerHTML = pipes.length === 0
+        ? '<div class="mrow"><span class="pill pill-mute">no data yet</span></div>'
+        : pipes.map(p => `
+            <div class="mrow">
+              <span>${p.name}</span>
+              <span class="faint">${p.fps} fps · ${p.latency_ms_avg} ms</span>
             </div>`).join('');
-      } catch (e) {
-        document.getElementById('ts').textContent = 'error: ' + e.message;
-      }
+
+      // cameras
+      const cams = d.cameras || {};
+      document.getElementById('cams').innerHTML =
+        Object.entries(cams).map(([cid, s]) => `
+          <div class="mrow">
+            <span>${cid} ${healthPill(s.health_state)}</span>
+            <span class="faint">${(s.current_fps||0).toFixed(1)} fps ·
+                  ${s.frames_captured} frames ·
+                  ${s.reconnect_count} reconnects</span>
+          </div>`).join('');
+    } catch (e) {
+      document.getElementById('ts').textContent = 'error: ' + e.message;
     }
-    refresh();
-    setInterval(refresh, 2000);
-  </script>
+  }
+  refresh();
+  setInterval(refresh, 2000);
+</script>
 </body>
 </html>
