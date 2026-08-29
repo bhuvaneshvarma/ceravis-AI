@@ -93,12 +93,12 @@
   /* the app's own backdrop (loginBgImage) with a slow, gentle zoom-in on mount
      (app: bg-cover bg-center scale-105 transition-[10s]) + slate wash + blur */
   .login-wrap::before {
-    content: ""; position: absolute; inset: 0; z-index: 0;
+    content: ""; position: fixed; inset: 0; z-index: 0;
     background: url("login-bg.png") center/cover no-repeat;
     transform: scale(1.03); animation: lg-drift 18s ease-in-out infinite alternate;
   }
   .login-wrap::after {
-    content: ""; position: absolute; inset: 0; z-index: 0;
+    content: ""; position: fixed; inset: 0; z-index: 0;
     background: linear-gradient(135deg, rgba(15,23,42,.6), rgba(15,23,42,.4) 50%, rgba(15,23,42,.6));
     backdrop-filter: blur(2px);
   }
@@ -122,7 +122,8 @@
   /* faint teal wash in the corner (app: from-secondary/5) */
   .login-brand::before { content: ""; position: absolute; inset: 0;
     background: linear-gradient(135deg, rgba(53,152,157,.06), transparent 55%); opacity: .6; }
-  .login-logo { height: 44px; width: auto; display: block; position: relative; z-index: 1; }
+  .login-logo { height: 44px; width: auto; max-width: 160px; object-fit: contain;
+                align-self: flex-start; display: block; position: relative; z-index: 1; }
   .login-brand-mid { position: relative; z-index: 1; }
   .login-hero { position: relative; width: 100%; border-radius: 18px; display: block;
                 margin-bottom: 26px; object-fit: cover;
@@ -189,6 +190,10 @@
               background: #00c758; color: #fff; font-weight: 700; font-size: 13.5px;
               padding: 11px 18px; border-radius: 12px; box-shadow: 0 12px 34px rgba(0,199,88,.3);
               display: flex; align-items: center; gap: 9px; animation: slideIn .2s ease; }
+  .preview-badge { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+              z-index: 400; background: var(--navy); color: #fff; font-size: 11px; font-weight: 700;
+              letter-spacing: .6px; padding: 7px 16px; border-radius: 999px;
+              box-shadow: 0 8px 24px rgba(15,23,42,.3); }
   @media (max-width: 760px) {
     .login-card { grid-template-columns: 1fr; max-width: 460px; }
     .login-brand { display: none; }
@@ -1519,7 +1524,70 @@ async function initEnroll() {
   pendingEnrollRid = null;
 }
 
+/* ================= local preview mode =================
+   Open setup.html?preview=1 to walk EVERY screen with no backend: this stubs
+   the edge API with sample data so the login is skipped and each wizard step
+   renders populated (cameras, recipient, zones, enrollment). Design/QA only —
+   it never runs on the device (no ?preview there) and touches nothing real. */
+function installPreviewMocks() {
+  document.documentElement.setAttribute("data-preview", "1");
+  const USER = { firstName: "John", lastName: "Doe",
+    email: "john@fullcircleamerica.com", phone: "+1 (555) 123-4567",
+    gender: "male", role: "CARE_RECIPIENT", tier: "TIER_3",
+    ceravisUserId: 5033, edgeId: "pX94On3Q_hpBPDum0HRX9O0jGyTAOEvDz8smRRcSE-I" };
+  const CAMS = [
+    { camera_id: "LIVING ROOM", camera_name: "Living Room", room_name: "LIVING ROOM", device_label: "CAM_01", ptz_supported: false },
+    { camera_id: "LOUNGE", camera_name: "Lounge", room_name: "LOUNGE", device_label: "CAM_02", ptz_supported: true },
+  ];
+  const STATUS = {
+    "LIVING ROOM": { health_state: "running", current_fps: 24.9, frames_captured: 184213, reconnect_count: 0 },
+    "LOUNGE": { health_state: "running", current_fps: 15.0, frames_captured: 98211, reconnect_count: 1 },
+  };
+  const RECIPS = [{ recipient_id: "5033", full_name: "John Doe", enrollment: { state: "pending_reid" } }];
+  const shot = (label) => `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540">
+    <rect width="960" height="540" fill="#0e141b"/>
+    <rect x="1" y="1" width="958" height="538" fill="none" stroke="#1e2a36"/>
+    <text x="480" y="264" fill="#35989d" font-family="Inter,sans-serif" font-size="30" font-weight="700" text-anchor="middle">${label}</text>
+    <text x="480" y="300" fill="#5b7186" font-family="Inter,sans-serif" font-size="15" text-anchor="middle">preview frame</text></svg>`;
+  const J = (o) => new Response(JSON.stringify(o), { status: 200, headers: { "Content-Type": "application/json" } });
+  const pick = (u) => {
+    u = u.split("?")[0];
+    if (u.endsWith("/api/v1/account")) return { verified: true, configured: true, remote: { keyed: true }, user: USER };
+    if (u.endsWith("/api/v1/cameras")) return CAMS;
+    if (u.endsWith("/api/v1/cameras/status")) return STATUS;
+    if (u.endsWith("/api/v1/recipients")) return RECIPS;
+    if (u.includes("/zones")) return [];
+    if (u.includes("/media")) return { count: 0, frames: [] };
+    if (u.includes("/embeddings/stats")) return { adaptive: 0, adaptive_cap: 50 };
+    if (u.includes("/enroll/status")) return { state: "pending_reid", message: "Preview — ReID engine off", embeddings: 0, references: 0 };
+    if (u.includes("/metrics/system")) return { gpu_pct: 41, cpu_pct_avg: 22, ram_pct: 37 };
+    if (u.includes("/metrics")) return { system: { gpu_pct: 41, cpu_pct_avg: 22, ram_pct: 37, gpu_temp_c: 52, cpu_temp_c: 47, ram_used_mb: 5200, ram_total_mb: 16000 }, pipelines: [{ name: "living room", fps: 24.9, latency_ms_avg: 31 }], cameras: STATUS };
+    if (u.includes("/discovery/scan")) return { cameras: [], subnets: ["192.168.0.0/24"] };
+    return {};
+  };
+  const orig = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : (input && input.url) || "";
+    if (url.includes("/api/v1/")) {
+      if (url.includes("/snapshot")) {
+        const label = decodeURIComponent((url.split("/cameras/")[1] || "").split("/")[0] || "Camera");
+        return Promise.resolve(new Response(shot(label), { status: 200, headers: { "Content-Type": "image/svg+xml" } }));
+      }
+      const method = ((init && init.method) || "GET").toUpperCase();
+      return Promise.resolve(J(method === "GET"
+        ? pick(url)
+        : { ok: true, synced: true, count: CAMS.length, uploaded: true, cameras: CAMS.length, zones: 3 }));
+    }
+    return orig(input, init);
+  };
+  const badge = document.createElement("div");
+  badge.className = "preview-badge";
+  badge.textContent = "PREVIEW MODE — sample data, no device";
+  document.body.appendChild(badge);
+}
+
 /* ================= boot ================= */
+if (new URLSearchParams(location.search).has("preview")) installPreviewMocks();
 initGate();
 </script>
 </body>
