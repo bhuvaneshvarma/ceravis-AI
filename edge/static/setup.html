@@ -173,12 +173,18 @@
                     padding: 0 2px; margin: 26px 0 12px; }
   .login-otp-head .login-label { margin: 0; }
   .login-otp-head .faint { font-size: 11px; font-style: italic; color: var(--faint); font-weight: 500; }
-  .otp-boxes { display: flex; justify-content: space-between; gap: 10px; }
-  .otp-boxes input { width: 56px; height: 56px; text-align: center; font-size: 18px;
-                     font-weight: 700; color: var(--navy); border-radius: 10px; padding: 0;
-                     border-color: var(--line); transition: all .2s; }
-  .otp-boxes input:focus { transform: scale(1.05); border-color: var(--teal);
-                           box-shadow: 0 0 0 3px rgba(53,152,157,.1); }
+  .otp-boxes { display: flex; justify-content: space-between; gap: 11px; }
+  /* soft, slightly-raised white tiles (matches the app: faint border + shadow,
+     not a hard outline); teal on focus and once a digit is entered. */
+  .otp-boxes input { width: 56px; height: 56px; text-align: center; font-size: 19px;
+                     font-weight: 700; color: var(--navy); border-radius: 13px; padding: 0;
+                     border: 1px solid #eceff4; background: #fff;
+                     box-shadow: 0 2px 6px rgba(15,23,42,.06); transition: all .18s ease; }
+  .otp-boxes input:hover { border-color: #dde3ec; }
+  .otp-boxes input:focus { transform: translateY(-1px) scale(1.04); border-color: var(--teal);
+                           box-shadow: 0 6px 16px rgba(53,152,157,.2), 0 0 0 3px rgba(53,152,157,.13); }
+  .otp-boxes input.filled { border-color: var(--teal); color: var(--teal-dim);
+                            box-shadow: 0 3px 10px rgba(53,152,157,.15); }
   .login-actions { margin-top: 26px; display: flex; flex-direction: column; gap: 18px; }
   .login-resend { text-align: center; font-size: 12px; color: var(--faint); font-weight: 500; }
   .login-resend b { color: #334155; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -278,7 +284,7 @@
   <!-- ============ STEP 1 — RECIPIENT ============ -->
   <section id="step-2" hidden>
     <div class="split">
-      <div class="card">
+      <div class="card accent-left accent-orange">
         <h2>Care recipient</h2>
         <div class="hint mb">Your verified CERAVIS profile — registered as the care
           recipient on this device.</div>
@@ -636,7 +642,7 @@ function showOtpView(email) {
   document.getElementById("lg-otp-view").hidden = false;
   document.getElementById("lg-email-shown").value = email;
   const boxes = [...document.querySelectorAll("#lg-otp input")];
-  boxes.forEach(b => b.value = "");
+  boxes.forEach(b => { b.value = ""; b.classList.remove("filled"); });
   boxes[0].focus();
 }
 function showEmailView() {
@@ -704,9 +710,11 @@ document.getElementById("lg-edit").onclick = showEmailView;
 /* OTP boxes: auto-advance on type, hop back on backspace, submit on Enter. */
 (() => {
   const boxes = [...document.querySelectorAll("#lg-otp input")];
+  const mark = (x) => x.classList.toggle("filled", !!x.value);
   boxes.forEach((b, i) => {
     b.addEventListener("input", () => {
       b.value = b.value.replace(/\D/g, "").slice(0, 1);
+      mark(b);
       if (b.value && i < boxes.length - 1) boxes[i + 1].focus();
     });
     b.addEventListener("keydown", e => {
@@ -717,7 +725,7 @@ document.getElementById("lg-edit").onclick = showEmailView;
       const d = (e.clipboardData.getData("text") || "").replace(/\D/g, "");
       if (!d) return;
       e.preventDefault();
-      boxes.forEach((x, k) => x.value = d[k] || "");
+      boxes.forEach((x, k) => { x.value = d[k] || ""; mark(x); });
       boxes[Math.min(d.length, boxes.length) - 1].focus();
     });
   });
