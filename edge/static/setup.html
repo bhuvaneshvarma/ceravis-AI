@@ -90,6 +90,9 @@
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     padding: 30px 18px;
   }
+  /* `hidden` alone loses to the display:flex above (equal specificity, author
+     wins), so the gate would stay on top of the wizard — force it hidden. */
+  #login-gate[hidden] { display: none !important; }
   /* the app's own backdrop (loginBgImage) with a slow, gentle zoom-in on mount
      (app: bg-cover bg-center scale-105 transition-[10s]) + slate wash + blur */
   .login-wrap::before {
@@ -178,8 +181,9 @@
      not a hard outline); teal on focus and once a digit is entered. */
   .otp-boxes input { width: 56px; height: 56px; text-align: center; font-size: 19px;
                      font-weight: 700; color: var(--navy); border-radius: 13px; padding: 0;
-                     border: 1px solid #eceff4; background: #fff;
+                     border: 1px solid #eceff4; background: #fff; outline: none;
                      box-shadow: 0 2px 6px rgba(15,23,42,.06); transition: all .18s ease; }
+  .otp-boxes input:focus-visible { outline: none; }
   .otp-boxes input:hover { border-color: #dde3ec; }
   .otp-boxes input:focus { transform: translateY(-1px) scale(1.04); border-color: var(--teal);
                            box-shadow: 0 6px 16px rgba(53,152,157,.2), 0 0 0 3px rgba(53,152,157,.13); }
@@ -745,18 +749,18 @@ document.getElementById("lg-verify").onclick = async () => {
       btn.disabled = false; return;
     }
     ACCOUNT.verified = true; ACCOUNT.user = r.user;
-    // Verifying assigned this device's edge_id; the tunnel re-key + MediaMTX
-    // live-path repoint run in the background. If a tunnel apply was scheduled,
-    // wait until frpc is really routing before opening the wizard.
-    if (r.provisioning) {
-      const stop = startSpinner(msg, "Verified — updating remote access…");
-      const acct = await waitForProvisioning(true);
-      stop();
-      if (acct && acct.user) ACCOUNT.user = acct.user;   // keep edgeId fresh
-    }
     clearInterval(resendTimer);
     loginToast("Signed in");
-    enterWizard();
+    enterWizard();                       // open the wizard right away (LAN never drops)
+    // Verifying assigned this device's edge_id; the frpc re-key + MediaMTX
+    // live-path repoint run in the BACKGROUND on the device. If a tunnel apply
+    // was scheduled, refresh the edgeId once it's really keyed — without making
+    // the operator wait on a spinner (the old blocking wait hung the login).
+    if (r.provisioning) {
+      waitForProvisioning(true)
+        .then(acct => { if (acct && acct.user) ACCOUNT.user = acct.user; })
+        .catch(() => {});
+    }
   } catch (e) {
     msg.innerHTML = `<span class="bad">✗ verification failed</span>`;
     btn.disabled = false;
@@ -773,7 +777,7 @@ const streams = {};            // camera_id -> liveView handle (cameras wall)
 function enterWizard() {
   document.getElementById("login-gate").hidden = true;
   document.getElementById("wizard").hidden = false;
-  if (!document.querySelector(".topbar")) renderNav("setup.html");
+  if (!document.querySelector(".sidebar")) renderNav("setup.html");
   show(1);
 }
 
