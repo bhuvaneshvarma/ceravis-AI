@@ -119,8 +119,8 @@ html.cv-shell-collapsed body { padding-left: 78px; }
 .side-foot span { display: block; opacity: .8; }
 
 .app-header {
-  position: sticky; top: 0; z-index: 40; height: 58px;
-  display: flex; align-items: center; gap: 14px; padding: 0 26px;
+  position: sticky; top: 0; z-index: 40; height: 52px;
+  display: flex; align-items: center; gap: 14px; padding: 0 22px;
   background: rgba(255,255,255,.95); backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
@@ -171,8 +171,11 @@ body.sidebar-collapsed .side-foot { display: none; }
 /* ---- shared empty state (tables / lists) ------------------------- */
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; gap: 10px; padding: 40px 20px; color: var(--faint);
+  text-align: center; gap: 10px; padding: 34px 20px; color: var(--faint);
 }
+/* the flex above beats the UA [hidden]{display:none} (equal specificity), so an
+   empty state given `hidden` wouldn't actually hide — force it. */
+.empty[hidden] { display: none !important; }
 .empty .empty-ic {
   width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center;
   justify-content: center; background: var(--panel-2); color: var(--teal);
@@ -181,34 +184,34 @@ body.sidebar-collapsed .side-foot { display: none; }
 .empty .empty-title { font-size: 14px; font-weight: 600; color: var(--muted); }
 .empty .empty-sub { font-size: 12.5px; color: var(--faint); max-width: 320px; }
 
-/* ---- layout ------------------------------------------------------ */
-.page { max-width: 1500px; margin: 0 auto; padding: 26px 28px 60px; }
-.page-head { margin: 6px 0 22px; }
-.page-head h1 { margin: 0; font-size: 24px; font-weight: 800; color: var(--navy);
-                letter-spacing: -.4px; }
-.page-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+/* ---- layout (tight, app-matched rhythm) -------------------------- */
+.page { max-width: 1600px; margin: 0 auto; padding: 16px 22px 32px; }
+.page-head { margin: 0 0 14px; }
+.page-head h1 { margin: 0; font-size: 20px; font-weight: 800; color: var(--navy);
+                letter-spacing: -.3px; }
+.page-head .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 /* premium header: a white container box holding a gradient icon badge + the
    title/subtitle (the icon + box are added by renderNav) — on every page. */
 .page-head.ph-flex {
-  display: flex; align-items: center; gap: 16px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 15px 20px; box-shadow: var(--shadow-sm);
+  display: flex; align-items: center; gap: 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+  padding: 12px 18px; box-shadow: var(--shadow-sm);
 }
-.page-head.ph-flex h1 { font-size: 21px; }
+.page-head.ph-flex h1 { font-size: 19px; }
 .ph-icon {
-  width: 50px; height: 50px; border-radius: 14px; flex: 0 0 auto;
+  width: 44px; height: 44px; border-radius: 12px; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center; color: #fff;
   background: linear-gradient(135deg, var(--teal), var(--teal-dim));
-  box-shadow: 0 8px 18px rgba(53,152,157,.3);
+  box-shadow: 0 7px 16px rgba(53,152,157,.28);
 }
-.ph-icon svg { width: 25px; height: 25px; stroke: currentColor; }
+.ph-icon svg { width: 23px; height: 23px; stroke: currentColor; }
 
 /* ---- cards ------------------------------------------------------- */
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 22px;
+  padding: 18px 20px;
   box-shadow: var(--shadow);
 }
 .card h2 {
@@ -286,7 +289,7 @@ input:-webkit-autofill:focus, input:-webkit-autofill:active {
 .pill-mute { color: var(--faint); background: rgba(15,23,42,.06); }
 
 /* ---- stepper ------------------------------------------------------ */
-.stepper { display: flex; align-items: center; margin: 4px 0 26px; }
+.stepper { display: flex; align-items: center; margin: 2px 0 18px; }
 .step { display: flex; align-items: center; gap: 10px; }
 .step .dot {
   width: 34px; height: 34px; border-radius: 50%;

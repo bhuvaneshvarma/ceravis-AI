@@ -195,6 +195,95 @@ def get_user_details(email: str) -> dict | None:
     return data
 
 
+def send_otp(email: str) -> bool:
+    """
+    POST /v1/ai/sendOtp — ask the app server to email a login one-time code.
+    Body: {"email": "..."}. Carries the X-API-Key header like every /v1/ai call.
+
+    Returns True when the server accepts it (2xx). 404 -> False (no such
+    account). Raises CeravisApiError on config/transport/other-server errors.
+    The full request+response is written to the wire log (data/
+    ceravis_api_wire.jsonl) so the exchange is inspectable by hand.
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/sendOtp"
+    request_body = {"email": email}
+    logger.info("sendOtp -> POST %s  email=%s", url, email)
+    t0 = time.perf_counter()
+    try:
+        resp = requests.post(url, json=request_body, headers=_headers(),
+                             timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("sendOtp: cannot reach %s — %s", url, exc)
+        call_log.record("sendOtp", False, label=email, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("sendOtp", "POST", url, request_body, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
+    logger.info("sendOtp <- HTTP %s", resp.status_code)
+    call_log.record("sendOtp", resp.status_code < 400, label=email,
+                    status=resp.status_code, latency_ms=lat)
+    _wire("sendOtp", "POST", url, request_body, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
+    if resp.status_code == 404:
+        return False
+    if resp.status_code >= 400:
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
+    return True
+
+
+def verify_otp(email: str, otp: str) -> bool:
+    """
+    POST /v1/ai/verifyOtp — check the login one-time code.
+    Body: {"email": "...", "otp": "..."}. X-API-Key header as usual.
+
+    Returns True when the server accepts the code (2xx, and not an explicit
+    {data:false}); a bad/expired code (400/401/403/422, or {data:false}) -> False.
+    Raises CeravisApiError on config/transport/other-server errors. Full
+    request+response is captured in the wire log.
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/verifyOtp"
+    request_body = {"email": email, "otp": otp}
+    logger.info("verifyOtp -> POST %s  email=%s", url, email)
+    t0 = time.perf_counter()
+    try:
+        resp = requests.post(url, json=request_body, headers=_headers(),
+                             timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("verifyOtp: cannot reach %s — %s", url, exc)
+        call_log.record("verifyOtp", False, label=email, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("verifyOtp", "POST", url, request_body, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
+    logger.info("verifyOtp <- HTTP %s", resp.status_code)
+    call_log.record("verifyOtp", resp.status_code < 400, label=email,
+                    status=resp.status_code, latency_ms=lat)
+    _wire("verifyOtp", "POST", url, request_body, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
+    if resp.status_code in (400, 401, 403, 422):
+        return False                              # wrong / expired code
+    if resp.status_code >= 400:
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
+    try:                                          # honour an explicit {data:false}
+        if _unwrap(resp.json()) is False:
+            return False
+    except ValueError:
+        pass
+    return True
+
+
 def save_cameras(patient_user_id, cameras: list[dict]):
     """
     PUT /v1/ai/saveCamera — register this patient's cameras with the app server.

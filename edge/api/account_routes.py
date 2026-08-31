@@ -17,6 +17,8 @@ from integration.ceravis_api import (
     is_configured,
     room_to_enum,
     save_cameras,
+    send_otp,
+    verify_otp,
 )
 from livestream.mediamtx_client import is_up as media_backbone_up
 from livestream.mediamtx_client import stream_base, sync_camera, webrtc_url
@@ -102,46 +104,53 @@ class RequestOtpRequest(BaseModel):
 @router.post("/request-otp")
 def request_otp(req: RequestOtpRequest):
     """Kick off the login one-time-code for a care recipient signing in on this
-    edge device — the mirror of the cloud app's login OTP.
-
-    PLACEHOLDER: this is the seam the app-server call plugs into later. It will
-    POST the entered email to the app.ceravishealth OTP endpoint, which emails a
-    code, and this returns {"sent": True} only when the account exists (a green
-    response) so the UI advances to the code screen. Until that call is wired in,
-    the setup keeps the OTP step OPTIONAL: this returns `sent` best-effort so the
-    flow proceeds, and the real existence/verification check still happens at
-    /verify (get_user_details) exactly as it does today. Nothing else changed.
+    edge device: POST the email to app.ceravishealth `/v1/ai/sendOtp`, which
+    emails a 5-digit code. Returns {"sent": True} only when the server accepts it
+    (the account exists); {"sent": False, reason} otherwise, so the UI knows
+    whether to advance to the code screen. The full exchange lands in the wire log.
     """
     email = (req.email or "").strip()
     if not email:
         return {"sent": False, "reason": "Email is required"}
-    # TODO(app-server OTP): replace with the app.ceravishealth send-OTP call and
-    # gate `sent` on its response. Left as a no-op stub so the wiring is a single
-    # localized change and the rest of the login flow is already in place.
-    logger.info("login OTP requested for %s (stub — app-server send pending)", email)
-    return {"sent": True, "stub": True, "email": email}
+    try:
+        ok = send_otp(email)
+    except CeravisApiError as exc:
+        logger.warning("sendOtp failed for %s: %s", email, exc)
+        return {"sent": False, "reason": str(exc)}
+    if not ok:
+        return {"sent": False, "reason": "No CERAVIS account found for this email"}
+    logger.info("login OTP sent to %s", email)
+    return {"sent": True, "email": email}
 
 
 class VerifyRequest(BaseModel):
     email: str
     phone: str | None = None
-    # The login code the recipient typed. Carried for the app-server verify wiring
-    # that lands with the send-OTP call above; ignored today (the OTP step is
-    # optional until then), so an empty or any value still verifies via email.
+    # The 5-digit login code the recipient typed; checked with the app server
+    # (/v1/ai/verifyOtp) BEFORE the account is fetched.
     otp: str | None = None
 
 
 @router.post("/verify")
 def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTasks):
     """
-    Gate the setup wizard: look the email up on the CERAVIS app server. If the
-    account exists, persist it (with the entered phone) and return it so the next
-    screen can pre-fill. The phone is stored alongside — UserDetailsResponse has
-    no phone field, so the email is what the server verifies.
+    Gate the setup wizard. First check the login one-time code with the app
+    server (/v1/ai/verifyOtp); only a good code proceeds to look the email up
+    (/v1/ai/userDetails). If the account exists, persist it and return it so the
+    next screen can pre-fill. Both app-server hits are recorded in the wire log.
     """
     email = (req.email or "").strip()
     if not email:
         return {"verified": False, "reason": "Email is required"}
+    # 1) The one-time code must check out before we fetch anything.
+    otp = (req.otp or "").strip()
+    try:
+        if not verify_otp(email, otp):
+            return {"verified": False, "reason": "Invalid or expired code"}
+    except CeravisApiError as exc:
+        logger.warning("verifyOtp failed for %s: %s", email, exc)
+        return {"verified": False, "reason": str(exc)}
+    # 2) Code accepted — fetch the account.
     try:
         user = get_user_details(email)
     except CeravisApiError as exc:
