@@ -14,6 +14,24 @@
    Self-contained: defines only window.CERAVIS_PREFIX + wraps fetch, so it never
    clashes with a page's own `api` helper.
    ===================================================================== */
+/* Reserve the sidebar layout on <html> BEFORE <body> paints, so navigating
+   between pages never visibly jumps (full-width content -> shifted) or flashes
+   the collapsed state. renderNav adds the real sidebar + matching body classes
+   afterwards. Loaded first in <head> on every sidebar page (NOT the recordings
+   console, which doesn't include this file). */
+(function () {
+  try {
+    var de = document.documentElement;
+    de.classList.add("cv-shell");
+    if (localStorage.getItem("cv-sidebar-collapsed") === "1")
+      de.classList.add("cv-shell-collapsed");
+    // Already signed in? Mark it so setup.html can skip painting the login gate
+    // (no flash of the login before the wizard restores).
+    var s = JSON.parse(localStorage.getItem("cv-session") || "null");
+    if (s && s.ts && (Date.now() - s.ts) <= 15 * 60 * 1000) de.classList.add("cv-authed");
+  } catch (e) {}
+})();
+
 (function () {
   var m = location.pathname.match(/^(\/[^/]+)\/ui(?:\/|$)/);
   var PREFIX = (m && m[1]) || "";

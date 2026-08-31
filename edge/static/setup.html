@@ -9,11 +9,6 @@
 <link rel="stylesheet" href="ceravis.css" />
 <style>
   .wizard-actions { display: flex; justify-content: space-between; margin-top: 22px; }
-  .step-status { display: flex; align-items: center; gap: 9px; margin: -6px 0 18px;
-                 padding: 11px 15px; border-radius: 12px; font-size: 13px; font-weight: 600;
-                 background: rgba(0,181,81,.08); color: var(--ok); border: 1px solid rgba(0,181,81,.28);
-                 box-shadow: var(--shadow-sm); animation: slideIn .25s ease; }
-  .step-status::before { content: "✓"; font-weight: 800; }
   .split { display: grid; grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
   @media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
   /* Live verification wall: stack cameras one below the other (not a 2-up grid)
@@ -47,7 +42,10 @@
           padding: 9px 12px; margin: 12px 0; }
   .frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
                 gap: 6px; margin-top: 8px; }
-  .enroll-card { max-width: 880px; }
+  /* enrollment picker + panel in two columns on wide screens so the card fills
+     the width instead of a narrow mid-page column */
+  .enroll-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; align-items: start; }
+  @media (max-width: 1000px) { .enroll-grid { grid-template-columns: 1fr; } }
   /* keep the captured frames in a bounded, scrollable tray — not a huge page scroll */
   #en-frames { max-height: 262px; overflow-y: auto; padding: 4px; border: 1px solid var(--line-soft);
                border-radius: 10px; background: var(--panel-2); }
@@ -93,6 +91,15 @@
   .rec-name { font-size: 18px; font-weight: 700; color: var(--navy);
               display: flex; align-items: center; gap: 9px; }
   .rec-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  /* full-width recipient card: details in two columns, full-height orange accent */
+  .recipient-card.accent-left::before { top: 0; bottom: 0;
+    border-radius: var(--radius) 0 0 var(--radius); width: 4px; }
+  .rec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 34px; margin-top: 4px; }
+  .rec-grid .prow.wide { grid-column: 1 / -1; }
+  .prow { display: flex; justify-content: space-between; align-items: center; gap: 14px;
+          padding: 10px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+  .prow b { text-align: right; word-break: break-all; color: var(--navy); }
+  @media (max-width: 760px) { .rec-grid { grid-template-columns: 1fr; } }
 
   /* =====================================================================
      LOGIN GATE — full-screen sign-in, matched 1:1 to the Ceravis Health app
@@ -106,6 +113,9 @@
   /* `hidden` alone loses to the display:flex above (equal specificity, author
      wins), so the gate would stay on top of the wizard — force it hidden. */
   #login-gate[hidden] { display: none !important; }
+  /* Already-signed-in reload: don't paint the login gate at all (fleet-prefix.js
+     sets cv-authed before body) — the wizard restores with no login flash. */
+  html.cv-authed #login-gate { display: none; }
   /* the app's own backdrop (loginBgImage) with a slow, gentle zoom-in on mount
      (app: bg-cover bg-center scale-105 transition-[10s]) + slate wash + blur */
   .login-wrap::before {
@@ -298,12 +308,9 @@
   <!-- stepper -->
   <div class="stepper" id="stepper"></div>
 
-  <!-- carries the previous step's save result forward (cameras synced, zones saved) -->
-  <div class="step-status" id="step-status" hidden></div>
-
   <!-- ============ STEP 1 — RECIPIENT (details only) ============ -->
   <section id="step-2" hidden>
-    <div class="card accent-left accent-orange" style="max-width:660px">
+    <div class="card accent-left accent-orange recipient-card">
       <h2>Care recipient</h2>
       <div class="hint mb">Your verified CERAVIS profile — registered as the care
         recipient on this device. Face/body enrollment is the final step.</div>
@@ -447,58 +454,60 @@
           <div>Enrolling: <b id="enroll-who">—</b></div>
           <span class="pill pill-mute" id="enroll-state">—</span>
         </div>
-          <div class="enroll-tabs">
-            <button class="etab active" data-tab="photos">A · Photos</button>
-            <button class="etab" data-tab="video">B · Video</button>
-            <button class="etab" data-tab="live">C · Live camera</button>
-          </div>
-
-          <div class="ectx" id="en-ctx"></div>
-
-          <div class="etab-body" data-body="photos">
-            <input type="file" id="en-photos" accept="image/*" multiple />
-            <button class="btn btn-ghost btn-sm mt" id="en-photos-go">Add photos</button>
-          </div>
-          <div class="etab-body" data-body="video" hidden>
-            <input type="file" id="en-video" accept="video/*" />
-            <button class="btn btn-ghost btn-sm mt" id="en-video-go">Add video</button>
-          </div>
-          <div class="etab-body" data-body="live" hidden>
-            <select id="en-cam"></select>
-            <div class="en-live-stage">
-              <video id="en-live-video"></video>
-              <div class="en-live-nosig" id="en-live-nosig">Connecting…</div>
+        <div class="enroll-grid mt">
+          <div>
+            <div class="enroll-tabs">
+              <button class="etab active" data-tab="photos">A · Photos</button>
+              <button class="etab" data-tab="video">B · Video</button>
+              <button class="etab" data-tab="live">C · Live camera</button>
             </div>
-            <div class="row mt" style="gap:8px; align-items:center; flex-wrap:wrap">
-              <label class="f" style="margin:0">View</label>
-              <select id="en-view" style="width:auto">
-                <option value="front">front</option><option value="back">back</option>
-                <option value="left">left</option><option value="right">right</option>
-              </select>
-              <label class="f" style="margin:0">Posture</label>
-              <select id="en-posture" style="width:auto">
-                <option value="standing">standing</option><option value="sitting">sitting</option>
-                <option value="walking">walking</option><option value="turning">turning</option>
-                <option value="bending">bending</option>
-              </select>
-              <button class="btn btn-sm btn-capture" id="en-capture">● Capture frame</button>
-              <span class="faint" id="en-capcount">0 captured</span>
-            </div>
-            <div id="en-grid"></div>
-            <button class="btn btn-ghost btn-sm mt" id="en-live-go">or auto-capture 4 s</button>
-          </div>
 
-          <div class="mt">
+            <div class="ectx" id="en-ctx"></div>
+
+            <div class="etab-body" data-body="photos">
+              <input type="file" id="en-photos" accept="image/*" multiple />
+              <button class="btn btn-ghost btn-sm mt" id="en-photos-go">Add photos</button>
+            </div>
+            <div class="etab-body" data-body="video" hidden>
+              <input type="file" id="en-video" accept="video/*" />
+              <button class="btn btn-ghost btn-sm mt" id="en-video-go">Add video</button>
+            </div>
+            <div class="etab-body" data-body="live" hidden>
+              <select id="en-cam"></select>
+              <div class="en-live-stage">
+                <video id="en-live-video"></video>
+                <div class="en-live-nosig" id="en-live-nosig">Connecting…</div>
+              </div>
+              <div class="row mt" style="gap:8px; align-items:center; flex-wrap:wrap">
+                <label class="f" style="margin:0">View</label>
+                <select id="en-view" style="width:auto">
+                  <option value="front">front</option><option value="back">back</option>
+                  <option value="left">left</option><option value="right">right</option>
+                </select>
+                <label class="f" style="margin:0">Posture</label>
+                <select id="en-posture" style="width:auto">
+                  <option value="standing">standing</option><option value="sitting">sitting</option>
+                  <option value="walking">walking</option><option value="turning">turning</option>
+                  <option value="bending">bending</option>
+                </select>
+                <button class="btn btn-sm btn-capture" id="en-capture">● Capture frame</button>
+                <span class="faint" id="en-capcount">0 captured</span>
+              </div>
+              <div id="en-grid"></div>
+              <button class="btn btn-ghost btn-sm mt" id="en-live-go">or auto-capture 4 s</button>
+            </div>
+
+            <div class="row mt" style="justify-content:space-between">
+              <button class="btn btn-primary" id="en-commit" disabled>Enroll &amp; save embeddings</button>
+              <span class="enroll-status" id="en-status"></span>
+            </div>
+          </div>
+          <div>
             <div class="faint" style="font-size:11.5px;text-transform:uppercase;letter-spacing:1px">
               Captured frames — review before enrolling</div>
             <div class="frame-grid" id="en-frames">
               <span class="faint" style="font-size:12.5px">No frames yet.</span>
             </div>
-          </div>
-
-          <div class="row mt" style="justify-content:space-between">
-            <button class="btn btn-primary" id="en-commit" disabled>Enroll &amp; save embeddings</button>
-            <span class="enroll-status" id="en-status"></span>
           </div>
         </div>
 
@@ -640,7 +649,9 @@ async function initGate() {
       }
     } catch (_) {}
   }
-  // Show the login; prefill the known email so it's one tap to the code.
+  // Fall back to the login (session gone, or account not verified): undo the
+  // pre-hide so the gate paints, then prefill the known email.
+  document.documentElement.classList.remove("cv-authed");
   try {
     const a = await api("/api/v1/account");
     if (a && a.user && a.user.email)
@@ -805,7 +816,6 @@ function renderStepper() {
 }
 function show(n) {
   step = Math.min(Math.max(n, 1), STEPS.length);
-  if (step === 1) setStepStatus(null);       // nothing saved yet on the first step
   SECTIONS.forEach((id, i) =>
     document.getElementById(id).hidden = (i + 1) !== step);
   document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
@@ -818,26 +828,12 @@ function show(n) {
   if (step === 4) initEnroll();
 }
 document.getElementById("w-back").onclick = () => show(step - 1);
-/* A small success banner carried onto the NEXT step: step 2 saves cameras
-   (saveCamera) and step 3 saves zones, and each result is shown on arrival. */
-function setStepStatus(html) {
-  const el = document.getElementById("step-status");
-  if (!el) return;
-  if (!html) { el.hidden = true; el.innerHTML = ""; return; }
-  el.hidden = false; el.innerHTML = html;
-}
 document.getElementById("w-next").onclick = async () => {
-  if (step === 2) {                          // leaving Cameras -> saveCamera to the account
-    const r = await syncCameras(false);
-    if (r && r.synced) setStepStatus(`${r.count} camera(s) synced to your CERAVIS account`);
-  }
-  // Leaving Room zones: write the ONE consolidated zones file to the cloud.
-  // (The posture images are then pulled as the Enrollment step opens.)
-  if (step === 3) {
-    const z = await finalizeZones();
-    if (z && z.uploaded)
-      setStepStatus(`Zones saved to your account · ${z.cameras || 0} camera(s), ${z.zones || 0} zone(s)`);
-  }
+  // Leaving Cameras -> push each camera to the account (saveCamera); the inline
+  // "✓ N synced" note on the cameras card reports it. Leaving Room zones -> write
+  // the consolidated zones file (a toast reports it). Both are best-effort.
+  if (step === 2) await syncCameras(false);
+  if (step === 3) await finalizeZones();
   show(step + 1);
 };
 
@@ -1260,10 +1256,8 @@ document.getElementById("z-save").onclick = async () => {
 };
 
 /* ================= STEP 1 — recipient ================= */
-function profRow(k, v) {
-  return `<div style="display:flex;justify-content:space-between;padding:7px 0;
-    border-bottom:1px solid var(--line-soft);font-size:13px">
-    <span class="faint">${k}</span><b>${v}</b></div>`;
+function profRow(k, v, wide) {
+  return `<div class="prow${wide ? " wide" : ""}"><span class="faint">${k}</span><b>${v}</b></div>`;
 }
 async function initRecipient() {
   const prof = document.getElementById("r-profile");
@@ -1282,7 +1276,8 @@ async function initRecipient() {
          <div class="rec-name">${name} <span class="pill pill-ok">ACTIVE</span></div>
          <div class="rec-meta">${u.role || "Care Recipient"} · CERAVIS #${u.ceravisUserId ?? "—"}${u.tier ? " · " + u.tier : ""}</div>
        </div>
-     </div>`
+     </div>
+     <div class="rec-grid">`
     + profRow("First name", u.firstName || "—")
     + profRow("Last name", u.lastName || "—")
     + profRow("Email", u.email || "—")
@@ -1290,7 +1285,9 @@ async function initRecipient() {
     + profRow("Gender", u.gender || "—")
     + profRow("Role", u.role || "—")
     + profRow("Tier", u.tier || "—")
-    + profRow("Device edge id", u.edgeId || "—");
+    + profRow("CERAVIS user", "#" + (u.ceravisUserId ?? "—"))
+    + profRow("Device edge id", u.edgeId || "—", true)
+    + `</div>`;
   await ensureRecipient(u);
   refreshRecipients();
 }

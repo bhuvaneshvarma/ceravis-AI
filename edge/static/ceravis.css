@@ -58,6 +58,13 @@ body {
    Mirrors the Ceravis app (teal sidebar bg-secondary #35989d, white active
    pill with teal text + orange icon, logo on a white header strip). */
 body.has-sidebar { padding-left: 252px; }
+/* pre-reserve the sidebar width before paint (set on <html> by fleet-prefix.js)
+   so page-to-page navigation doesn't jump; the collapsed rule wins when set. */
+html.cv-shell body { padding-left: 252px; }
+html.cv-shell-collapsed body { padding-left: 78px; }
+@media (max-width: 900px) {
+  html.cv-shell body, html.cv-shell-collapsed body { padding-left: 0; }
+}
 .logo-chip {
   background: #fff; border-radius: 12px; padding: 6px 13px;
   display: inline-flex; align-items: center;
@@ -180,15 +187,21 @@ body.sidebar-collapsed .side-foot { display: none; }
 .page-head h1 { margin: 0; font-size: 24px; font-weight: 800; color: var(--navy);
                 letter-spacing: -.4px; }
 .page-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
-/* premium header: gradient icon badge beside the title (added by renderNav) */
-.page-head.ph-flex { display: flex; align-items: center; gap: 17px; }
+/* premium header: a white container box holding a gradient icon badge + the
+   title/subtitle (the icon + box are added by renderNav) — on every page. */
+.page-head.ph-flex {
+  display: flex; align-items: center; gap: 16px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 15px 20px; box-shadow: var(--shadow-sm);
+}
+.page-head.ph-flex h1 { font-size: 21px; }
 .ph-icon {
-  width: 54px; height: 54px; border-radius: 15px; flex: 0 0 auto;
+  width: 50px; height: 50px; border-radius: 14px; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center; color: #fff;
   background: linear-gradient(135deg, var(--teal), var(--teal-dim));
-  box-shadow: 0 10px 22px rgba(53,152,157,.32);
+  box-shadow: 0 8px 18px rgba(53,152,157,.3);
 }
-.ph-icon svg { width: 26px; height: 26px; stroke: currentColor; }
+.ph-icon svg { width: 25px; height: 25px; stroke: currentColor; }
 
 /* ---- cards ------------------------------------------------------- */
 .card {
