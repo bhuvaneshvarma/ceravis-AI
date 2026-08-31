@@ -50,6 +50,7 @@
 
 <script src="ceravis.js"></script>
 <script>
+if (!cvRequireAuth()) throw new Error("redirecting to login");
 renderNav("hotspot.html");
 
 async function refresh() {

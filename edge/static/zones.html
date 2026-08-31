@@ -83,6 +83,7 @@
 
 <script src="ceravis.js"></script>
 <script>
+if (!cvRequireAuth()) throw new Error("redirecting to login");
 renderNav("zones.html");
 const $ = (id) => document.getElementById(id);
 /* api(), toast() come from ceravis.js */

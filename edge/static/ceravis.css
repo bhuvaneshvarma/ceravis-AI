@@ -99,6 +99,12 @@ body.has-sidebar { padding-left: 252px; }
   box-shadow: 0 4px 14px rgba(0,0,0,.16);
 }
 .side-item.active svg { stroke: var(--orange); }
+.side-signout {
+  width: 100%; background: none; border: 0; cursor: pointer; font: inherit;
+  text-align: left; margin-top: 8px; padding-top: 13px;
+  border-top: 1px solid rgba(255,255,255,.14); border-radius: 0;
+}
+.side-signout:hover { background: rgba(255,255,255,.14); color: #fff; border-radius: 12px; }
 .side-foot {
   flex: 0 0 auto; padding: 16px 20px; font-size: 11px; line-height: 1.5;
   color: rgba(255,255,255,.72); border-top: 1px solid rgba(255,255,255,.14);
@@ -174,6 +180,15 @@ body.sidebar-collapsed .side-foot { display: none; }
 .page-head h1 { margin: 0; font-size: 24px; font-weight: 800; color: var(--navy);
                 letter-spacing: -.4px; }
 .page-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+/* premium header: gradient icon badge beside the title (added by renderNav) */
+.page-head.ph-flex { display: flex; align-items: center; gap: 17px; }
+.ph-icon {
+  width: 54px; height: 54px; border-radius: 15px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, var(--teal), var(--teal-dim));
+  box-shadow: 0 10px 22px rgba(53,152,157,.32);
+}
+.ph-icon svg { width: 26px; height: 26px; stroke: currentColor; }
 
 /* ---- cards ------------------------------------------------------- */
 .card {

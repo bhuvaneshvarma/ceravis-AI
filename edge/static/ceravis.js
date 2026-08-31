@@ -28,6 +28,53 @@ function toast(msg, kind = "ok", ms = 2600) {
   setTimeout(() => el.remove(), ms);
 }
 
+/* ---- login session + idle auto-logout -------------------------------
+   A lightweight CLIENT session gates every /ui page behind the login on
+   setup.html. It is separate from the device account (account.json persists);
+   this is the per-browser access session that expires after 15 min idle. */
+const CV_SESSION_KEY = "cv-session";
+const CV_IDLE_MS = 15 * 60 * 1000;          // auto sign-out after 15 min idle
+
+function cvSessionValid() {
+  try {
+    const s = JSON.parse(localStorage.getItem(CV_SESSION_KEY) || "null");
+    return !!(s && s.ts && (Date.now() - s.ts) <= CV_IDLE_MS);
+  } catch (_) { return false; }
+}
+function cvStartSession(user) {
+  try {
+    localStorage.setItem(CV_SESSION_KEY,
+      JSON.stringify({ ts: Date.now(), email: (user && user.email) || "" }));
+  } catch (_) {}
+  cvArmIdle();
+}
+function cvBumpSession() {                    // called on activity
+  if (!cvSessionValid()) return;             // never resurrect an expired one
+  try {
+    const s = JSON.parse(localStorage.getItem(CV_SESSION_KEY) || "{}");
+    s.ts = Date.now();
+    localStorage.setItem(CV_SESSION_KEY, JSON.stringify(s));
+  } catch (_) {}
+}
+function cvSignOut() {
+  try { localStorage.removeItem(CV_SESSION_KEY); } catch (_) {}
+  location.replace("setup.html");
+}
+/* Guard a protected page: redirect to the login when there's no live session. */
+function cvRequireAuth() {
+  if (cvSessionValid()) { cvArmIdle(); return true; }
+  location.replace("setup.html");
+  return false;
+}
+let _cvIdleArmed = false;
+function cvArmIdle() {
+  if (_cvIdleArmed) return;
+  _cvIdleArmed = true;
+  ["click", "keydown", "mousemove", "touchstart", "scroll"].forEach(ev =>
+    window.addEventListener(ev, cvBumpSession, { passive: true }));
+  setInterval(() => { if (!cvSessionValid()) cvSignOut(); }, 30000);
+}
+
 /* ---- shared top navigation ------------------------------------------ */
 /* The brand mark is the Ceravis Health wordmark — the exact asset the cloud app
    ships (edge/static/ceravis-logo.png), on a white chip so it reads on the teal
@@ -51,6 +98,7 @@ const NAV_ICONS = {
   cam:     `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>`,
   zones:   `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20 3 17V4l6 3 6-3 6 3v13l-6-3-6 3Z"/><path d="M9 7v13M15 4v13"/></svg>`,
   hotspot: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 15.8a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/></svg>`,
+  signout: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>`,
 };
 
 /* App-style shell: a fixed teal sidebar (the app's own sidebar colour + active
@@ -79,7 +127,11 @@ function renderNav(active) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
     </div>
-    <nav class="side-nav">${nav}</nav>
+    <nav class="side-nav">${nav}
+      <button type="button" class="side-item side-signout" id="cv-signout" title="Sign out">
+        ${NAV_ICONS.signout}<span>Sign out</span>
+      </button>
+    </nav>
     <div class="side-foot">&copy; 2026 Ceravis Health<span>All Rights Reserved</span></div>`;
 
   const header = document.createElement("header");
@@ -96,6 +148,28 @@ function renderNav(active) {
   document.body.prepend(header);
   document.body.prepend(aside);
   document.body.classList.add("has-sidebar");
+  cvArmIdle();                                  // keep the idle timer running
+
+  // Premium page header: give the in-content .page-head a gradient icon badge
+  // (the active section's icon) beside the title + subtitle — one place, every
+  // page. Done here so the wizard's page-head (shown after login) is covered too.
+  const activeIcon = (items.find(i => i[0] === active) || [])[2] || NAV_ICONS.setup;
+  const ph = document.querySelector(".page-head");
+  if (ph && !ph.dataset.enhanced) {
+    ph.dataset.enhanced = "1";
+    const text = document.createElement("div");
+    while (ph.firstChild) text.appendChild(ph.firstChild);
+    const badge = document.createElement("div");
+    badge.className = "ph-icon";
+    badge.innerHTML = activeIcon;
+    ph.classList.add("ph-flex");
+    ph.append(badge, text);
+  }
+
+  const signout = document.getElementById("cv-signout");
+  if (signout) signout.onclick = () => {
+    if (confirm("Sign out of this device console?")) cvSignOut();
+  };
 
   const toggle = document.getElementById("cv-side-toggle");
   if (toggle) toggle.onclick = () => aside.classList.toggle("open");

@@ -4,6 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CERAVIS — Video Console (Live &amp; Playback)</title>
+<!-- login gate: this console is self-contained (no ceravis.js), so it checks the
+     client session inline and bounces to the login when there isn't a live one. -->
+<script>
+(function () {
+  try {
+    var s = JSON.parse(localStorage.getItem("cv-session") || "null");
+    if (!(s && s.ts && (Date.now() - s.ts) <= 15 * 60 * 1000)) location.replace("../setup.html");
+    else localStorage.setItem("cv-session", JSON.stringify({ ts: Date.now(), email: s.email || "" }));
+  } catch (e) { location.replace("../setup.html"); }
+})();
+</script>
 <!-- Inline icon: the page must never request /favicon.ico, which through the
      fleet tunnel is a 404 on every load. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M8 17h4l2-5 3 9 2-5.5L20.5 17H24' stroke='%232dd4bf' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />

@@ -9,8 +9,16 @@
 <link rel="stylesheet" href="ceravis.css" />
 <style>
   .wizard-actions { display: flex; justify-content: space-between; margin-top: 22px; }
+  .step-status { display: flex; align-items: center; gap: 9px; margin: -6px 0 18px;
+                 padding: 11px 15px; border-radius: 12px; font-size: 13px; font-weight: 600;
+                 background: rgba(0,181,81,.08); color: var(--ok); border: 1px solid rgba(0,181,81,.28);
+                 box-shadow: var(--shadow-sm); animation: slideIn .25s ease; }
+  .step-status::before { content: "✓"; font-weight: 800; }
   .split { display: grid; grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
   @media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
+  /* Live verification wall: stack cameras one below the other (not a 2-up grid)
+     so they line up cleanly beside the tall form. */
+  #c-grid { grid-template-columns: 1fr; }
   .probe-result { font-size: 12.5px; margin-top: 8px; min-height: 18px; }
   .zone-stage { position: relative; background: #000; border-radius: 12px;
                 overflow: hidden; border: 1px solid var(--line); }
@@ -39,6 +47,11 @@
           padding: 9px 12px; margin: 12px 0; }
   .frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
                 gap: 6px; margin-top: 8px; }
+  .enroll-card { max-width: 880px; }
+  /* keep the captured frames in a bounded, scrollable tray — not a huge page scroll */
+  #en-frames { max-height: 262px; overflow-y: auto; padding: 4px; border: 1px solid var(--line-soft);
+               border-radius: 10px; background: var(--panel-2); }
+  .en-live-stage video { max-height: 320px; }
   .frame-grid img { width: 100%; aspect-ratio: 3/4; object-fit: cover;
                     border-radius: 6px; border: 1px solid var(--line); }
   .frame-cell { position: relative; }
@@ -285,21 +298,16 @@
   <!-- stepper -->
   <div class="stepper" id="stepper"></div>
 
-  <!-- ============ STEP 1 — RECIPIENT ============ -->
+  <!-- carries the previous step's save result forward (cameras synced, zones saved) -->
+  <div class="step-status" id="step-status" hidden></div>
+
+  <!-- ============ STEP 1 — RECIPIENT (details only) ============ -->
   <section id="step-2" hidden>
-    <div class="split">
-      <div class="card accent-left accent-orange">
-        <h2>Care recipient</h2>
-        <div class="hint mb">Your verified CERAVIS profile — registered as the care
-          recipient on this device.</div>
-        <div id="r-profile"></div>
-      </div>
-      <div class="card">
-        <h2>Registered on this device</h2>
-        <table class="tbl"><tbody id="r-table"></tbody></table>
-        <div class="hint mt">Face/body enrollment is the final step. Falls &amp;
-          posture work without it; enrollment adds identity (recipient vs others).</div>
-      </div>
+    <div class="card accent-left accent-orange" style="max-width:660px">
+      <h2>Care recipient</h2>
+      <div class="hint mb">Your verified CERAVIS profile — registered as the care
+        recipient on this device. Face/body enrollment is the final step.</div>
+      <div id="r-profile"></div>
     </div>
   </section>
 
@@ -418,20 +426,27 @@
 
   <!-- ============ STEP 4 — ENROLLMENT (embeddings) ============ -->
   <section id="step-5" hidden>
-    <div class="split">
-      <div class="card">
-        <h2>Face / body enrollment</h2>
-        <div id="enroll-none" class="empty">
-          <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div>
-          <div class="empty-title">Pick a recipient to enroll</div>
-          <div class="empty-sub">Add enrollment media — photos, a short video, or live capture —
-            so the system can recognize the recipient (media → embeddings → FAISS).</div>
+    <div class="card enroll-card">
+      <h2>Face / body enrollment</h2>
+      <div class="hint mb">Pick a recipient below to enroll. Falls + posture work
+        without enrollment; enrollment adds <i>identity</i> (recipient vs others) and
+        needs the ReID engine — until it's built, media is stored and shows
+        <span class="pill pill-warn">pending_reid</span>, then embeds automatically.</div>
+      <table class="tbl"><tbody id="r-table-en"></tbody></table>
+
+      <div id="enroll-none" class="empty" style="padding:26px 20px">
+        <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div>
+        <div class="empty-title">Pick a recipient above to enroll</div>
+        <div class="empty-sub">Add enrollment media — photos, a short video, or live capture —
+          so the system can recognize the recipient (media → embeddings → FAISS).</div>
+      </div>
+
+      <div id="enroll-panel" hidden>
+        <hr class="sep" />
+        <div class="row" style="justify-content:space-between">
+          <div>Enrolling: <b id="enroll-who">—</b></div>
+          <span class="pill pill-mute" id="enroll-state">—</span>
         </div>
-        <div id="enroll-panel" hidden>
-          <div class="row" style="justify-content:space-between">
-            <div>Enrolling: <b id="enroll-who">—</b></div>
-            <span class="pill pill-mute" id="enroll-state">—</span>
-          </div>
           <div class="enroll-tabs">
             <button class="etab active" data-tab="photos">A · Photos</button>
             <button class="etab" data-tab="video">B · Video</button>
@@ -487,22 +502,10 @@
           </div>
         </div>
 
-        <hr class="sep" />
-        <div class="row" style="justify-content:space-between; align-items:center">
-          <span class="faint" id="en-current">Pick a recipient on the right to enroll.</span>
-          <a class="btn btn-primary btn-sm" href="live.html">Finish — open Live Wall</a>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Recipients</h2>
-        <table class="tbl"><tbody id="r-table-en"></tbody></table>
-        <div class="hint mt">
-          Pick a recipient to enroll. Falls + posture work without enrollment;
-          enrollment adds <i>identity</i> (recipient vs others) and needs the ReID
-          engine — build it with <code>scripts/export_reid.sh</code>. Until then
-          media is stored and shows <span class="pill pill-warn">pending_reid</span>;
-          embeddings build automatically once ReID is on.
-        </div>
+      <hr class="sep" />
+      <div class="row" style="justify-content:space-between; align-items:center">
+        <span class="faint" id="en-current">Pick a recipient above to enroll.</span>
+        <a class="btn btn-primary btn-sm" href="live.html">Finish — open Live Wall</a>
       </div>
     </div>
   </section>
@@ -625,13 +628,21 @@ function startInputCycle() {
 async function initGate() {
   buildTitleAnim();
   startInputCycle();
-  // Already onboarded on this device? Skip the login and open the wizard.
+  // A live login session restores the account and opens the wizard directly;
+  // an expired/absent session shows the login even if the device is onboarded.
+  if (cvSessionValid()) {
+    try {
+      const a = await api("/api/v1/account");
+      if (a && a.verified && a.user) {
+        ACCOUNT.verified = true; ACCOUNT.user = a.user;
+        cvArmIdle();
+        return enterWizard();
+      }
+    } catch (_) {}
+  }
+  // Show the login; prefill the known email so it's one tap to the code.
   try {
     const a = await api("/api/v1/account");
-    if (a && a.verified && a.user) {
-      ACCOUNT.verified = true; ACCOUNT.user = a.user;
-      return enterWizard();
-    }
     if (a && a.user && a.user.email)
       document.getElementById("lg-email").value = a.user.email;
     if (a && a.configured === false)
@@ -749,6 +760,7 @@ document.getElementById("lg-verify").onclick = async () => {
       btn.disabled = false; return;
     }
     ACCOUNT.verified = true; ACCOUNT.user = r.user;
+    cvStartSession(r.user);              // start the 15-min idle login session
     clearInterval(resendTimer);
     loginToast("Signed in");
     enterWizard();                       // open the wizard right away (LAN never drops)
@@ -793,6 +805,7 @@ function renderStepper() {
 }
 function show(n) {
   step = Math.min(Math.max(n, 1), STEPS.length);
+  if (step === 1) setStepStatus(null);       // nothing saved yet on the first step
   SECTIONS.forEach((id, i) =>
     document.getElementById(id).hidden = (i + 1) !== step);
   document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
@@ -805,11 +818,26 @@ function show(n) {
   if (step === 4) initEnroll();
 }
 document.getElementById("w-back").onclick = () => show(step - 1);
+/* A small success banner carried onto the NEXT step: step 2 saves cameras
+   (saveCamera) and step 3 saves zones, and each result is shown on arrival. */
+function setStepStatus(html) {
+  const el = document.getElementById("step-status");
+  if (!el) return;
+  if (!html) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false; el.innerHTML = html;
+}
 document.getElementById("w-next").onclick = async () => {
-  if (step === 2) syncCameras(false);        // leaving Cameras: push to the account
+  if (step === 2) {                          // leaving Cameras -> saveCamera to the account
+    const r = await syncCameras(false);
+    if (r && r.synced) setStepStatus(`${r.count} camera(s) synced to your CERAVIS account`);
+  }
   // Leaving Room zones: write the ONE consolidated zones file to the cloud.
   // (The posture images are then pulled as the Enrollment step opens.)
-  if (step === 3) await finalizeZones();
+  if (step === 3) {
+    const z = await finalizeZones();
+    if (z && z.uploaded)
+      setStepStatus(`Zones saved to your account · ${z.cameras || 0} camera(s), ${z.zones || 0} zone(s)`);
+  }
   show(step + 1);
 };
 
@@ -822,7 +850,8 @@ async function finalizeZones() {
       toast(`Zones saved to your account · ${z.cameras} camera(s), ${z.zones} zone(s)`);
     else if (z && z.reason)
       toast(`Zones not uploaded: ${z.reason}`, "err");
-  } catch (e) { /* non-fatal */ }
+    return z;
+  } catch (e) { return null; }
 }
 
 /* ================= STEP 2 — cameras ================= */
@@ -1082,7 +1111,7 @@ async function syncCameras(manual) {
   const out = document.getElementById("c-sync-out");
   if (!ACCOUNT.verified) {
     if (out) out.innerHTML = `<span class="warn">Verify your account first.</span>`;
-    return;
+    return null;
   }
   if (out) out.innerHTML = `<span class="muted">Syncing…</span>`;
   try {
@@ -1094,7 +1123,8 @@ async function syncCameras(manual) {
       if (out) out.innerHTML = `<span class="bad">✗ ${r.reason || "sync failed"}</span>`;
       if (manual) toast(r.reason || "Camera sync failed", "err");
     }
-  } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; }
+    return r;
+  } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; return null; }
 }
 
 /* ================= STEP 3 — zones ================= */
@@ -1604,6 +1634,7 @@ function installPreviewMocks() {
   badge.className = "preview-badge";
   badge.textContent = "PREVIEW MODE — sample data, no device";
   document.body.appendChild(badge);
+  cvStartSession({ email: USER.email });    // bypass the login gate in preview
 }
 
 /* ================= boot ================= */

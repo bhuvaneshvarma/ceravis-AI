@@ -100,6 +100,20 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _no_cache_ui_assets(request, call_next):
+    """Serve the UI code (HTML/CSS/JS) with `no-cache` so a browser ALWAYS
+    revalidates and picks up a redeploy instead of running a stale cached bundle
+    — the exact failure that made a freshly-pushed setup.html/ceravis.js appear
+    broken (old JS, new HTML) on the device. Revalidation is a cheap 304 on the
+    LAN; images keep normal caching. (Not encryption — just cache correctness.)"""
+    resp = await call_next(request)
+    path = request.url.path
+    if path.endswith((".js", ".css", ".html")) or path.rstrip("/").endswith("/ui"):
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
 class _FleetEdgePrefix:
     """Fleet per-edge path handling — a PURE-ASGI middleware on purpose.
 

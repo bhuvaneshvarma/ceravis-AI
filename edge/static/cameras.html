@@ -123,6 +123,7 @@
 
 <script src="ceravis.js"></script>
 <script>
+if (!cvRequireAuth()) throw new Error("redirecting to login");
 renderNav("cameras.html");
 const $ = (id) => document.getElementById(id);
 /* api(), toast() come from ceravis.js */

@@ -149,6 +149,7 @@ moment you clicked.">📸 Snapshot</button>
 <script src="ceravis.js"></script>
 <script src="live-view.js"></script>
 <script>
+if (!cvRequireAuth()) throw new Error("redirecting to login");
 renderNav("monitor.html");
 
 const POSTURE_COLOR = {
