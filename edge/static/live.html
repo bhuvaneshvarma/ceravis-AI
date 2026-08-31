@@ -57,7 +57,7 @@
 <script src="ceravis.js"></script>
 <script src="live-view.js"></script>
 <script>
-if (!cvRequireAuth()) throw new Error("redirecting to login");
+cvRequireAuth();  // arms idle timer; head-redirect already gated the load
 renderNav("live.html");
 
 const streams = {};   // camera_id -> handle

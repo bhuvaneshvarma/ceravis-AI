@@ -28,7 +28,14 @@
     // Already signed in? Mark it so setup.html can skip painting the login gate
     // (no flash of the login before the wizard restores).
     var s = JSON.parse(localStorage.getItem("cv-session") || "null");
-    if (s && s.ts && (Date.now() - s.ts) <= 15 * 60 * 1000) de.classList.add("cv-authed");
+    var authed = s && s.ts && (Date.now() - s.ts) <= 15 * 60 * 1000;
+    if (authed) de.classList.add("cv-authed");
+    // No live session and this ISN'T the login page? Redirect NOW, in <head>,
+    // before the body paints — no flashed content, no thrown console error.
+    // (setup.html is the login; the recordings console guards itself inline.)
+    else if (!/setup\.html$/.test(location.pathname)) {
+      location.replace("setup.html");
+    }
   } catch (e) {}
 })();
 

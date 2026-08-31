@@ -35,6 +35,13 @@
   --shadow-lg: 0 2px 4px rgba(15,23,42,.05), 0 24px 48px -12px rgba(15,23,42,.18);
   --ring:      0 0 0 4px rgba(53,152,157,.13);
   --radius:    16px;
+  /* ===== ONE KNOB for container padding across EVERY page/screen =====
+     Bump these two if things feel too tight, drop them for even less.
+     --pad-card  : padding inside every .card, the page-head box, and the
+                   setup stepper box  (vertical  horizontal).
+     --gap-stack : vertical space between stacked containers.            */
+  --pad-card:  13px 16px;
+  --gap-stack: 14px;
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-script: "Patrick Hand", "Segoe Script", cursive;
 }
@@ -186,7 +193,7 @@ body.sidebar-collapsed .side-foot { display: none; }
 
 /* ---- layout (tight, app-matched rhythm) -------------------------- */
 .page { max-width: 1600px; margin: 0 auto; padding: 16px 22px 32px; }
-.page-head { margin: 0 0 14px; }
+.page-head { margin: 0 0 var(--gap-stack); }
 .page-head h1 { margin: 0; font-size: 20px; font-weight: 800; color: var(--navy);
                 letter-spacing: -.3px; }
 .page-head .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
@@ -195,9 +202,12 @@ body.sidebar-collapsed .side-foot { display: none; }
 .page-head.ph-flex {
   display: flex; align-items: center; gap: 14px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
-  padding: 12px 18px; box-shadow: var(--shadow-sm);
+  padding: var(--pad-card); box-shadow: var(--shadow-sm);
 }
 .page-head.ph-flex h1 { font-size: 19px; }
+/* stacked container around the stepper (setup) — matches the header box */
+.stepper-card { padding: var(--pad-card); margin-bottom: var(--gap-stack); }
+.stepper-card .stepper { margin: 0; }
 .ph-icon {
   width: 44px; height: 44px; border-radius: 12px; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center; color: #fff;
@@ -211,7 +221,7 @@ body.sidebar-collapsed .side-foot { display: none; }
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 18px 20px;
+  padding: var(--pad-card);
   box-shadow: var(--shadow);
 }
 .card h2 {
