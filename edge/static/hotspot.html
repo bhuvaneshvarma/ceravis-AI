@@ -80,31 +80,19 @@ async function refresh() {
 
 document.getElementById("hs-start").onclick = async () => {
   const out = document.getElementById("hs-out");
-  const btn = document.getElementById("hs-start");
-  const ssid = document.getElementById("hs-ssid").value.trim();
   out.innerHTML = `<span class="muted">Starting…</span>`;
-  btn.disabled = true;
-  // Bringing up the AP reconfigures the WiFi radio. If this console is being
-  // viewed over that SAME radio, the reply never comes back — so bound the wait
-  // instead of spinning forever, and tell the user exactly what to do next.
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 45000);
   try {
     const r = await api("/api/v1/network/hotspot", {
       method: "POST",
-      signal: ctl.signal,
-      body: JSON.stringify({ ssid, password: document.getElementById("hs-pass").value }),
+      body: JSON.stringify({
+        ssid: document.getElementById("hs-ssid").value.trim(),
+        password: document.getElementById("hs-pass").value,
+      }),
     });
     out.innerHTML = `<span class="ok">✓ broadcasting “${r.ssid}”</span>`;
     toast(`Hotspot “${r.ssid}” is up`);
   } catch (e) {
-    out.innerHTML = (e && e.name === "AbortError")
-      ? `<span class="bad">✗ No reply — the hotspot is likely up but this radio
-         switched to it. Reconnect over Ethernet, or join “${ssid}”, then reload.</span>`
-      : `<span class="bad">✗ ${e.detail || "failed"}</span>`;
-  } finally {
-    clearTimeout(timer);
-    btn.disabled = false;
+    out.innerHTML = `<span class="bad">✗ ${e.detail || "failed"}</span>`;
   }
   refresh();
 };
