@@ -10,10 +10,12 @@
     var s = JSON.parse(localStorage.getItem("cv-session") || "null");
     var authed = !!(s && s.ts);
     var onLogin = /login\.html$/.test(location.pathname);
+    // monitor.html is a standalone diagnostics console — never gated by login.
+    var ungated = /(?:login|monitor)\.html$/.test(location.pathname);
     if (authed) {
       de.classList.add("cv-authed");
       if (onLogin) location.replace("live.html");
-    } else if (!onLogin) {
+    } else if (!ungated) {
       location.replace("login.html");
     }
   } catch (e) {}
