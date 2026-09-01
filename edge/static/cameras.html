@@ -2,264 +2,29 @@
 <html lang="en">
 <head>
 <script src="fleet-prefix.js"></script>
-<script src="live-view.js"></script>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CERAVIS — Cameras</title>
+<link rel="icon" type="image/png" href="favicon.png" />
 <link rel="stylesheet" href="ceravis.css" />
-<style>
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
-  label { display:block; font-size:11.5px; color:var(--muted); margin:10px 0 5px;
-          text-transform:uppercase; letter-spacing:.8px; font-weight:600; }
-  button { background:var(--teal); border:0; color:#fff; padding:9px 15px;
-           border-radius:10px; cursor:pointer; font-size:13px; font-weight:700;
-           font-family:inherit; transition:all .15s; }
-  button:hover { background:var(--teal-dim); }
-  button.ghost { background:#fff; border:1px solid var(--line); color:var(--navy); }
-  button.ghost:hover { border-color:var(--muted); background:var(--panel-2); }
-  button.danger { background:rgba(251,44,54,.1); color:var(--bad);
-                  border:1px solid rgba(251,44,54,.28); }
-  button.danger:hover { background:rgba(251,44,54,.18); }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line-soft);
-           vertical-align:middle; }
-  th { color:var(--faint); font-weight:700; font-size:10.5px;
-       text-transform:uppercase; letter-spacing:1.1px; border-bottom:1px solid var(--line); }
-  td code { background:var(--panel-2); padding:2px 7px; border-radius:6px; font-size:12px; }
-  tbody tr { transition:background .12s; }
-  tbody tr:hover { background:var(--panel-2); }
-  .mono { font-variant-numeric:tabular-nums; }
-  .preview-stage { position:relative; margin-top:6px; }
-  .preview { background:#000; border-radius:12px; aspect-ratio:16/9;
-             width:100%; object-fit:contain; display:block; border:1px solid var(--line); }
-  .preview-empty { position:absolute; inset:0; display:flex; flex-direction:column; gap:10px;
-                   align-items:center; justify-content:center; color:#8391a6; font-size:13px;
-                   background:repeating-linear-gradient(45deg,#10161f,#10161f 12px,#141b26 12px,#141b26 24px);
-                   border-radius:12px; border:1px solid var(--line); }
-  .preview-empty svg { width:30px; height:30px; stroke:#5b7186; }
-  .err  { color:var(--bad); font-size:12px; margin-top:6px; font-weight:600; }
-  .note { color:var(--faint); font-size:12px; margin-top:6px; }
-</style>
 </head>
 <body>
 <div class="page">
   <div class="page-head">
     <h1>Cameras</h1>
-    <div class="sub">
-      Add RTSP feeds, label them by room, preview live, then label zones.
-    </div>
+    <div class="sub">Discover and add cameras, control them, verify their live feeds,
+      and sync them to your CERAVIS account — the same tools as the setup wizard.</div>
   </div>
-
-  <div class="grid" style="margin-top:16px">
-
-    <div class="card">
-      <h2>Add camera</h2>
-
-      <label>RTSP URL</label>
-      <input id="rtsp_url" placeholder="rtsp://user:pass@192.168.0.10:554/stream1" />
-
-      <label>Camera ID</label>
-      <input id="camera_id" placeholder="cam_2" />
-
-      <label>Display name</label>
-      <input id="camera_name" placeholder="Bedroom Camera" />
-
-      <label>Room</label>
-      <input id="room_name" placeholder="Bedroom" />
-
-      <div class="row" style="margin-top:14px">
-        <button id="btn-probe">Test connection</button>
-        <button id="btn-save">Save camera</button>
-        <button class="ghost" id="btn-clear">Clear</button>
-      </div>
-      <div id="probe-result" class="note"></div>
-      <div id="err" class="err"></div>
-    </div>
-
-    <div class="card">
-      <h2>Live preview</h2>
-      <label>Camera</label>
-      <select id="preview-select">
-        <option value="">— select a camera —</option>
-      </select>
-      <div class="preview-stage">
-        <video id="preview" class="preview"></video>
-        <div class="preview-empty" id="preview-empty">
-          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>
-          <span>Select a camera to preview its live feed</span>
-        </div>
-      </div>
-      <div id="preview-meta" class="note"></div>
-      <div id="ptz-pad" class="row" hidden
-           style="margin-top:10px;gap:6px;flex-wrap:wrap">
-        <button class="ghost ptz" data-ptz="0,0.6,0"  title="tilt up">▲</button>
-        <button class="ghost ptz" data-ptz="0,-0.6,0" title="tilt down">▼</button>
-        <button class="ghost ptz" data-ptz="-0.6,0,0" title="pan left">◀</button>
-        <button class="ghost ptz" data-ptz="0.6,0,0"  title="pan right">▶</button>
-        <button class="ghost ptz" data-ptz="0,0,0.5"  title="zoom in">＋</button>
-        <button class="ghost ptz" data-ptz="0,0,-0.5" title="zoom out">－</button>
-        <span class="note" style="align-self:center">hold to move</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:16px">
-    <h2>Registered cameras</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th><th>Name</th><th>Room</th>
-          <th>Status</th><th>FPS</th><th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="cam-table-body"></tbody>
-    </table>
-  </div>
+  <div id="cam-root"></div>
 </div>
 
 <script src="ceravis.js"></script>
+<script src="live-view.js"></script>
+<script src="cameras-panel.js"></script>
 <script>
 cvRequireAuth();
 renderNav("cameras.html");
-const $ = (id) => document.getElementById(id);
-
-let _edgeId = null;
-async function edgeId() {
-  if (_edgeId !== null) return _edgeId;
-  try { const a = await api('/api/v1/account'); _edgeId = (a && a.user && a.user.edgeId) || ''; }
-  catch { _edgeId = ''; }
-  return _edgeId;
-}
-
-let previewView = null;
-
-async function loadCameras() {
-  const [cams, statuses] = await Promise.all([
-    api('/api/v1/cameras'),
-    api('/api/v1/cameras/status').catch(() => ({})),
-  ]);
-  CAMS = cams;
-
-  const tbody = $('cam-table-body');
-  tbody.innerHTML = cams.length === 0
-    ? `<tr><td colspan="7"><div class="empty">
-         <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg></div>
-         <div class="empty-title">No cameras registered yet</div>
-         <div class="empty-sub">Add an RTSP feed on the left, or scan your network from the Setup page.</div>
-       </div></td></tr>`
-    : cams.map(c => {
-        const s = statuses[c.camera_id] || {};
-        const state = s.health_state || 'offline';
-        return `<tr>
-          <td><code>${c.camera_id}</code></td>
-          <td><b>${c.camera_name}</b></td>
-          <td>${c.room_name}</td>
-          <td>${healthPill(state)}</td>
-          <td class="mono">${(s.current_fps || 0).toFixed(1)}</td>
-          <td class="row">
-            <button class="ghost" data-action="start" data-id="${c.camera_id}">Start</button>
-            <button class="ghost" data-action="stop"  data-id="${c.camera_id}">Stop</button>
-            <button class="ghost" data-action="restart" data-id="${c.camera_id}">Restart</button>
-            <button class="danger" data-action="delete" data-id="${c.camera_id}">Delete</button>
-          </td></tr>`;
-      }).join('');
-
-  const sel = $('preview-select');
-  const current = sel.value;
-  sel.innerHTML = '<option value="">— select a camera —</option>' +
-    cams.map(c => `<option value="${c.camera_id}">${c.camera_id} · ${c.camera_name}</option>`).join('');
-  if (cams.some(c => c.camera_id === current)) sel.value = current;
-
-  tbody.querySelectorAll('button[data-action]').forEach(btn => {
-    btn.onclick = async () => {
-      const id = btn.dataset.id, action = btn.dataset.action;
-      try {
-        if (action === 'delete') {
-          if (!confirm(`Delete camera ${id}?`)) return;
-          await api('/api/v1/cameras/' + id, { method:'DELETE' });
-        } else {
-
-          await api('/api/v1/cameras/control', { method:'POST', body: JSON.stringify(
-            { edgeId: await edgeId(), cameraLabel: id, action }) });
-        }
-        loadCameras();
-      } catch (e) { alert(JSON.stringify(e)); }
-    };
-  });
-}
-
-$('btn-probe').onclick = async () => {
-  $('probe-result').textContent = '… probing';
-  try {
-    const r = await api('/api/v1/cameras/probe', {
-      method:'POST',
-      body: JSON.stringify({ rtsp_url: $('rtsp_url').value.trim() }),
-    });
-    $('probe-result').innerHTML = r.ok
-      ? `<span class="ok">OK — ${r.width}x${r.height}</span>`
-      : `<span class="bad">FAIL — ${r.reason}</span>`;
-  } catch (e) { $('probe-result').innerHTML = '<span class="bad">probe error</span>'; }
-};
-
-$('btn-save').onclick = async () => {
-  $('err').textContent = '';
-  const camera = {
-    camera_id: $('camera_id').value.trim(),
-    camera_name: $('camera_name').value.trim(),
-    room_name: $('room_name').value.trim(),
-    rtsp_url: $('rtsp_url').value.trim(),
-    is_enabled: true,
-  };
-  if (!camera.camera_id || !camera.rtsp_url) {
-    $('err').textContent = 'camera_id and rtsp_url are required';
-    return;
-  }
-  try {
-    await api('/api/v1/cameras', { method:'POST', body: JSON.stringify(camera) });
-    await api('/api/v1/cameras/control', { method:'POST', body: JSON.stringify(
-      { edgeId: await edgeId(), cameraLabel: camera.camera_id, action: 'start' }) })
-      .catch(() => {});
-    ['camera_id','camera_name','room_name','rtsp_url'].forEach(id => $(id).value='');
-    loadCameras();
-  } catch (e) { $('err').textContent = JSON.stringify(e); }
-};
-
-$('btn-clear').onclick = () => {
-  ['camera_id','camera_name','room_name','rtsp_url'].forEach(id => $(id).value='');
-  $('err').textContent = ''; $('probe-result').textContent = '';
-};
-
-let CAMS = [];
-$('preview-select').onchange = (e) => {
-  connectPreview(e.target.value);
-  const cam = CAMS.find(c => c.camera_id === e.target.value);
-  $('ptz-pad').hidden = !(cam && cam.ptz_supported);
-};
-
-const ptzSend = (body) => api(
-  `/api/v1/cameras/${$('preview-select').value}/ptz`,
-  { method: 'POST', body: JSON.stringify(body) }).catch(() => {});
-document.querySelectorAll('.ptz').forEach(btn => {
-  const [pan, tilt, zoom] = btn.dataset.ptz.split(',').map(Number);
-  btn.onpointerdown = () => ptzSend({ pan, tilt, zoom });
-  btn.onpointerup = btn.onpointerleave = () => ptzSend({ action: 'stop' });
-});
-
-function connectPreview(camera_id) {
-  if (previewView) { previewView.stop(); previewView = null; }
-  const video = $('preview');
-  const ph = $('preview-empty');
-  if (!camera_id) { $('preview-meta').textContent = ''; if (ph) ph.style.display = 'flex'; return; }
-  if (ph) ph.style.display = 'none';
-  previewView = liveView(video, camera_id, {
-    onState: s => $('preview-meta').textContent =
-      s === 'live' ? 'streaming ' + camera_id : s,
-  });
-}
-
-loadCameras();
-setInterval(loadCameras, 4000);
+mountCameras(document.getElementById("cam-root"));
 </script>
 </body>
 </html>

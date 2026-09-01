@@ -437,3 +437,33 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .card.accent-left { position: relative; }
 .card.accent-teal::before { background: var(--teal); }
 .card.accent-orange::before { background: var(--orange); }
+
+/* ---- shared panels: cameras + zones (setup wizard + dedicated pages) ----
+   One implementation each lives in cameras-panel.js / zones-panel.js; these
+   styles are shared so the wizard step and the standalone page look identical. */
+.split { display: grid; grid-template-columns: 400px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
+.cam-panel .split { grid-template-columns: 1fr 1fr; }
+@media (max-width: 1100px) { .cam-panel .split { grid-template-columns: 1fr; } }
+.cam-panel #c-grid { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px; max-height: 560px; overflow-y: auto; padding-right: 2px; }
+.cam-panel #c-grid:empty { display: none; }
+.cam-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ptz-pad { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.probe-result { font-size: 12.5px; margin-top: 8px; min-height: 18px; }
+.prof-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  border: 1px solid var(--line-soft); border-radius: 9px; margin-bottom: 6px;
+  cursor: pointer; font-size: 12.5px; }
+.prof-row.sel { border-color: var(--teal-dim); background: rgba(46,158,143,.07); }
+.prof-row .res { font-weight: 700; font-variant-numeric: tabular-nums; }
+.prof-row .tag { font-size: 10px; letter-spacing: .5px; padding: 1px 6px;
+  border-radius: 999px; border: 1px solid var(--line); }
+.prof-row .tag.bad { color: var(--bad); border-color: rgba(226,61,83,.45); }
+.prof-row .pick { margin-left: auto; font-size: 10px; letter-spacing: .5px; color: var(--teal-dim); }
+.zone-stage { position: relative; background: #000; border-radius: 12px;
+  overflow: hidden; border: 1px solid var(--line); }
+.zone-stage canvas { display: block; width: 100%; cursor: crosshair; }
+.zone-list-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  border: 1px solid var(--line-soft); border-radius: 9px; margin-bottom: 7px; cursor: pointer; }
+.zone-list-item.sel { border-color: var(--teal-dim); background: rgba(46,158,143,.07); }
+.zone-chip { width: 13px; height: 13px; border-radius: 4px; flex: 0 0 auto; }

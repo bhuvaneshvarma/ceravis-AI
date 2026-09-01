@@ -9,24 +9,8 @@
 <link rel="stylesheet" href="ceravis.css" />
 <style>
   .wizard-actions { display: flex; justify-content: space-between; margin-top: 18px; }
-  .split { display: grid; grid-template-columns: 400px 1fr; gap: 16px; align-items: start; }
-  @media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
-
-  #step-3 .split { grid-template-columns: 1fr 1fr; }
-
-  #c-grid { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 10px; max-height: 560px; overflow-y: auto; padding-right: 2px; }
-  #c-grid:empty { display: none; }
-  .probe-result { font-size: 12.5px; margin-top: 8px; min-height: 18px; }
-  .zone-stage { position: relative; background: #000; border-radius: 12px;
-                overflow: hidden; border: 1px solid var(--line); }
-  .zone-stage canvas { display: block; width: 100%; cursor: crosshair; }
-  .zone-list-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
-                    border: 1px solid var(--line-soft); border-radius: 9px;
-                    margin-bottom: 7px; cursor: pointer; }
-  .zone-list-item.sel { border-color: var(--teal-dim);
-                        background: rgba(46,158,143,.07); }
-  .zone-chip { width: 13px; height: 13px; border-radius: 4px; flex: 0 0 auto; }
+  /* camera + zone panel styles now live in ceravis.css (shared with the
+     dedicated cameras.html / zones.html pages via cameras-panel/zones-panel). */
   .contact-row { display: grid; grid-template-columns: 1fr 130px 1fr 36px;
                  gap: 8px; margin-bottom: 8px; }
   .review-block { padding: 13px 15px; border: 1px solid var(--line-soft);
@@ -72,17 +56,6 @@
               border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); }
   .cov-cell.on { border-color: var(--teal-dim); background: rgba(46,158,143,.1); color: var(--teal-dim); }
   .cov-cell.next { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal-dim) inset; }
-  .prof-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
-              border: 1px solid var(--line-soft); border-radius: 9px;
-              margin-bottom: 6px; cursor: pointer; font-size: 12.5px; }
-  .prof-row.sel { border-color: var(--teal-dim); background: rgba(46,158,143,.07); }
-  .prof-row .res { font-weight: 700; font-variant-numeric: tabular-nums; }
-  .prof-row .tag { font-size: 10px; letter-spacing: .5px; padding: 1px 6px;
-                   border-radius: 999px; border: 1px solid var(--line); }
-  .prof-row .tag.bad { color: var(--bad); border-color: rgba(226,61,83,.45); }
-  .prof-row .pick { margin-left: auto; font-size: 10px; letter-spacing: .5px;
-                    color: var(--teal-dim); }
-
   .rec-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
   .rec-avatar { width: 58px; height: 58px; border-radius: 14px; flex: 0 0 auto;
                 display: flex; align-items: center; justify-content: center;
@@ -124,116 +97,11 @@
     </div>
   </section>
 
-  <section id="step-3" hidden>
-    <div class="split">
-      <div class="card">
-        <h2>Find cameras <span class="faint">(WiFi / ONVIF)</span></h2>
-        <div class="hint mb">Scans every network interface — WiFi, ethernet and the
-          device hotspot — and fills the form below automatically. If the WiFi
-          blocks discovery, it sweeps the subnet as a fallback. Manual RTSP entry
-          always works too.</div>
-        <div class="row">
-          <button class="btn btn-ghost" id="d-scan">Scan network</button>
-          <span class="probe-result" id="d-scan-out"></span>
-        </div>
-        <div id="d-list" class="mt"></div>
-        <div id="d-creds" class="mt" hidden>
-          <div class="grid-2">
-            <div>
-              <label class="f">Camera username</label>
-              <input type="text" id="d-user" placeholder="admin" />
-            </div>
-            <div>
-              <label class="f">Camera password</label>
-              <input type="password" id="d-pass" />
-            </div>
-          </div>
-          <div class="row mt">
-            <button class="btn btn-ghost" id="d-probe">Connect &amp; read profiles</button>
-            <span class="probe-result" id="d-probe-out"></span>
-          </div>
-          <div id="d-profiles" class="mt" hidden>
-            <label class="f">Stream to use</label>
-            <div class="hint" style="margin-bottom:6px">This ONE stream feeds the AI,
-              the recordings and every live view, so it is chosen once here. The
-              recommended pick is already selected.</div>
-            <div id="d-profile-list"></div>
-            <div class="probe-result" id="d-profile-why"></div>
-          </div>
-        </div>
-        <hr class="sep" />
-        <h2>Add a camera</h2>
-        <label class="f">RTSP stream URL</label>
-        <input type="text" id="c-url" placeholder="rtsp://user:pass@192.168.x.x:554/stream1" />
-        <div class="hint">If the password has special characters (<code>@ : /</code>) they must be
-          percent-encoded — <code>@</code> becomes <code>%40</code>. Test connection does this
-          for you; keep the encoded form. 4K (H.265) mains stream over TCP automatically.</div>
-        <div class="row mt">
-          <button class="btn btn-ghost" id="c-probe">Test connection</button>
-          <span class="probe-result" id="c-probe-out"></span>
-        </div>
-        <label class="f">Camera label</label>
-        <select id="c-room">
+  <!-- Cameras (shared cameras-panel.js — same as the dedicated cameras.html) -->
+  <section id="step-3" hidden><div id="cam-root"></div></section>
 
-          <option value="">— select room —</option>
-          <option>KITCHEN</option>
-          <option>BEDROOM</option>
-          <option>LIVING ROOM</option>
-          <option>LOUNGE</option>
-          <option>LIVE FEED</option>
-        </select>
-        <div class="hint">The room this camera watches. Its id and live link are
-          derived from the label automatically on save.</div>
-        <div class="row mt">
-          <button class="btn btn-primary" id="c-save">Save &amp; start camera</button>
-        </div>
-        <hr class="sep" />
-        <h2>Registered cameras</h2>
-        <table class="tbl"><tbody id="c-table"></tbody></table>
-        <div class="row mt"><span class="probe-result" id="c-sync-out"></span></div>
-        <div class="hint">Pressing Continue syncs each camera's room and live
-          stream link to your CERAVIS account automatically.</div>
-      </div>
-
-      <div class="card">
-        <h2>Live verification wall</h2>
-        <div class="hint mb">Streams appear here as soon as a camera is saved —
-          verify aim and coverage before continuing.</div>
-        <div class="cam-grid" id="c-grid"></div>
-      </div>
-    </div>
-  </section>
-
-  <section id="step-4" hidden>
-    <div class="split">
-      <div class="card">
-        <h2>Zone the rooms</h2>
-        <div class="hint mb">Pick a camera, then click on the image to outline an
-          area (bed, fridge, door…). Double-click — or “Close polygon” — to finish
-          the shape. Drag any point to adjust. Zones give alerts spatial meaning:
-          <i>“fall near the bed”</i>.</div>
-        <label class="f">Camera</label>
-        <select id="z-cam"></select>
-        <label class="f">New zone name</label>
-        <input type="text" id="z-name" placeholder="bed / fridge / door" />
-        <div class="row mt">
-          <button class="btn btn-primary btn-sm" id="z-close">Close polygon</button>
-          <button class="btn btn-ghost btn-sm" id="z-undo">Undo point</button>
-          <button class="btn btn-ghost btn-sm" id="z-clear">Discard drawing</button>
-          <button class="btn btn-ghost btn-sm" id="z-refresh">Refresh frame</button>
-        </div>
-        <hr class="sep" />
-        <h2>Zones on this camera</h2>
-        <div id="z-list"></div>
-        <button class="btn btn-primary mt" id="z-save">Save all zones</button>
-      </div>
-      <div class="card">
-        <h2>Camera view</h2>
-        <div class="zone-stage"><canvas id="z-canvas" width="960" height="540"></canvas></div>
-        <div class="hint mt" id="z-status">Select a camera to begin.</div>
-      </div>
-    </div>
-  </section>
+  <!-- Room zones (shared zones-panel.js — same as the dedicated zones.html) -->
+  <section id="step-4" hidden><div id="zone-root"></div></section>
 
   <section id="step-5" hidden>
     <div class="card enroll-card">
@@ -330,6 +198,8 @@
 
 <script src="ceravis.js"></script>
 <script src="live-view.js"></script>
+<script src="cameras-panel.js"></script>
+<script src="zones-panel.js"></script>
 <script>
 
 const ACCOUNT = { verified: false, user: null };
@@ -338,7 +208,7 @@ let pendingEnrollRid = null;
 const STEPS = ["Recipient", "Cameras", "Room zones", "Enrollment"];
 const SECTIONS = ["step-2", "step-3", "step-4", "step-5"];
 let step = 1;
-const streams = {};
+let camPanel = null, zonePanel = null;
 
 async function initSetup() {
   // The head-redirect in fleet-prefix.js already gates the load; re-check here.
@@ -370,411 +240,18 @@ function show(n) {
   document.getElementById("w-next").style.visibility = step === STEPS.length ? "hidden" : "visible";
   renderStepper();
   if (step !== STEPS.length) stopEnrollPreview();
+  if (camPanel && step !== 2) { camPanel.destroy(); camPanel = null; }
+  if (zonePanel && step !== 3) { zonePanel.destroy(); zonePanel = null; }
   if (step === 1) initRecipient();
-  if (step === 2) refreshCameras();
-  if (step === 3) initZones();
+  if (step === 2 && !camPanel) camPanel = mountCameras(document.getElementById("cam-root"));
+  if (step === 3 && !zonePanel) zonePanel = mountZones(document.getElementById("zone-root"));
   if (step === 4) initEnroll();
 }
 document.getElementById("w-back").onclick = () => show(step - 1);
 document.getElementById("w-next").onclick = async () => {
-
-  if (step === 2) await syncCameras(false);
-  if (step === 3) await finalizeZones();
+  if (step === 2 && camPanel) await camPanel.syncCameras(false);
+  if (step === 3 && zonePanel) await zonePanel.finalize();
   show(step + 1);
-};
-
-async function finalizeZones() {
-  try {
-    const z = await api("/api/v1/zones/finalize", { method: "POST" });
-    if (z && z.uploaded)
-      toast(`Zones saved to your account · ${z.cameras} camera(s), ${z.zones} zone(s)`);
-    else if (z && z.reason)
-      toast(`Zones not uploaded: ${z.reason}`, "err");
-    return z;
-  } catch (e) { return null; }
-}
-
-async function refreshCameras() {
-  const [cams, status] = await Promise.all([
-    api("/api/v1/cameras"), api("/api/v1/cameras/status").catch(() => ({})),
-  ]);
-
-  document.getElementById("c-table").innerHTML = cams.length === 0
-    ? `<tr><td><div class="empty">
-         <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg></div>
-         <div class="empty-title">No cameras added yet</div>
-         <div class="empty-sub">Scan the network above, or paste an RTSP URL and save your first camera.</div>
-       </div></td></tr>`
-    : cams.map(c => {
-        const s = status[c.camera_id] || {};
-        return `<tr>
-          <td><b>${c.room_name}</b><br><span class="faint">${c.device_label ? c.device_label + " · " : ""}${c.camera_id}</span></td>
-          <td>${healthPill(s.health_state)}</td>
-          <td><button class="btn btn-danger btn-sm" data-del="${c.camera_id}">Remove</button></td>
-        </tr>`;
-      }).join("");
-  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm(`Remove camera ${b.dataset.del}?`)) return;
-    await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
-      { edgeId: (ACCOUNT.user && ACCOUNT.user.edgeId) || "",
-        cameraLabel: b.dataset.del, action: "stop" }) }).catch(() => {});
-    await api(`/api/v1/cameras/${b.dataset.del}`, { method: "DELETE" });
-    toast("Camera removed"); refreshCameras();
-  });
-
-  const grid = document.getElementById("c-grid");
-  const want = new Set(cams.map(c => c.camera_id));
-  Object.keys(streams).forEach(id => {
-    if (!want.has(id)) { streams[id].stop(); delete streams[id];
-      document.getElementById(`tile-${id}`)?.remove(); }
-  });
-  cams.forEach(c => {
-    if (streams[c.camera_id]) return;
-    const tile = el("div", "cam-tile");
-    tile.id = `tile-${c.camera_id}`;
-    tile.innerHTML = `
-      <div class="nosignal">NO SIGNAL</div>
-      <video style="display:none"></video>
-      <div class="overlay"><span class="name">${c.camera_name}</span>
-        <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
-      <div class="foot"><span id="st-${c.camera_id}">connecting…</span></div>`;
-    grid.appendChild(tile);
-    const video = tile.querySelector("video");
-    streams[c.camera_id] = liveView(video, c.camera_id, {
-      onState: s => {
-        tile.querySelector(".nosignal").style.display = s === "live" ? "none" : "flex";
-        video.style.display = s === "live" ? "block" : "none";
-        const st = document.getElementById(`st-${c.camera_id}`);
-        if (st) st.textContent = s.toUpperCase();
-      },
-    });
-  });
-}
-
-const DISC = { cams: [], sel: null, probed: null, profileToken: null };
-
-async function runScan(deep) {
-  const out = document.getElementById("d-scan-out");
-  out.innerHTML = `<span class="muted">${deep ? "Deep scan — sweeping the subnet" : "Scanning the network"}…</span>`;
-  document.getElementById("d-list").innerHTML = "";
-  document.getElementById("d-creds").hidden = true;
-  DISC.sel = DISC.probed = null;
-  try {
-    const r = await api(`/api/v1/discovery/scan${deep ? "?deep=1" : ""}`);
-    DISC.cams = r.cameras || [];
-    const where = (r.subnets || []).join(", ") || "this network";
-    if (DISC.cams.length) {
-      out.innerHTML = `<span class="ok">✓ ${DISC.cams.length} camera(s) found</span>
-        <span class="faint">on ${where}</span>`;
-    } else {
-
-      out.innerHTML = `<span class="warn">No ONVIF cameras answered on ${where}.</span>`
-        + (deep ? "" : ` <button class="btn btn-ghost" style="padding:2px 8px;font-size:12px"
-             id="d-deep">Deep scan</button>`);
-      const deepBtn = document.getElementById("d-deep");
-      if (deepBtn) deepBtn.onclick = () => runScan(true);
-    }
-    document.getElementById("d-list").innerHTML = DISC.cams.map((c, i) => `
-      <label style="display:flex;gap:8px;align-items:center;padding:6px 2px;
-                    font-size:13px;cursor:pointer">
-        <input type="radio" name="d-cam" value="${i}" style="width:auto">
-        <b>${c.name || c.hardware || c.manufacturer || "camera"}</b>
-        <span class="faint">${c.ip}${c.hardware ? " · " + c.hardware : ""}${c.via === "unicast" ? " · sweep" : ""}</span>
-      </label>`).join("");
-    document.querySelectorAll('input[name="d-cam"]').forEach(el => {
-      el.onchange = () => {
-        DISC.sel = DISC.cams[parseInt(el.value, 10)];
-        DISC.probed = null;
-        document.getElementById("d-creds").hidden = false;
-        document.getElementById("d-probe-out").textContent = "";
-      };
-    });
-  } catch (e) { out.innerHTML = `<span class="bad">✗ scan failed</span>`; }
-}
-document.getElementById("d-scan").onclick = () => runScan(false);
-
-document.getElementById("d-probe").onclick = async () => {
-  const out = document.getElementById("d-probe-out");
-  if (!DISC.sel) return;
-  out.innerHTML = `<span class="muted">Connecting…</span>`;
-  try {
-    const r = await api("/api/v1/discovery/probe", {
-      method: "POST",
-      body: JSON.stringify({
-        xaddr: DISC.sel.xaddr,
-        username: document.getElementById("d-user").value.trim(),
-        password: document.getElementById("d-pass").value,
-      }),
-    });
-    DISC.probed = r;
-    out.innerHTML = `<span class="ok">✓ ${r.device.manufacturer || ""} ${r.device.model || ""}
-      ${r.ptz ? " · PTZ ✓" : ""}</span>`;
-    renderProfiles(r);
-  } catch (e) {
-    out.innerHTML = `<span class="bad">✗ ${e.detail || "connection failed (credentials?)"}</span>`;
-  }
-};
-
-function selectProfile(token) {
-  const r = DISC.probed;
-  if (!r) return;
-  const p = (r.profiles || []).find(x => x.token === token);
-  if (!p) return;
-  DISC.profileToken = token;
-  document.getElementById("c-url").value = p.uri || "";
-  document.querySelectorAll(".prof-row").forEach(el =>
-    el.classList.toggle("sel", el.dataset.token === token));
-
-  const ai = r.ai || {};
-  const aiNote = ai.uri && ai.token !== token
-    ? `<br><span class="muted">The AI will additionally read
-       ${ai.resolution} ${ai.encoding} — more reach for tracking. This camera is
-       the only kind that gets two streams.</span>` : "";
-  const enc = (p.codec || p.encoding || "").toUpperCase();
-  document.getElementById("d-profile-why").innerHTML = enc && enc !== "H264"
-    ? `<span class="bad">${enc} cannot play in any browser — live view will be
-       black and its recordings unplayable.</span>`
-    : `<span class="muted">${(r.recommended || {}).reason || ""}</span>${aiNote}`;
-}
-
-function renderProfiles(r) {
-  const wrap = document.getElementById("d-profiles");
-  const list = document.getElementById("d-profile-list");
-  const rec = r.recommended || {};
-
-  const profiles = (r.profiles || [])
-    .filter(p => p.uri && (p.codec || p.encoding || "").toUpperCase() !== "JPEG");
-  if (!profiles.length) {
-    wrap.hidden = true;
-    return;
-  }
-  list.innerHTML = profiles.map(p => {
-    const enc = (p.codec || p.encoding || "").toUpperCase();
-    const bad = enc && enc !== "H264";
-    return `<div class="prof-row" data-token="${p.token}">
-      <span class="res">${p.width}×${p.height}</span>
-      <span class="tag ${bad ? "bad" : ""}">${enc || "?"}</span>
-      <span class="muted">${p.fps ? Math.round(p.fps) + " fps" : ""} · ${p.name || p.token}</span>
-      ${p.token === rec.token ? '<span class="pick">RECOMMENDED</span>' : ""}
-    </div>`;
-  }).join("");
-  list.querySelectorAll(".prof-row").forEach(el =>
-    el.onclick = () => selectProfile(el.dataset.token));
-  wrap.hidden = false;
-  selectProfile(rec.token || profiles[0].token);
-}
-
-document.getElementById("c-probe").onclick = async () => {
-  const out = document.getElementById("c-probe-out");
-  const field = document.getElementById("c-url");
-  const url = field.value.trim();
-  if (!url) { out.innerHTML = `<span class="warn">Enter an RTSP URL first.</span>`; return; }
-  out.innerHTML = `<span class="muted">Probing stream (TCP)…</span>`;
-  try {
-    const r = await api("/api/v1/cameras/probe", {
-      method: "POST", body: JSON.stringify({ rtsp_url: url }) });
-
-    if (r.url && r.url !== url) field.value = r.url;
-    const fixed = (r.url && r.url !== url)
-      ? ` <span class="faint">(credentials auto-encoded)</span>` : "";
-    out.innerHTML = r.ok
-      ? `<span class="ok">✓ Connected — ${r.width}×${r.height}</span>${fixed}`
-      : `<span class="bad">✗ ${r.reason}</span>${fixed}`;
-  } catch (e) { out.innerHTML = `<span class="bad">✗ probe failed</span>`; }
-};
-
-document.getElementById("c-save").onclick = async () => {
-
-  const cam = {
-    room_name: document.getElementById("c-room").value.trim(),
-    rtsp_url: document.getElementById("c-url").value.trim(),
-    is_enabled: true,
-  };
-
-  const picked = DISC.probed && (DISC.probed.profiles || [])
-    .find(p => p.token === DISC.profileToken);
-  if (picked && cam.rtsp_url === picked.uri) {
-    cam.onvif_xaddr = DISC.sel ? DISC.sel.xaddr : null;
-    cam.onvif_username = document.getElementById("d-user").value.trim() || null;
-    cam.onvif_password = document.getElementById("d-pass").value || null;
-
-    cam.onvif_profile_token = picked.token || null;
-
-    const ai = DISC.probed.ai || {};
-    const wantsAi = ai.uri && ai.token && ai.token !== picked.token;
-    cam.ai_rtsp_url = wantsAi ? ai.uri : "";
-    cam.ai_profile_token = wantsAi ? ai.token : null;
-    cam.ptz_supported = !!DISC.probed.ptz;
-  }
-  if (!cam.room_name || !cam.rtsp_url)
-    return toast("Pick a camera label and enter (or test) an RTSP URL", "err");
-  try {
-    const res = await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
-    const cid = (res && res.camera_id) || "";
-    if (cid) await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
-      { edgeId: (ACCOUNT.user && ACCOUNT.user.edgeId) || "",
-        cameraLabel: cid, action: "start" }) });
-    toast(`${cam.room_name} saved & started`);
-    ["c-url", "c-room"].forEach(i => document.getElementById(i).value = "");
-    document.getElementById("c-probe-out").textContent = "";
-    DISC.probed = DISC.sel = DISC.profileToken = null;
-    document.getElementById("d-creds").hidden = true;
-    document.getElementById("d-profiles").hidden = true;
-    document.getElementById("d-probe-out").textContent = "";
-    refreshCameras();
-  } catch (e) { toast(e.detail || "Save failed", "err"); }
-};
-setInterval(() => { if (step === 2 && !document.getElementById("wizard").hidden) refreshCameras(); }, 5000);
-
-async function syncCameras(manual) {
-  const out = document.getElementById("c-sync-out");
-  if (!ACCOUNT.verified) {
-    if (out) out.innerHTML = `<span class="warn">Verify your account first.</span>`;
-    return null;
-  }
-  if (out) out.innerHTML = `<span class="muted">Syncing…</span>`;
-  try {
-    const r = await api("/api/v1/account/sync-cameras", { method: "POST" });
-    if (r.synced) {
-      if (out) out.innerHTML = `<span class="ok">✓ ${r.count} camera(s) synced to CERAVIS</span>`;
-      if (manual) toast(`${r.count} camera(s) sent to CERAVIS`);
-    } else {
-      if (out) out.innerHTML = `<span class="bad">✗ ${r.reason || "sync failed"}</span>`;
-      if (manual) toast(r.reason || "Camera sync failed", "err");
-    }
-    return r;
-  } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; return null; }
-}
-
-const Z = { cam: null, img: null, zones: [], drawing: [], sel: -1, drag: null };
-const zCanvas = document.getElementById("z-canvas");
-const zCtx = zCanvas.getContext("2d");
-const COLORS = ["#2dd4bf","#60a5fa","#fbbf24","#f87171","#c084fc","#34d399","#fb923c"];
-
-async function initZones() {
-  const cams = await api("/api/v1/cameras");
-  const sel = document.getElementById("z-cam");
-  sel.innerHTML = `<option value="">— select camera —</option>` +
-    cams.map(c => `<option value="${c.camera_id}">${c.camera_name} (${c.room_name})</option>`).join("");
-  sel.onchange = () => loadZoneCam(sel.value);
-}
-async function loadZoneCam(camId) {
-  Z.cam = camId; Z.drawing = []; Z.sel = -1;
-  if (!camId) { Z.img = null; zDraw(); return; }
-  document.getElementById("z-status").textContent = "Loading frame…";
-  try {
-    const blob = await fetch(`/api/v1/cameras/${camId}/snapshot?quality=75&t=${Date.now()}`)
-      .then(r => { if (!r.ok) throw 0; return r.blob(); });
-    const img = new Image();
-    img.onload = () => {
-      Z.img = img; zCanvas.width = img.naturalWidth; zCanvas.height = img.naturalHeight;
-      zDraw();
-      document.getElementById("z-status").textContent =
-        "Click to add points · double-click to close · drag a point to adjust.";
-    };
-    img.src = URL.createObjectURL(blob);
-  } catch {
-    Z.img = null; zDraw();
-    document.getElementById("z-status").innerHTML =
-      `<span class="warn">No frame available — is the camera running?</span>`;
-  }
-  Z.zones = (await api(`/api/v1/zones?camera_id=${encodeURIComponent(camId)}`)) || [];
-  zList(); zDraw();
-}
-function zDraw() {
-  zCtx.fillStyle = "#000"; zCtx.fillRect(0, 0, zCanvas.width, zCanvas.height);
-  if (Z.img) zCtx.drawImage(Z.img, 0, 0, zCanvas.width, zCanvas.height);
-  Z.zones.forEach((z, i) => zPoly(z.polygon, COLORS[i % COLORS.length],
-    z.zone_name, false, i === Z.sel));
-  if (Z.drawing.length) zPoly(Z.drawing, "#ffffff", "…", true, false);
-}
-function zPoly(pts, color, label, open, selected) {
-  if (!pts.length) return;
-  zCtx.lineWidth = selected ? 4 : 2.5; zCtx.strokeStyle = color;
-  zCtx.fillStyle = color + "2e";
-  zCtx.beginPath(); zCtx.moveTo(pts[0][0], pts[0][1]);
-  pts.slice(1).forEach(p => zCtx.lineTo(p[0], p[1]));
-  if (!open) { zCtx.closePath(); zCtx.fill(); }
-  zCtx.stroke();
-  pts.forEach(p => { zCtx.beginPath(); zCtx.arc(p[0], p[1], selected ? 7 : 5, 0, 7);
-    zCtx.fillStyle = color; zCtx.fill(); });
-  if (label) {
-    zCtx.font = "600 15px sans-serif";
-    const w = zCtx.measureText(label).width;
-    zCtx.fillStyle = "rgba(0,0,0,.75)";
-    zCtx.fillRect(pts[0][0] + 8, pts[0][1] - 26, w + 14, 22);
-    zCtx.fillStyle = color; zCtx.fillText(label, pts[0][0] + 15, pts[0][1] - 10);
-  }
-}
-function zPos(e) {
-  const r = zCanvas.getBoundingClientRect();
-  return [Math.round((e.clientX - r.left) * zCanvas.width / r.width),
-          Math.round((e.clientY - r.top) * zCanvas.height / r.height)];
-}
-zCanvas.addEventListener("mousedown", e => {
-  const [x, y] = zPos(e);
-
-  for (let zi = 0; zi < Z.zones.length; zi++)
-    for (let pi = 0; pi < Z.zones[zi].polygon.length; pi++) {
-      const [px, py] = Z.zones[zi].polygon[pi];
-      if ((px-x)**2 + (py-y)**2 < 144) { Z.drag = [zi, pi]; Z.sel = zi; zList(); return; }
-    }
-});
-zCanvas.addEventListener("mousemove", e => {
-  if (!Z.drag) return;
-  const [x, y] = zPos(e);
-  Z.zones[Z.drag[0]].polygon[Z.drag[1]] = [x, y]; zDraw();
-});
-window.addEventListener("mouseup", () => { Z.drag = null; });
-zCanvas.addEventListener("click", e => {
-  if (Z.drag) return;
-  const [x, y] = zPos(e);
-
-  for (let zi = 0; zi < Z.zones.length; zi++)
-    for (const [px, py] of Z.zones[zi].polygon)
-      if ((px-x)**2 + (py-y)**2 < 144) { Z.sel = zi; zList(); zDraw(); return; }
-  Z.drawing.push([x, y]); zDraw();
-});
-zCanvas.addEventListener("dblclick", () => closeDrawing());
-function closeDrawing() {
-  if (Z.drawing.length < 3) return toast("A zone needs at least 3 points", "err");
-  const name = document.getElementById("z-name").value.trim();
-  if (!name) return toast("Name the zone first", "err");
-  Z.zones.push({ zone_id: "zone_" + Math.random().toString(36).slice(2, 8),
-                 camera_id: Z.cam, zone_name: name, polygon: Z.drawing.slice() });
-  Z.drawing = []; document.getElementById("z-name").value = "";
-  zList(); zDraw();
-}
-document.getElementById("z-close").onclick = closeDrawing;
-document.getElementById("z-undo").onclick = () => { Z.drawing.pop(); zDraw(); };
-document.getElementById("z-clear").onclick = () => { Z.drawing = []; zDraw(); };
-document.getElementById("z-refresh").onclick = () => Z.cam && loadZoneCam(Z.cam);
-function zList() {
-  document.getElementById("z-list").innerHTML = Z.zones.length === 0
-    ? `<div class="faint">No zones yet for this camera.</div>`
-    : Z.zones.map((z, i) => `
-      <div class="zone-list-item ${i === Z.sel ? "sel" : ""}" data-zi="${i}">
-        <span class="zone-chip" style="background:${COLORS[i % COLORS.length]}"></span>
-        <input type="text" value="${z.zone_name}" data-rn="${i}"
-               style="flex:1;padding:4px 8px;font-size:13px" />
-        <span class="faint">${z.polygon.length} pts</span>
-        <button class="btn btn-danger btn-sm" data-zdel="${i}">✕</button>
-      </div>`).join("");
-  document.querySelectorAll("[data-zi]").forEach(d =>
-    d.onclick = e => { if (e.target.tagName === "DIV" || e.target.tagName === "SPAN")
-      { Z.sel = +d.dataset.zi; zList(); zDraw(); } });
-  document.querySelectorAll("[data-rn]").forEach(inp =>
-    inp.onchange = () => { Z.zones[+inp.dataset.rn].zone_name = inp.value.trim(); zDraw(); });
-  document.querySelectorAll("[data-zdel]").forEach(b =>
-    b.onclick = () => { Z.zones.splice(+b.dataset.zdel, 1); Z.sel = -1; zList(); zDraw(); });
-}
-document.getElementById("z-save").onclick = async () => {
-  if (!Z.cam) return toast("Select a camera first", "err");
-  try {
-    await api(`/api/v1/zones/camera/${Z.cam}`,
-      { method: "PUT", body: JSON.stringify(Z.zones) });
-    toast(`Saved ${Z.zones.length} zones for ${Z.cam}`);
-  } catch (e) { toast("Save failed", "err"); }
 };
 
 function profRow(k, v, wide) {

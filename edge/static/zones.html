@@ -5,225 +5,26 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CERAVIS — Zones</title>
+<link rel="icon" type="image/png" href="favicon.png" />
 <link rel="stylesheet" href="ceravis.css" />
-<style>
-  label { display:block; font-size:11.5px; color:var(--muted); margin:8px 0 5px;
-          text-transform:uppercase; letter-spacing:.8px; font-weight:600; }
-  input, select { min-width:200px; }
-  button { background:var(--teal); border:0; color:#fff; padding:9px 15px;
-           border-radius:10px; cursor:pointer; font-size:13px; font-weight:700;
-           font-family:inherit; transition:all .15s; }
-  button:hover { background:var(--teal-dim); }
-  button.ghost { background:#fff; border:1px solid var(--line); color:var(--navy); }
-  button.ghost:hover { border-color:var(--muted); background:var(--panel-2); }
-  button.danger { background:rgba(251,44,54,.1); color:var(--bad);
-                  border:1px solid rgba(251,44,54,.28); }
-  button.danger:hover { background:rgba(251,44,54,.18); }
-  .stage { position:relative; display:inline-block; background:#000;
-           border-radius:12px; overflow:hidden; max-width:100%; border:1px solid var(--line); }
-  .stage canvas { display:block; cursor:crosshair; max-width:100%; }
-  .legend { color:var(--faint); font-size:12px; margin-top:10px; }
-  .card { margin-top:16px; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line-soft); }
-  th { color:var(--faint); font-weight:700; font-size:10.5px;
-       text-transform:uppercase; letter-spacing:1.1px; border-bottom:1px solid var(--line); }
-  td code { background:var(--panel-2); padding:2px 7px; border-radius:6px; font-size:12px; }
-  tbody tr { transition:background .12s; }
-  tbody tr:hover { background:var(--panel-2); }
-</style>
 </head>
 <body>
 <div class="page">
   <div class="page-head">
-    <h1>Zone labeler</h1>
-    <div class="sub">
-      Click on the snapshot to drop polygon points. Double-click to close.
-      Name it, click "Add zone". Hit "Save all zones" when done.
-    </div>
+    <h1>Room zones</h1>
+    <div class="sub">Outline areas on each camera (bed, fridge, door…) so alerts carry
+      spatial meaning — the same labeler as the setup wizard.</div>
   </div>
-
-  <div class="card">
-    <div class="row">
-      <div>
-        <label>Camera</label>
-        <select id="cam-select"><option value="">— select —</option></select>
-      </div>
-      <div>
-        <label>Zone name (e.g. "fridge", "bed", "door")</label>
-        <input id="zone-name" placeholder="bed" />
-      </div>
-      <div style="margin-top:24px" class="row">
-        <button id="btn-add">Add zone</button>
-        <button id="btn-undo" class="ghost">Undo point</button>
-        <button id="btn-reset" class="ghost">Reset drawing</button>
-        <button id="btn-save">Save all zones</button>
-        <button id="btn-refresh" class="ghost">Refresh snapshot</button>
-      </div>
-    </div>
-    <div class="legend">
-      Tip: live preview frame is shown — works best when the camera is "running".
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="stage">
-      <canvas id="canvas" width="960" height="540"></canvas>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Zones for this camera</h2>
-    <table>
-      <thead><tr><th>ID</th><th>Name</th><th>Vertices</th><th></th></tr></thead>
-      <tbody id="zone-tbody"></tbody>
-    </table>
-  </div>
+  <div id="zone-root"></div>
 </div>
 
 <script src="ceravis.js"></script>
+<script src="live-view.js"></script>
+<script src="zones-panel.js"></script>
 <script>
 cvRequireAuth();
 renderNav("zones.html");
-const $ = (id) => document.getElementById(id);
-
-const canvas = $('canvas');
-const ctx = canvas.getContext('2d');
-
-let bgImg = null;
-let imgW = 1, imgH = 1;
-let drawing = [];
-let zones = [];
-const COLORS = ['#7ad0ff','#39d98a','#f5a623','#ff6b6b','#c084fc','#fb7185'];
-
-async function loadCameras() {
-  const cams = await api('/api/v1/cameras');
-  $('cam-select').innerHTML = '<option value="">— select —</option>' +
-    cams.map(c => `<option value="${c.camera_id}">${c.camera_id} · ${c.room_name}</option>`).join('');
-}
-
-async function loadZones(camera_id) {
-  zones = (await api('/api/v1/zones?camera_id=' + encodeURIComponent(camera_id)))
-            .map(z => ({...z}));
-  renderZoneTable();
-  redraw();
-}
-
-function renderZoneTable() {
-  $('zone-tbody').innerHTML = zones.length === 0
-    ? `<tr><td colspan="4"><div class="empty">
-         <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 20 3 17V4l6 3 6-3 6 3v13l-6-3-6 3Z"/><path d="M9 7v13M15 4v13"/></svg></div>
-         <div class="empty-title">No zones on this camera yet</div>
-         <div class="empty-sub">Click on the frame to outline an area, name it, then Add zone.</div>
-       </div></td></tr>`
-    : zones.map((z, i) => `
-        <tr>
-          <td><code>${z.zone_id}</code></td>
-          <td>${z.zone_name}</td>
-          <td>${z.polygon.length}</td>
-          <td><button class="ghost" data-i="${i}">Remove</button></td>
-        </tr>`).join('');
-  $('zone-tbody').querySelectorAll('button[data-i]').forEach(b => {
-    b.onclick = () => { zones.splice(+b.dataset.i, 1); renderZoneTable(); redraw(); };
-  });
-}
-
-async function loadSnapshot(camera_id) {
-  if (!camera_id) { bgImg = null; redraw(); return; }
-  const blob = await fetch('/api/v1/cameras/' + camera_id + '/snapshot?quality=70&t=' + Date.now())
-    .then(r => r.ok ? r.blob() : Promise.reject());
-  const url = URL.createObjectURL(blob);
-  const img = new Image();
-  img.onload = () => {
-    bgImg = img;
-    imgW = img.naturalWidth; imgH = img.naturalHeight;
-    canvas.width = imgW; canvas.height = imgH;
-    redraw();
-    URL.revokeObjectURL(url);
-  };
-  img.onerror = () => { bgImg = null; redraw(); };
-  img.src = url;
-}
-
-function redraw() {
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-  if (bgImg) ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
-
-  zones.forEach((z, i) => drawPolygon(z.polygon, COLORS[i % COLORS.length], z.zone_name));
-  if (drawing.length > 0) drawPolygon(drawing, '#ffff66', '…drawing',  true);
-}
-
-function drawPolygon(pts, color, label, open=false) {
-  if (pts.length === 0) return;
-  ctx.lineWidth = 3; ctx.strokeStyle = color;
-  ctx.fillStyle = color + '33';
-  ctx.beginPath();
-  ctx.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-  if (!open) { ctx.closePath(); ctx.fill(); }
-  ctx.stroke();
-  pts.forEach(p => {
-    ctx.beginPath(); ctx.arc(p[0], p[1], 5, 0, Math.PI*2);
-    ctx.fillStyle = color; ctx.fill();
-  });
-  if (label) {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(pts[0][0]+8, pts[0][1]-22, ctx.measureText(label).width+16, 22);
-    ctx.fillStyle = color; ctx.font='14px sans-serif';
-    ctx.fillText(label, pts[0][0]+16, pts[0][1]-6);
-  }
-}
-
-canvas.addEventListener('click', (e) => {
-  const rect = canvas.getBoundingClientRect();
-  const x = (e.clientX - rect.left) * (canvas.width  / rect.width);
-  const y = (e.clientY - rect.top)  * (canvas.height / rect.height);
-  drawing.push([Math.round(x), Math.round(y)]);
-  redraw();
-});
-
-canvas.addEventListener('dblclick', () => {
-  if (drawing.length >= 3) commitDrawing();
-});
-
-function commitDrawing() {
-  const name = $('zone-name').value.trim();
-  if (!name) { alert('Give the zone a name first'); return; }
-  zones.push({
-    zone_id: 'zone_' + Math.random().toString(36).slice(2, 8),
-    camera_id: $('cam-select').value,
-    zone_name: name,
-    polygon: drawing.slice(),
-  });
-  drawing = [];
-  $('zone-name').value = '';
-  renderZoneTable(); redraw();
-}
-
-$('btn-add').onclick   = () => { if (drawing.length < 3) alert('Need at least 3 points'); else commitDrawing(); };
-$('btn-undo').onclick  = () => { drawing.pop(); redraw(); };
-$('btn-reset').onclick = () => { drawing = []; redraw(); };
-$('btn-refresh').onclick = () => loadSnapshot($('cam-select').value);
-
-$('btn-save').onclick = async () => {
-  const cid = $('cam-select').value;
-  if (!cid) return;
-  try {
-    await api('/api/v1/zones/camera/' + cid, {
-      method:'PUT', body: JSON.stringify(zones),
-    });
-    alert('Saved ' + zones.length + ' zones');
-  } catch (e) { alert(JSON.stringify(e)); }
-};
-
-$('cam-select').onchange = async (e) => {
-  drawing = [];
-  await loadSnapshot(e.target.value);
-  if (e.target.value) await loadZones(e.target.value);
-};
-
-loadCameras();
+mountZones(document.getElementById("zone-root"));
 </script>
 </body>
 </html>
