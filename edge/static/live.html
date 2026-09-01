@@ -57,11 +57,11 @@
 <script src="ceravis.js"></script>
 <script src="live-view.js"></script>
 <script>
-cvRequireAuth();  // arms idle timer; head-redirect already gated the load
+cvRequireAuth();
 renderNav("live.html");
 
-const streams = {};   // camera_id -> handle
-const tiles = {};     // camera_id -> element
+const streams = {};
+const tiles = {};
 
 async function sync() {
   const [cams, status] = await Promise.all([
@@ -83,7 +83,7 @@ async function sync() {
 
   cams.forEach(c => {
     const s = status[c.camera_id] || {};
-    if (tiles[c.camera_id]) {   // refresh footer info only
+    if (tiles[c.camera_id]) {
       const foot = tiles[c.camera_id].querySelector(".foot span");
       foot.innerHTML = `${(s.current_fps || 0).toFixed(1)} fps · ` +
         `${s.frames_captured || 0} frames · ${s.reconnect_count || 0} reconnects`;

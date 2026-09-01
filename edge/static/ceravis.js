@@ -1,13 +1,5 @@
-/* =====================================================================
-   CERAVIS shared front-end helpers: nav, API, toasts
-   (live camera video lives in live-view.js — one mechanism, WebRTC only)
-   ===================================================================== */
 
-/* The fleet per-edge prefix (for /api on /<edge_id>/ui/… pages) is handled
-   globally by fleet-prefix.js, which every page loads BEFORE this file — it
-   wraps fetch, so nothing here needs to know the prefix. */
 
-/* ---- tiny API wrapper ---------------------------------------------- */
 async function api(path, opts = {}) {
   const r = await fetch(path, {
     headers: { "Content-Type": "application/json" }, ...opts,
@@ -18,7 +10,6 @@ async function api(path, opts = {}) {
   return body;
 }
 
-/* ---- toast notifications ------------------------------------------- */
 function toast(msg, kind = "ok", ms = 2600) {
   document.querySelectorAll(".toast").forEach(t => t.remove());
   const el = document.createElement("div");
@@ -28,18 +19,13 @@ function toast(msg, kind = "ok", ms = 2600) {
   setTimeout(() => el.remove(), ms);
 }
 
-/* ---- login session + idle auto-logout -------------------------------
-   A lightweight CLIENT session gates every /ui page behind the login on
-   setup.html. It is separate from the device account (account.json persists);
-   this is the per-browser access session that expires after 15 min idle. */
 const CV_SESSION_KEY = "cv-session";
-const CV_IDLE_MS = 15 * 60 * 1000;          // idle window (auto-logout DISABLED for now — re-enable later)
+const CV_IDLE_MS = 15 * 60 * 1000;
 
 function cvSessionValid() {
   try {
     const s = JSON.parse(localStorage.getItem(CV_SESSION_KEY) || "null");
-    // Inactivity auto-logout is OFF during development: a session stays valid
-    // once started. Re-enable by restoring `&& (Date.now() - s.ts) <= CV_IDLE_MS`.
+
     return !!(s && s.ts);
   } catch (_) { return false; }
 }
@@ -50,8 +36,8 @@ function cvStartSession(user) {
   } catch (_) {}
   cvArmIdle();
 }
-function cvBumpSession() {                    // called on activity
-  if (!cvSessionValid()) return;             // never resurrect an expired one
+function cvBumpSession() {
+  if (!cvSessionValid()) return;
   try {
     const s = JSON.parse(localStorage.getItem(CV_SESSION_KEY) || "{}");
     s.ts = Date.now();
@@ -62,7 +48,7 @@ function cvSignOut() {
   try { localStorage.removeItem(CV_SESSION_KEY); } catch (_) {}
   location.replace("setup.html");
 }
-/* Guard a protected page: redirect to the login when there's no live session. */
+
 function cvRequireAuth() {
   if (cvSessionValid()) { cvArmIdle(); return true; }
   location.replace("setup.html");
@@ -70,20 +56,13 @@ function cvRequireAuth() {
 }
 let _cvIdleArmed = false;
 function cvArmIdle() {
-  // Inactivity auto-logout DISABLED for now — no activity listeners, no
-  // expiry sweep. Re-enable this body (activity listeners + 30s cvSignOut
-  // sweep) once development is finished.
+
   if (_cvIdleArmed) return;
   _cvIdleArmed = true;
 }
 
-/* ---- shared top navigation ------------------------------------------ */
-/* The brand mark is the Ceravis Health wordmark — the exact asset the cloud app
-   ships (edge/static/ceravis-logo.png), on a white chip so it reads on the teal
-   bar the way the app's logo sits on its teal sidebar. */
 const CERAVIS_LOGO = `<img class="logo-img" src="ceravis-logo.png" alt="Ceravis Health" />`;
 
-/* Put the Ceravis monogram in the browser tab, once, on every page. */
 function ensureFavicon() {
   if (document.querySelector('link[rel="icon"]')) return;
   const link = document.createElement("link");
@@ -91,7 +70,6 @@ function ensureFavicon() {
   document.head.appendChild(link);
 }
 
-/* Minimal 20px stroke icons, one per nav destination (Lucide-style). */
 const NAV_ICONS = {
   setup:   `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>`,
   live:    `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
@@ -103,9 +81,6 @@ const NAV_ICONS = {
   signout: `<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>`,
 };
 
-/* App-style shell: a fixed teal sidebar (the app's own sidebar colour + active
-   pill) plus a slim white top header. Prepended to <body>; content keeps its
-   own `.page` container, shifted right by `body.has-sidebar`. */
 function renderNav(active) {
   ensureFavicon();
   const items = [
@@ -150,11 +125,8 @@ function renderNav(active) {
   document.body.prepend(header);
   document.body.prepend(aside);
   document.body.classList.add("has-sidebar");
-  cvArmIdle();                                  // keep the idle timer running
+  cvArmIdle();
 
-  // Premium page header: give the in-content .page-head a gradient icon badge
-  // (the active section's icon) beside the title + subtitle — one place, every
-  // page. Done here so the wizard's page-head (shown after login) is covered too.
   const activeIcon = (items.find(i => i[0] === active) || [])[2] || NAV_ICONS.setup;
   const ph = document.querySelector(".page-head");
   if (ph && !ph.dataset.enhanced) {
@@ -178,7 +150,6 @@ function renderNav(active) {
   aside.querySelectorAll(".side-item").forEach(a =>
     a.addEventListener("click", () => aside.classList.remove("open")));
 
-  // Desktop collapse (icon-only rail), remembered per browser like the app's ← .
   const COLLAPSE_KEY = "cv-sidebar-collapsed";
   let collapsed = false;
   try { collapsed = localStorage.getItem(COLLAPSE_KEY) === "1"; } catch (_) {}
@@ -197,11 +168,6 @@ function renderNav(active) {
   tick(); setInterval(tick, 1000);
 }
 
-/* Live camera video is NOT served by this process — every page plays the same
-   MediaMTX WebRTC stream as the public live links, via liveView() in
-   live-view.js (loaded by the pages that show cameras). */
-
-/* ---- misc ------------------------------------------------------------ */
 function el(tag, cls, html) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;

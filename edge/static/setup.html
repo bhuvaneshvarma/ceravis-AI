@@ -11,10 +11,9 @@
   .wizard-actions { display: flex; justify-content: space-between; margin-top: 18px; }
   .split { display: grid; grid-template-columns: 400px 1fr; gap: 16px; align-items: start; }
   @media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
-  /* Step 2 (Cameras): equal columns — form and live wall aligned side by side. */
+
   #step-3 .split { grid-template-columns: 1fr 1fr; }
-  /* Live verification wall: tiles auto-tile (2-up on a wide column) inside a
-     bounded, scrollable box, so 3-4+ cameras never grow the page endlessly. */
+
   #c-grid { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
             gap: 10px; max-height: 560px; overflow-y: auto; padding-right: 2px; }
   #c-grid:empty { display: none; }
@@ -46,11 +45,10 @@
           padding: 9px 12px; margin: 12px 0; }
   .frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
                 gap: 6px; margin-top: 8px; }
-  /* enrollment picker + panel in two columns on wide screens so the card fills
-     the width instead of a narrow mid-page column */
+
   .enroll-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; align-items: start; }
   @media (max-width: 1000px) { .enroll-grid { grid-template-columns: 1fr; } }
-  /* keep the captured frames in a bounded, scrollable tray — not a huge page scroll */
+
   #en-frames { max-height: 262px; overflow-y: auto; padding: 4px; border: 1px solid var(--line-soft);
                border-radius: 10px; background: var(--panel-2); }
   .en-live-stage video { max-height: 320px; }
@@ -85,7 +83,6 @@
   .prof-row .pick { margin-left: auto; font-size: 10px; letter-spacing: .5px;
                     color: var(--teal-dim); }
 
-  /* ---- recipient profile header (step 1) ---- */
   .rec-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
   .rec-avatar { width: 58px; height: 58px; border-radius: 14px; flex: 0 0 auto;
                 display: flex; align-items: center; justify-content: center;
@@ -95,7 +92,7 @@
   .rec-name { font-size: 18px; font-weight: 700; color: var(--navy);
               display: flex; align-items: center; gap: 9px; }
   .rec-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
-  /* full-width recipient card: details in two columns, full-height orange accent */
+
   .recipient-card.accent-left::before { top: 0; bottom: 0;
     border-radius: var(--radius) 0 0 var(--radius); width: 4px; }
   .rec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 34px; margin-top: 4px; }
@@ -105,23 +102,16 @@
   .prow b { text-align: right; word-break: break-all; color: var(--navy); }
   @media (max-width: 760px) { .rec-grid { grid-template-columns: 1fr; } }
 
-  /* =====================================================================
-     LOGIN GATE — full-screen sign-in, matched 1:1 to the Ceravis Health app
-     (email → 5-digit code). Uses the app's own logo / hero / bg assets.
-     ===================================================================== */
   .login-wrap {
     position: fixed; inset: 0; z-index: 200; overflow: auto;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     padding: 30px 18px;
   }
-  /* `hidden` alone loses to the display:flex above (equal specificity, author
-     wins), so the gate would stay on top of the wizard — force it hidden. */
+
   #login-gate[hidden] { display: none !important; }
-  /* Already-signed-in reload: don't paint the login gate at all (fleet-prefix.js
-     sets cv-authed before body) — the wizard restores with no login flash. */
+
   html.cv-authed #login-gate { display: none; }
-  /* the app's own backdrop (loginBgImage) with a slow, gentle zoom-in on mount
-     (app: bg-cover bg-center scale-105 transition-[10s]) + slate wash + blur */
+
   .login-wrap::before {
     content: ""; position: fixed; inset: 0; z-index: 0;
     background: url("login-bg.png") center/cover no-repeat;
@@ -149,7 +139,7 @@
     justify-content: space-between; position: relative; overflow: hidden;
     background: #f8fafc; border-right: 1px solid #f1f5f9;
   }
-  /* faint teal wash in the corner (app: from-secondary/5) */
+
   .login-brand::before { content: ""; position: absolute; inset: 0;
     background: linear-gradient(135deg, rgba(53,152,157,.06), transparent 55%); opacity: .6; }
   .login-logo { height: 44px; width: auto; max-width: 160px; object-fit: contain;
@@ -162,12 +152,9 @@
   .login-hero:hover { filter: grayscale(0); }
   .login-brand-title { margin: 0 0 10px; font-size: clamp(19px, 1.6vw, 22px);
                        font-weight: 800; color: #1e293b; line-height: 1.24; letter-spacing: -.3px; }
-  /* "Healthcare Management," inherits slate-800 here; the "Reimagined." letters
-     get teal inline from buildTitleAnim(). (No blanket span rule — it would
-     also colour the per-letter spans of the first line.) */
+
   .login-brand-title .rei { color: var(--teal); }
-  /* Solid colour at rest (slate-800 / teal) with a gentle rise+brighten wave —
-     the floor stays high so the text never reads as washed-out grey. */
+
   .login-brand-title .ltr { display: inline-block; white-space: pre;
                             animation: lg-shimmer 4.4s ease-in-out infinite;
                             animation-delay: var(--d, 0s); }
@@ -204,8 +191,7 @@
   .login-otp-head .login-label { margin: 0; }
   .login-otp-head .faint { font-size: 11px; font-style: italic; color: var(--faint); font-weight: 500; }
   .otp-boxes { display: flex; justify-content: space-between; gap: 11px; }
-  /* soft, slightly-raised white tiles (matches the app: faint border + shadow,
-     not a hard outline); teal on focus and once a digit is entered. */
+
   .otp-boxes input { width: 56px; height: 56px; text-align: center; font-size: 19px;
                      font-weight: 700; color: var(--navy); border-radius: 13px; padding: 0;
                      border: 1px solid #eceff4; background: #fff; outline: none;
@@ -239,7 +225,6 @@
 </head>
 <body>
 
-<!-- =================== LOGIN GATE =================== -->
 <div class="login-wrap" id="login-gate">
   <div class="login-card">
     <div class="login-brand">
@@ -253,7 +238,7 @@
       </div>
     </div>
     <div class="login-form">
-      <!-- EMAIL VIEW -->
+
       <div id="lg-email-view">
         <h1 class="login-h1">Login</h1>
         <p class="login-lead">Connect with your care network and care recipients data in seconds.</p>
@@ -265,7 +250,7 @@
         <button class="btn btn-teal login-cta" id="lg-continue">Continue</button>
         <div class="login-msg" id="lg-email-msg"></div>
       </div>
-      <!-- OTP VIEW -->
+
       <div id="lg-otp-view" hidden>
         <h1 class="login-h1">Login</h1>
         <p class="login-lead">Connect with your care network and care recipients data in seconds.</p>
@@ -297,7 +282,6 @@
   <div class="login-foot">&copy; 2026 Ceravis Health</div>
 </div>
 
-<!-- =================== SETUP WIZARD =================== -->
 <div class="page" id="wizard" hidden>
   <div class="page-head">
     <h1>Device setup</h1>
@@ -305,10 +289,8 @@
       room zones &rarr; enrollment. Everything saves to the device as you go.</div>
   </div>
 
-  <!-- stepper (in its own container, matching the header box) -->
   <div class="card stepper-card"><div class="stepper" id="stepper"></div></div>
 
-  <!-- ============ STEP 1 — RECIPIENT (details only) ============ -->
   <section id="step-2" hidden>
     <div class="card accent-left accent-orange recipient-card">
       <h2>Care recipient</h2>
@@ -318,7 +300,6 @@
     </div>
   </section>
 
-  <!-- ============ STEP 2 — CAMERAS ============ -->
   <section id="step-3" hidden>
     <div class="split">
       <div class="card">
@@ -369,7 +350,7 @@
         </div>
         <label class="f">Camera label</label>
         <select id="c-room">
-          <!-- CERAVIS CameraName enum, in caps — the room IS the camera's identity -->
+
           <option value="">— select room —</option>
           <option>KITCHEN</option>
           <option>BEDROOM</option>
@@ -399,7 +380,6 @@
     </div>
   </section>
 
-  <!-- ============ STEP 3 — ZONES ============ -->
   <section id="step-4" hidden>
     <div class="split">
       <div class="card">
@@ -431,7 +411,6 @@
     </div>
   </section>
 
-  <!-- ============ STEP 4 — ENROLLMENT (embeddings) ============ -->
   <section id="step-5" hidden>
     <div class="card enroll-card">
       <h2>Face / body enrollment</h2>
@@ -528,13 +507,10 @@
 <script src="ceravis.js"></script>
 <script src="live-view.js"></script>
 <script>
-/* ================= account state (shared) ================= */
-const ACCOUNT = { verified: false, user: null };
-let pendingEnrollRid = null;     // recipient to enroll once we reach the last step
 
-/* Small spinner + a "backend is reachable again" wait, used while the device
-   saves the edge_id and re-keys the frp tunnel — which briefly drops a REMOTE
-   session, so we poll until it answers again before letting the operator move on. */
+const ACCOUNT = { verified: false, user: null };
+let pendingEnrollRid = null;
+
 function startSpinner(el, label) {
   const frames = ["◐", "◓", "◑", "◒"]; let i = 0;
   el.innerHTML = `<span class="muted"><span data-sp>◐</span> ${label}</span>`;
@@ -543,7 +519,7 @@ function startSpinner(el, label) {
   return () => clearInterval(t);
 }
 async function waitForProvisioning(expectKeyed, ms = 40000) {
-  await new Promise(r => setTimeout(r, 2500));         // let the frpc restart begin
+  await new Promise(r => setTimeout(r, 2500));
   const deadline = Date.now() + ms;
   let last = null;
   while (Date.now() < deadline) {
@@ -551,18 +527,15 @@ async function waitForProvisioning(expectKeyed, ms = 40000) {
       const r = await fetch("/api/v1/account", { cache: "no-store" });
       if (r.ok) {
         last = await r.json();
-        // Reachable is enough when nothing had to be re-keyed; when a tunnel
-        // apply was scheduled, wait until frpc is REALLY routing this edge_id
-        // (remote.keyed read live from frpc.toml) before calling it done.
+
         if (!expectKeyed || (last.remote && last.remote.keyed)) return last;
       }
-    } catch (_) { /* tunnel blip during restart — keep waiting */ }
+    } catch (_) {  }
     await new Promise(r => setTimeout(r, 2000));
   }
   return last;
 }
-/* The by-hand fallback, rendered from the device's own provisioning report, for
-   when the tunnel can't auto-update (helper missing, or still not keyed). */
+
 function provisionManualHtml(rem, lead) {
   const cmds = rem ? [rem.install_cmd, rem.apply_cmd].filter(Boolean) : [];
   const block = cmds.map(c => `<code>${c}</code>`).join("<br>");
@@ -570,15 +543,6 @@ function provisionManualHtml(rem, lead) {
     + (block ? `<div class="faint" style="margin-top:6px">${block}</div>` : "");
 }
 
-/* ================= LOGIN GATE — email → one-time code ================= */
-/* A care recipient signs in on this edge device exactly like the Ceravis Health
-   app: enter the account email, receive a code, verify. Verifying fetches the
-   full account (get_user_details), assigns this device's edge_id and re-keys the
-   frp tunnel + MediaMTX live paths — then the onboarding wizard opens.
-
-   The one-time code is OPTIONAL for now: request-otp is a stub until the
-   app-server send-OTP call is wired in, so any code is accepted and /verify
-   (email lookup) is what actually gates entry, unchanged from before. */
 let resendTimer = null;
 
 function loginToast(msg) {
@@ -590,8 +554,6 @@ function loginToast(msg) {
   setTimeout(() => t.remove(), 2600);
 }
 
-/* Per-letter shimmer on "Healthcare Management, Reimagined." (app: each glyph
-   fades/rises on a staggered loop). Built once from the element's data-l1/l2. */
 function buildTitleAnim() {
   const t = document.getElementById("lg-title");
   if (!t || t.dataset.built) return;
@@ -607,13 +569,10 @@ function buildTitleAnim() {
   add(t.dataset.l2 || "", 0.8, true);
 }
 
-/* The email bar's animated hint — the icon + placeholder cycle through
-   Email / Phone / Member ID exactly like the app, while the field itself stays
-   the account email. Pauses while the field is focused or filled. */
 const LG_HINTS = [
-  { ic: "✉", ph: "name@email.com" },      // envelope
-  { ic: "☎", ph: "Enter Phone Number" },  // phone
-  { ic: "\u{1F464}", ph: "Enter Member ID" },  // person
+  { ic: "✉", ph: "name@email.com" },
+  { ic: "☎", ph: "Enter Phone Number" },
+  { ic: "\u{1F464}", ph: "Enter Member ID" },
 ];
 let lgCycleTimer = null, lgCycleI = 0;
 function startInputCycle() {
@@ -623,7 +582,7 @@ function startInputCycle() {
   clearInterval(lgCycleTimer);
   ic.textContent = LG_HINTS[0].ic; inp.placeholder = LG_HINTS[0].ph;
   lgCycleTimer = setInterval(() => {
-    if (inp.value) return;   // cycle the hint only while the field is empty
+    if (inp.value) return;
     lgCycleI = (lgCycleI + 1) % LG_HINTS.length;
     ic.classList.add("swap");
     setTimeout(() => {
@@ -637,8 +596,7 @@ function startInputCycle() {
 async function initGate() {
   buildTitleAnim();
   startInputCycle();
-  // A live login session restores the account and opens the wizard directly;
-  // an expired/absent session shows the login even if the device is onboarded.
+
   if (cvSessionValid()) {
     try {
       const a = await api("/api/v1/account");
@@ -649,8 +607,7 @@ async function initGate() {
       }
     } catch (_) {}
   }
-  // Fall back to the login (session gone, or account not verified): undo the
-  // pre-hide so the gate paints, then prefill the known email.
+
   document.documentElement.classList.remove("cv-authed");
   try {
     const a = await api("/api/v1/account");
@@ -659,7 +616,7 @@ async function initGate() {
     if (a && a.configured === false)
       document.getElementById("lg-email-msg").innerHTML =
         `<span class="warn">CERAVIS server not configured on this device yet.</span>`;
-  } catch (_) { /* offline / fresh device — just show the login */ }
+  } catch (_) {  }
   document.getElementById("lg-email").focus();
 }
 
@@ -678,8 +635,6 @@ function showEmailView() {
   document.getElementById("lg-email").focus();
 }
 
-/* Ask the app server (via the edge) to email a login code for this address.
-   Returns the response {sent, reason?}; the caller advances only on sent:true. */
 async function requestOtp(email) {
   try {
     return await api("/api/v1/account/request-otp",
@@ -736,7 +691,6 @@ document.getElementById("lg-email").addEventListener("keydown", e => {
 });
 document.getElementById("lg-edit").onclick = showEmailView;
 
-/* OTP boxes: auto-advance on type, hop back on backspace, submit on Enter. */
 (() => {
   const boxes = [...document.querySelectorAll("#lg-otp input")];
   const mark = (x) => x.classList.toggle("filled", !!x.value);
@@ -774,14 +728,11 @@ document.getElementById("lg-verify").onclick = async () => {
       btn.disabled = false; return;
     }
     ACCOUNT.verified = true; ACCOUNT.user = r.user;
-    cvStartSession(r.user);              // start the 15-min idle login session
+    cvStartSession(r.user);
     clearInterval(resendTimer);
     loginToast("Signed in");
-    enterWizard();                       // open the wizard right away (LAN never drops)
-    // Verifying assigned this device's edge_id; the frpc re-key + MediaMTX
-    // live-path repoint run in the BACKGROUND on the device. If a tunnel apply
-    // was scheduled, refresh the edgeId once it's really keyed — without making
-    // the operator wait on a spinner (the old blocking wait hung the login).
+    enterWizard();
+
     if (r.provisioning) {
       waitForProvisioning(true)
         .then(acct => { if (acct && acct.user) ACCOUNT.user = acct.user; })
@@ -793,12 +744,10 @@ document.getElementById("lg-verify").onclick = async () => {
   }
 };
 
-/* ================= wizard frame ================= */
-/* Login is the gate; the wizard is the four onboarding steps below. */
 const STEPS = ["Recipient", "Cameras", "Room zones", "Enrollment"];
-const SECTIONS = ["step-2", "step-3", "step-4", "step-5"];   // wizard step i → section id
+const SECTIONS = ["step-2", "step-3", "step-4", "step-5"];
 let step = 1;
-const streams = {};            // camera_id -> liveView handle (cameras wall)
+const streams = {};
 
 function enterWizard() {
   document.getElementById("login-gate").hidden = true;
@@ -824,7 +773,7 @@ function show(n) {
   document.getElementById("w-back").style.visibility = step === 1 ? "hidden" : "visible";
   document.getElementById("w-next").style.visibility = step === STEPS.length ? "hidden" : "visible";
   renderStepper();
-  if (step !== STEPS.length) stopEnrollPreview();     // don't keep the WS alive off-step
+  if (step !== STEPS.length) stopEnrollPreview();
   if (step === 1) initRecipient();
   if (step === 2) refreshCameras();
   if (step === 3) initZones();
@@ -832,16 +781,12 @@ function show(n) {
 }
 document.getElementById("w-back").onclick = () => show(step - 1);
 document.getElementById("w-next").onclick = async () => {
-  // Leaving Cameras -> push each camera to the account (saveCamera); the inline
-  // "✓ N synced" note on the cameras card reports it. Leaving Room zones -> write
-  // the consolidated zones file (a toast reports it). Both are best-effort.
+
   if (step === 2) await syncCameras(false);
   if (step === 3) await finalizeZones();
   show(step + 1);
 };
 
-/* Continue from Room zones -> upload the single consolidated zones_<id>.json
-   (all cameras). Best-effort: a cloud hiccup never blocks leaving the step. */
 async function finalizeZones() {
   try {
     const z = await api("/api/v1/zones/finalize", { method: "POST" });
@@ -853,12 +798,11 @@ async function finalizeZones() {
   } catch (e) { return null; }
 }
 
-/* ================= STEP 2 — cameras ================= */
 async function refreshCameras() {
   const [cams, status] = await Promise.all([
     api("/api/v1/cameras"), api("/api/v1/cameras/status").catch(() => ({})),
   ]);
-  // table
+
   document.getElementById("c-table").innerHTML = cams.length === 0
     ? `<tr><td><div class="empty">
          <div class="empty-ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg></div>
@@ -881,15 +825,15 @@ async function refreshCameras() {
     await api(`/api/v1/cameras/${b.dataset.del}`, { method: "DELETE" });
     toast("Camera removed"); refreshCameras();
   });
-  // live wall
+
   const grid = document.getElementById("c-grid");
   const want = new Set(cams.map(c => c.camera_id));
-  Object.keys(streams).forEach(id => {            // drop removed
+  Object.keys(streams).forEach(id => {
     if (!want.has(id)) { streams[id].stop(); delete streams[id];
       document.getElementById(`tile-${id}`)?.remove(); }
   });
   cams.forEach(c => {
-    if (streams[c.camera_id]) return;             // already streaming
+    if (streams[c.camera_id]) return;
     const tile = el("div", "cam-tile");
     tile.id = `tile-${c.camera_id}`;
     tile.innerHTML = `
@@ -911,7 +855,6 @@ async function refreshCameras() {
   });
 }
 
-/* ---- ONVIF discovery (WiFi cameras on the LAN / device hotspot) ---- */
 const DISC = { cams: [], sel: null, probed: null, profileToken: null };
 
 async function runScan(deep) {
@@ -928,8 +871,7 @@ async function runScan(deep) {
       out.innerHTML = `<span class="ok">✓ ${DISC.cams.length} camera(s) found</span>
         <span class="faint">on ${where}</span>`;
     } else {
-      // Nothing answered — show WHERE we looked + offer a subnet sweep, so the
-      // operator can tell "wrong network" from "camera blocking multicast".
+
       out.innerHTML = `<span class="warn">No ONVIF cameras answered on ${where}.</span>`
         + (deep ? "" : ` <button class="btn btn-ghost" style="padding:2px 8px;font-size:12px"
              id="d-deep">Deep scan</button>`);
@@ -977,15 +919,6 @@ document.getElementById("d-probe").onclick = async () => {
   }
 };
 
-/* ---- stream profile picker -------------------------------------------
-   A camera exposes several profiles (main / sub / jpeg) and we consume exactly
-   ONE — the same stream reaches the AI, the recordings, the /ui tiles and the
-   public links. So the choice is made here, at registration, not left to
-   whichever URL happened to get pasted. The edge recommends the largest H.264
-   profile at or below CAMERA_PREFERRED_HEIGHT and says why; the operator can
-   override. H.265 rows are marked unusable: no browser decodes HEVC over
-   WebRTC, so such a profile is a black screen everywhere and its recordings
-   cannot be played back. */
 function selectProfile(token) {
   const r = DISC.probed;
   if (!r) return;
@@ -995,8 +928,7 @@ function selectProfile(token) {
   document.getElementById("c-url").value = p.uri || "";
   document.querySelectorAll(".prof-row").forEach(el =>
     el.classList.toggle("sel", el.dataset.token === token));
-  // p.codec is VERIFIED off the wire where ffprobe could read it, falling back
-  // to p.encoding (which ONVIF lies about for HEVC). Never show the claim.
+
   const ai = r.ai || {};
   const aiNote = ai.uri && ai.token !== token
     ? `<br><span class="muted">The AI will additionally read
@@ -1013,9 +945,7 @@ function renderProfiles(r) {
   const wrap = document.getElementById("d-profiles");
   const list = document.getElementById("d-profile-list");
   const rec = r.recommended || {};
-  // JPEG profiles exist for stills, not for a stream — they are not a choice,
-  // so they are not offered. Matches usable_profiles() on the edge, so the list
-  // the operator sees and the list the recommendation ranked are the same list.
+
   const profiles = (r.profiles || [])
     .filter(p => p.uri && (p.codec || p.encoding || "").toUpperCase() !== "JPEG");
   if (!profiles.length) {
@@ -1047,8 +977,7 @@ document.getElementById("c-probe").onclick = async () => {
   try {
     const r = await api("/api/v1/cameras/probe", {
       method: "POST", body: JSON.stringify({ rtsp_url: url }) });
-    // Adopt the server's credential-encoded URL so what gets saved is the exact
-    // working string (e.g. a '@' in the password comes back as %40).
+
     if (r.url && r.url !== url) field.value = r.url;
     const fixed = (r.url && r.url !== url)
       ? ` <span class="faint">(credentials auto-encoded)</span>` : "";
@@ -1059,26 +988,22 @@ document.getElementById("c-probe").onclick = async () => {
 };
 
 document.getElementById("c-save").onclick = async () => {
-  // The room label IS the camera. Everything else (id, name, live link) is
-  // derived on the device; onvif details ride along from a discovered camera.
+
   const cam = {
     room_name: document.getElementById("c-room").value.trim(),
     rtsp_url: document.getElementById("c-url").value.trim(),
     is_enabled: true,
   };
-  // Discovered camera: carry the ONVIF details (PTZ endpoint + credentials) —
-  // only if the URL is still the probed one.
+
   const picked = DISC.probed && (DISC.probed.profiles || [])
     .find(p => p.token === DISC.profileToken);
   if (picked && cam.rtsp_url === picked.uri) {
     cam.onvif_xaddr = DISC.sel ? DISC.sel.xaddr : null;
     cam.onvif_username = document.getElementById("d-user").value.trim() || null;
     cam.onvif_password = document.getElementById("d-pass").value || null;
-    // The profile we chose above IS the one the pipeline consumes — store its
-    // token so PTZ and any later re-read address the same stream.
+
     cam.onvif_profile_token = picked.token || null;
-    // A SECOND stream for the AI, only when the camera needs one: kept only if
-    // it is genuinely a different profile from the one viewers get.
+
     const ai = DISC.probed.ai || {};
     const wantsAi = ai.uri && ai.token && ai.token !== picked.token;
     cam.ai_rtsp_url = wantsAi ? ai.uri : "";
@@ -1089,14 +1014,14 @@ document.getElementById("c-save").onclick = async () => {
     return toast("Pick a camera label and enter (or test) an RTSP URL", "err");
   try {
     const res = await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
-    const cid = (res && res.camera_id) || "";       // id derived server-side
+    const cid = (res && res.camera_id) || "";
     if (cid) await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
       { edgeId: (ACCOUNT.user && ACCOUNT.user.edgeId) || "",
         cameraLabel: cid, action: "start" }) });
     toast(`${cam.room_name} saved & started`);
     ["c-url", "c-room"].forEach(i => document.getElementById(i).value = "");
     document.getElementById("c-probe-out").textContent = "";
-    DISC.probed = DISC.sel = DISC.profileToken = null;   // consumed by this save
+    DISC.probed = DISC.sel = DISC.profileToken = null;
     document.getElementById("d-creds").hidden = true;
     document.getElementById("d-profiles").hidden = true;
     document.getElementById("d-probe-out").textContent = "";
@@ -1105,7 +1030,6 @@ document.getElementById("c-save").onclick = async () => {
 };
 setInterval(() => { if (step === 2 && !document.getElementById("wizard").hidden) refreshCameras(); }, 5000);
 
-/* Push registered cameras (room + WebSocket URL) to the CERAVIS account. */
 async function syncCameras(manual) {
   const out = document.getElementById("c-sync-out");
   if (!ACCOUNT.verified) {
@@ -1126,7 +1050,6 @@ async function syncCameras(manual) {
   } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; return null; }
 }
 
-/* ================= STEP 3 — zones ================= */
 const Z = { cam: null, img: null, zones: [], drawing: [], sel: -1, drag: null };
 const zCanvas = document.getElementById("z-canvas");
 const zCtx = zCanvas.getContext("2d");
@@ -1194,7 +1117,7 @@ function zPos(e) {
 }
 zCanvas.addEventListener("mousedown", e => {
   const [x, y] = zPos(e);
-  // grab an existing vertex (of any zone) to drag
+
   for (let zi = 0; zi < Z.zones.length; zi++)
     for (let pi = 0; pi < Z.zones[zi].polygon.length; pi++) {
       const [px, py] = Z.zones[zi].polygon[pi];
@@ -1210,7 +1133,7 @@ window.addEventListener("mouseup", () => { Z.drag = null; });
 zCanvas.addEventListener("click", e => {
   if (Z.drag) return;
   const [x, y] = zPos(e);
-  // clicking near a vertex selects, otherwise adds a drawing point
+
   for (let zi = 0; zi < Z.zones.length; zi++)
     for (const [px, py] of Z.zones[zi].polygon)
       if ((px-x)**2 + (py-y)**2 < 144) { Z.sel = zi; zList(); zDraw(); return; }
@@ -1258,7 +1181,6 @@ document.getElementById("z-save").onclick = async () => {
   } catch (e) { toast("Save failed", "err"); }
 };
 
-/* ================= STEP 1 — recipient ================= */
 function profRow(k, v, wide) {
   return `<div class="prow${wide ? " wide" : ""}"><span class="faint">${k}</span><b>${v}</b></div>`;
 }
@@ -1295,13 +1217,11 @@ async function initRecipient() {
   refreshRecipients();
 }
 async function ensureRecipient(u) {
-  // The care recipient IS the verified account (there's no separate recipients
-  // store) — just make sure their on-device enrollment folder exists. Identity
-  // comes from account.json, so no body is sent.
-  const rid = String(u.ceravisUserId);              // the account's own id, verbatim
-  pendingEnrollRid = pendingEnrollRid || rid;       // enroll this one at the final step
+
+  const rid = String(u.ceravisUserId);
+  pendingEnrollRid = pendingEnrollRid || rid;
   try { await api("/api/v1/recipients", { method: "POST" }); }
-  catch (e) { /* not verified yet / non-fatal */ }
+  catch (e) {  }
 }
 
 const ENROLL_PILL = {
@@ -1321,22 +1241,19 @@ async function refreshRecipients() {
           <td><button class="btn btn-ghost btn-sm" ${attr}="${r.recipient_id}">Enroll</button></td>
         </tr>`;
       }).join("");
-  const t1 = document.getElementById("r-table");        // step 1 (Recipient)
+  const t1 = document.getElementById("r-table");
   if (t1) t1.innerHTML = rows("data-enroll-nav");
-  const t2 = document.getElementById("r-table-en");      // step 4 (Enrollment)
+  const t2 = document.getElementById("r-table-en");
   if (t2) t2.innerHTML = rows("data-enroll-sel");
   document.querySelectorAll("[data-enroll-nav]").forEach(b =>
     b.onclick = () => { pendingEnrollRid = b.dataset.enrollNav; show(4); });
   document.querySelectorAll("[data-enroll-sel]").forEach(b =>
     b.onclick = () => selectEnroll(b.dataset.enrollSel));
 }
-/* ---- enrollment (photos / video / live) ---- */
-let enrollRid = null, enrollPoll = null, enrollPreview = null;
-const EN_MIN_FRAMES = 10;   // live capture: enable Enroll once this many frames
 
-// Guided coverage grid: every viewpoint × posture should have >=1 captured
-// frame before enrolling, so the gallery covers each side/pose for live
-// matching and snapshot annotation.
+let enrollRid = null, enrollPoll = null, enrollPreview = null;
+const EN_MIN_FRAMES = 10;
+
 const ENROLL_VIEWS = ["front", "back", "left", "right"];
 const ENROLL_POSTURES = ["standing", "sitting"];
 function requiredCells() {
@@ -1418,7 +1335,7 @@ document.querySelectorAll(".etab").forEach(t => t.onclick = () => {
     b.hidden = b.dataset.body !== t.dataset.tab);
   setCtx(t.dataset.tab);
   if (t.dataset.tab === "live") startEnrollPreview(); else stopEnrollPreview();
-  loadFrames();                  // recompute the Enroll gate for this tab
+  loadFrames();
 });
 
 function renderFrames(m) {
@@ -1445,9 +1362,6 @@ async function loadFrames() {
   catch {}
 }
 
-/* Live preview for the capture flow. Framing aid only — the capture itself is
-   taken server-side from the AI frame buffer, so what this shows never affects
-   what gets enrolled. */
 function startEnrollPreview() {
   stopEnrollPreview();
   const cam = document.getElementById("en-cam").value;
@@ -1476,7 +1390,7 @@ async function pollEnroll() {
     document.getElementById("enroll-state").className =
       "pill " + (ENROLL_PILL[s.state] || "pill-mute");
     document.getElementById("enroll-state").textContent = s.state;
-    // "live-learned" = adaptive embeddings captured during live monitoring.
+
     const adapt = stats ? ` · live-learned ${stats.adaptive}/${stats.adaptive_cap}` : "";
     document.getElementById("en-status").innerHTML =
       `${s.message || ""} <span class="faint">· emb ${s.embeddings || 0}`
@@ -1513,7 +1427,7 @@ document.getElementById("en-capture").onclick = async () => {
       { method: "POST", body: JSON.stringify({ camera_id: cam, label }) });
     toast(`Captured · ${label}`);
     renderFrames(m);
-    // guide the operator to the next uncovered pose
+
     const counts = coverageCounts(m);
     const next = requiredCells().find(c => (counts[c] || 0) === 0);
     if (next) {
@@ -1542,7 +1456,6 @@ document.getElementById("en-commit").onclick = async () => {
   } catch (e) { toast(e.detail || "Enroll failed", "err"); }
 };
 
-/* ================= STEP 4 — enrollment ================= */
 async function initEnroll() {
   refreshRecipients();
   let rid = pendingEnrollRid;
@@ -1557,10 +1470,7 @@ async function initEnroll() {
     if (cur) cur.textContent = "No recipient yet — add one in the Recipient step.";
     return;
   }
-  // Pull the patient's posture images from the app (getPatientPostures) so they
-  // appear as enrollment frames to embed. Always reports the outcome so it's
-  // clear whether the call fired and what it found. On-device capture still
-  // works if the account has no cloud postures.
+
   try {
     const r = await api(`/api/v1/recipients/${rid}/postures/import`, { method: "POST" });
     const got = r ? (r.imported || 0) + (r.skipped || 0) : 0;
@@ -1574,7 +1484,6 @@ async function initEnroll() {
   pendingEnrollRid = null;
 }
 
-/* ================= boot ================= */
 initGate();
 </script>
 </body>

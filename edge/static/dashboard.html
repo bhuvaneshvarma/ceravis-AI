@@ -33,7 +33,7 @@
 
 <script src="ceravis.js"></script>
 <script>
-  cvRequireAuth();  // arms idle timer; head-redirect already gated the load
+  cvRequireAuth();
   renderNav("dashboard.html");
   const cls = (v, warn, bad) => v >= bad ? 'bad' : v >= warn ? 'warn' : 'ok';
 
@@ -61,7 +61,6 @@
         `<span class="${cls(ramPct,75,90)}">${ramPct}%</span>
          <div class="mrow"><span class="faint">${sys.ram_used_mb||0} / ${sys.ram_total_mb||0} MB</span></div>`;
 
-      // pipelines
       const pipes = d.pipelines || [];
       document.getElementById('pipes').innerHTML = pipes.length === 0
         ? '<div class="mrow"><span class="pill pill-mute">no data yet</span></div>'
@@ -71,7 +70,6 @@
               <span class="faint">${p.fps} fps · ${p.latency_ms_avg} ms</span>
             </div>`).join('');
 
-      // cameras
       const cams = d.cameras || {};
       document.getElementById('cams').innerHTML =
         Object.entries(cams).map(([cid, s]) => `

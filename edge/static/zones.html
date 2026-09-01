@@ -83,18 +83,17 @@
 
 <script src="ceravis.js"></script>
 <script>
-cvRequireAuth();  // arms idle timer; head-redirect already gated the load
+cvRequireAuth();
 renderNav("zones.html");
 const $ = (id) => document.getElementById(id);
-/* api(), toast() come from ceravis.js */
 
 const canvas = $('canvas');
 const ctx = canvas.getContext('2d');
 
-let bgImg = null;            // last decoded snapshot (Image)
-let imgW = 1, imgH = 1;      // natural image dims
-let drawing = [];            // points being drawn in image coords
-let zones = [];              // accumulated zones to POST
+let bgImg = null;
+let imgW = 1, imgH = 1;
+let drawing = [];
+let zones = [];
 const COLORS = ['#7ad0ff','#39d98a','#f5a623','#ff6b6b','#c084fc','#fb7185'];
 
 async function loadCameras() {
@@ -152,7 +151,7 @@ function redraw() {
   if (bgImg) ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
 
   zones.forEach((z, i) => drawPolygon(z.polygon, COLORS[i % COLORS.length], z.zone_name));
-  if (drawing.length > 0) drawPolygon(drawing, '#ffff66', '…drawing', /*open*/ true);
+  if (drawing.length > 0) drawPolygon(drawing, '#ffff66', '…drawing',  true);
 }
 
 function drawPolygon(pts, color, label, open=false) {

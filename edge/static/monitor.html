@@ -12,10 +12,7 @@
   .mon-stage { position: relative; background: #000; border-radius: 14px;
                overflow: hidden; border: 1px solid var(--line); aspect-ratio: 16/9;
                box-shadow: var(--shadow); }
-  /* The video is the picture; the canvas is a transparent overlay sitting
-     exactly on top of it. Both use object-fit:contain over the same box, so a
-     bbox drawn in source-pixel coordinates lands on the right person without
-     ever copying a frame through JavaScript. */
+
   .mon-stage video, .mon-stage canvas {
     position: absolute; inset: 0; width: 100%; height: 100%;
     object-fit: contain; display: block;
@@ -33,7 +30,7 @@
   .track-chip.fallen { border-color: rgba(248,113,113,.5);
                        background: rgba(248,113,113,.1); animation: blink 1.2s infinite; }
   .sidecol .card { margin-bottom: 14px; }
-  /* Cloud sync console — live saveAlert/saveSnapshot call status */
+
   .cs-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b;
             flex: 0 0 auto; }
   .cs-dot.ok  { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.7); }
@@ -69,12 +66,12 @@
              color: var(--muted); font-size: 10.5px; }
   .cs-meta a { color: #60a5fa; }
   .cs-alertid { color: #d97706; font-weight: 600; }
-  /* direction: OUT = edge -> app server, IN = app server -> this edge */
+
   .cs-dir { font-size: 9.5px; font-weight: 700; letter-spacing: .5px;
             padding: 1px 6px; border-radius: 999px; }
   .cs-dir.out { color: #35989d; border: 1px solid rgba(45,212,191,.4); }
   .cs-dir.in  { color: #a78bfa; border: 1px solid rgba(167,139,250,.4); }
-  /* expandable full exchange — request (blue) vs response (green) */
+
   .cs-io { margin-top: 6px; }
   .cs-io > summary { cursor: pointer; font-size: 10.5px; color: var(--muted);
                      user-select: none; list-style: none; }
@@ -149,7 +146,7 @@ moment you clicked.">📸 Snapshot</button>
 <script src="ceravis.js"></script>
 <script src="live-view.js"></script>
 <script>
-cvRequireAuth();  // arms idle timer; head-redirect already gated the load
+cvRequireAuth();
 renderNav("monitor.html");
 
 const POSTURE_COLOR = {
@@ -159,29 +156,23 @@ const POSTURE_COLOR = {
 
 const M = {
   cam: null, stream: null,
-  state: {},                 // latest ai/state for ALL cameras
-  searching: true,           // true when no enrolled target is in view
+  state: {},
+  searching: true,
 };
 const video = document.getElementById("m-video");
 const canvas = document.getElementById("m-canvas");
 const ctx = canvas.getContext("2d");
-let CAM_NAMES = {};          // camera_id -> "Name (Room)"
+let CAM_NAMES = {};
 
 async function initCamNames() {
   const cams = await api("/api/v1/cameras").catch(() => []);
   CAM_NAMES = Object.fromEntries(
     cams.map(c => [c.camera_id, `${c.camera_name} (${c.room_name})`]));
-  // This device's edge_id — the snapshot/control endpoints verify it matches
-  // (control_auth). Fetched once; empty on an unverified dev box (then accepted).
+
   try { const a = await api("/api/v1/account"); M.edgeId = (a && a.user && a.user.edgeId) || ""; }
   catch { M.edgeId = ""; }
 }
 
-/* ---- snapshot the current camera at THIS instant --------------------
-   Sends the client's timestamp so the edge maps it to the frame for the moment
-   the button was clicked (freshest live frame when ~now; the exact recorded
-   frame when the instant is older). Falls back to a plain live grab if the
-   timestamped request can't be served (e.g. no footage at that instant). */
 document.getElementById("snap-btn").onclick = async () => {
   const cam = M.cam;
   if (!cam) { toast("No camera in view yet", "warn"); return; }
@@ -193,9 +184,9 @@ document.getElementById("snap-btn").onclick = async () => {
   try {
     let snap;
     try { snap = await api(`${path}?ts=${encodeURIComponent(ts)}&${q}`); }
-    catch { snap = await api(`${path}?${q}`); }            // retry: plain live (freshest frame)
+    catch { snap = await api(`${path}?${q}`); }
     const a = document.createElement("a");
-    a.href = snap.image;                                   // data:image/jpeg;base64,…
+    a.href = snap.image;
     a.download = `${cam}_${ts.replace(/[:.]/g, "-")}.jpg`;
     document.body.appendChild(a); a.click(); a.remove();
     toast(`Snapshot saved · ${snap.source} · `
@@ -205,17 +196,11 @@ document.getElementById("snap-btn").onclick = async () => {
   } finally { btn.disabled = false; }
 };
 
-/* ---- target-driven camera selection -----------------------------
-   The monitor follows the enrolled recipient: it shows whichever camera the
-   ReID-matched target is on, and only that person's box. With no target in
-   view it falls back to the busiest camera in a "searching" state. Camera
-   choice is sticky to avoid flapping when several cameras see people. */
 function camsWithTarget(state) {
   return Object.keys(state).filter(
     cam => (state[cam].tracks || []).some(t => t.is_target));
 }
-// Reality check: there is only ONE enrolled recipient, so only ONE target is
-// ever shown — the highest ReID-score match among any is_target tracks.
+
 function bestTarget(camState) {
   const ts = ((camState && camState.tracks) || []).filter(t => t.is_target);
   if (!ts.length) return null;
@@ -226,12 +211,11 @@ function pickCamera(state) {
   const cams = Object.keys(state);
   if (!cams.length) return { cam: null, searching: true };
   const withTarget = camsWithTarget(state);
-  if (M.cam && withTarget.includes(M.cam))      // target still here -> stay
+  if (M.cam && withTarget.includes(M.cam))
     return { cam: M.cam, searching: false };
-  if (withTarget.length)                        // target moved -> follow it
+  if (withTarget.length)
     return { cam: withTarget[0], searching: false };
-  // No target anywhere: keep the current camera if it still exists, else the
-  // most-active one (max raw detections). Either way we are "searching".
+
   if (M.cam && state[M.cam]) return { cam: M.cam, searching: true };
   let best = cams[0], bestN = -1;
   cams.forEach(c => { const n = state[c].detections || 0;
@@ -240,7 +224,7 @@ function pickCamera(state) {
 }
 function setCamera(camId, searching) {
   M.searching = searching;
-  if (camId === M.cam) return;                   // no change — keep the stream
+  if (camId === M.cam) return;
   if (M.stream) { M.stream.stop(); M.stream = null; }
   M.cam = camId;
   clearOverlay();
@@ -257,16 +241,6 @@ function setCamera(camId, searching) {
   });
 }
 
-/* ---- overlay -------------------------------------------------------
-   Only the target marker is drawn — the picture itself is the <video> beneath.
-
-   The canvas is kept SMALL and the bboxes are scaled into it. Matching the
-   stream's own pixel size would be simpler (no scale factor) but means a 4K
-   canvas layer blended over a 4K video layer on every composite, plus a 33 MB
-   clear on every AI poll — free on a GPU-composited browser, and very much not
-   free on one falling back to software. A single dot needs none of that
-   precision. Both layers keep the video's aspect ratio and the same
-   object-fit: contain box, so they line up exactly. */
 const OVERLAY_W = 960;
 
 function clearOverlay() {
@@ -276,51 +250,43 @@ function clearOverlay() {
 function draw() {
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return;
-  const w = Math.min(OVERLAY_W, vw);         // never upscale a small stream
+  const w = Math.min(OVERLAY_W, vw);
   const h = Math.round(vh * (w / vw));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   clearOverlay();
-  if (M.searching) return;                  // clean preview — no search overlay
-  // Mark the target with a single head dot (the box is kept for saved snapshots
-  // only). Green = tracked normally, red = fall / needs attention.
+  if (M.searching) return;
+
   const cs = M.state[M.cam] || {};
   const best = bestTarget(cs);
   if (!best) return;
   const [x1, y1, x2, y2] = best.bbox;
-  // Scale by the AI's OWN frame width — the space bboxes live in — not the
-  // <video> width. They differ when the AI decodes a different-resolution
-  // stream than the browser shows, and scaling by the video width then drops
-  // the dot in the wrong place. Same camera => same aspect, so one scale does
-  // both axes. Falls back to the video width when the size isn't reported.
-  const s = w / (cs.frame_w || vw);          // source pixels -> overlay pixels
+
+  const s = w / (cs.frame_w || vw);
   const cx = ((x1 + x2) / 2) * s;
-  const cy = (y1 + (y2 - y1) * 0.08) * s;    // sit the dot on the head
-  const r = Math.max(7, w / 110);            // noticeable but not big
+  const cy = (y1 + (y2 - y1) * 0.08) * s;
+  const r = Math.max(7, w / 110);
   const color = best.posture === "fallen" ? "#ef4444" : "#22c55e";
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,.65)"; ctx.shadowBlur = r;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fillStyle = color; ctx.fill();
-  ctx.shadowBlur = 0;                        // crisp white ring on top
+  ctx.shadowBlur = 0;
   ctx.lineWidth = Math.max(2, r * 0.3); ctx.strokeStyle = "rgba(255,255,255,.95)";
   ctx.stroke();
   ctx.restore();
 }
 
-/* ---- AI state polling --------------------------------------------- */
 async function pollState() {
   let state;
-  try { state = await api(`/api/v1/ai/state`); } catch { return; }   // ALL cameras
+  try { state = await api(`/api/v1/ai/state`); } catch { return; }
   M.state = state;
   const pick = pickCamera(state);
   setCamera(pick.cam, pick.searching);
   updateHeader();
 
-  // Exactly one target (highest ReID score); everyone else is ignored.
   const best = M.searching ? null : bestTarget(M.state[M.cam]);
   const tracks = best ? [best] : [];
 
-  // chips
   document.getElementById("m-chips").innerHTML = tracks.length === 0
     ? `<span class="faint" style="font-size:12.5px">${M.searching
         ? "Searching for the enrolled recipient…" : "Target not in view."}</span>`
@@ -355,7 +321,6 @@ function updateHeader() {
   }
 }
 
-/* ---- Cloud sync console (live saveAlert/saveSnapshot status) ------- */
 const CS = { lastTs: null };
 const csEsc = s => String(s).replace(/[&<>"]/g,
   m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
@@ -368,15 +333,11 @@ async function pollCloud() {
   document.getElementById("cs-stats").textContent =
     calls.length ? `${okN} ✓ · ${calls.length - okN} ✗` : "";
   const dot = document.getElementById("cs-dot");
-  // Red while the queue is stuck retrying — a green dot over a backlog would
-  // say "cloud fine" during an outage.
+
   const stalled = (r.outbox || {}).pending && (r.outbox || {}).last_error;
   dot.className = "cs-dot" + (stalled ? " err"
     : calls.length ? (calls[0].ok ? " ok" : " err") : "");
 
-  // The upload queue. Depth 0 = everything raised has been delivered; anything
-  // else names the backlog and how long the head has been waiting, so a network
-  // outage is legible as "held, not lost" while it is happening.
   const q = r.outbox || {};
   const qEl = document.getElementById("cs-queue");
   const attn = q.attention;
@@ -384,9 +345,7 @@ async function pollCloud() {
     const mins = Math.round((q.oldest_pending_age_secs || 0) / 60);
     const mb = (q.pending_bytes || 0) / 1e6;
     qEl.hidden = false;
-    // A needs-attention rejection (bad key / wrong patient / clip too big) is
-    // worded distinctly — the data is NOT lost, it keeps retrying, but a human
-    // should fix the cause.
+
     qEl.className = attn ? "cs-queue attn" : "cs-queue";
     qEl.textContent = attn
       ? `⚠ NEEDS ATTENTION — server rejecting with HTTP ${attn.code}`
@@ -398,7 +357,7 @@ async function pollCloud() {
         + ` · ${q.last_error ? "retrying — " + q.last_error.slice(0, 70) : "sending"}`;
   } else { qEl.hidden = true; }
 
-  if (!calls.length || calls[0].ts === CS.lastTs) return;   // nothing new — keep scroll
+  if (!calls.length || calls[0].ts === CS.lastTs) return;
   CS.lastTs = calls[0].ts;
 
   const epCls = e => e === "saveAlert" ? "alert"
@@ -410,21 +369,17 @@ async function pollCloud() {
     ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE",
     recordingEvent: "REC EVENT" }[e]
     || (e || "?").toUpperCase());
-  // Pipeline detections aren't HTTP calls — word their status accordingly.
-  // An upload has three states, not two: QUEUED the moment the event fires,
-  // then CALL HIT when it actually reaches the server (a second line, so an
-  // outage reads as a gap between the two), or DROPPED if the sliding window
-  // gave up on it.
+
   const okTxt = c => c.state === "queued" ? "⏳ QUEUED"
     : c.state === "dropped" ? "✗ DROPPED"
     : c.endpoint === "event" ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
     : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
   const stateCls = c => c.state === "queued" ? "cs-wait"
     : c.ok ? "cs-ok" : "cs-bad";
-  // Direction: OUT = this edge → app server; IN = app server → this edge.
+
   const dirBadge = c => c.direction === "in" ? `<span class="cs-dir in">↓ IN</span>`
     : c.direction === "out" ? `<span class="cs-dir out">↑ OUT</span>` : "";
-  // Pretty-print a body (JSON-string or object) for the expandable panel.
+
   const fmtBody = v => {
     if (v == null) return "";
     let s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
@@ -457,7 +412,6 @@ async function pollCloud() {
     </div>`).join("");
 }
 
-/* ---- recording on/off (disk saver) --------------------------------- */
 async function refreshRec() {
   let s;
   try { s = await api("/api/v1/recordings/state"); } catch { return; }

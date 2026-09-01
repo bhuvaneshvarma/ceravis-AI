@@ -53,7 +53,6 @@
 
   <div class="grid" style="margin-top:16px">
 
-    <!-- ===== Add camera form ===== -->
     <div class="card">
       <h2>Add camera</h2>
 
@@ -78,7 +77,6 @@
       <div id="err" class="err"></div>
     </div>
 
-    <!-- ===== Live preview ===== -->
     <div class="card">
       <h2>Live preview</h2>
       <label>Camera</label>
@@ -106,7 +104,6 @@
     </div>
   </div>
 
-  <!-- ===== Camera list ===== -->
   <div class="card" style="margin-top:16px">
     <h2>Registered cameras</h2>
     <table>
@@ -123,14 +120,10 @@
 
 <script src="ceravis.js"></script>
 <script>
-cvRequireAuth();  // arms idle timer; head-redirect already gated the load
+cvRequireAuth();
 renderNav("cameras.html");
 const $ = (id) => document.getElementById(id);
-/* api(), toast() come from ceravis.js */
 
-// This device's edge_id — the control endpoints (camera start/stop/restart, PTZ)
-// authenticate on it, so local calls send the device's own value. Cached; ""
-// on an unprovisioned dev box, which the edge accepts.
 let _edgeId = null;
 async function edgeId() {
   if (_edgeId !== null) return _edgeId;
@@ -139,7 +132,7 @@ async function edgeId() {
   return _edgeId;
 }
 
-let previewView = null;      // live-view.js handle for the preview pane
+let previewView = null;
 
 async function loadCameras() {
   const [cams, statuses] = await Promise.all([
@@ -186,7 +179,7 @@ async function loadCameras() {
           if (!confirm(`Delete camera ${id}?`)) return;
           await api('/api/v1/cameras/' + id, { method:'DELETE' });
         } else {
-          // start | stop | restart -> the unified edgeId-authed control endpoint.
+
           await api('/api/v1/cameras/control', { method:'POST', body: JSON.stringify(
             { edgeId: await edgeId(), cameraLabel: id, action }) });
         }
@@ -237,16 +230,13 @@ $('btn-clear').onclick = () => {
   $('err').textContent = ''; $('probe-result').textContent = '';
 };
 
-// Live preview: the MediaMTX WebRTC stream (live-view.js) — the same feed the
-// shared links serve, so what you see here is exactly what a remote viewer sees.
-let CAMS = [];                    // refreshed by loadCameras for the PTZ pad
+let CAMS = [];
 $('preview-select').onchange = (e) => {
   connectPreview(e.target.value);
   const cam = CAMS.find(c => c.camera_id === e.target.value);
   $('ptz-pad').hidden = !(cam && cam.ptz_supported);
 };
 
-// PTZ: move while the button is held, stop on release (ONVIF ContinuousMove).
 const ptzSend = (body) => api(
   `/api/v1/cameras/${$('preview-select').value}/ptz`,
   { method: 'POST', body: JSON.stringify(body) }).catch(() => {});

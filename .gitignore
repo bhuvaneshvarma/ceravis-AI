@@ -72,6 +72,7 @@ Thumbs.db
 # LOCAL ONLY — kept in the working tree, never committed.
 /docs/identity-architecture.md
 /docs/ai-pipeline-reference.md
+/docs/ui-architecture.md
 # Local ONVIF capability dumps (tools/onvif_dump) — camera-specific, may contain
 # usernames/network details; a review artifact, never committed.
 camerainfo/
