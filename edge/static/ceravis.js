@@ -33,12 +33,14 @@ function toast(msg, kind = "ok", ms = 2600) {
    setup.html. It is separate from the device account (account.json persists);
    this is the per-browser access session that expires after 15 min idle. */
 const CV_SESSION_KEY = "cv-session";
-const CV_IDLE_MS = 15 * 60 * 1000;          // auto sign-out after 15 min idle
+const CV_IDLE_MS = 15 * 60 * 1000;          // idle window (auto-logout DISABLED for now — re-enable later)
 
 function cvSessionValid() {
   try {
     const s = JSON.parse(localStorage.getItem(CV_SESSION_KEY) || "null");
-    return !!(s && s.ts && (Date.now() - s.ts) <= CV_IDLE_MS);
+    // Inactivity auto-logout is OFF during development: a session stays valid
+    // once started. Re-enable by restoring `&& (Date.now() - s.ts) <= CV_IDLE_MS`.
+    return !!(s && s.ts);
   } catch (_) { return false; }
 }
 function cvStartSession(user) {
@@ -68,11 +70,11 @@ function cvRequireAuth() {
 }
 let _cvIdleArmed = false;
 function cvArmIdle() {
+  // Inactivity auto-logout DISABLED for now — no activity listeners, no
+  // expiry sweep. Re-enable this body (activity listeners + 30s cvSignOut
+  // sweep) once development is finished.
   if (_cvIdleArmed) return;
   _cvIdleArmed = true;
-  ["click", "keydown", "mousemove", "touchstart", "scroll"].forEach(ev =>
-    window.addEventListener(ev, cvBumpSession, { passive: true }));
-  setInterval(() => { if (!cvSessionValid()) cvSignOut(); }, 30000);
 }
 
 /* ---- shared top navigation ------------------------------------------ */
