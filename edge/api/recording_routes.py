@@ -23,8 +23,10 @@ those files. Nothing is re-cut, re-encoded or duplicated for playback.
                                                      the playlist)
     GET /api/v1/recordings/{camera}/segment/{file} -> one stored segment, as-is
 
-Plus the monitor's recording on/off switch:
+Plus the per-camera recording state for the app server, and the monitor's
+recording on/off switch:
 
+    GET  /api/v1/recordings/status   -> per camera: recording now? since when?
     GET  /api/v1/recordings/state
     POST /api/v1/recordings/toggle
 
@@ -82,6 +84,31 @@ def recording_state(request: Request):
         return {"available": False, "enabled": False, "recording": []}
     return {"available": True, "enabled": rc.is_enabled(),
             "recording": rc.recording_now()}
+
+
+@router.get("/status")
+def recording_status(request: Request, edge_id: str | None = None):
+    """Per-camera recording state for the app server: which cameras are
+    recording RIGHT NOW, and since when that has been true.
+
+        GET /api/v1/recordings/status?edge_id=<id>
+        -> { "cameras": [ {camera_id, recording: bool, since: ISO-8601|null} ] }
+
+    `since` is when the CURRENT state began — the start of the open stretch when
+    recording is true, the moment it stopped when false — on the same edge clock
+    every other timestamp here uses, so it lines up with /timeline and the
+    recordings/event push. It is null only for a camera that has not changed
+    state since this device booted (we do not know, and a guessed timestamp is
+    worse than none).
+
+    EVERY configured camera is listed, so one call is the complete picture. This
+    is the pull twin of the recordings/event push: the events say when it
+    CHANGED, this says what is true NOW — the way to resync after an outage.
+
+    503 while the recorder is not running (MediaMTX down): "unknown" is the
+    honest answer, and better than reporting every camera as not recording."""
+    check_edge_id(edge_id)
+    return {"cameras": _controller(request).status()}
 
 
 @router.post("/toggle")

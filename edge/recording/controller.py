@@ -60,10 +60,11 @@ class RecordingController:
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
         self._last_person: dict[str, float] = {}   # camera_id -> monotonic time
-        # camera_id -> when its OPEN stretch began (edge-local wall clock). The
-        # "finalized" event must repeat the same start the "started" event sent,
-        # so the backend can pair them; this is where that start is held.
-        self._segment_start: dict[str, datetime] = {}
+        # camera_id -> when its CURRENT recording state began (edge-local wall
+        # clock). ONE fact with two readers: /recordings/status reports it as
+        # `since`, and a "finalized" event uses it as the stretch's `start` (so
+        # it repeats exactly what the "started" event sent and the two pair up).
+        self._state_since: dict[str, datetime] = {}
         # Optional cloud reporter (the outbox sender), attached at boot AFTER
         # the outbox exists. None = nothing is reported and recording is
         # completely unaffected — this is a notification, never a dependency.
@@ -297,10 +298,33 @@ class RecordingController:
         and must keep working whether or not this is ever called."""
         self._event_sink = sender
 
-    def _report(self, camera_id: str, on: bool) -> None:
+    def status(self) -> list[dict]:
+        """Per-camera recording state for the app server: is this camera
+        recording right now, and since when has that been so.
+
+        `since` is the instant the CURRENT state began — the start of the open
+        stretch while recording, the moment it stopped while not. It is None for
+        a camera that has not changed state since this device booted: we do not
+        know, and inventing a timestamp is worse than saying so.
+
+        EVERY configured camera is listed, so one call is the whole picture."""
+        out = []
+        for cam in sorted(self._cameras.get_all(), key=lambda c: c.camera_id):
+            since = self._state_since.get(cam.camera_id)
+            out.append({
+                "camera_id": cam.camera_id,
+                "recording": bool(self._recording.get(cam.camera_id, False)),
+                "since": since.isoformat() if since is not None else None,
+            })
+        return out
+
+    def _report(self, camera_id: str, on: bool, at: datetime,
+                began: datetime | None) -> None:
         """Tell the app server this camera opened or closed a stretch of
         footage — ONE call per camera per transition, fired from the single
-        place that knows recording actually changed state.
+        place that knows recording actually changed state. `at` is the instant
+        of this transition and `began` is when the state being LEFT started, so
+        a finalized event reports the stretch exactly as /status described it.
 
         It is queued on the durable outbox, never sent inline: this runs on the
         recording tick, which must not wait on the network, and a stretch that
@@ -313,24 +337,18 @@ class RecordingController:
             return
         try:
             if on:
-                start = clock.now()
-                self._segment_start[camera_id] = start
-                sink.queue_recording_event(camera_id, "started",
-                                           start.isoformat())
-                return
-            start = self._segment_start.pop(camera_id, None)
-            if start is None:
-                # No open stretch on record (we never reported its start), so
-                # there is nothing to finalize. Say so rather than invent a
-                # start time the backend would store as fact.
+                sink.queue_recording_event(camera_id, "started", at.isoformat())
+            elif began is None:
+                # No open stretch on record (we never saw it start), so there is
+                # nothing to finalize. Say so rather than invent a start time the
+                # backend would store as fact.
                 logger.warning("recording event: %s stopped with no recorded "
                                "start — no finalized event sent", camera_id)
-                return
-            end = clock.now()
-            sink.queue_recording_event(
-                camera_id, "finalized", start.isoformat(),
-                end=end.isoformat(),
-                seconds=round((end - start).total_seconds(), 1))
+            else:
+                sink.queue_recording_event(
+                    camera_id, "finalized", began.isoformat(),
+                    end=at.isoformat(),
+                    seconds=round((at - began).total_seconds(), 1))
         except Exception:                     # noqa: BLE001 — never break recording
             logger.exception("recording event: reporting %s %s failed",
                              camera_id, "start" if on else "stop")
@@ -349,6 +367,11 @@ class RecordingController:
         self._recording[camera_id] = on
         logger.info("recording %s: %s (path %s)",
                     "started" if on else "stopped", camera_id, path)
+        # ONE instant for this transition, so `since` and the event's timestamps
+        # can never disagree by a scheduling hair.
+        at = clock.now()
+        began = self._state_since.get(camera_id)    # when the state we leave began
+        self._state_since[camera_id] = at
         # After the flip, so the cloud only ever hears what actually happened:
         # a MediaMTX refusal above returns early and reports nothing.
-        self._report(camera_id, on)
+        self._report(camera_id, on, at, began)
