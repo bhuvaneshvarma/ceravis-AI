@@ -45,11 +45,19 @@
   .login-logo { height: 44px; width: auto; max-width: 160px; object-fit: contain;
                 align-self: flex-start; display: block; position: relative; z-index: 1; }
   .login-brand-mid { position: relative; z-index: 1; }
-  .login-hero { position: relative; width: 100%; border-radius: 18px; display: block;
-                margin-bottom: 26px; object-fit: cover;
-                box-shadow: 0 20px 44px rgba(53,152,157,.18);
-                filter: grayscale(.2); transition: filter .7s ease; }
-  .login-hero:hover { filter: grayscale(0); }
+  /* Hero: the Ceravis wordmark, centered and large, on a soft premium panel
+     that fills the brand column's empty space. */
+  .login-hero-logo {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; box-sizing: border-box; border-radius: 20px; margin-bottom: 26px;
+    padding: 46px 30px; min-height: 200px;
+    background:
+      radial-gradient(130% 130% at 50% 0%, rgba(53,152,157,.12), transparent 62%),
+      linear-gradient(160deg, #ffffff 0%, #eef7f7 100%);
+    border: 1px solid #e4f0f0;
+    box-shadow: 0 22px 48px rgba(53,152,157,.16), inset 0 1px 0 rgba(255,255,255,.7);
+  }
+  .login-hero-logo img { width: 80%; max-width: 250px; height: auto; display: block; }
   .login-brand-title { margin: 0 0 10px; font-size: clamp(19px, 1.6vw, 22px);
                        font-weight: 800; color: #1e293b; line-height: 1.24; letter-spacing: -.3px; }
   .login-brand-title .rei { color: var(--teal); }
@@ -127,8 +135,9 @@
     <div class="login-brand">
       <img class="login-logo" src="ceravis-logo.png" alt="Ceravis Health" />
       <div class="login-brand-mid">
-        <img class="login-hero" src="login-hero-ai.svg"
-             alt="AI and IoT powering connected healthcare" />
+        <div class="login-hero-logo">
+          <img src="ceravis-logo.png" alt="Ceravis Health" />
+        </div>
         <h2 class="login-brand-title" id="lg-title"
             data-l1="Healthcare Management," data-l2="Reimagined."></h2>
         <p class="login-brand-sub">Providing seamless care coordination and intelligent
