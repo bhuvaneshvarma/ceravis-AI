@@ -8,11 +8,13 @@
       de.classList.add("cv-shell-collapsed");
 
     var s = JSON.parse(localStorage.getItem("cv-session") || "null");
-    var authed = s && s.ts && (Date.now() - s.ts) <= 15 * 60 * 1000;
-    if (authed) de.classList.add("cv-authed");
-
-    else if (!/setup\.html$/.test(location.pathname)) {
-      location.replace("setup.html");
+    var authed = !!(s && s.ts);
+    var onLogin = /login\.html$/.test(location.pathname);
+    if (authed) {
+      de.classList.add("cv-authed");
+      if (onLogin) location.replace("live.html");
+    } else if (!onLogin) {
+      location.replace("login.html");
     }
   } catch (e) {}
 })();

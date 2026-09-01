@@ -150,7 +150,36 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     except CeravisApiError as exc:
         logger.warning("verifyOtp failed for %s: %s", email, exc)
         return {"verified": False, "reason": str(exc)}
-    # 2) Code accepted — fetch the account.
+
+    # 2) RETURNING device — account.json already holds THIS recipient. A normal
+    # sign-in (to add a camera / edit zones) must NOT re-fetch userDetails from
+    # the app server every time; the local account is the source of truth. We
+    # only make sure the frp tunnel is still keyed to the stored edge_id, then
+    # let the operator straight into the app. `fresh:false` tells the login page
+    # to open the Live Wall (not the onboarding wizard).
+    stored = account_config.get()
+    if (stored.get("ceravisUserId")
+            and (stored.get("email") or "").strip().lower() == email.lower()):
+        edge_id = account_config.get_edge_id()
+        provisioning, remote = False, None
+        if edge_id:
+            from integration.edge_provision import (
+                apply_edge_id_async, provisioning_report,
+            )
+            remote = provisioning_report(edge_id)
+            # Re-apply only when the tunnel is not already routing this token AND
+            # the privileged helper is present to do it — never on every login.
+            if remote["helper_installed"] and not remote["keyed"]:
+                background_tasks.add_task(apply_edge_id_async, edge_id)
+                provisioning = True
+        logger.info("returning login: user #%s (%s) — userDetails skipped",
+                    stored.get("ceravisUserId"), email)
+        return {"verified": True, "user": stored, "fresh": False,
+                "edgeId": edge_id or None, "provisioning": provisioning,
+                "remote": remote}
+
+    # 3) FRESH registration (no local account yet, or a different email) — fetch
+    # the account from the app server and onboard via the wizard (`fresh:true`).
     try:
         user = get_user_details(email)
     except CeravisApiError as exc:
@@ -228,9 +257,10 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
             background_tasks.add_task(_repoint_live_paths, _stream_base(request))
             logger.info("edge_id changed %r -> %r: MediaMTX repoint + link "
                         "refresh scheduled", prev_edge_id, edge_id)
-    logger.info("account verified: user #%s (%s)",
+    logger.info("account verified (fresh): user #%s (%s)",
                 account["ceravisUserId"], account["email"])
-    return {"verified": True, "user": account, "edgeId": edge_id or None,
+    return {"verified": True, "user": account, "fresh": True,
+            "edgeId": edge_id or None,
             "provisioning": provisioning, "remote": remote}
 
 

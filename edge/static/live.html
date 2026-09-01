@@ -15,16 +15,8 @@
   .cam-tile.maximized {
     position: fixed; inset: 0; z-index: 90; border-radius: 0; aspect-ratio: auto;
   }
-  .statbar { display: flex; gap: 12px; align-items: stretch; margin-bottom: 18px; flex-wrap: wrap; }
-  .statbar > span { display: flex; flex-direction: column; gap: 3px; min-width: 104px;
-                    background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
-                    padding: 11px 16px; box-shadow: var(--shadow-sm);
-                    font-size: 10.5px; text-transform: uppercase; letter-spacing: .9px;
-                    color: var(--faint); font-weight: 700; }
-  .statbar > span b { font-size: 19px; color: var(--navy); font-weight: 800; letter-spacing: 0;
-                      text-transform: none; font-variant-numeric: tabular-nums; }
-  .statbar #s-note { justify-content: center; text-transform: none; letter-spacing: 0;
-                     font-weight: 500; color: var(--faint); }
+  .live-bar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--gap-stack); }
+  .live-bar .pill { font-size: 12px; padding: 5px 13px; }
 </style>
 </head>
 <body>
@@ -36,12 +28,8 @@
       Click any tile to maximize · <span class="kbd">Esc</span> to exit.</div>
   </div>
 
-  <div class="statbar" id="stats">
-    <span>GPU <b id="s-gpu">—</b></span>
-    <span>CPU <b id="s-cpu">—</b></span>
-    <span>RAM <b id="s-ram">—</b></span>
-    <span>Cameras <b id="s-cams">—</b></span>
-    <span id="s-note" class="faint"></span>
+  <div class="live-bar">
+    <span class="pill pill-mute" id="live-count">Loading cameras…</span>
   </div>
 
   <div class="wall" id="wall"></div>
@@ -69,8 +57,12 @@ async function sync() {
     api("/api/v1/cameras/status").catch(() => ({})),
   ]);
   document.getElementById("empty").hidden = cams.length > 0;
-  document.getElementById("s-cams").textContent =
-    `${Object.values(status).filter(s => s.health_state === "running").length}/${cams.length} live`;
+  const liveN = Object.values(status).filter(s => s.health_state === "running").length;
+  const pill = document.getElementById("live-count");
+  pill.className = "pill " + (cams.length === 0 ? "pill-mute"
+    : liveN === cams.length ? "pill-ok" : liveN > 0 ? "pill-warn" : "pill-bad");
+  pill.textContent = cams.length === 0 ? "No cameras yet"
+    : `${liveN} / ${cams.length} camera${cams.length > 1 ? "s" : ""} live`;
 
   const wall = document.getElementById("wall");
   wall.className = "wall" + (cams.length <= 1 ? " single" : cams.length > 4 ? " many" : "");
@@ -119,18 +111,8 @@ window.addEventListener("keydown", e => {
     document.querySelectorAll(".cam-tile").forEach(t => t.classList.remove("maximized"));
 });
 
-async function sysStats() {
-  try {
-    const m = await api("/api/v1/metrics/system");
-    document.getElementById("s-gpu").textContent = (m.gpu_pct ?? "—") + "%";
-    document.getElementById("s-cpu").textContent = (m.cpu_pct_avg ?? "—") + "%";
-    document.getElementById("s-ram").textContent = (m.ram_pct ?? "—") + "%";
-  } catch { document.getElementById("s-note").textContent = ""; }
-}
-
-sync(); sysStats();
+sync();
 setInterval(sync, 5000);
-setInterval(sysStats, 3000);
 </script>
 </body>
 </html>
