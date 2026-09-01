@@ -23,9 +23,6 @@ Two rules define the whole contract:
     `revert()` drives back to it and forgets it — that is the entire mechanism
     behind the cloud call's `action:"revert"`.
 
-`notify()` at the end of every action is a generic post-action hook other
-modules can subscribe to with `add_listener()`. Nothing in the core depends on
-anyone being subscribed.
 """
 
 import logging
@@ -44,8 +41,6 @@ _lock = threading.RLock()
 _stop_timers: dict[str, threading.Timer] = {}
 # camera_id -> (pan, tilt, zoom) the camera framed BEFORE this override began
 _home: dict[str, tuple[float, float, float]] = {}
-# post-action hooks; see add_listener()
-_listeners: list = []
 
 
 # ---- camera plumbing -------------------------------------------------
@@ -76,33 +71,6 @@ def log(ok: bool, label: str, detail: str, status: int) -> None:
     (logger.info if ok else logger.warning)("PTZ %s — %s", label or "?", detail)
     call_log.record("ptz", ok, status=status,
                     label=f"{canon(label)} {detail}".strip()[:300])
-
-
-# ---- post-action hooks -----------------------------------------------
-
-def add_listener(fn) -> None:
-    """Subscribe `fn(camera)` to run after every completed PTZ action. Optional
-    add-ons register themselves here; a hook that raises is logged and ignored,
-    never allowed to break a real move."""
-    with _lock:
-        if fn not in _listeners:
-            _listeners.append(fn)
-
-
-def remove_listener(fn) -> None:
-    with _lock:
-        if fn in _listeners:
-            _listeners.remove(fn)
-
-
-def notify(camera: Camera) -> None:
-    with _lock:
-        hooks = tuple(_listeners)
-    for fn in hooks:
-        try:
-            fn(camera)
-        except Exception:                    # noqa: BLE001 — a hook is never fatal
-            logger.warning("PTZ post-action hook failed", exc_info=True)
 
 
 # ---- home position (what revert() goes back to) ----------------------
@@ -185,7 +153,6 @@ def move(camera: Camera, pan: float, tilt: float, zoom: float = 0.0,
     onvif_cam.ptz_move(token, pan, tilt, zoom)
     used = None if duration_ms is None else _arm_auto_stop(
         camera, onvif_cam, token, duration_ms or settings.ptz_max_move_ms)
-    notify(camera)
     return used
 
 
@@ -199,16 +166,13 @@ def revert(camera: Camera) -> bool:
     with _lock:
         home = _home.pop(camera.camera_id, None)
     if home is None:
-        notify(camera)
         return False
     try:
         client(camera).ptz_absolute_move(token_for(camera), *home)
     except Exception:
         with _lock:                          # put it back: still off-framing
             _home.setdefault(camera.camera_id, home)
-        notify(camera)
         raise
-    notify(camera)
     return True
 
 
@@ -217,4 +181,3 @@ def stop(camera: Camera) -> None:
     cloud API has none because its moves stop themselves."""
     _cancel_auto_stop(camera.camera_id)
     client(camera).ptz_stop(token_for(camera))
-    notify(camera)
