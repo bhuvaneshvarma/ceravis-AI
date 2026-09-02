@@ -4,17 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CERAVIS — Video Console (Live &amp; Playback)</title>
-<!-- login gate: this console is self-contained (no ceravis.js), so it checks the
-     client session inline and bounces to the login when there isn't a live one. -->
-<script>
-(function () {
-  try {
-    var s = JSON.parse(localStorage.getItem("cv-session") || "null");
-    if (!(s && s.ts && (Date.now() - s.ts) <= 15 * 60 * 1000)) location.replace("../setup.html");
-    else localStorage.setItem("cv-session", JSON.stringify({ ts: Date.now(), email: s.email || "" }));
-  } catch (e) { location.replace("../setup.html"); }
-})();
-</script>
+<!-- Standalone diagnostics/testing console — NO login gate (grouped with the AI
+     Monitor under /ui/ui-testing/, a folder that can be removed for production). -->
 <!-- Inline icon: the page must never request /favicon.ico, which through the
      fleet tunnel is a 404 on every load. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M8 17h4l2-5 3 9 2-5.5L20.5 17H24' stroke='%232dd4bf' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
@@ -32,18 +23,19 @@
     it LIVE, or scrub back through the footage the edge already recorded.
 
   HOW IT STAYS SEPARATE (so you can delete it any time)
-    * It is TWO files in ONE folder:  edge/static/recordings/
-          index.html   <- this page
-          hls.min.js   <- the video-playback library (bundled so it works
-                           even with no internet on the device)
-    * It ADDS NOTHING to the backend and EDITS NO other file. It only *reads*
-      the endpoints the edge already exposes.
-    * To remove the whole feature:  delete the  edge/static/recordings/  folder.
-      Nothing else in the project references it. Done.
+    * It lives in the REMOVABLE testing folder:  edge/static/ui-testing/
+          recordings.html  <- this page
+          hls.min.js       <- the video-playback library (bundled so it works
+                              even with no internet on the device)
+          monitor.html     <- the AI Monitor diagnostics console (sibling)
+    * It ADDS NOTHING to the backend and EDITS NO other production file. It only
+      *reads* the endpoints the edge already exposes, and has NO login gate.
+    * To remove all diagnostics/testing UI for production: delete the
+      edge/static/ui-testing/ folder. Nothing else references it. Done.
 
   WHERE IT LIVES ONCE DEPLOYED
-    The edge already serves everything in edge/static/ at /ui/. So this page is
-    reachable at:   http://<device-ip>:8000/ui/recordings/
+    The edge serves everything in edge/static/ at /ui/. So this page is
+    reachable at:   http://<device-ip>:8000/ui/ui-testing/recordings.html
 
   WHICH EDGE ENDPOINTS IT USES (all pre-existing — nothing new was built)
     Live view  (the exact links the cloud gets):
@@ -64,13 +56,13 @@
 -->
 
 <style>
-  /* ---- palette: light Ceravis chrome, dark media surfaces ---------------- */
+  /* ---- palette: dark diagnostics theme, unified with the AI Monitor ------- */
   :root{
-    --bg:#f4f7fb; --panel:#ffffff; --panel-2:#f5f8fc; --line:#e6ecf3;
-    --text:#1e293b; --muted:#475569; --faint:#94a3b8;
-    --teal:#35989d; --teal-dim:#cfe7e4; --teal-ink:#ffffff;
-    --live:#ef4444; --ok:#00b551; --warn:#d98a24; --bad:#fb2c36;
-    --shadow:0 10px 30px rgba(15,23,42,.12);
+    --bg:#070b11; --panel:#101725; --panel-2:#141d2e; --line:#1d2a3f;
+    --text:#e8eef8; --muted:#8fa3bf; --faint:#5b6b85;
+    --teal:#2dd4bf; --teal-dim:#0f766e; --teal-ink:#04141b;
+    --live:#f87171; --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+    --shadow:0 10px 30px rgba(0,0,0,.5);
     --radius:14px;
     font-synthesis:none;
   }
@@ -87,20 +79,25 @@
 
   /* ---- top bar ----------------------------------------------------------- */
   .topbar{
-    display:flex; align-items:center; gap:16px; padding:9px 16px;
-    background:linear-gradient(180deg,#38a1a5,#2f8d91);
-    border-bottom:1px solid rgba(15,23,42,.06); box-shadow:0 2px 16px rgba(15,23,42,.12);
+    display:flex; align-items:center; gap:16px; padding:11px 16px;
+    background:var(--panel); border-bottom:1px solid var(--line); box-shadow:0 1px 0 var(--line);
     flex:0 0 auto; z-index:20;
   }
   .brand{display:flex; align-items:center; gap:11px; font-weight:700; letter-spacing:.3px}
   .brand .logo-chip{background:#fff; border-radius:11px; padding:5px 12px; display:inline-flex;
-    align-items:center; box-shadow:0 3px 10px rgba(0,0,0,.14)}
+    align-items:center; box-shadow:0 3px 10px rgba(0,0,0,.3)}
   .brand .logo-img{height:26px; width:auto; display:block}
-  .brand .tag{display:block; font-size:10.5px; color:rgba(255,255,255,.85); font-weight:500; letter-spacing:.4px}
-  .topbar .clock{color:#fff}
-  .topbar .iconbtn{background:rgba(255,255,255,.16); border-color:rgba(255,255,255,.28); color:#fff}
-  .topbar .iconbtn:hover{background:rgba(255,255,255,.26); border-color:rgba(255,255,255,.4); color:#fff}
-  .topbar .pill{background:rgba(255,255,255,.16); border-color:rgba(255,255,255,.28); color:#fff}
+  .brand .tag{display:block; font-size:10.5px; color:var(--muted); font-weight:500; letter-spacing:.4px}
+  /* dark topbar nav (unified with the AI Monitor) */
+  .topnav{display:inline-flex; gap:6px}
+  .topnav a{padding:6px 13px; border-radius:9px; font-size:12.5px; font-weight:700;
+    color:var(--muted); border:1px solid transparent}
+  .topnav a:hover{color:var(--text); background:var(--panel-2)}
+  .topnav a.active{color:var(--teal); background:rgba(45,212,191,.12); border-color:rgba(45,212,191,.3)}
+  .topbar .clock{color:var(--muted)}
+  .topbar .iconbtn{background:var(--panel-2); border-color:var(--line); color:var(--muted)}
+  .topbar .iconbtn:hover{background:var(--panel-2); border-color:var(--teal-dim); color:var(--text)}
+  .topbar .pill{background:var(--panel-2); border-color:var(--line); color:var(--muted)}
   .topbar .spacer{flex:1}
   .pill{
     display:inline-flex; align-items:center; gap:7px; padding:5px 11px; border-radius:999px;
@@ -257,7 +254,7 @@
   /* ---- toast ------------------------------------------------------------- */
   .toast{
     position:fixed; left:50%; bottom:26px; transform:translateX(-50%); z-index:80;
-    background:#ffffff; border:1px solid var(--line); color:var(--text); padding:12px 18px;
+    background:var(--panel); border:1px solid var(--line); color:var(--text); padding:12px 18px;
     border-radius:11px; box-shadow:var(--shadow); font-size:13px; max-width:min(560px,92vw);
   }
   .toast.bad{border-color:rgba(251,44,54,.4)}
@@ -281,6 +278,10 @@
     <span class="logo-chip"><img class="logo-img" src="../ceravis-logo.png" alt="Ceravis Health" /></span>
     <span class="tag">Video Console &middot; Live &amp; Playback</span>
   </div>
+  <nav class="topnav">
+    <a href="monitor.html">AI Monitor</a>
+    <a href="recordings.html" class="active">Recordings</a>
+  </nav>
   <div class="spacer"></div>
   <span class="pill" id="backbonePill"><span class="dot" id="backboneDot"></span><span id="backboneTxt">checking…</span></span>
   <span class="clock mono" id="clock">—</span>
@@ -415,7 +416,7 @@ function toast(msg, kind = "", ms = 4200){
    page needs follows from the ONE address it was opened at, which is also the
    only address that is guaranteed to reach this device:
 
-     through the fleet tunnel   /<edge_id>/ui/recordings/
+     through the fleet tunnel   /<edge_id>/ui/ui-testing/recordings.html
         api   ->  /<edge_id>/api/v1/…        (frps routes by URL path)
         live  ->  /<edge_id>/<cam>/whep      SAME ORIGIN, no port: Caddy holds
                   the TLS and frps forwards the path to MediaMTX. Naming a port
@@ -423,7 +424,7 @@ function toast(msg, kind = "", ms = 4200){
                   through the tunnel, and an http:// URL on an https:// page is
                   blocked as mixed content before it is even tried.
 
-     on the home network        /ui/recordings/
+     on the home network        /ui/ui-testing/recordings.html
         api   ->  /api/v1/…                  (same host, same port)
         live  ->  <host>:8889/<cam>/whep     MediaMTX direct, which is the only
                   way to reach it with no proxy in front.
