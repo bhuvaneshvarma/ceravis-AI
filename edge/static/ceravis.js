@@ -19,6 +19,18 @@ function toast(msg, kind = "ok", ms = 2600) {
   setTimeout(() => el.remove(), ms);
 }
 
+/* Top-right save/status popup — green on success, red on failure. Used for the
+   saveCamera / sync result on setup Step 2 (Continue) and cameras.html (Save). */
+function cvNotify(msg, ok = true, ms = 3000) {
+  document.querySelectorAll(".cv-notify").forEach(t => t.remove());
+  const n = document.createElement("div");
+  n.className = "cv-notify " + (ok ? "ok" : "err");
+  n.innerHTML = `<span class="ic">${ok ? "&#10003;" : "&#10007;"}</span><span></span>`;
+  n.lastChild.textContent = msg;
+  document.body.appendChild(n);
+  setTimeout(() => n.remove(), ms);
+}
+
 const CV_SESSION_KEY = "cv-session";
 const CV_IDLE_MS = 15 * 60 * 1000;
 

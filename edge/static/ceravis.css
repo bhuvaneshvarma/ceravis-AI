@@ -90,7 +90,7 @@ html.cv-shell-collapsed body { padding-left: 78px; }
 }
 .side-top {
   height: 64px; flex: 0 0 auto; background: #fff; display: flex; align-items: center;
-  justify-content: space-between; padding: 0 16px; box-shadow: 0 1px 0 rgba(15,23,42,.06);
+  justify-content: space-between; padding: 0 16px; box-shadow: 0 1px 0 var(--line);
 }
 .side-brand { display: inline-flex; text-decoration: none; }
 .side-top .logo-chip { padding: 0; box-shadow: none; }
@@ -133,7 +133,10 @@ html.cv-shell-collapsed body { padding-left: 78px; }
   position: sticky; top: 0; z-index: 40; height: 64px;
   display: flex; align-items: center; gap: 14px; padding: 0 22px;
   background: rgba(255,255,255,.95); backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--line);
+  /* Divider as a box-shadow (painted OUTSIDE the 64px box, at y=64) so it lands
+     on the same line as the sidebar top strip's shadow — a border-bottom sits
+     1px inside the box and left a visible seam against the sidebar. */
+  box-shadow: 0 1px 0 var(--line);
 }
 .app-eyebrow {
   font-size: 11px; font-weight: 700; letter-spacing: 1.6px;
@@ -449,7 +452,6 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   gap: 10px; max-height: 560px; overflow-y: auto; padding-right: 2px; }
 .cam-panel #c-grid:empty { display: none; }
 .cam-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.ptz-pad { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
 .probe-result { font-size: 12.5px; margin-top: 8px; min-height: 18px; }
 .prof-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
   border: 1px solid var(--line-soft); border-radius: 9px; margin-bottom: 6px;
@@ -467,3 +469,88 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   border: 1px solid var(--line-soft); border-radius: 9px; margin-bottom: 7px; cursor: pointer; }
 .zone-list-item.sel { border-color: var(--teal-dim); background: rgba(46,158,143,.07); }
 .zone-chip { width: 13px; height: 13px; border-radius: 4px; flex: 0 0 auto; }
+
+/* inline info dot with a native tooltip (e.g. PTZ hint on the cameras table) */
+.info-i { display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; font-size: 11px; font-weight: 800;
+  font-style: normal; cursor: help; color: var(--teal-dim);
+  background: rgba(53,152,157,.12); border: 1px solid rgba(53,152,157,.3); }
+
+/* ---- top-right save/status toast (cvNotify) — green ok / red error ---- */
+.cv-notify { position: fixed; top: 20px; right: 20px; z-index: 400;
+  display: flex; align-items: center; gap: 9px; max-width: 340px;
+  padding: 12px 16px; border-radius: 12px; font-size: 13.5px; font-weight: 700;
+  color: #fff; box-shadow: 0 14px 34px rgba(15,23,42,.22);
+  animation: cv-notify-in .22s cubic-bezier(.22,1,.36,1) both; }
+.cv-notify.ok  { background: linear-gradient(135deg, #14b866, #0f9c56); }
+.cv-notify.err { background: linear-gradient(135deg, #f2545b, #e11d48); }
+.cv-notify .ic { font-size: 15px; line-height: 1; }
+@keyframes cv-notify-in { from { opacity: 0; transform: translateY(-8px); }
+                          to   { opacity: 1; transform: none; } }
+
+/* ---- fullscreen live viewer (cameras panel: click a tile) + PTZ box ---- */
+.cam-fs { position: fixed; inset: 0; z-index: 300; background: #05070b;
+  display: flex; flex-direction: column; animation: cv-fs-in .2s ease both; }
+@keyframes cv-fs-in { from { opacity: 0; } to { opacity: 1; } }
+.cam-fs-top { display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; gap: 12px; }
+.cam-fs-title { display: flex; align-items: center; gap: 12px; }
+.cam-fs-badge { width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, var(--orange), var(--orange-dim)); }
+.cam-fs-badge svg { width: 22px; height: 22px; stroke: currentColor; }
+.cam-fs-name { color: #fff; font-size: 15px; font-weight: 800; letter-spacing: .5px; }
+.cam-fs-sub { color: #8fa3bf; font-size: 11.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+.cam-fs-actions { display: flex; gap: 8px; }
+.cam-fs-btn { width: 40px; height: 40px; border-radius: 11px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06);
+  color: #dbe4ee; font-size: 15px; font-weight: 800; display: inline-flex;
+  align-items: center; justify-content: center; transition: all .15s; }
+.cam-fs-btn:hover { background: rgba(255,255,255,.14); color: #fff; }
+.cam-fs-btn.on { background: var(--orange); border-color: var(--orange); color: #fff; }
+.cam-fs-stage { position: relative; flex: 1; margin: 0 18px 18px;
+  border-radius: 16px; overflow: hidden; background: #000;
+  border: 1px solid rgba(255,255,255,.08); }
+.cam-fs-stage video { width: 100%; height: 100%; object-fit: contain;
+  display: block; background: #000; }
+.cam-fs-stage .nosignal { position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; color: #8391a6; font-size: 13px;
+  letter-spacing: 1.5px;
+  background: repeating-linear-gradient(45deg, #10161f, #10161f 12px, #141b26 12px, #141b26 24px); }
+.cam-fs-live { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+  background: rgba(0,0,0,.55); color: #fff; font-size: 11.5px; font-weight: 700;
+  letter-spacing: 1px; text-transform: uppercase; }
+.cam-fs-live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad);
+  animation: blink 1.4s infinite; }
+.ptz-box { position: absolute; right: 20px; bottom: 20px; width: 176px;
+  background: rgba(10,14,20,.86); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 16px; padding: 14px; backdrop-filter: blur(8px);
+  box-shadow: 0 18px 44px rgba(0,0,0,.45); }
+.ptz-box.hidden { display: none; }
+.ptz-box .ptz-h { text-align: center; color: var(--orange); font-size: 11px;
+  font-weight: 800; letter-spacing: 1.5px; }
+.ptz-box .ptz-hint { text-align: center; color: #64748b; font-size: 9px;
+  font-weight: 700; letter-spacing: 1.5px; margin-bottom: 10px; }
+.ptz-dpad { position: relative; width: 128px; height: 128px; margin: 0 auto;
+  border-radius: 50%; border: 1px solid rgba(255,255,255,.12);
+  background: radial-gradient(circle at 50% 50%, rgba(53,152,157,.12), transparent 70%); }
+.ptz-dpad button { position: absolute; width: 34px; height: 34px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.06);
+  color: #dbe4ee; cursor: pointer; display: flex; align-items: center;
+  justify-content: center; font-size: 14px; transition: all .12s; }
+.ptz-dpad button:hover { background: var(--teal); border-color: var(--teal); color: #fff; }
+.ptz-dpad .up   { top: 4px;  left: 50%; transform: translateX(-50%); }
+.ptz-dpad .down { bottom: 4px; left: 50%; transform: translateX(-50%); }
+.ptz-dpad .left { left: 4px;  top: 50%; transform: translateY(-50%); }
+.ptz-dpad .right{ right: 4px; top: 50%; transform: translateY(-50%); }
+.ptz-dpad .mid  { left: 50%; top: 50%; transform: translate(-50%,-50%);
+  width: 40px; height: 40px; border-radius: 50%; color: var(--orange);
+  border-color: rgba(255,102,0,.4); }
+.ptz-zoom { display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin-top: 12px; color: #8fa3bf; font-size: 11px; font-weight: 700; }
+.ptz-zoom button { width: 30px; height: 30px; border-radius: 9px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.06);
+  color: #dbe4ee; font-size: 15px; font-weight: 800; }
+.ptz-zoom button:hover { background: var(--teal); border-color: var(--teal); color: #fff; }

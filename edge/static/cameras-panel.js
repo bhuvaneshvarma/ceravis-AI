@@ -63,15 +63,13 @@ function mountCameras(root, opts = {}) {
         <div class="hint">The room this camera watches. Its id and live link are
           derived from the label automatically on save.</div>
         <div class="row mt">
-          <button class="btn btn-primary" id="c-save">Save &amp; start camera</button>
+          <button class="btn btn-primary" id="c-save">Start / preview camera</button>
         </div>
         <hr class="sep" />
-        <h2>Registered cameras</h2>
+        <h2>Registered cameras
+          <i class="info-i" title="Click a camera in the live verification wall to open it fullscreen and set its PTZ angle. That becomes the camera's saved starting angle.">i</i>
+        </h2>
         <table class="tbl"><tbody id="c-table"></tbody></table>
-        <div class="row mt">
-          <button class="btn btn-ghost btn-sm" id="c-sync">Sync to CERAVIS account</button>
-          <span class="probe-result" id="c-sync-out"></span>
-        </div>
       </div>
 
       <div class="card">
@@ -121,10 +119,8 @@ function mountCameras(root, opts = {}) {
               <button class="btn btn-ghost btn-sm" data-act="start" data-id="${c.camera_id}">Start</button>
               <button class="btn btn-ghost btn-sm" data-act="stop" data-id="${c.camera_id}">Stop</button>
               <button class="btn btn-ghost btn-sm" data-act="restart" data-id="${c.camera_id}">Restart</button>
-              ${c.ptz_supported ? `<button class="btn btn-ghost btn-sm" data-ptztoggle="${c.camera_id}">PTZ</button>` : ""}
               <button class="btn btn-danger btn-sm" data-del="${c.camera_id}">Delete</button>
-            </td></tr>
-            ${c.ptz_supported ? `<tr class="ptz-row" id="ptz-${c.camera_id}" hidden><td colspan="3">${ptzPadHtml(c.camera_id)}</td></tr>` : ""}`;
+            </td></tr>`;
         }).join("");
     wireTable();
     syncWall(cams);
@@ -145,27 +141,94 @@ function mountCameras(root, opts = {}) {
       await api(`/api/v1/cameras/${b.dataset.del}`, { method: "DELETE" });
       toast("Camera removed"); refresh();
     });
-    root.querySelectorAll("[data-ptztoggle]").forEach(b => b.onclick = () => {
-      const rowEl = gid("ptz-" + b.dataset.ptztoggle);
-      if (rowEl) rowEl.hidden = !rowEl.hidden;
-    });
-    root.querySelectorAll(".ptz-btn").forEach(btn => {
-      const cam = btn.dataset.cam;
-      const [pan, tilt, zoom] = btn.dataset.ptz.split(",").map(Number);
-      btn.onpointerdown = () => ptzSend(cam, { pan, tilt, zoom });
-      btn.onpointerup = btn.onpointerleave = () => ptzSend(cam, { action: "stop" });
-    });
   }
   const ptzSend = (cam, body) => api(`/api/v1/cameras/${cam}/ptz`,
     { method: "POST", body: JSON.stringify(body) }).catch(() => {});
-  function ptzPadHtml(cam) {
-    const b = (p, t, z, label, title) =>
-      `<button class="btn btn-ghost btn-sm ptz-btn" data-cam="${cam}" data-ptz="${p},${t},${z}" title="${title}">${label}</button>`;
-    return `<div class="ptz-pad">
-      ${b(0, 0.6, 0, "▲", "tilt up")}${b(0, -0.6, 0, "▼", "tilt down")}
-      ${b(-0.6, 0, 0, "◀", "pan left")}${b(0.6, 0, 0, "▶", "pan right")}
-      ${b(0, 0, 0.5, "＋", "zoom in")}${b(0, 0, -0.5, "－", "zoom out")}
-      <span class="faint" style="align-self:center">hold to move</span></div>`;
+
+  /* ---- fullscreen live viewer (click a tile) + PTZ joystick box ---- */
+  const MON_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>`;
+  let fsOverlay = null, fsStream = null, fsEscHandler = null;
+
+  function ptzBoxHtml(cam) {
+    const btn = (spec, cls, glyph, title) =>
+      `<button class="${cls}" data-cam="${cam}" data-ptz="${spec}" title="${title}">${glyph}</button>`;
+    return `<div class="ptz-box" id="fs-ptz">
+      <div class="ptz-h">PTZ CONTROL</div>
+      <div class="ptz-hint">HOLD TO MOVE</div>
+      <div class="ptz-dpad">
+        ${btn("0,0.6,0", "up", "▲", "tilt up")}
+        ${btn("0,-0.6,0", "down", "▼", "tilt down")}
+        ${btn("-0.6,0,0", "left", "◀", "pan left")}
+        ${btn("0.6,0,0", "right", "▶", "pan right")}
+        ${btn("stop", "mid", "■", "stop")}
+      </div>
+      <div class="ptz-zoom">
+        ${btn("0,0,-0.5", "", "－", "zoom out")}<span>ZOOM</span>${btn("0,0,0.5", "", "＋", "zoom in")}
+      </div>
+    </div>`;
+  }
+  function wirePtz(box) {
+    box.querySelectorAll("[data-ptz]").forEach(b => {
+      const cam = b.dataset.cam, spec = b.dataset.ptz;
+      if (spec === "stop") { b.onclick = () => ptzSend(cam, { action: "stop" }); return; }
+      const [pan, tilt, zoom] = spec.split(",").map(Number);
+      b.onpointerdown = () => ptzSend(cam, { pan, tilt, zoom });
+      b.onpointerup = b.onpointerleave = () => ptzSend(cam, { action: "stop" });
+    });
+  }
+  function openFullscreen(cam) {
+    closeFullscreen();
+    const ov = el("div", "cam-fs");
+    ov.innerHTML = `
+      <div class="cam-fs-top">
+        <div class="cam-fs-title">
+          <div class="cam-fs-badge">${MON_ICON}</div>
+          <div>
+            <div class="cam-fs-name">${cam.room_name} · FULLSCREEN</div>
+            <div class="cam-fs-sub">${cam.camera_name} · live preview</div>
+          </div>
+        </div>
+        <div class="cam-fs-actions">
+          ${cam.ptz_supported ? `<button class="cam-fs-btn on" id="fs-ptz-toggle" title="Toggle PTZ control">PTZ</button>` : ""}
+          <button class="cam-fs-btn" id="fs-close" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+      <div class="cam-fs-stage">
+        <div class="cam-fs-live"><span class="dot"></span>Live</div>
+        <div class="nosignal" id="fs-nosig">CONNECTING…</div>
+        <video id="fs-video"></video>
+      </div>
+      ${cam.ptz_supported ? ptzBoxHtml(cam.camera_id) : ""}`;
+    document.body.appendChild(ov);
+    fsOverlay = ov;
+    const video = ov.querySelector("#fs-video");
+    const nosig = ov.querySelector("#fs-nosig");
+    video.style.display = "none";
+    fsStream = liveView(video, cam.camera_id, {
+      onState: s => {
+        nosig.style.display = s === "live" ? "none" : "flex";
+        video.style.display = s === "live" ? "block" : "none";
+        nosig.textContent = s === "stalled" ? "SIGNAL STALLED"
+          : s === "offline" ? "OFFLINE" : "CONNECTING…";
+      },
+    });
+    ov.querySelector("#fs-close").onclick = closeFullscreen;
+    const toggle = ov.querySelector("#fs-ptz-toggle");
+    const box = ov.querySelector("#fs-ptz");
+    if (toggle && box) {
+      toggle.onclick = () => {
+        box.classList.toggle("hidden");
+        toggle.classList.toggle("on", !box.classList.contains("hidden"));
+      };
+      wirePtz(box);
+    }
+    fsEscHandler = (e) => { if (e.key === "Escape") closeFullscreen(); };
+    document.addEventListener("keydown", fsEscHandler);
+  }
+  function closeFullscreen() {
+    if (fsStream) { try { fsStream.stop(); } catch (_) {} fsStream = null; }
+    if (fsEscHandler) { document.removeEventListener("keydown", fsEscHandler); fsEscHandler = null; }
+    if (fsOverlay) { fsOverlay.remove(); fsOverlay = null; }
   }
 
   function syncWall(cams) {
@@ -185,6 +248,8 @@ function mountCameras(root, opts = {}) {
         <div class="overlay"><span class="name">${c.camera_name}</span>
           <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
         <div class="foot"><span id="st-${c.camera_id}">connecting…</span></div>`;
+      tile.title = "Open fullscreen · set PTZ angle";
+      tile.onclick = () => openFullscreen(c);
       grid.appendChild(tile);
       const video = tile.querySelector("video");
       streams[c.camera_id] = liveView(video, c.camera_id, {
@@ -281,21 +346,14 @@ function mountCameras(root, opts = {}) {
     selectProfile(rec.token || profiles[0].token);
   }
 
-  /* ---- cloud sync ---- */
-  async function syncCameras(manual) {
-    const out = gid("c-sync-out");
-    if (out) out.innerHTML = `<span class="muted">Syncing…</span>`;
+  /* ---- cloud save (saveCamera) — top-right green/red popup on both pages ---- */
+  async function syncCameras() {
     try {
       const r = await api("/api/v1/account/sync-cameras", { method: "POST" });
-      if (r.synced) {
-        if (out) out.innerHTML = `<span class="ok">✓ ${r.count} camera(s) synced to CERAVIS</span>`;
-        if (manual) toast(`${r.count} camera(s) sent to CERAVIS`);
-      } else {
-        if (out) out.innerHTML = `<span class="bad">✗ ${r.reason || "sync failed"}</span>`;
-        if (manual) toast(r.reason || "Camera sync failed", "err");
-      }
+      if (r && r.synced) cvNotify(`Saved · ${r.count} camera(s) synced to your CERAVIS account`, true);
+      else cvNotify((r && r.reason) || "Not saved — camera sync failed", false);
       return r;
-    } catch (e) { if (out) out.innerHTML = `<span class="bad">✗ sync failed</span>`; return null; }
+    } catch (e) { cvNotify("Not saved — couldn't reach the server", false); return null; }
   }
 
   /* ---- wire the static controls ---- */
@@ -374,12 +432,11 @@ function mountCameras(root, opts = {}) {
       refresh();
     } catch (e) { toast(e.detail || "Save failed", "err"); }
   };
-  gid("c-sync").onclick = () => syncCameras(true);
-
   function destroy() {
     destroyed = true;
     if (refreshTimer) clearInterval(refreshTimer);
     Object.values(streams).forEach(s => { try { s.stop(); } catch (_) {} });
+    closeFullscreen();
     root.innerHTML = "";
   }
 

@@ -66,8 +66,11 @@
               display: flex; align-items: center; gap: 9px; }
   .rec-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 
-  .recipient-card.accent-left::before { top: 0; bottom: 0;
-    border-radius: var(--radius) 0 0 var(--radius); width: 4px; }
+  /* full-height flush accent: clip the bar to the card's rounded rect so its
+     ends follow the corners exactly instead of poking past them. */
+  .recipient-card { overflow: hidden; }
+  .recipient-card.accent-left::before { top: 0; bottom: 0; left: 0;
+    border-radius: 0; width: 4px; }
   .rec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 34px; margin-top: 4px; }
   .rec-grid .prow.wide { grid-column: 1 / -1; }
   .prow { display: flex; justify-content: space-between; align-items: center; gap: 14px;
@@ -249,7 +252,7 @@ function show(n) {
 }
 document.getElementById("w-back").onclick = () => show(step - 1);
 document.getElementById("w-next").onclick = async () => {
-  if (step === 2 && camPanel) await camPanel.syncCameras(false);
+  if (step === 2 && camPanel) await camPanel.syncCameras();   // saveCamera + top-right popup
   if (step === 3 && zonePanel) await zonePanel.finalize();
   show(step + 1);
 };

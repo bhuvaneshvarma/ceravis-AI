@@ -16,6 +16,9 @@
       and sync them to your CERAVIS account — the same tools as the setup wizard.</div>
   </div>
   <div id="cam-root"></div>
+  <div class="row" style="justify-content:flex-end; margin-top:16px">
+    <button class="btn btn-primary" id="cam-save-btn">Save</button>
+  </div>
 </div>
 
 <script src="ceravis.js"></script>
@@ -24,7 +27,8 @@
 <script>
 cvRequireAuth();
 renderNav("cameras.html");
-mountCameras(document.getElementById("cam-root"));
+const camPanel = mountCameras(document.getElementById("cam-root"));
+document.getElementById("cam-save-btn").onclick = () => camPanel.syncCameras();
 </script>
 </body>
 </html>
