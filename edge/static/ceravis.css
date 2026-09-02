@@ -322,9 +322,14 @@ input:-webkit-autofill:focus, input:-webkit-autofill:active {
 .step.done .dot { background: rgba(53,152,157,.14); border-color: var(--teal);
                   color: var(--teal-dim); }
 .step.done .lbl { color: var(--muted); }
-.step-line { flex: 1; height: 2px; background: var(--line); margin: 0 16px;
-             min-width: 30px; }
-.step-line.done { background: var(--teal); }
+/* the connector fills left→right when its step completes — a smooth progress
+   sweep (the stepper is updated in place, not rebuilt, so the transition fires). */
+.step-line { position: relative; flex: 1; height: 3px; background: var(--line);
+             margin: 0 16px; min-width: 30px; border-radius: 2px; overflow: hidden; }
+.step-line::after { content: ""; position: absolute; inset: 0; width: 0;
+             background: var(--teal); border-radius: 2px;
+             transition: width .6s cubic-bezier(.4, 0, .2, 1); }
+.step-line.done::after { width: 100%; }
 
 /* ---- surveillance grid ------------------------------------------- */
 .cam-grid {

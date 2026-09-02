@@ -226,14 +226,27 @@ async function initSetup() {
 }
 
 function renderStepper() {
-  document.getElementById("stepper").innerHTML = STEPS.map((s, i) => {
+  const wrap = document.getElementById("stepper");
+  // Build the stepper ONCE, then update classes in place so the connector fill
+  // can animate on step change (rebuilding each time would kill the transition).
+  if (!wrap.dataset.built) {
+    wrap.dataset.built = "1";
+    wrap.innerHTML = STEPS.map((s, i) => {
+      const n = i + 1;
+      const line = i < STEPS.length - 1 ? `<div class="step-line" data-line="${n}"></div>` : "";
+      return `<div class="step" data-step="${n}"><div class="dot"></div>
+              <div class="lbl">${s}</div></div>${line}`;
+    }).join("");
+  }
+  STEPS.forEach((s, i) => {
     const n = i + 1;
-    const cls = n === step ? "active" : n < step ? "done" : "";
-    const line = i < STEPS.length - 1
-      ? `<div class="step-line ${n < step ? "done" : ""}"></div>` : "";
-    return `<div class="step ${cls}"><div class="dot">${n < step ? "✓" : n}</div>
-            <div class="lbl">${s}</div></div>${line}`;
-  }).join("");
+    const stepEl = wrap.querySelector(`[data-step="${n}"]`);
+    stepEl.classList.toggle("active", n === step);
+    stepEl.classList.toggle("done", n < step);
+    stepEl.querySelector(".dot").textContent = n < step ? "✓" : n;
+    const line = wrap.querySelector(`[data-line="${n}"]`);
+    if (line) line.classList.toggle("done", n < step);
+  });
 }
 function show(n) {
   step = Math.min(Math.max(n, 1), STEPS.length);
