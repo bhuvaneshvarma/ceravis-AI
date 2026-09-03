@@ -133,7 +133,8 @@ def _set_links(request: Request, camera: Camera) -> None:
 @router.post("")
 def create_camera(camera: Camera, request: Request):
     if camera_config.get_by_id(camera.camera_id):
-        raise HTTPException(409, f"Camera exists: {camera.camera_id}")
+        raise HTTPException(
+            409, f"This room already has a camera ({camera.camera_id}).")
     _normalize_urls(camera)
     _enrich_device_info(camera)
     _set_links(request, camera)
@@ -297,11 +298,36 @@ def update_camera(camera_id: str, camera: Camera, request: Request):
 
 @router.delete("/{camera_id}")
 def delete_camera(camera_id: str, request: Request):
+    cam = camera_config.get_by_id(camera_id)   # read the room BEFORE removing it
     if not camera_config.delete(camera_id):
         raise HTTPException(404, "Camera not found")
     _mtx_remove(request, camera_id)
     ptz_control.forget_home(camera_id)        # no stale framing to drive back to
+    _cloud_forget_camera(cam)                  # mirror the removal on the account
     return {"status": "deleted", "camera_id": camera_id}
+
+
+def _cloud_forget_camera(cam) -> None:
+    """Best-effort: tell the app server to drop this camera from the account too
+    (PUT /v1/ai/cameras/delete, by room), so a local delete also clears the DB —
+    the delete twin of saveCamera. A cloud hiccup must never fail the local
+    delete, so every error here is swallowed."""
+    if not cam:
+        return
+    try:
+        from configuration.account_config import AccountConfig
+        from integration.ceravis_api import (
+            delete_camera as cloud_delete, is_configured, room_to_enum,
+        )
+        if not is_configured():
+            return
+        pid = AccountConfig().get().get("ceravisUserId")
+        if not pid:
+            return
+        cloud_delete(pid, room_to_enum(cam.room_name))
+    except Exception as exc:                    # noqa: BLE001 — never fail delete
+        logging.getLogger("cameras").warning(
+            "cloud camera delete failed (local delete kept): %s", exc)
 
 
 @router.get("/{camera_id}/status")

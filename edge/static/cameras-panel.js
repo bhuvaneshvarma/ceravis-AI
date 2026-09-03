@@ -1,23 +1,26 @@
 /* =====================================================================
    Shared camera-management panel — ONE implementation used by BOTH the
    setup wizard (Step 2) and the dedicated cameras.html page.
-   mountCameras(root) renders: ONVIF discovery + profile pick, manual RTSP
-   add, a registered-cameras table (start/stop/restart/delete + PTZ), a live
-   verification wall, and a "sync to CERAVIS" action. Returns
-   { refresh, syncCameras, destroy }. Depends on ceravis.js (api, toast, el,
-   healthPill) and live-view.js (liveView), which every page loads first.
+   mountCameras(root, { cloudSaveOnAdd }) renders: ONVIF discovery + connect,
+   an add-a-camera form (auto-filled RTSP + room), a registered-cameras table
+   (start/stop/restart/delete — delete also clears the cloud), and a live
+   verification wall (click a tile → fullscreen + PTZ). Returns
+   { refresh, syncCameras, destroy }. Depends on ceravis.js (api, toast,
+   cvNotify, el, healthPill) and live-view.js (liveView).
+
+   Design notes (kept OUT of the page for a clean, professional UI) live in
+   docs/ui-architecture.md.
    ===================================================================== */
 function mountCameras(root, opts = {}) {
   const CAM_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>`;
+  const ROOMS = ["KITCHEN", "BEDROOM", "LIVING ROOM", "LOUNGE", "LIVE FEED"];
 
   root.innerHTML = `
   <div class="cam-panel">
     <div class="split">
       <div class="card">
-        <h2>Find cameras <span class="faint">(WiFi / ONVIF)</span></h2>
-        <div class="hint mb">Scans every network interface — WiFi, ethernet and the
-          device hotspot — and fills the form below automatically. If discovery is
-          blocked it sweeps the subnet as a fallback. Manual RTSP entry works too.</div>
+        <h2>Find cameras <span class="faint">(Wi-Fi / ONVIF)</span></h2>
+        <div class="hint mb">Scan this network, then sign in with the camera's own username and password.</div>
         <div class="row">
           <button class="btn btn-ghost" id="d-scan">Scan network</button>
           <span class="probe-result" id="d-scan-out"></span>
@@ -31,51 +34,29 @@ function mountCameras(root, opts = {}) {
               <input type="password" id="d-pass" /></div>
           </div>
           <div class="row mt">
-            <button class="btn btn-ghost" id="d-probe">Connect &amp; read profiles</button>
+            <button class="btn btn-ghost" id="d-probe">Connect &amp; preview</button>
             <span class="probe-result" id="d-probe-out"></span>
-          </div>
-          <div id="d-profiles" class="mt" hidden>
-            <label class="f">Stream to use</label>
-            <div class="hint" style="margin-bottom:6px">This ONE stream feeds the AI,
-              the recordings and every live view, so it is chosen once here. The
-              recommended pick is already selected.</div>
-            <div id="d-profile-list"></div>
-            <div class="probe-result" id="d-profile-why"></div>
           </div>
         </div>
         <hr class="sep" />
         <h2>Add a camera</h2>
-        <label class="f">RTSP stream URL</label>
+        <label class="f">RTSP stream URL <span class="faint">(auto-filled when you connect)</span></label>
         <input type="text" id="c-url" placeholder="rtsp://user:pass@192.168.x.x:554/stream1" />
-        <div class="hint">Special characters in the password (<code>@ : /</code>) are
-          percent-encoded for you by Test connection — keep the encoded form.
-          4K (H.265) mains stream over TCP automatically.</div>
+        <label class="f">Room</label>
+        <select id="c-room"><option value="">— select room —</option></select>
         <div class="row mt">
-          <button class="btn btn-ghost" id="c-probe">Test connection</button>
-          <span class="probe-result" id="c-probe-out"></span>
-        </div>
-        <label class="f">Camera label</label>
-        <select id="c-room">
-          <option value="">— select room —</option>
-          <option>KITCHEN</option><option>BEDROOM</option><option>LIVING ROOM</option>
-          <option>LOUNGE</option><option>LIVE FEED</option>
-        </select>
-        <div class="hint">The room this camera watches. Its id and live link are
-          derived from the label automatically on save.</div>
-        <div class="row mt">
-          <button class="btn btn-primary" id="c-save">Start / preview camera</button>
+          <button class="btn btn-primary" id="c-save">Save &amp; start</button>
         </div>
         <hr class="sep" />
         <h2>Registered cameras
-          <i class="info-i" title="Click a camera in the live verification wall to open it fullscreen and set its PTZ angle. That becomes the camera's saved starting angle.">i</i>
+          <i class="info-i" title="Click a camera in the live wall to open it fullscreen and set its viewing angle.">i</i>
         </h2>
         <table class="tbl"><tbody id="c-table"></tbody></table>
       </div>
 
       <div class="card">
         <h2>Live verification wall</h2>
-        <div class="hint mb">Streams appear here as soon as a camera is saved —
-          verify aim and coverage.</div>
+        <div class="hint mb">Live view of your saved cameras. Click one to open it fullscreen and set its angle.</div>
         <div class="cam-grid" id="c-grid"></div>
       </div>
     </div>
@@ -93,7 +74,25 @@ function mountCameras(root, opts = {}) {
     return _edgeId;
   }
 
-  /* ---- registered cameras (table + controls + PTZ) + live wall ---- */
+  /* ---- friendly, short messages (never raw server text) ---- */
+  function friendlyProbeError(e) {
+    const d = ((e && (e.detail || e.message)) || "").toString().toLowerCase();
+    if (d.includes("authentic") || d.includes("not authorized") || d.includes("unauthor") || d.includes("401"))
+      return "Incorrect camera username or password.";
+    if (d.includes("cannot reach") || d.includes("timed out") || d.includes("timeout") || d.includes("refused"))
+      return "Camera unreachable — check it's powered on and on this network.";
+    return "Couldn't connect — check the login and try again.";
+  }
+  function friendlyCloudError(reason) {
+    const d = (reason || "").toString().toLowerCase();
+    if (d.includes("already") || d.includes("duplicate") || d.includes("exists"))
+      return "Not saved — this room already has a camera on your account.";
+    if (d.includes("verify") || d.includes("account"))
+      return "Not saved — verify your account first.";
+    return "Not saved — please try again.";
+  }
+
+  /* ---- registered cameras (table + controls) + room list + live wall ---- */
   async function refresh() {
     let cams, status;
     try {
@@ -102,13 +101,14 @@ function mountCameras(root, opts = {}) {
       ]);
     } catch { return; }
     if (destroyed) return;
+    rebuildRooms(cams);
     const tbody = gid("c-table");
     if (!tbody) return;
     tbody.innerHTML = cams.length === 0
       ? `<tr><td colspan="3"><div class="empty">
            <div class="empty-ic">${CAM_ICON}</div>
            <div class="empty-title">No cameras added yet</div>
-           <div class="empty-sub">Scan the network above, or paste an RTSP URL and save your first camera.</div>
+           <div class="empty-sub">Scan the network above and connect your first camera.</div>
          </div></td></tr>`
       : cams.map(c => {
           const s = status[c.camera_id] || {};
@@ -126,6 +126,21 @@ function mountCameras(root, opts = {}) {
     syncWall(cams);
   }
 
+  /* One camera per room: the dropdown only offers rooms not already taken
+     (keeps the in-progress selection so a background refresh never drops it). */
+  function rebuildRooms(cams) {
+    const sel = gid("c-room");
+    if (!sel) return;
+    const cur = sel.value;
+    const taken = new Set(cams.map(c => (c.room_name || "").toUpperCase()));
+    const avail = ROOMS.filter(r => !taken.has(r.toUpperCase()) || r.toUpperCase() === cur.toUpperCase());
+    const sig = cur + "|" + avail.join(",");
+    if (sel.dataset.sig === sig) return;      // nothing changed — don't churn
+    sel.dataset.sig = sig;
+    sel.innerHTML = `<option value="">— select room —</option>` +
+      avail.map(r => `<option${r.toUpperCase() === cur.toUpperCase() ? " selected" : ""}>${r}</option>`).join("");
+  }
+
   function wireTable() {
     root.querySelectorAll("[data-act]").forEach(b => b.onclick = async () => {
       try {
@@ -135,11 +150,14 @@ function mountCameras(root, opts = {}) {
       } catch (e) { toast(e.detail || "Control failed", "err"); }
     });
     root.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-      if (!confirm(`Delete camera ${b.dataset.del}?`)) return;
+      if (!confirm(`Delete camera ${b.dataset.del}? This also removes it from your CERAVIS account.`)) return;
       await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
         { edgeId: await edgeId(), cameraLabel: b.dataset.del, action: "stop" }) }).catch(() => {});
-      await api(`/api/v1/cameras/${b.dataset.del}`, { method: "DELETE" });
-      toast("Camera removed"); refresh();
+      try {
+        await api(`/api/v1/cameras/${b.dataset.del}`, { method: "DELETE" });  // edge also clears the cloud
+        cvNotify("Camera removed", true);
+      } catch (e) { cvNotify("Couldn't remove the camera — try again", false); }
+      refresh();
     });
   }
   const ptzSend = (cam, body) => api(`/api/v1/cameras/${cam}/ptz`,
@@ -234,6 +252,9 @@ function mountCameras(root, opts = {}) {
   function syncWall(cams) {
     const grid = gid("c-grid");
     if (!grid) return;
+    // matrix: 1 → 1 col, 2-4 → 2 cols (2×1 / 2×2), 5+ → 3 cols (3×2), scrolls beyond.
+    const cols = cams.length <= 1 ? 1 : cams.length <= 4 ? 2 : 3;
+    grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
     const want = new Set(cams.map(c => c.camera_id));
     Object.keys(streams).forEach(id => {
       if (!want.has(id)) { streams[id].stop(); delete streams[id]; gid(`tile-${id}`)?.remove(); }
@@ -248,7 +269,7 @@ function mountCameras(root, opts = {}) {
         <div class="overlay"><span class="name">${c.camera_name}</span>
           <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
         <div class="foot"><span id="st-${c.camera_id}">connecting…</span></div>`;
-      tile.title = "Open fullscreen · set PTZ angle";
+      tile.title = "Open fullscreen · set the camera's angle";
       tile.onclick = () => openFullscreen(c);
       grid.appendChild(tile);
       const video = tile.querySelector("video");
@@ -278,7 +299,7 @@ function mountCameras(root, opts = {}) {
         out.innerHTML = `<span class="ok">✓ ${DISC.cams.length} camera(s) found</span>
           <span class="faint">on ${where}</span>`;
       } else {
-        out.innerHTML = `<span class="warn">No ONVIF cameras answered on ${where}.</span>`
+        out.innerHTML = `<span class="warn">No cameras answered on ${where}.</span>`
           + (deep ? "" : ` <button class="btn btn-ghost" style="padding:2px 8px;font-size:12px"
                id="d-deep">Deep scan</button>`);
         const deepBtn = gid("d-deep");
@@ -299,66 +320,39 @@ function mountCameras(root, opts = {}) {
           gid("d-probe-out").textContent = "";
         };
       });
-    } catch (e) { out.innerHTML = `<span class="bad">✗ scan failed</span>`; }
+    } catch (e) { out.innerHTML = `<span class="bad">✗ Scan failed — try again.</span>`; }
   }
 
-  function selectProfile(token) {
-    const r = DISC.probed;
-    if (!r) return;
-    const p = (r.profiles || []).find(x => x.token === token);
-    if (!p) return;
-    DISC.profileToken = token;
-    gid("c-url").value = p.uri || "";
-    root.querySelectorAll(".prof-row").forEach(elm =>
-      elm.classList.toggle("sel", elm.dataset.token === token));
-    const ai = r.ai || {};
-    const aiNote = ai.uri && ai.token !== token
-      ? `<br><span class="muted">The AI will additionally read
-         ${ai.resolution} ${ai.encoding} — more reach for tracking. This camera is
-         the only kind that gets two streams.</span>` : "";
-    const enc = (p.codec || p.encoding || "").toUpperCase();
-    gid("d-profile-why").innerHTML = enc && enc !== "H264"
-      ? `<span class="bad">${enc} cannot play in any browser — live view will be
-         black and its recordings unplayable.</span>`
-      : `<span class="muted">${(r.recommended || {}).reason || ""}</span>${aiNote}`;
-  }
-
-  function renderProfiles(r) {
-    const wrap = gid("d-profiles");
-    const list = gid("d-profile-list");
+  /* Auto-pick the best BROWSER-PLAYABLE stream: the largest H.264 profile (the
+     backend recommends one at/below ~1080p). H.265 is skipped — no browser
+     decodes HEVC over WebRTC. The AI keeps using the camera's main profile
+     regardless; this choice is only what the /ui tiles and live links play. */
+  function pickBestH264(r) {
+    const h264 = (r.profiles || []).filter(p =>
+      p.uri && (p.codec || p.encoding || "").toUpperCase() === "H264");
+    if (!h264.length) return null;
     const rec = r.recommended || {};
-    const profiles = (r.profiles || [])
-      .filter(p => p.uri && (p.codec || p.encoding || "").toUpperCase() !== "JPEG");
-    if (!profiles.length) { wrap.hidden = true; return; }
-    list.innerHTML = profiles.map(p => {
-      const enc = (p.codec || p.encoding || "").toUpperCase();
-      const bad = enc && enc !== "H264";
-      return `<div class="prof-row" data-token="${p.token}">
-        <span class="res">${p.width}×${p.height}</span>
-        <span class="tag ${bad ? "bad" : ""}">${enc || "?"}</span>
-        <span class="muted">${p.fps ? Math.round(p.fps) + " fps" : ""} · ${p.name || p.token}</span>
-        ${p.token === rec.token ? '<span class="pick">RECOMMENDED</span>' : ""}
-      </div>`;
-    }).join("");
-    list.querySelectorAll(".prof-row").forEach(elm =>
-      elm.onclick = () => selectProfile(elm.dataset.token));
-    wrap.hidden = false;
-    selectProfile(rec.token || profiles[0].token);
+    return h264.find(p => p.token === rec.token)
+        || h264.slice().sort((a, b) => (b.width * b.height) - (a.width * a.height))[0];
   }
 
-  /* ---- cloud save (saveCamera) — top-right green/red popup on both pages ---- */
+  /* ---- cloud save (saveCamera batch) ---- */
+  async function syncCamerasRaw() {
+    try { return await api("/api/v1/account/sync-cameras", { method: "POST" }); }
+    catch (e) { return { synced: false, reason: "__unreachable__" }; }
+  }
   async function syncCameras() {
-    try {
-      const r = await api("/api/v1/account/sync-cameras", { method: "POST" });
-      if (r && r.synced) cvNotify(`Saved · ${r.count} camera(s) synced to your CERAVIS account`, true);
-      else cvNotify((r && r.reason) || "Not saved — camera sync failed", false);
-      return r;
-    } catch (e) { cvNotify("Not saved — couldn't reach the server", false); return null; }
+    const r = await syncCamerasRaw();
+    if (r && r.synced) cvNotify(`Saved · ${r.count} camera(s) synced to your account`, true);
+    else cvNotify(r && r.reason === "__unreachable__"
+      ? "Not saved — couldn't reach the server" : friendlyCloudError(r && r.reason), false);
+    return r;
   }
 
   /* ---- wire the static controls ---- */
   gid("d-scan").onclick = () => runScan(false);
-  gid("d-probe").onclick = async () => {
+
+  gid("d-probe").onclick = async () => {                 // "Connect & preview"
     const out = gid("d-probe-out");
     if (!DISC.sel) return;
     out.innerHTML = `<span class="muted">Connecting…</span>`;
@@ -372,31 +366,23 @@ function mountCameras(root, opts = {}) {
         }),
       });
       DISC.probed = r;
-      out.innerHTML = `<span class="ok">✓ ${r.device.manufacturer || ""} ${r.device.model || ""}
-        ${r.ptz ? " · PTZ ✓" : ""}</span>`;
-      renderProfiles(r);
+      const pick = pickBestH264(r);
+      if (!pick) {
+        DISC.profileToken = null;
+        out.innerHTML = `<span class="bad">✗ This camera has no browser-playable (H.264) stream.</span>`;
+        return;
+      }
+      DISC.profileToken = pick.token;
+      gid("c-url").value = pick.uri || "";
+      const dev = `${(r.device || {}).manufacturer || ""} ${(r.device || {}).model || ""}`.trim();
+      out.innerHTML = `<span class="ok">✓ Connected${dev ? " · " + dev : ""}${r.ptz ? " · PTZ" : ""}</span>`
+        + ` <span class="faint">— pick a room, then Save &amp; start.</span>`;
     } catch (e) {
-      out.innerHTML = `<span class="bad">✗ ${e.detail || "connection failed (credentials?)"}</span>`;
+      out.innerHTML = `<span class="bad">✗ ${friendlyProbeError(e)}</span>`;
     }
   };
-  gid("c-probe").onclick = async () => {
-    const out = gid("c-probe-out");
-    const field = gid("c-url");
-    const url = field.value.trim();
-    if (!url) { out.innerHTML = `<span class="warn">Enter an RTSP URL first.</span>`; return; }
-    out.innerHTML = `<span class="muted">Probing stream (TCP)…</span>`;
-    try {
-      const r = await api("/api/v1/cameras/probe", {
-        method: "POST", body: JSON.stringify({ rtsp_url: url }) });
-      if (r.url && r.url !== url) field.value = r.url;
-      const fixed = (r.url && r.url !== url)
-        ? ` <span class="faint">(credentials auto-encoded)</span>` : "";
-      out.innerHTML = r.ok
-        ? `<span class="ok">✓ Connected — ${r.width}×${r.height}</span>${fixed}`
-        : `<span class="bad">✗ ${r.reason}</span>${fixed}`;
-    } catch (e) { out.innerHTML = `<span class="bad">✗ probe failed</span>`; }
-  };
-  gid("c-save").onclick = async () => {
+
+  gid("c-save").onclick = async () => {                  // "Save & start"
     const cam = {
       room_name: gid("c-room").value.trim(),
       rtsp_url: gid("c-url").value.trim(),
@@ -415,23 +401,38 @@ function mountCameras(root, opts = {}) {
       cam.ai_profile_token = wantsAi ? ai.token : null;
       cam.ptz_supported = !!DISC.probed.ptz;
     }
-    if (!cam.room_name || !cam.rtsp_url)
-      return toast("Pick a camera label and enter (or test) an RTSP URL", "err");
+    if (!cam.room_name) return cvNotify("Pick a room for this camera.", false);
+    if (!cam.rtsp_url) return cvNotify("Connect to a camera (or paste an RTSP URL) first.", false);
+    const btn = gid("c-save");
+    btn.disabled = true;
     try {
       const res = await api("/api/v1/cameras", { method: "POST", body: JSON.stringify(cam) });
       const cid = (res && res.camera_id) || "";
       if (cid) await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
-        { edgeId: await edgeId(), cameraLabel: cid, action: "start" }) });
-      toast(`${cam.room_name} saved & started`);
-      ["c-url", "c-room"].forEach(i => gid(i).value = "");
-      gid("c-probe-out").textContent = "";
+        { edgeId: await edgeId(), cameraLabel: cid, action: "start" }) }).catch(() => {});
+      // reset the add form
+      gid("c-url").value = ""; gid("c-room").value = "";
+      gid("d-probe-out").textContent = "";
       DISC.probed = DISC.sel = DISC.profileToken = null;
       gid("d-creds").hidden = true;
-      gid("d-profiles").hidden = true;
-      gid("d-probe-out").textContent = "";
-      refresh();
-    } catch (e) { toast(e.detail || "Save failed", "err"); }
+      await refresh();
+      if (opts.cloudSaveOnAdd) {
+        const r = await syncCamerasRaw();               // cameras.html saves to the account now
+        if (r && r.synced)
+          cvNotify("Saved — open the tile to set the camera's angle.", true);
+        else
+          cvNotify(r && r.reason === "__unreachable__"
+            ? "Started, but not saved — couldn't reach the server" : friendlyCloudError(r && r.reason), false);
+      } else {
+        cvNotify("Preview ready — open the tile to set the camera's angle.", true);
+      }
+    } catch (e) {
+      const d = ((e && (e.detail || e.message)) || "").toString().toLowerCase();
+      cvNotify(d.includes("already") || d.includes("exists")
+        ? "This room already has a camera." : "Couldn't save the camera — try again.", false);
+    } finally { btn.disabled = false; }
   };
+
   function destroy() {
     destroyed = true;
     if (refreshTimer) clearInterval(refreshTimer);
