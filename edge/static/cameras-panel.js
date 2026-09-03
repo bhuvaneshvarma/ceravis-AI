@@ -76,12 +76,13 @@ function mountCameras(root, opts = {}) {
 
   /* ---- friendly, short messages (never raw server text) ---- */
   function friendlyProbeError(e) {
+    // The camera was just discovered (so it IS reachable): unless the error is a
+    // clear network failure, a probe failure means the login was wrong.
     const d = ((e && (e.detail || e.message)) || "").toString().toLowerCase();
-    if (d.includes("authentic") || d.includes("not authorized") || d.includes("unauthor") || d.includes("401"))
-      return "Incorrect camera username or password.";
-    if (d.includes("cannot reach") || d.includes("timed out") || d.includes("timeout") || d.includes("refused"))
+    if (d.includes("cannot reach") || d.includes("timed out") || d.includes("timeout")
+        || d.includes("refused") || d.includes("unreachable") || d.includes("no route"))
       return "Camera unreachable — check it's powered on and on this network.";
-    return "Couldn't connect — check the login and try again.";
+    return "Incorrect camera username or password.";
   }
   function friendlyCloudError(reason) {
     const d = (reason || "").toString().toLowerCase();
@@ -113,7 +114,7 @@ function mountCameras(root, opts = {}) {
       : cams.map(c => {
           const s = status[c.camera_id] || {};
           return `<tr>
-            <td><b>${c.room_name}</b><br><span class="faint">${c.device_label ? c.device_label + " · " : ""}${c.camera_id}</span></td>
+            <td><b>${prettyLabel(c.room_name)}</b><br><span class="faint">${c.device_label ? prettyLabel(c.device_label) + " · " : ""}${prettyLabel(c.camera_id)}</span></td>
             <td>${healthPill(s.health_state)} <span class="faint">${(s.current_fps || 0).toFixed(1)} fps</span></td>
             <td class="cam-actions">
               <button class="btn btn-ghost btn-sm" data-act="start" data-id="${c.camera_id}">Start</button>
@@ -150,7 +151,10 @@ function mountCameras(root, opts = {}) {
       } catch (e) { toast(e.detail || "Control failed", "err"); }
     });
     root.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-      if (!confirm(`Delete camera ${b.dataset.del}? This also removes it from your CERAVIS account.`)) return;
+      const ok = await cvConfirm(
+        `Remove ${prettyLabel(b.dataset.del)}? This also deletes it from your CERAVIS account.`,
+        { title: "Delete camera?", confirmText: "Delete", danger: true });
+      if (!ok) return;
       await api("/api/v1/cameras/control", { method: "POST", body: JSON.stringify(
         { edgeId: await edgeId(), cameraLabel: b.dataset.del, action: "stop" }) }).catch(() => {});
       try {
@@ -202,8 +206,8 @@ function mountCameras(root, opts = {}) {
         <div class="cam-fs-title">
           <div class="cam-fs-badge">${MON_ICON}</div>
           <div>
-            <div class="cam-fs-name">${cam.room_name} · FULLSCREEN</div>
-            <div class="cam-fs-sub">${cam.camera_name} · live preview</div>
+            <div class="cam-fs-name">${prettyLabel(cam.room_name)} · FULLSCREEN</div>
+            <div class="cam-fs-sub">${prettyLabel(cam.camera_name)} · live preview</div>
           </div>
         </div>
         <div class="cam-fs-actions">
@@ -266,8 +270,8 @@ function mountCameras(root, opts = {}) {
       tile.innerHTML = `
         <div class="nosignal">NO SIGNAL</div>
         <video style="display:none"></video>
-        <div class="overlay"><span class="name">${c.camera_name}</span>
-          <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
+        <div class="overlay"><span class="name">${prettyLabel(c.camera_name)}</span>
+          <span class="room">· ${prettyLabel(c.room_name)}</span><span class="rec-dot"></span></div>
         <div class="foot"><span id="st-${c.camera_id}">connecting…</span></div>`;
       tile.title = "Open fullscreen · set the camera's angle";
       tile.onclick = () => openFullscreen(c);
@@ -355,15 +359,17 @@ function mountCameras(root, opts = {}) {
   gid("d-probe").onclick = async () => {                 // "Connect & preview"
     const out = gid("d-probe-out");
     if (!DISC.sel) return;
+    const user = gid("d-user").value.trim();
+    const pass = gid("d-pass").value;
+    if (!user || !pass) {
+      out.innerHTML = `<span class="warn">Enter the camera username and password.</span>`;
+      return;
+    }
     out.innerHTML = `<span class="muted">Connecting…</span>`;
     try {
       const r = await api("/api/v1/discovery/probe", {
         method: "POST",
-        body: JSON.stringify({
-          xaddr: DISC.sel.xaddr,
-          username: gid("d-user").value.trim(),
-          password: gid("d-pass").value,
-        }),
+        body: JSON.stringify({ xaddr: DISC.sel.xaddr, username: user, password: pass }),
       });
       DISC.probed = r;
       const pick = pickBestH264(r);

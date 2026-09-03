@@ -487,6 +487,21 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   font-style: normal; cursor: help; color: var(--teal-dim);
   background: rgba(53,152,157,.12); border: 1px solid rgba(53,152,157,.3); }
 
+/* ---- in-app confirm dialog (cvConfirm) — replaces the browser confirm() ---- */
+.cv-dialog-scrim { position: fixed; inset: 0; z-index: 500; display: flex;
+  align-items: center; justify-content: center; padding: 20px;
+  background: rgba(15,23,42,.45); backdrop-filter: blur(3px);
+  animation: cv-dialog-fade .15s ease; }
+.cv-dialog { width: 100%; max-width: 420px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow-lg);
+  padding: 22px 22px 18px; animation: cv-dialog-pop .18s cubic-bezier(.22,1,.36,1) both; }
+.cv-dialog-title { font-size: 16px; font-weight: 800; color: var(--navy); }
+.cv-dialog-msg { font-size: 13.5px; color: var(--muted); line-height: 1.55; margin-top: 8px; }
+.cv-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+@keyframes cv-dialog-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cv-dialog-pop { from { opacity: 0; transform: translateY(10px) scale(.97); }
+                           to   { opacity: 1; transform: none; } }
+
 /* ---- top-right save/status toast (cvNotify) — green ok / red error ---- */
 .cv-notify { position: fixed; top: 20px; right: 20px; z-index: 400;
   display: flex; align-items: center; gap: 9px; max-width: 340px;

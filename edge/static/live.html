@@ -85,8 +85,8 @@ async function sync() {
     tile.innerHTML = `
       <div class="nosignal">NO SIGNAL</div>
       <video style="display:none"></video>
-      <div class="overlay"><span class="name">${c.camera_name}</span>
-        <span class="room">· ${c.room_name}</span><span class="rec-dot"></span></div>
+      <div class="overlay"><span class="name">${prettyLabel(c.camera_name)}</span>
+        <span class="room">· ${prettyLabel(c.room_name)}</span><span class="rec-dot"></span></div>
       <div class="foot"><span></span></div>`;
     tile.onclick = () => {
       const wasMax = tile.classList.contains("maximized");

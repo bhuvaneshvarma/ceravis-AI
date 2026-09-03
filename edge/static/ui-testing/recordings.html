@@ -508,8 +508,8 @@ async function loadCameras(){
     row.innerHTML = `
       <div class="thumb">▦</div>
       <div class="meta">
-        <div class="cn">${esc(c.camera_name||c.camera_id)}</div>
-        <div class="cr">${esc(c.room_name||"—")}</div>
+        <div class="cn">${pl(c.camera_name||c.camera_id)}</div>
+        <div class="cr">${pl(c.room_name||"—")}</div>
       </div>
       ${c.ptz_supported ? '<span class="badge">PTZ</span>' : ''}
       <span class="dot ${live?'ok':''}" title="${live?'online':'offline'}"></span>`;
@@ -548,7 +548,7 @@ function selectCamera(cam){
   CURRENT = cam;
   document.querySelectorAll(".camrow").forEach((r,i) =>
     r.classList.toggle("active", CAMERAS[i] && CAMERAS[i].camera_id===cam.camera_id));
-  $("nowcam").innerHTML = `${esc(cam.camera_name||cam.camera_id)} <small>· ${esc(cam.room_name||"")}</small>`;
+  $("nowcam").innerHTML = `${pl(cam.camera_name||cam.camera_id)} <small>· ${pl(cam.room_name||"")}</small>`;
   applyMode();          // (re)start whichever mode is active for this camera
 }
 
@@ -585,7 +585,7 @@ function teardown(){
 /* ===================================================================== */
 async function startLive(cam){
   const gen = GEN;                              // this attempt's ticket (see teardown)
-  showSpinner("Connecting to live view…", `Opening a low-latency stream from ${esc(cam.camera_name||cam.camera_id)}.`);
+  showSpinner("Connecting to live view…", `Opening a low-latency stream from ${pl(cam.camera_name||cam.camera_id)}.`);
   const path = streamPath(cam.camera_id);
   // Fleet: the proxy owns TLS, so there is exactly ONE correct scheme — this
   // page's. LAN: MediaMTX may serve https (installer certs) or plain, so try
@@ -681,10 +681,10 @@ function liveChip(cam){
 function liveFailed(cam, path, secure){
   const link = `${liveOrigin(secure)}/${path}`;
   const why = FLEET
-    ? `The streaming engine did not answer for <b>${esc(cam.camera_name||cam.camera_id)}</b>.
+    ? `The streaming engine did not answer for <b>${pl(cam.camera_name||cam.camera_id)}</b>.
        The camera may be offline, or the device's tunnel is down — the dot next to the
        camera and the backbone chip at the top say which. Recorded footage still works.`
-    : `The streaming engine did not answer for <b>${esc(cam.camera_name||cam.camera_id)}</b>.
+    : `The streaming engine did not answer for <b>${pl(cam.camera_name||cam.camera_id)}</b>.
        On the home network this is usually a secure-streaming certificate that has to be
        trusted once — open the raw link below and approve it, then come back.`;
   showOverlay("Live view could not connect", why,
@@ -982,6 +982,8 @@ function hideOverlay(){ $("overlay").classList.add("hidden"); }
 /* 9. FORMAT + misc                                                      */
 /* ===================================================================== */
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+/* Camera labels never show underscores in the UI (LIVING_ROOM -> LIVING ROOM). */
+function pl(s){ return esc(String(s==null?"":s).replace(/_/g," ")); }
 function fmtClock(d){ return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}); }
 function tickClock(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
   $("clock").textContent = `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} · ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }

@@ -404,7 +404,7 @@ async function selectEnroll(rid, name) {
   setCtx("photos");
   const cams = await api("/api/v1/cameras").catch(() => []);
   document.getElementById("en-cam").innerHTML = cams.length
-    ? cams.map(c => `<option value="${c.camera_id}">${c.camera_name}</option>`).join("")
+    ? cams.map(c => `<option value="${c.camera_id}">${prettyLabel(c.camera_name)}</option>`).join("")
     : `<option value="">— no cameras —</option>`;
   document.getElementById("en-cam").onchange = () => {
     if (document.querySelector(".etab.active")?.dataset.tab === "live") startEnrollPreview();

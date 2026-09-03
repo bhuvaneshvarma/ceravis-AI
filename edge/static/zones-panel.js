@@ -51,7 +51,7 @@ function mountZones(root, opts = {}) {
     const cams = await api("/api/v1/cameras").catch(() => []);
     const sel = gid("z-cam");
     sel.innerHTML = `<option value="">— select camera —</option>` +
-      cams.map(c => `<option value="${c.camera_id}">${c.camera_name} (${c.room_name})</option>`).join("");
+      cams.map(c => `<option value="${c.camera_id}">${prettyLabel(c.camera_name)} (${prettyLabel(c.room_name)})</option>`).join("");
     sel.onchange = () => loadZoneCam(sel.value);
   }
 

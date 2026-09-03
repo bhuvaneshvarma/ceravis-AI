@@ -31,6 +31,47 @@ function cvNotify(msg, ok = true, ms = 3000) {
   setTimeout(() => n.remove(), ms);
 }
 
+/* Display a label without underscores — enum-style ids (LIVING_ROOM, CAM_01)
+   never show an underscore in the UI. Value sent to the API is untouched. */
+function prettyLabel(s) {
+  return String(s == null ? "" : s).replace(/_/g, " ");
+}
+
+/* Premium in-app confirm dialog (replaces the browser confirm()). Returns a
+   Promise<boolean>. `message` is plain text; opts: {title, confirmText,
+   cancelText, danger}. Esc / click-outside = cancel, Enter = confirm. */
+function cvConfirm(message, opts = {}) {
+  return new Promise(resolve => {
+    document.querySelectorAll(".cv-dialog-scrim").forEach(d => d.remove());
+    const scrim = document.createElement("div");
+    scrim.className = "cv-dialog-scrim";
+    scrim.innerHTML = `
+      <div class="cv-dialog" role="dialog" aria-modal="true">
+        <div class="cv-dialog-title"></div>
+        <div class="cv-dialog-msg"></div>
+        <div class="cv-dialog-actions">
+          <button class="btn btn-ghost" data-cv="cancel"></button>
+          <button class="btn ${opts.danger ? "btn-danger" : "btn-primary"}" data-cv="ok"></button>
+        </div>
+      </div>`;
+    scrim.querySelector(".cv-dialog-title").textContent = opts.title || "Please confirm";
+    scrim.querySelector(".cv-dialog-msg").textContent = message;
+    scrim.querySelector('[data-cv="cancel"]').textContent = opts.cancelText || "Cancel";
+    scrim.querySelector('[data-cv="ok"]').textContent = opts.confirmText || "Confirm";
+    document.body.appendChild(scrim);
+    const done = (v) => { scrim.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+    scrim.querySelector('[data-cv="ok"]').onclick = () => done(true);
+    scrim.querySelector('[data-cv="cancel"]').onclick = () => done(false);
+    scrim.addEventListener("click", e => { if (e.target === scrim) done(false); });
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); done(false); }
+      else if (e.key === "Enter") { e.preventDefault(); done(true); }
+    };
+    document.addEventListener("keydown", onKey);
+    scrim.querySelector('[data-cv="ok"]').focus();
+  });
+}
+
 const CV_SESSION_KEY = "cv-session";
 const CV_IDLE_MS = 15 * 60 * 1000;
 
@@ -149,8 +190,9 @@ function renderNav(active) {
   }
 
   const signout = document.getElementById("cv-signout");
-  if (signout) signout.onclick = () => {
-    if (confirm("Sign out of this device console?")) cvSignOut();
+  if (signout) signout.onclick = async () => {
+    if (await cvConfirm("You'll need to sign in again to access this console.",
+      { title: "Sign out?", confirmText: "Sign out", danger: true })) cvSignOut();
   };
 
   // Mobile off-canvas sidebar: a scrim backdrop makes it reliable — tapping

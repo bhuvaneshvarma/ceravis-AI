@@ -193,7 +193,7 @@ let CAM_NAMES = {};          // camera_id -> "Name (Room)"
 async function initCamNames() {
   const cams = await api("/api/v1/cameras").catch(() => []);
   CAM_NAMES = Object.fromEntries(
-    cams.map(c => [c.camera_id, `${c.camera_name} (${c.room_name})`]));
+    cams.map(c => [c.camera_id, `${prettyLabel(c.camera_name)} (${prettyLabel(c.room_name)})`]));
   // This device's edge_id — the snapshot/control endpoints verify it matches
   // (control_auth). Fetched once; empty on an unverified dev box (then accepted).
   try { const a = await api("/api/v1/account"); M.edgeId = (a && a.user && a.user.edgeId) || ""; }
