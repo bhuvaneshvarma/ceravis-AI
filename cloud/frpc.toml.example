@@ -13,7 +13,7 @@
 # that house's uvicorn. Public links:
 #   live : https://<DOMAIN>/<EDGE_ID>/<ROOM>/         (MediaMTX player page)
 #   API  : https://<DOMAIN>/api/v1/…                  (open; edgeId in request)
-#   pages: https://<DOMAIN>/ui/setup.html             (Caddy Basic-Auth prompt)
+#   pages: https://<DOMAIN>/ui/login.html             (email + one-time-code sign-in)
 # EDGE_ID must equal edge/infra/env/jetson.env's EDGE_ID (the app server hands it
 # back at account verification and the edge writes it there for you to copy).
 
@@ -47,7 +47,7 @@ locations = ["/EDGE_ID"]  # ceravis:edge-id — set automatically at account ver
 # so uvicorn serves its normal /api and /ui. The edgeId in the request body
 # stays as a second check (control_auth).
 #   API   : https://<DOMAIN>/<edge_id>/api/v1/…
-#   pages : https://<DOMAIN>/<edge_id>/ui/setup.html   (Basic-Auth at Caddy)
+#   pages : https://<DOMAIN>/<edge_id>/ui/login.html   (email + one-time-code sign-in)
 # No video is proxied here: the admin pages play the SAME WebRTC stream as the
 # live links, which the mediamtx-webrtc proxy below already serves.
 # frps picks the LONGEST matching location, so /<edge_id>/api|ui go here to

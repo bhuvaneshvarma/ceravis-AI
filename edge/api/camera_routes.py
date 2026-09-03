@@ -473,7 +473,7 @@ def ptz(camera_id: str, body: dict):
     Two deliberate differences from the cloud endpoint above. It keeps a stop
     (the browser holds the button, so a held move must not time out), and it
     honours optical `zoom` — this is the tool used while aiming a camera during
-    setup, on the LAN, behind the admin login. It shares the same core, so a
+    setup, from the console pages (behind the app's email login). It shares the same core, so a
     later cloud `revert` also undoes an installer's nudge.
     Body: { "pan": -1..1, "tilt": -1..1, "zoom": -1..1 } or { "action": "stop" }.
     """

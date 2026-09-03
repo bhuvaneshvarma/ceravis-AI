@@ -3,38 +3,30 @@
 # Caddy is the ONE public entry for the whole fleet: it obtains and auto-renews a
 # single Let's Encrypt certificate for the shared domain and reverse-proxies
 # every request to the frps HTTP vhost (127.0.0.1:7080), which routes by path:
-#   /<edge_id>/…  -> that home's MediaMTX (live links, open)
-#   /api/…        -> that home's uvicorn API (open; edgeId verified in-request)
-#   /ui/…         -> that home's uvicorn pages (Basic-Auth, below)
+#   /<edge_id>/…      -> that home's MediaMTX (live links, open)
+#   /<edge_id>/api/…  -> that home's uvicorn API (edgeId verified in-request)
+#   /<edge_id>/ui/…   -> that home's uvicorn pages (gated by the app's own login)
 # The video itself stays peer-to-peer (UDP) and never passes through here.
+#
+# AUTH MODEL — no Caddy Basic-Auth (removed):
+#   The UI pages gate THEMSELVES. Every /ui page requires the family's CERAVIS
+#   email + one-time-code sign-in (login.html), held as a per-browser session;
+#   unauthenticated pages redirect to the login. The only ungated pages are the
+#   removable diagnostics consoles under /ui/ui-testing/ (deleted for production).
+#   The API verifies the edgeId carried in each request, and live links are the
+#   per-camera URLs the app already gates behind the account. So there is no
+#   separate admin/password anymore — Caddy just terminates TLS and proxies.
 #
 # Setup:
 #   1) Point an A record for this domain at the EC2 elastic IP.
 #   2) Open TCP 80 + 443 (Caddy: ACME on 80, HTTPS on 443). Keep frps :7080
 #      CLOSED to the internet — only Caddy reaches it over loopback.
-#   3) Generate a password hash for the admin login:
-#        caddy hash-password --plaintext 'YOUR_STRONG_PASSWORD'
-#      paste it below (it is a bcrypt hash, safe to commit-less keep here).
-#   4) cp Caddyfile.example Caddyfile, set the domain + hash, then:
+#   3) cp Caddyfile.example Caddyfile, set the domain, then:
 #        bash install_caddy.sh
 #
 # Caddy preserves the incoming Host header, so frps sees Host:
 # edgeai.ceravishealth.in and matches the edges' customDomains.
 
 edgeai.ceravishealth.in {
-	# The admin PAGES require a login; the API and live links do not — the API
-	# verifies the edgeId carried in each request, and live links are the
-	# per-camera URLs the app already gates behind the family's account.
-	#
-	# Everything is now routed PER EDGE under /<edge_id>/… (api, ui, stream, live),
-	# so the admin pages arrive as /<edge_id>/ui/… — match that with a regex
-	# (Caddy can't know each device's edge_id). `^/[^/]+/ui(/|$)` = the SECOND
-	# path segment is exactly `ui`, so it catches every home's /<edge_id>/ui and
-	# nothing else (a /<edge_id>/api/… or /<edge_id>/<ROOM>/whep never matches).
-	@ui path_regexp ^/[^/]+/ui(/|$)
-	basic_auth @ui {
-		admin BCRYPT_HASH_FROM_caddy_hash-password
-	}
-
 	reverse_proxy 127.0.0.1:7080
 }

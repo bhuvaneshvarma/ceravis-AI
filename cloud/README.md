@@ -23,9 +23,10 @@ edgeai.ceravishealth.in                          ┌──────── AWS
 - `/<edge_id>/<ROOM>/` → that home's **MediaMTX** live player page (open).
 - `/<edge_id>/api/…` → that home's **uvicorn control API** (PTZ, recordings,
   timeline, camera start/stop/restart, snapshot) — open.
-- `/<edge_id>/ui/…` → that home's **admin pages** (Basic-Auth at Caddy).
+- `/<edge_id>/ui/…` → that home's **console pages** (gated by the app's own
+  email + one-time-code sign-in; no Caddy Basic-Auth).
 
-No video crosses the tunnel as pixels: the admin pages play the same
+No video crosses the tunnel as pixels: the console pages play the same
 `/<edge_id>/<ROOM>/whep` WebRTC stream as the live links.
 
 frps routes on the URL **only** (never the request body), so putting the
@@ -93,15 +94,15 @@ openssl rand -hex 24            # copy the output
 nano frps.toml                  # paste into auth.token
 bash install_frps.sh
 
-# 2) TLS front + admin login
-caddy hash-password --plaintext 'YOUR_STRONG_ADMIN_PASSWORD'   # copy the hash
+# 2) TLS front (no admin password — the UI pages gate themselves via email login)
 cp Caddyfile.example Caddyfile
-nano Caddyfile                  # set the domain + paste the hash into basic_auth
+nano Caddyfile                  # set the domain
 bash install_caddy.sh
 ```
 
 frps uses `vhostHTTPPort = 7080`; Caddy reverse-proxies `:443 → 127.0.0.1:7080`
-and Basic-Auth-protects only `/ui/*`. First HTTPS request mints the cert.
+for the whole fleet (no Basic-Auth — every `/ui` page requires the family's
+CERAVIS email + one-time-code sign-in). First HTTPS request mints the cert.
 
 ---
 
@@ -164,15 +165,17 @@ internally, so it serves both forms.)
    confirm — from a phone **on mobile data**, open
    `https://edgeai.ceravishealth.in/<edge_id>/<ROOM>/` → live video.
 4. **API + pages:** `…/<edge_id>/api/v1/system/status` should answer;
-   `…/<edge_id>/ui/setup.html` should prompt for the admin login.
+   `…/<edge_id>/ui/` should land on `login.html` (email + one-time-code sign-in).
 
 ---
 
 ## 6. Auth model
 
-- **Admin pages (`/<edge_id>/ui/*`)** — HTTP Basic Auth at Caddy (the
-  `basic_auth` block, matched by `path_regexp ^/[^/]+/ui`). Humans get an
-  id/password prompt from anywhere.
+- **Console pages (`/<edge_id>/ui/*`)** — gated by the app's OWN login: every
+  page requires the family's CERAVIS email + one-time-code sign-in (`login.html`,
+  held as a per-browser session); unauthenticated pages redirect to it. There is
+  **no** Caddy Basic-Auth / admin password anymore. The only ungated pages are
+  the removable diagnostics consoles under `/ui/ui-testing/`.
 - **API (`/<edge_id>/api/*`)** — **no** Basic Auth, so the app server calls it
   freely. Instead each control request (PTZ, recording playback) must carry this
   device's `edgeId`, and the edge verifies it **matches** the provisioned value
