@@ -168,6 +168,12 @@ body.sidebar-collapsed .side-item { justify-content: center; padding: 12px; }
 body.sidebar-collapsed .side-item span { display: none; }
 body.sidebar-collapsed .side-foot { display: none; }
 
+/* mobile off-canvas backdrop (created by renderNav; hidden on desktop) */
+.sidebar-scrim { position: fixed; inset: 0; z-index: 55; background: rgba(15,23,42,.42);
+  backdrop-filter: blur(2px); opacity: 0; visibility: hidden; transition: opacity .2s ease; }
+.sidebar-scrim.show { opacity: 1; visibility: visible; }
+@media (min-width: 901px) { .sidebar-scrim { display: none !important; } }
+
 @media (max-width: 900px) {
   body.has-sidebar, body.sidebar-collapsed.has-sidebar { padding-left: 0; }
   .sidebar, body.sidebar-collapsed .sidebar {

@@ -153,10 +153,21 @@ function renderNav(active) {
     if (confirm("Sign out of this device console?")) cvSignOut();
   };
 
+  // Mobile off-canvas sidebar: a scrim backdrop makes it reliable — tapping
+  // outside, choosing an item, or Esc all close it (previously only the toggle
+  // did, so it could get stuck open on a phone).
+  let scrim = document.querySelector(".sidebar-scrim");
+  if (!scrim) { scrim = document.createElement("div"); scrim.className = "sidebar-scrim"; document.body.appendChild(scrim); }
+  const setSide = (open) => {
+    aside.classList.toggle("open", open);
+    scrim.classList.toggle("show", open);
+  };
   const toggle = document.getElementById("cv-side-toggle");
-  if (toggle) toggle.onclick = () => aside.classList.toggle("open");
+  if (toggle) toggle.onclick = () => setSide(!aside.classList.contains("open"));
+  scrim.onclick = () => setSide(false);
   aside.querySelectorAll(".side-item").forEach(a =>
-    a.addEventListener("click", () => aside.classList.remove("open")));
+    a.addEventListener("click", () => setSide(false)));
+  window.addEventListener("keydown", e => { if (e.key === "Escape") setSide(false); });
 
   const COLLAPSE_KEY = "cv-sidebar-collapsed";
   let collapsed = false;
@@ -171,9 +182,16 @@ function renderNav(active) {
 
   const tick = () => {
     const el = document.getElementById("cv-clock");
-    if (el) el.textContent = new Date().toLocaleString();
+    if (el) el.textContent = cvDateTime();
   };
   tick(); setInterval(tick, 1000);
+}
+
+/* Header date-time in dd/mm/yyyy · HH:MM:SS (24-hour). */
+function cvDateTime(d = new Date()) {
+  const p = n => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`
+       + ` · ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 function el(tag, cls, html) {
