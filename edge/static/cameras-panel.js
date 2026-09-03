@@ -86,6 +86,8 @@ function mountCameras(root, opts = {}) {
   }
   function friendlyCloudError(reason) {
     const d = (reason || "").toString().toLowerCase();
+    if (d.includes("no camera") || d.includes("registered yet"))
+      return "No cameras to save yet.";
     if (d.includes("already") || d.includes("duplicate") || d.includes("exists"))
       return "Not saved — this room already has a camera on your account.";
     if (d.includes("verify") || d.includes("account"))
@@ -132,6 +134,7 @@ function mountCameras(root, opts = {}) {
   function rebuildRooms(cams) {
     const sel = gid("c-room");
     if (!sel) return;
+    if (sel === document.activeElement) return;   // don't rebuild under the user
     const cur = sel.value;
     const taken = new Set(cams.map(c => (c.room_name || "").toUpperCase()));
     const avail = ROOMS.filter(r => !taken.has(r.toUpperCase()) || r.toUpperCase() === cur.toUpperCase());
@@ -427,8 +430,10 @@ function mountCameras(root, opts = {}) {
         if (r && r.synced)
           cvNotify("Saved — open the tile to set the camera's angle.", true);
         else
-          cvNotify(r && r.reason === "__unreachable__"
-            ? "Started, but not saved — couldn't reach the server" : friendlyCloudError(r && r.reason), false);
+          // The camera IS added + streaming locally; only the account save failed.
+          cvNotify("Started on the device, but not saved to your account — "
+            + (r && r.reason === "__unreachable__" ? "couldn't reach the server."
+               : friendlyCloudError(r && r.reason).replace(/^Not saved — /, "")), false);
       } else {
         cvNotify("Preview ready — open the tile to set the camera's angle.", true);
       }

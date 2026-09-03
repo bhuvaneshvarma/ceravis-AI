@@ -65,10 +65,12 @@ function cvConfirm(message, opts = {}) {
     scrim.addEventListener("click", e => { if (e.target === scrim) done(false); });
     const onKey = (e) => {
       if (e.key === "Escape") { e.preventDefault(); done(false); }
-      else if (e.key === "Enter") { e.preventDefault(); done(true); }
+      // Enter confirms only NON-destructive dialogs; a danger action must be
+      // clicked deliberately so a stray Enter can't delete/sign-out.
+      else if (e.key === "Enter" && !opts.danger) { e.preventDefault(); done(true); }
     };
     document.addEventListener("keydown", onKey);
-    scrim.querySelector('[data-cv="ok"]').focus();
+    scrim.querySelector(opts.danger ? '[data-cv="cancel"]' : '[data-cv="ok"]').focus();
   });
 }
 
@@ -209,7 +211,16 @@ function renderNav(active) {
   scrim.onclick = () => setSide(false);
   aside.querySelectorAll(".side-item").forEach(a =>
     a.addEventListener("click", () => setSide(false)));
-  window.addEventListener("keydown", e => { if (e.key === "Escape") setSide(false); });
+  // One global Esc handler (bound once) closes whichever sidebar is open — avoids
+  // stacking a new listener each time renderNav runs.
+  if (!window.__cvSideEscBound) {
+    window.__cvSideEscBound = true;
+    window.addEventListener("keydown", e => {
+      if (e.key !== "Escape") return;
+      document.querySelector(".sidebar.open")?.classList.remove("open");
+      document.querySelector(".sidebar-scrim.show")?.classList.remove("show");
+    });
+  }
 
   const COLLAPSE_KEY = "cv-sidebar-collapsed";
   let collapsed = false;
