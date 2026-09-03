@@ -18,6 +18,7 @@ installs the polkit rule that grants them.
 import logging
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -55,6 +56,23 @@ def _wifi_device() -> str | None:
         if len(parts) >= 2 and parts[1] == "wifi":
             return parts[0]
     return None
+
+
+def _ensure_wifi_up(device: str) -> None:
+    """A hotspot needs the WiFi radio ON. On Ethernet-uplink installs the radio
+    is often soft-blocked (rfkill) or switched off, which makes `connection up`
+    fail with a misleading "no suitable device found". Turn it on and wait for
+    the device to leave the "unavailable" state. Best-effort — if this can't
+    help, the up step still surfaces the real error."""
+    _run(["nmcli", "radio", "wifi", "on"])
+    for _ in range(10):                        # up to ~5s: unavailable -> ready
+        code, out = _run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"], timeout=5)
+        if code == 0 and any(
+            (p := line.split(":"))[0] == device and len(p) >= 2 and p[1] != "unavailable"
+            for line in out.splitlines()
+        ):
+            return
+        time.sleep(0.5)
 
 
 def _hotspot_active() -> bool:
@@ -123,6 +141,7 @@ def hotspot_start(req: HotspotRequest):
     if device is None:
         raise HTTPException(400, "no WiFi adapter found on this device")
 
+    _ensure_wifi_up(device)                                # radio may be off on Ethernet uplinks
     _run(["nmcli", "connection", "delete", _CON])          # rebuild from scratch
     steps = [
         ["nmcli", "connection", "add", "type", "wifi", "ifname", device,
@@ -137,9 +156,15 @@ def hotspot_start(req: HotspotRequest):
         code, out = _run(args, timeout=30)
         if code != 0:
             logger.warning("hotspot step failed: %s -> %s", " ".join(args[:4]), out)
-            hint = (" (service user lacks NetworkManager rights — run "
-                    "setup/install_hotspot.sh)" if "not authorized" in out.lower()
-                    else "")
+            low = out.lower()
+            if "not authorized" in low:
+                hint = (" (service user lacks NetworkManager rights — run "
+                        "setup/install_hotspot.sh)")
+            elif "no suitable device" in low or "not available" in low:
+                hint = (" (WiFi radio unavailable — run `sudo rfkill unblock wifi` "
+                        "then `nmcli radio wifi on`)")
+            else:
+                hint = ""
             raise HTTPException(502, f"hotspot setup failed: {out.strip()[:200]}{hint}")
     logger.info("hotspot up: ssid=%s device=%s", ssid, device)
     return {"active": True, "ssid": ssid, "device": device}
