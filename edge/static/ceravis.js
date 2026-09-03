@@ -37,6 +37,15 @@ function prettyLabel(s) {
   return String(s == null ? "" : s).replace(/_/g, " ");
 }
 
+/* Human-readable form of an enum-ish value for display: underscores → spaces,
+   Title Case (CARE_RECIPIENT → "Care Recipient", TIER_1 → "Tier 1", MALE →
+   "Male"). Use for role/tier/gender-style fields — NOT for ids/tokens/emails. */
+function prettyValue(s) {
+  s = String(s == null ? "" : s).trim();
+  if (!s) return "";
+  return s.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
+
 /* Premium in-app confirm dialog (replaces the browser confirm()). Returns a
    Promise<boolean>. `message` is plain text; opts: {title, confirmText,
    cancelText, danger}. Esc / click-outside = cancel, Enter = confirm. */
@@ -240,10 +249,12 @@ function renderNav(active) {
   tick(); setInterval(tick, 1000);
 }
 
-/* Header date-time in dd/mm/yyyy · HH:MM:SS (24-hour). */
+/* Header date-time: dd Mon yyyy · HH:MM:SS (month in text, 24-hour). */
+const CV_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 function cvDateTime(d = new Date()) {
   const p = n => String(n).padStart(2, "0");
-  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`
+  return `${p(d.getDate())} ${CV_MONTHS[d.getMonth()]} ${d.getFullYear()}`
        + ` · ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 

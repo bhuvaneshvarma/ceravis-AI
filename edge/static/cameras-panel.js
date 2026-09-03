@@ -344,8 +344,11 @@ function mountCameras(root, opts = {}) {
   }
 
   /* ---- cloud save (saveCamera batch) ---- */
-  async function syncCamerasRaw() {
-    try { return await api("/api/v1/account/sync-cameras", { method: "POST" }); }
+  async function syncCamerasRaw(cameraId) {
+    // cameras.html passes the new camera's id so ONLY it is pushed (the server
+    // rejects re-sent cameras as duplicates); setup Continue omits it to push all.
+    const q = cameraId ? `?camera_id=${encodeURIComponent(cameraId)}` : "";
+    try { return await api("/api/v1/account/sync-cameras" + q, { method: "POST" }); }
     catch (e) { return { synced: false, reason: "__unreachable__" }; }
   }
   async function syncCameras() {
@@ -426,7 +429,7 @@ function mountCameras(root, opts = {}) {
       gid("d-creds").hidden = true;
       await refresh();
       if (opts.cloudSaveOnAdd) {
-        const r = await syncCamerasRaw();               // cameras.html saves to the account now
+        const r = await syncCamerasRaw(cid);            // push ONLY the new camera
         if (r && r.synced)
           cvNotify("Saved — open the tile to set the camera's angle.", true);
         else

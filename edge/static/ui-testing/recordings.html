@@ -985,8 +985,9 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;",
 /* Camera labels never show underscores in the UI (LIVING_ROOM -> LIVING ROOM). */
 function pl(s){ return esc(String(s==null?"":s).replace(/_/g," ")); }
 function fmtClock(d){ return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}); }
-function tickClock(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
-  $("clock").textContent = `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} · ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+function tickClock(){ const d=new Date(), p=n=>String(n).padStart(2,"0"),
+  M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  $("clock").textContent = `${p(d.getDate())} ${M[d.getMonth()]} ${d.getFullYear()} · ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
 
 /* ===================================================================== */
 /* 10. WIRING (buttons, tabs, timeline hover, panels)                    */

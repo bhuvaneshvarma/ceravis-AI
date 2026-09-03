@@ -288,7 +288,7 @@ async function initRecipient() {
        <div class="rec-avatar">${initials}</div>
        <div>
          <div class="rec-name">${name} <span class="pill pill-ok">ACTIVE</span></div>
-         <div class="rec-meta">${u.role || "Care Recipient"} · CERAVIS #${u.ceravisUserId ?? "—"}${u.tier ? " · " + u.tier : ""}</div>
+         <div class="rec-meta">${prettyValue(u.role) || "Care Recipient"} · CERAVIS #${u.ceravisUserId ?? "—"}${u.tier ? " · " + prettyValue(u.tier) : ""}</div>
        </div>
      </div>
      <div class="rec-grid">`
@@ -296,11 +296,11 @@ async function initRecipient() {
     + profRow("Last name", u.lastName || "—")
     + profRow("Email", u.email || "—")
     + profRow("Mobile", u.phone || "—")
-    + profRow("Gender", u.gender || "—")
-    + profRow("Role", u.role || "—")
-    + profRow("Tier", u.tier || "—")
+    + profRow("Gender", u.gender ? prettyValue(u.gender) : "—")
+    + profRow("Role", u.role ? prettyValue(u.role) : "—")
+    + profRow("Tier", u.tier ? prettyValue(u.tier) : "—")
     + profRow("CERAVIS user", "#" + (u.ceravisUserId ?? "—"))
-    + profRow("Device edge id", u.edgeId || "—", true)
+    + profRow("Device edge id", u.edgeId || "—", true)   // edge_id shown RAW
     + `</div>`;
   await ensureRecipient(u);
   refreshRecipients();

@@ -265,20 +265,29 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
 
 
 @router.post("/sync-cameras")
-def sync_cameras(request: Request):
+def sync_cameras(request: Request, camera_id: str | None = None):
     """
-    Push every registered camera to the app server for the verified patient:
+    Push registered camera(s) to the app server for the verified patient:
     PUT /v1/ai/saveCamera with patientUserId + the full per-camera record
     (device, model, supplier, room, url, rtspUrl, recordRtspUrl, hlsUrl,
     onvif*, ptzSupported, isEnabled, webrtcUrl — see _cloud_camera). `url`/
     `webrtcUrl` = the camera's WebRTC HTTPS live link (MediaMTX); the cloud
     mirrors exactly what cameras.json holds on the device.
+
+    `camera_id` (optional) pushes ONLY that one camera — used when a single new
+    camera is added on cameras.html, so the server isn't re-sent cameras it
+    already has (which it rejects as duplicates). The setup wizard's Continue
+    omits it to push the whole first-time batch.
     """
     acct = account_config.get()
     pid = acct.get("ceravisUserId")
     if not pid:
         return {"synced": False, "reason": "Account not verified — verify first"}
     cams = CameraConfig().get_all()
+    if camera_id:
+        cams = [c for c in cams if c.camera_id == camera_id]
+        if not cams:
+            return {"synced": False, "reason": f"Camera {camera_id} not found"}
     if not cams:
         return {"synced": False, "reason": "No cameras registered yet"}
 
