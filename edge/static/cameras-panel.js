@@ -320,10 +320,12 @@ function mountCameras(root, opts = {}) {
       }
       gid("d-list").innerHTML = DISC.cams.map((c, i) => {
         const connected = registeredIps.has(c.ip);
-        return `<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;
-                      font-size:13px;cursor:pointer">
-          <input type="radio" name="d-cam" value="${i}" style="width:auto">
-          <span class="conn-dot ${connected ? "on" : ""}" title="${connected ? "Already connected" : "Not added yet"}"></span>
+        // Already-added cameras: a locked green dot (no radio → can't be picked).
+        const control = connected
+          ? `<span class="d-cam-dot" title="Already added"></span>`
+          : `<input type="radio" name="d-cam" value="${i}">`;
+        return `<label class="d-cam-row ${connected ? "is-connected" : ""}">
+          ${control}
           <b>${c.name || c.hardware || c.manufacturer || "camera"}</b>
           <span class="faint">${c.ip}${c.hardware ? " · " + c.hardware : ""}${connected ? " · connected" : ""}${c.via === "unicast" ? " · sweep" : ""}</span>
         </label>`;

@@ -27,12 +27,12 @@ function mountZones(root, opts = {}) {
           <button class="btn btn-ghost btn-sm" id="z-undo">Undo point</button>
           <button class="btn btn-ghost btn-sm" id="z-clear">Discard</button>
         </div>
-        <button class="btn btn-primary mt" id="z-savecam" style="width:100%">Save zone</button>
+        <div class="row mt"><button class="btn btn-primary btn-sm" id="z-savecam">Save zone</button></div>
         <hr class="sep" />
         <h2>Zones on this camera</h2>
         <div id="z-list"></div>
         ${opts.showSaveAll
-          ? `<button class="btn btn-teal mt" id="z-saveall" style="width:100%">Save all zones</button>`
+          ? `<div class="row mt"><button class="btn btn-teal btn-sm" id="z-saveall">Save all zones</button></div>`
           : ""}
       </div>
       <div class="card">
