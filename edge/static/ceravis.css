@@ -463,6 +463,11 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   gap: 10px; max-height: 560px; overflow-y: auto; padding-right: 2px; }
 .cam-panel #c-grid:empty { display: none; }
 .cam-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+/* discovery list: green dot = already added, grey = not yet */
+.conn-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--line); border: 1px solid var(--faint); }
+.conn-dot.on { background: var(--ok); border-color: var(--ok);
+  box-shadow: 0 0 7px rgba(0,181,81,.55); }
 .probe-result { font-size: 12.5px; margin-top: 8px; min-height: 18px; }
 .prof-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px;
   border: 1px solid var(--line-soft); border-radius: 9px; margin-bottom: 6px;

@@ -66,6 +66,7 @@ function mountCameras(root, opts = {}) {
   const streams = {};
   const DISC = { cams: [], sel: null, probed: null, profileToken: null };
   let refreshTimer = null, _edgeId = null, destroyed = false;
+  let registeredIps = new Set();   // IPs of cameras already added (for the green dot)
 
   async function edgeId() {
     if (_edgeId !== null) return _edgeId;
@@ -104,6 +105,11 @@ function mountCameras(root, opts = {}) {
       ]);
     } catch { return; }
     if (destroyed) return;
+    registeredIps = new Set();
+    cams.forEach(c => {
+      const m = ((c.onvif_xaddr || "") + " " + (c.rtsp_url || "")).match(/\d{1,3}(?:\.\d{1,3}){3}/);
+      if (m) registeredIps.add(m[0]);
+    });
     rebuildRooms(cams);
     const tbody = gid("c-table");
     if (!tbody) return;
@@ -312,13 +318,16 @@ function mountCameras(root, opts = {}) {
         const deepBtn = gid("d-deep");
         if (deepBtn) deepBtn.onclick = () => runScan(true);
       }
-      gid("d-list").innerHTML = DISC.cams.map((c, i) => `
-        <label style="display:flex;gap:8px;align-items:center;padding:6px 2px;
+      gid("d-list").innerHTML = DISC.cams.map((c, i) => {
+        const connected = registeredIps.has(c.ip);
+        return `<label style="display:flex;gap:8px;align-items:center;padding:6px 2px;
                       font-size:13px;cursor:pointer">
           <input type="radio" name="d-cam" value="${i}" style="width:auto">
+          <span class="conn-dot ${connected ? "on" : ""}" title="${connected ? "Already connected" : "Not added yet"}"></span>
           <b>${c.name || c.hardware || c.manufacturer || "camera"}</b>
-          <span class="faint">${c.ip}${c.hardware ? " · " + c.hardware : ""}${c.via === "unicast" ? " · sweep" : ""}</span>
-        </label>`).join("");
+          <span class="faint">${c.ip}${c.hardware ? " · " + c.hardware : ""}${connected ? " · connected" : ""}${c.via === "unicast" ? " · sweep" : ""}</span>
+        </label>`;
+      }).join("");
       root.querySelectorAll('input[name="d-cam"]').forEach(elm => {
         elm.onchange = () => {
           DISC.sel = DISC.cams[parseInt(elm.value, 10)];
@@ -455,7 +464,10 @@ function mountCameras(root, opts = {}) {
     root.innerHTML = "";
   }
 
-  refresh();
+  // Auto-scan the network on open so the operator doesn't have to click every
+  // time (the "Scan network" button stays for a manual re-scan). Runs after the
+  // first refresh so already-connected cameras show their green dot immediately.
+  refresh().then(() => { if (!destroyed) runScan(false); });
   refreshTimer = setInterval(refresh, 5000);
   return { refresh, syncCameras, destroy };
 }

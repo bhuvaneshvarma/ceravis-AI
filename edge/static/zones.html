@@ -24,7 +24,9 @@
 <script>
 cvRequireAuth();
 renderNav("zones.html");
-mountZones(document.getElementById("zone-root"));
+// Standalone page: show "Save all zones" (writes zones.json + uploads to account).
+// In the setup wizard it's hidden — Continue does the cloud save instead.
+mountZones(document.getElementById("zone-root"), { showSaveAll: true });
 </script>
 </body>
 </html>
