@@ -379,6 +379,56 @@ def delete_camera(patient_user_id, room: str):
         return True
 
 
+def delete_patient_zoning_file(user_id):
+    """
+    PUT /v1/ai/deletePatientZoningFile — remove this patient's existing ZONING
+    file from cloud storage (S3) so a re-save writes a clean object instead of
+    leaving a stale one behind (S3 objects can't be edited in place). Body:
+    { "userId": <id> }. Called right before uploadEmbeddingFile("ZONING", …) so
+    the cloud ends up with exactly one, current zones file per patient.
+
+    A 404 means there was no prior file — that's a success for delete-then-write,
+    so it returns True rather than raising. Returns the server response otherwise;
+    raises CeravisApiError on a real failure. Callers treat it as best-effort:
+    the delete is cleanup, and must never block saving the new zones file.
+    """
+    if not is_configured():
+        raise CeravisApiError(
+            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/deletePatientZoningFile"
+    payload = {"userId": user_id}
+    label = f"delete zoning file: user {user_id}"
+    logger.info("deletePatientZoningFile -> PUT %s  user=%s", url, user_id)
+    t0 = time.perf_counter()
+    try:
+        resp = requests.put(url, json=payload, headers=_headers(),
+                            timeout=settings.ceravis_api_timeout_secs)
+    except requests.RequestException as exc:
+        logger.warning("deletePatientZoningFile: cannot reach %s — %s", url, exc)
+        call_log.record("deleteZoningFile", False, label=label, error=str(exc),
+                        latency_ms=(time.perf_counter() - t0) * 1000)
+        _wire("deletePatientZoningFile", "PUT", url, payload, error=str(exc),
+              latency_ms=(time.perf_counter() - t0) * 1000)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
+    logger.info("deletePatientZoningFile <- HTTP %s  body=%s",
+                resp.status_code, resp.text[:200])
+    call_log.record("deleteZoningFile", resp.status_code < 400 or resp.status_code == 404,
+                    label=label, status=resp.status_code, latency_ms=lat)
+    _wire("deletePatientZoningFile", "PUT", url, payload,
+          status=resp.status_code, response=resp.text, latency_ms=lat)
+    if resp.status_code == 404:
+        return True                       # nothing stored yet — fine to write
+    if resp.status_code >= 400:
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code)
+    try:
+        return _unwrap(resp.json())
+    except ValueError:
+        return True
+
+
 def alert_id_of(response) -> int | None:
     """Pull the created alert's id out of a saveAlert response so it can be
     linked onto the snapshots that belong to it. Tolerant of shape: the

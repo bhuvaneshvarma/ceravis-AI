@@ -69,6 +69,7 @@ def finalize_zones():
     saves stay local and only a single zones file is ever written to the cloud."""
     from configuration.account_config import patient_user_id
     from integration.ceravis_api import (CeravisApiError, is_configured,
+                                          delete_patient_zoning_file,
                                           upload_embedding_file)
     grouped = _zones_by_camera()
     summary = {"cameras": len(grouped),
@@ -78,10 +79,23 @@ def finalize_zones():
         return {"uploaded": False,
                 "reason": "app server not configured / account not verified",
                 **summary}
+    # This file replaces the whole zones set — S3 objects can't be edited in
+    # place, so delete the patient's existing cloud zones file FIRST, then write
+    # the fresh one. Best-effort: a delete hiccup must not block the new upload
+    # (a 404 = nothing stored yet is already a success inside the call).
+    replaced = None
+    try:
+        delete_patient_zoning_file(pid)
+        replaced = True
+    except CeravisApiError as exc:
+        logger.warning("zones finalize: prior cloud file delete failed: %s", exc)
+        replaced = False
     data = json.dumps(grouped, indent=2).encode("utf-8")
     try:
         upload_embedding_file("ZONING", pid, f"zones_{pid}.json", data)
     except CeravisApiError as exc:
         logger.warning("zones finalize upload failed: %s", exc)
-        return {"uploaded": False, "reason": str(exc), **summary}
-    return {"uploaded": True, "file": f"zones_{pid}.json", **summary}
+        return {"uploaded": False, "reason": str(exc),
+                "prior_deleted": replaced, **summary}
+    return {"uploaded": True, "file": f"zones_{pid}.json",
+            "prior_deleted": replaced, **summary}
