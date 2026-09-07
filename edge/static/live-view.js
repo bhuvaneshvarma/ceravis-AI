@@ -4,9 +4,10 @@
 
   var MTX_WEBRTC_PORT = 8889;
   var CONNECT_TIMEOUT_MS = 9000;
-  var STALL_SECS = 6;
-  var RETRY_MIN_MS = 1000;
-  var RETRY_MAX_MS = 15000;
+  var STALL_SECS = 8;                 // no fresh frame this long (VISIBLE) = stalled
+  var DISCONNECT_GRACE_MS = 5000;     // let a transient ICE "disconnected" self-heal
+  var RETRY_MIN_MS = 800;
+  var RETRY_MAX_MS = 8000;
 
   var CV_PREFIX = (location.pathname.match(/^(\/[^/]+)\/ui(?:\/|$)/) || [])[1] || "";
   var FLEET = !!CV_PREFIX;
@@ -20,7 +21,6 @@
       edgePromise = fetch("/api/v1/account")
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (a) {
-
           EDGE = (a && (a.edge_id || (a.user && a.user.edgeId))) || "";
           return EDGE;
         })
@@ -60,14 +60,22 @@
     });
   }
 
+  /* ONE live-video mechanism: MediaMTX WHEP (WebRTC). The connection is treated
+     as a long-lived resource — it is NOT torn down when the tab is hidden or the
+     window is covered, so returning to the page resumes instantly instead of
+     re-negotiating. It only reconnects on a REAL failure (peer failed/closed, a
+     "disconnected" that doesn't self-heal within a grace window, or no fresh
+     frame for STALL_SECS while the page is visible). */
   function liveView(videoEl, cameraId, opts) {
     opts = opts || {};
     var onState = opts.onState || function () {};
     var stopped = false;
-    var paused = false;
+    var connecting = false;
     var pc = null;
     var retry = RETRY_MIN_MS;
     var watchdog = null;
+    var graceTimer = null;
+    var reconnectTimer = null;
     var lastTime = -1;
     var lastProgress = 0;
     var state = "";
@@ -82,10 +90,30 @@
       state = s;
       onState(s);
     }
-
+    function clearGrace() { if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; } }
+    function clearReconnect() { if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; } }
     function closePeer() {
       if (pc) { try { pc.close(); } catch (e) {  } pc = null; }
       try { videoEl.srcObject = null; } catch (e) {  }
+    }
+    function play() { var p = videoEl.play(); if (p && p.catch) p.catch(function () {  }); }
+
+    // React to connection-state changes AFTER a peer is live.
+    function handleConnState(peer) {
+      if (pc !== peer) return;                       // a stale peer — ignore
+      var s = peer.connectionState;
+      if (s === "connected") { clearGrace(); retry = RETRY_MIN_MS; setState("live"); play(); return; }
+      if (s === "disconnected") {
+        // Transient by nature — ICE often recovers on its own. Show "stalled"
+        // but give it a window before tearing the connection down.
+        setState("stalled");
+        if (!graceTimer) graceTimer = setTimeout(function () {
+          graceTimer = null;
+          if (pc === peer && peer.connectionState !== "connected") reconnect();
+        }, DISCONNECT_GRACE_MS);
+        return;
+      }
+      if (s === "failed" || s === "closed") reconnect();
     }
 
     function attempt(url) {
@@ -114,11 +142,15 @@
         peer.addTransceiver("video", { direction: "recvonly" });
         peer.ontrack = function (e) { videoEl.srcObject = e.streams[0]; };
         peer.onconnectionstatechange = function () {
-          if (peer.connectionState === "connected") return ok();
-          if (["failed", "closed", "disconnected"].indexOf(peer.connectionState) >= 0) {
-            if (settled) { if (pc === peer) reconnect(); }
-            else fail("peer " + peer.connectionState);
+          var s = peer.connectionState;
+          if (s === "connected") { ok(); return; }
+          if (!settled) {
+            // Pre-connect: "new"/"connecting"/"disconnected" are normal ICE churn
+            // — wait for the guard timeout; only a hard end aborts this attempt.
+            if (s === "failed" || s === "closed") fail("peer " + s);
+            return;
           }
+          handleConnState(peer);                     // post-connect: a real drop
         };
 
         peer.createOffer()
@@ -143,63 +175,72 @@
     }
 
     async function connect() {
-      if (stopped || paused) return;
+      if (stopped || connecting) return;
+      if (pc && pc.connectionState === "connected") { setState("live"); play(); return; }
+      connecting = true;
+      clearReconnect();
       setState("connecting");
-      var edge = await edgeId();
-      if (stopped) return;
-      var path = streamPath(cameraId, edge);
-      for (var i = 0, order = schemeOrder(); i < order.length; i++) {
-        try {
-          await attempt(origin(order[i]) + "/" + path + "/whep");
-          if (stopped) { closePeer(); return; }
-          if (!FLEET) lanSecure = order[i];
-          retry = RETRY_MIN_MS;
-          lastTime = -1;
-          lastProgress = Date.now();
-          setState("live");
-          videoEl.play().catch(function () {  });
-          return;
-        } catch (e) {
-          if (stopped) return;
+      try {
+        var edge = await edgeId();
+        if (stopped) return;
+        var path = streamPath(cameraId, edge);
+        var order = schemeOrder();
+        for (var i = 0; i < order.length; i++) {
+          try {
+            await attempt(origin(order[i]) + "/" + path + "/whep");
+            if (stopped) { closePeer(); return; }
+            if (!FLEET) lanSecure = order[i];
+            retry = RETRY_MIN_MS;
+            lastTime = -1;
+            lastProgress = Date.now();
+            setState("live");
+            play();
+            return;
+          } catch (e) {
+            if (stopped) return;
+          }
         }
+        setState("offline");
+        schedule();
+      } finally {
+        connecting = false;
       }
-      setState("offline");
-      schedule();
     }
 
     function schedule() {
-      if (stopped || paused) return;
-      setTimeout(connect, retry);
+      if (stopped) return;
+      clearReconnect();
+      reconnectTimer = setTimeout(connect, retry);
       retry = Math.min(Math.round(retry * 1.7), RETRY_MAX_MS);
     }
 
     function reconnect() {
       if (stopped) return;
+      clearGrace();
       closePeer();
       setState("offline");
       schedule();
     }
 
+    // Tab hidden / window minimized: KEEP the peer alive (WebRTC keeps flowing in
+    // the background) so returning is instant. The watchdog is paused meanwhile
+    // because a backgrounded <video> stops advancing currentTime — which would
+    // otherwise look like a stall and trigger a needless reconnect.
     function onVisibility() {
-      if (stopped) return;
-      if (document.hidden) {
-        paused = true;
-        closePeer();
-        setState("offline");
-      } else if (paused) {
-        paused = false;
-        retry = RETRY_MIN_MS;
-        connect();
-      }
+      if (stopped || document.hidden) return;
+      lastTime = -1;                                 // reset the stall baseline
+      lastProgress = Date.now();
+      clearGrace();
+      if (pc && pc.connectionState === "connected") { setState("live"); play(); }
+      else if (!connecting) { retry = RETRY_MIN_MS; connect(); }
     }
     document.addEventListener("visibilitychange", onVisibility);
 
     watchdog = setInterval(function () {
-      if (stopped || state !== "live") return;
+      if (stopped || document.hidden || state !== "live") return;
       var t = videoEl.currentTime;
       if (t !== lastTime) { lastTime = t; lastProgress = Date.now(); return; }
-      var idle = (Date.now() - lastProgress) / 1000;
-      if (idle > STALL_SECS) {
+      if ((Date.now() - lastProgress) / 1000 > STALL_SECS) {
         setState("stalled");
         reconnect();
       }
@@ -211,6 +252,8 @@
       stop: function () {
         stopped = true;
         clearInterval(watchdog);
+        clearGrace();
+        clearReconnect();
         document.removeEventListener("visibilitychange", onVisibility);
         closePeer();
       },
