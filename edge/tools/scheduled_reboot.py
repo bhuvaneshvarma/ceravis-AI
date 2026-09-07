@@ -46,6 +46,33 @@ def main() -> int:
         log.info("scheduled reboot is disabled (REBOOT_SCHEDULED_ENABLED=false)")
         return 0
 
+    # --- clock trust (RTC-less hardware) --------------------------------------
+    # This board boots at 1970 until NTP corrects it, and a wall-clock timer can
+    # then fire at a random daytime moment (see maintenance/reboot.py). Refuse to
+    # reboot unless the clock is trustworthy AND it is genuinely the nightly
+    # window — otherwise a clock step would reboot the device mid-day, and it
+    # would cold-boot back into 1970 and loop. Skipping is always a correct
+    # outcome (exit 0): a missed night is just a missed night.
+    if reboot.clock_synchronized() is False:
+        log.warning("SKIPPING reboot — the system clock is not NTP-synchronised "
+                    "yet; refusing to act on an untrustworthy clock")
+        call_log.record(
+            "event", True,
+            label="INFO · Nightly reboot skipped · clock not NTP-synced")
+        return 0
+    now_local = reboot.clock.now()
+    if not reboot.in_reboot_window(now_local):
+        log.warning("SKIPPING reboot — fired at %s, outside the %02d:00–%02d:00 "
+                    "window; this is a clock step, not the schedule",
+                    now_local.isoformat(timespec="seconds"),
+                    settings.reboot_window_start_hour % 24,
+                    (settings.reboot_window_start_hour + 1) % 24)
+        call_log.record(
+            "event", True,
+            label=("INFO · Nightly reboot skipped · fired outside the window at "
+                   + now_local.strftime("%H:%M") + " (clock step, not schedule)"))
+        return 0
+
     block = reboot.safety_block(_outbox())
     if block:
         log.warning("SKIPPING tonight's reboot — %s", block)

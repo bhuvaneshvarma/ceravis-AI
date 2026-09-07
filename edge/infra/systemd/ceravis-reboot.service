@@ -5,6 +5,14 @@
 Description=CERAVIS nightly reboot (safety-checked)
 # If the network is going down we are already on our way out; don't race it.
 After=network-online.target
+# This board has no battery-backed RTC — it boots at 1970 until NTP corrects it.
+# Ordering after time-sync.target means this service starts only once the clock
+# is disciplined, so scheduled_reboot.py sees the REAL time (it double-checks the
+# sync flag + the window itself, in case the timer fired early on a clock step).
+# Requires systemd-time-wait-sync to be enabled for time-sync.target to actually
+# mean "synchronised" — setup/install_reboot_timer.sh enables it.
+After=time-sync.target
+Wants=time-sync.target
 
 [Service]
 Type=oneshot

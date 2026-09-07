@@ -17,6 +17,15 @@ AccuracySec=1min
 # itself the moment it comes back the next morning to "catch up" a missed run —
 # that turns a normal power cut into a reboot the household witnesses, and in
 # the worst case a loop. A skipped night is simply a skipped night.
+#
+# Persistent=false is necessary but NOT sufficient on RTC-less hardware: this
+# board boots at 1970 until NTP corrects it, and a forward clock STEP while the
+# timer is loaded makes a wall-clock OnCalendar timer elapse immediately at a
+# random daytime moment (Persistent has no say over that). The real guard is in
+# scheduled_reboot.py, which refuses to reboot unless the clock is synchronised
+# AND it is genuinely the 03:00–04:00 window. The service also orders after
+# time-sync.target. Belt and braces, because a mid-day reboot loop on a care
+# device is not an acceptable failure mode.
 Persistent=false
 
 [Install]

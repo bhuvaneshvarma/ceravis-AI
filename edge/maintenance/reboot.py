@@ -199,6 +199,69 @@ def safety_block(outbox=None) -> str | None:
 
 
 # =====================================================================
+# Clock trust — the nightly reboot rides a WALL-CLOCK timer, and this
+# hardware boots without a trustworthy clock
+# =====================================================================
+#
+# The Jetson has no battery-backed RTC: on a cold boot it starts at the epoch
+# (1970-01-01) until systemd-timesyncd disciplines it over the network. A
+# realtime `OnCalendar` timer computed against a 1970 clock has its next-elapse
+# deep in the past the instant NTP steps the clock forward ~56 years — so systemd
+# fires it IMMEDIATELY, at whatever random daytime moment the sync landed, NOT at
+# 03:00. Because the reboot cold-boots straight back into 1970, that can loop.
+# `Persistent=false` does not help: it only governs runs missed while powered
+# OFF, not a clock step while running. So the scheduled path must verify the
+# clock itself before it acts — these two checks are that verification.
+
+def clock_synchronized() -> bool | None:
+    """Has the system clock been disciplined to a real time source yet.
+    True/False when it can be determined, None when it cannot (a non-systemd dev
+    box). Load-bearing on RTC-less hardware: a reboot decision taken on a 1970
+    clock fires at the wrong instant."""
+    # timesyncd creates this the moment it first syncs — the same signal
+    # systemd-time-wait-sync and time-sync.target gate on. Cheapest positive.
+    try:
+        if Path("/run/systemd/timesync/synchronized").exists():
+            return True
+    except Exception:
+        pass
+    # Works for any NTP client (chrony/ntpd too): the kernel's own synced flag.
+    try:
+        r = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            v = r.stdout.strip().lower()
+            if v in ("yes", "true", "1"):
+                return True
+            if v in ("no", "false", "0"):
+                return False
+    except Exception:
+        pass
+    return None                                    # can't tell (dev box)
+
+
+def in_reboot_window(now_local: datetime | None = None,
+                     grace_mins: int = 20) -> bool:
+    """Is it REALLY the nightly reboot window right now.
+
+    A legitimate scheduled run always lands inside [start:00, start:00 + 1h
+    RandomizedDelaySec + a little service-start slack). A wall-clock timer that
+    fired at a random daytime moment because the clock stepped forward at boot
+    will NOT — so this is what turns those spurious fires into a safe skip.
+    The grace covers the randomised hour plus time-wait-sync + start latency."""
+    n = now_local or clock.now()
+    start = settings.reboot_window_start_hour % 24
+    minutes = n.hour * 60 + n.minute
+    lo = start * 60
+    hi = lo + 60 + max(0, grace_mins)
+    if hi <= 24 * 60:
+        return lo <= minutes < hi
+    # window wraps past midnight (e.g. a start hour of 23)
+    return minutes >= lo or minutes < (hi - 24 * 60)
+
+
+# =====================================================================
 # Execution + accountability
 # =====================================================================
 
@@ -313,6 +376,15 @@ def status(outbox=None) -> dict:
             "set": has_password(),
             "locked_out": lock_left > 0,
             "lockout_secs_remaining": round(lock_left, 1),
+        },
+        # The nightly reboot is a wall-clock decision, so whether the device even
+        # KNOWS the time is part of "will it reboot tonight". `synchronized:false`
+        # (or a `now_local` in 1970) means the clock hasn't been NTP-disciplined
+        # yet — the scheduled run refuses to act until it is.
+        "clock": {
+            "synchronized": clock_synchronized(),
+            "now_local": clock.now_iso(),
+            "in_window_now": in_reboot_window(),
         },
         "safe_to_reboot": block is None,
         "blocked_reason": block,

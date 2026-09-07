@@ -136,6 +136,42 @@ check("reports the scheduled window", "03:00" in st["scheduled"]["window"],
       st["scheduled"]["window"])
 st = reboot.status(_Outbox(1))
 check("status reflects a block", st["safe_to_reboot"] is False and st["blocked_reason"])
+check("status surfaces the clock (synced + now + in-window)",
+      "clock" in st and "synchronized" in st["clock"]
+      and "in_window_now" in st["clock"])
+
+
+print("\n6. clock-trust guards (RTC-less hardware)")
+from datetime import datetime, timezone, timedelta            # noqa: E402
+IST = timezone(timedelta(hours=5, minutes=30))
+prev_hour = settings.reboot_window_start_hour
+settings.reboot_window_start_hour = 3
+# The window is [03:00, 04:00 + ~20min grace for the randomised delay + latency).
+check("03:30 is inside the nightly window",
+      reboot.in_reboot_window(datetime(2026, 9, 7, 3, 30, tzinfo=IST)))
+check("04:10 still inside (randomised delay + start latency)",
+      reboot.in_reboot_window(datetime(2026, 9, 7, 4, 10, tzinfo=IST)))
+check("02:59 is BEFORE the window — refused",
+      not reboot.in_reboot_window(datetime(2026, 9, 7, 2, 59, tzinfo=IST)))
+check("04:45 is AFTER the window — refused",
+      not reboot.in_reboot_window(datetime(2026, 9, 7, 4, 45, tzinfo=IST)))
+check("10:21 daytime fire (the real bug) is refused",
+      not reboot.in_reboot_window(datetime(2026, 9, 7, 10, 21, tzinfo=IST)))
+check("1970 boot clock (05:30 IST) is refused",
+      not reboot.in_reboot_window(datetime(1970, 1, 1, 5, 30, tzinfo=IST)))
+# A window that wraps past midnight must still work.
+settings.reboot_window_start_hour = 23
+check("23:30 inside a midnight-wrapping window",
+      reboot.in_reboot_window(datetime(2026, 9, 7, 23, 30, tzinfo=IST)))
+check("00:10 inside a midnight-wrapping window",
+      reboot.in_reboot_window(datetime(2026, 9, 7, 0, 10, tzinfo=IST)))
+check("12:00 outside a midnight-wrapping window",
+      not reboot.in_reboot_window(datetime(2026, 9, 7, 12, 0, tzinfo=IST)))
+settings.reboot_window_start_hour = prev_hour
+# clock_synchronized() must answer without raising, whatever the host is.
+synced = reboot.clock_synchronized()
+check("clock_synchronized() returns True/False/None, never raises",
+      synced in (True, False, None), repr(synced))
 
 
 if failures:

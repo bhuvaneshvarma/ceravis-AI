@@ -31,6 +31,25 @@ else
 fi
 rm -f "$TMP"
 
+# RTC-less board hygiene. Without a battery-backed clock the Jetson boots at
+# 1970 until NTP corrects it, and a wall-clock timer then fires at the wrong
+# instant. Two enablements make the nightly timer safe on such hardware:
+#   1) systemd-timesyncd disciplines the clock over the network AND, on shutdown,
+#      saves the time to /var/lib/systemd/timesync/clock which it bumps the clock
+#      forward to on the next boot — so a cold boot lands near the last-known time
+#      instead of 1970.
+#   2) systemd-time-wait-sync makes time-sync.target actually MEAN "clock is
+#      synchronised" (without it the target is reached almost immediately and
+#      guarantees nothing), so the reboot service's After=time-sync.target holds.
+# Both are best-effort: a stripped image may lack the units, and scheduled_reboot.py
+# still self-guards on the sync flag + the window regardless.
+sudo systemctl enable --now systemd-timesyncd 2>/dev/null \
+    && echo "systemd-timesyncd enabled (network time + persistent clock)" \
+    || echo "note: systemd-timesyncd not available — ensure SOME NTP client runs"
+sudo systemctl enable systemd-time-wait-sync 2>/dev/null \
+    && echo "systemd-time-wait-sync enabled (time-sync.target now means synced)" \
+    || echo "note: systemd-time-wait-sync not available — the in-script clock guard still applies"
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now ceravis-reboot.timer
 
