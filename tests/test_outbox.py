@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import shutil
 import sys
+import threading
+import time
 import tempfile
 from pathlib import Path
 
@@ -115,15 +117,22 @@ def pump(sender: OutboxSender, outbox: OutboxStore, rounds: int = 4000) -> None:
     much and loop. This preserves the RELATIVE ordering that the backoff creates
     — a job that just failed is further in the future than one that hasn't — so
     'step around a stuck job' is exercised, not defeated. Returns early once the
-    queue is empty; a permanently-failing job just runs out the rounds."""
+    queue is empty; a permanently-failing job just runs out the rounds.
+
+    Delivery runs on TWO lanes (urgent = alerts and their media, bulk = ambient)
+    so an alarm never waits behind an in-flight ambient upload. Each round ticks
+    every lane, which is what the real threads do side by side, and the clock
+    only advances once no lane has anything ready — otherwise a lane still
+    holding work would have its backoff fast-forwarded out from under it."""
     for _ in range(rounds):
         if outbox.stats()["pending"] == 0:
             return
-        wait = sender._tick()
-        if wait and wait > 0:
+        waits = [sender._tick(lane, lo, hi) for lane, lo, hi in outbox_sender._LANES]
+        idle = min(w for w in waits if w is not None)
+        if idle and idle > 0:
             outbox._store.execute(
                 "UPDATE outbox SET next_attempt = next_attempt - ? "
-                "WHERE state='pending' AND next_attempt > 0", (wait,))
+                "WHERE state='pending' AND next_attempt > 0", (idle,))
 
 
 DB = _TMP / "ceravis.db"
@@ -315,16 +324,23 @@ check("the fall is at the head despite being queued last",
 server.received.clear()
 server.online = True
 pump(sender, outbox)
-order = [r[1] for r in server.received]
-check("the fall alert went out first", order[0] == "someone fell")
-check("its photo went second, still after its own alert",
-      order[1] == "someone fell")
-check("the no-motion alert outranked the ambient snapshots",
-      order[2] == "no movement")
-check("and the ambient backlog followed, oldest first",
-      order[3:] == [f"posture {i}" for i in range(5)])
+# Delivery runs on two lanes, so ordering is guaranteed WITHIN a lane, not
+# across them: ambient wallpaper now moves alongside an incident instead of
+# queueing behind it. That is the point — an alarm no longer waits on it — so
+# these check the promises that survive, by identity rather than by position.
+sent = [(r[0], r[1]) for r in server.received]
+i_fall = sent.index(("saveAlert", "someone fell"))
+i_pic = sent.index(("saveSnapshot", "someone fell"))
+i_lull = sent.index(("saveAlert", "no movement"))
+i_amb = [sent.index(("saveSnapshot", f"posture {i}")) for i in range(5)]
+check("the fall alert went out first of everything", i_fall == 0)
+check("its photo followed its own alert, never before it", i_pic > i_fall)
+check("the fall and its photo both outranked the lesser alert",
+      i_lull > i_fall and i_lull > i_pic)
+check("the ambient backlog kept its own oldest-first order",
+      i_amb == sorted(i_amb))
 check("the fall's photo carried the alertId the fall had just been given",
-      server.received[1][2] == outbox.job(fall)["result_id"])
+      server.received[i_pic][2] == outbox.job(fall)["result_id"])
 check("nothing was lost to the reordering",
       len(server.received) == len(ambient) + 3)
 
@@ -370,6 +386,52 @@ check("and a discarded one is reported, never silently lost",
       any(c.get("state") == "dropped" for c in lines))
 
 # --------------------------------------------------------------------------
+print("\n14. an alarm is not stuck behind a slow ambient upload (2026-09-09)")
+# The incident: recording-event jobs retried against a failing endpoint every
+# 30s, each attempt holding the ONE sender thread for the full 8s timeout. The
+# sender was ~267% oversubscribed, so a FALL raised in that window could not be
+# picked until a doomed request finished. Recording events have since left the
+# queue entirely, but ANY slow ambient upload could do the same on one lane —
+# so this proves the urgent lane is genuinely independent, using real threads.
+server.online = True
+pump(sender, outbox)                      # start from empty
+released = threading.Event()
+
+
+def slow_snapshot(pid, text, camera_number, *, image=None, video=None,
+                  alert_id=None, category=None):
+    """An ambient upload that hangs the way a stalled server does."""
+    if text.startswith("wallpaper"):
+        released.wait(timeout=10.0)       # occupies the bulk lane
+    return server.save_snapshot(pid, text, camera_number, image=image,
+                                video=video, alert_id=alert_id,
+                                category=category)
+
+
+outbox_sender.save_snapshot = slow_snapshot
+server.received.clear()
+sender.queue_snapshot(7, "wallpaper", "LOUNGE", image=b"jpg",
+                      priority=PRIORITY_AMBIENT)
+sender.start()                            # the REAL two-lane threads
+time.sleep(0.4)                           # let the bulk lane pick it up and hang
+t0 = time.time()
+sender.queue_alert(7, "FALL", "urgent fall", priority=PRIORITY_FALL)
+for _ in range(100):                      # wait up to 5s for the alarm
+    if any(r[1] == "urgent fall" for r in server.received):
+        break
+    time.sleep(0.05)
+elapsed = time.time() - t0
+check("the ambient upload is still hanging, holding its own lane",
+      not any(r[1] == "wallpaper" for r in server.received))
+check(f"the fall alert went out anyway, in {elapsed:.2f}s", elapsed < 2.0)
+released.set()                            # let the ambient upload finish
+time.sleep(0.6)
+check("and the ambient upload completes normally once its server answers",
+      any(r[1] == "wallpaper" for r in server.received))
+sender.stop()
+sender.join(timeout=3)
+outbox_sender.save_snapshot = server.save_snapshot
+
 print("\n13. the heartbeat kick drains a backlog held during an outage")
 server.online = False
 server.received.clear()

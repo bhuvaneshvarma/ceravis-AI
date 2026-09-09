@@ -34,6 +34,41 @@ from common import clock
 
 logger = logging.getLogger("integration")
 
+
+# ---- one pooled connection per thread --------------------------------
+# Every call used to be a bare requests.put/post, which opens a NEW TCP
+# connection and runs a FULL TLS handshake each time. On a home uplink to a
+# remote server that is a few hundred ms of pure overhead on every upload, and
+# under retry pressure it is a stream of handshakes against one host.
+#
+# A Session keeps the connection alive, so the second call onward is just the
+# request. It is per-THREAD on purpose: requests.Session is not documented as
+# thread-safe, and the senders each run on their own thread, so a thread-local
+# gives each one its own pool with no shared mutable state and no lock.
+_local = threading.local()
+
+
+def _session() -> requests.Session:
+    s = getattr(_local, "session", None)
+    if s is None:
+        s = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=2, pool_maxsize=4,
+            max_retries=0)              # retries are the outbox's job, not urllib3's
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+        _local.session = s
+    return s
+
+
+def _timeout() -> tuple[float, float]:
+    """(connect, read). Splitting them matters: an UNREACHABLE server should
+    fail in a couple of seconds, not sit on the read budget — the difference
+    between a fast failure that frees the sender and a stalled one that blocks
+    whatever is queued behind it."""
+    read = float(settings.ceravis_api_timeout_secs)
+    return (min(3.05, read), read)
+
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------------------
@@ -163,8 +198,8 @@ def get_user_details(email: str) -> dict | None:
     logger.info("userDetails -> POST %s  email=%s", url, email)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=request_body, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().post(url, json=request_body, headers=_headers(),
+                             timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("userDetails: cannot reach %s — %s", url, exc)
         call_log.record("userDetails", False, label=email, error=str(exc),
@@ -213,8 +248,8 @@ def send_otp(email: str) -> bool:
     logger.info("sendOtp -> POST %s  email=%s", url, email)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=request_body, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().post(url, json=request_body, headers=_headers(),
+                             timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("sendOtp: cannot reach %s — %s", url, exc)
         call_log.record("sendOtp", False, label=email, error=str(exc),
@@ -255,8 +290,8 @@ def verify_otp(email: str, otp: str) -> bool:
     logger.info("verifyOtp -> POST %s  email=%s", url, email)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=request_body, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().post(url, json=request_body, headers=_headers(),
+                             timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("verifyOtp: cannot reach %s — %s", url, exc)
         call_log.record("verifyOtp", False, label=email, error=str(exc),
@@ -310,8 +345,8 @@ def save_cameras(patient_user_id, cameras: list[dict]):
                 url, patient_user_id, len(cameras), [c.get("room") for c in cameras])
     t0 = time.perf_counter()
     try:
-        resp = requests.put(url, json=payload, headers=_headers(),
-                            timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().put(url, json=payload, headers=_headers(),
+                            timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("saveCamera: cannot reach %s — %s", url, exc)
         call_log.record("saveCamera", False, label=label, error=str(exc),
@@ -354,8 +389,8 @@ def delete_camera(patient_user_id, room: str):
                 url, patient_user_id, room)
     t0 = time.perf_counter()
     try:
-        resp = requests.put(url, json=payload, headers=_headers(),
-                            timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().put(url, json=payload, headers=_headers(),
+                            timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("cameras/delete: cannot reach %s — %s", url, exc)
         call_log.record("cameraDelete", False, label=label, error=str(exc),
@@ -401,8 +436,8 @@ def delete_patient_zoning_file(user_id):
     logger.info("deletePatientZoningFile -> PUT %s  user=%s", url, user_id)
     t0 = time.perf_counter()
     try:
-        resp = requests.put(url, json=payload, headers=_headers(),
-                            timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().put(url, json=payload, headers=_headers(),
+                            timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("deletePatientZoningFile: cannot reach %s — %s", url, exc)
         call_log.record("deleteZoningFile", False, label=label, error=str(exc),
@@ -470,8 +505,8 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
                 patient_user_id, alert_type)
     t0 = time.perf_counter()
     try:
-        resp = requests.put(url, json=payload, headers=_headers(),
-                            timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().put(url, json=payload, headers=_headers(),
+                            timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("saveAlert: cannot reach %s — %s", url, exc)
         call_log.record("saveAlert", False, label=label, error=str(exc),
@@ -529,8 +564,8 @@ def send_recording_event(payload: dict) -> None:
                 payload.get("camera_id"), payload.get("status"))
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=payload, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().post(url, json=payload, headers=_headers(),
+                             timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("recordingEvent: cannot reach %s — %s", url, exc)
         call_log.record("recordingEvent", False, label=label, error=str(exc),
@@ -610,9 +645,9 @@ def save_snapshot(patient_id, text: str, camera_number: str, *,
                 url, patient_id, camera_number, alert_id, parts)
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, data=data, files=files,
+        resp = _session().post(url, data=data, files=files,
                              headers=_multipart_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+                             timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("saveSnapshot: cannot reach %s — %s", url, exc)
         call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
@@ -661,8 +696,8 @@ def get_patient_postures(user_id) -> list[dict]:
     logger.info("getPatientPostures -> PUT %s  user=%s", url, user_id)
     t0 = time.perf_counter()
     try:
-        resp = requests.put(url, json=request_body, headers=_headers(),
-                            timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().put(url, json=request_body, headers=_headers(),
+                            timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("getPatientPostures: cannot reach %s — %s", url, exc)
         call_log.record("getPatientPostures", False, label=str(user_id),
@@ -716,8 +751,8 @@ def upload_embedding_file(file_category: str, user_id, file_name: str,
     logger.info("uploadEmbeddingFile -> PUT %s  user=%s  %s", url, user_id, label)
     t0 = time.perf_counter()
     try:
-        resp = requests.put(url, json=payload, headers=_headers(),
-                            timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().put(url, json=payload, headers=_headers(),
+                            timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("uploadEmbeddingFile: cannot reach %s — %s", url, exc)
         call_log.record("uploadEmbeddingFile", False, label=label, error=str(exc),
@@ -755,8 +790,8 @@ def send_status(payload: dict) -> tuple[bool, int | None, str | None]:
     url = settings.status_heartbeat_url.strip()
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=payload, headers=_headers(),
-                             timeout=settings.ceravis_api_timeout_secs)
+        resp = _session().post(url, json=payload, headers=_headers(),
+                             timeout=_timeout())
     except requests.RequestException as exc:
         _wire("status", "POST", url, payload, error=str(exc),
               latency_ms=(time.perf_counter() - t0) * 1000)

@@ -368,7 +368,24 @@ class OutboxStore:
     _DEP_READY = ("(depends_on IS NULL OR depends_on NOT IN "
                   "(SELECT job_id FROM outbox WHERE state=?))")
 
-    def next_ready(self, now: float | None = None) -> dict | None:
+    @staticmethod
+    def _priority_clause(min_priority, max_priority) -> tuple[str, list]:
+        """Optional priority window, so a caller can ask for only part of the
+        queue. The delivery lanes use DISJOINT windows, which is what lets two
+        senders share one queue with no claim table and no locking: they can
+        never select the same row."""
+        sql, params = "", []
+        if min_priority is not None:
+            sql += " AND priority>=?"
+            params.append(int(min_priority))
+        if max_priority is not None:
+            sql += " AND priority<=?"
+            params.append(int(max_priority))
+        return sql, params
+
+    def next_ready(self, now: float | None = None, *,
+                   min_priority: int | None = None,
+                   max_priority: int | None = None) -> dict | None:
         """The next job to actually SEND: highest priority, oldest, that is DUE
         (its backoff has elapsed) and whose alert dependency is satisfied.
 
@@ -379,21 +396,25 @@ class OutboxStore:
         the due jobs, and seq breaks ties, so an incident stays in order and a
         fall still goes first."""
         now = time.time() if now is None else now
+        clause, extra = self._priority_clause(min_priority, max_priority)
         rows = self._store.fetchall(
             "SELECT " + ", ".join(_COLS) + " FROM outbox "
-            f"WHERE state=? AND next_attempt<=? AND {self._DEP_READY} "
+            f"WHERE state=? AND next_attempt<=? AND {self._DEP_READY}{clause} "
             "ORDER BY priority DESC, seq ASC LIMIT 1",
-            (STATE_PENDING, now, STATE_PENDING))
+            (STATE_PENDING, now, STATE_PENDING, *extra))
         return self._row(rows[0] if rows else None)
 
-    def next_due_at(self) -> float | None:
+    def next_due_at(self, *, min_priority: int | None = None,
+                    max_priority: int | None = None) -> float | None:
         """The earliest time any eligible pending job becomes due, so the sender
         can sleep exactly until then instead of polling. None when the queue has
         no eligible pending job (empty, or everything is dependency-blocked
         behind a job that is itself counted here)."""
+        clause, extra = self._priority_clause(min_priority, max_priority)
         rows = self._store.fetchall(
-            f"SELECT MIN(next_attempt) FROM outbox WHERE state=? AND {self._DEP_READY}",
-            (STATE_PENDING, STATE_PENDING))
+            "SELECT MIN(next_attempt) FROM outbox "
+            f"WHERE state=? AND {self._DEP_READY}{clause}",
+            (STATE_PENDING, STATE_PENDING, *extra))
         return rows[0][0] if rows and rows[0][0] is not None else None
 
     def wake_all(self) -> None:

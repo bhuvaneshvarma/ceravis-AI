@@ -238,12 +238,20 @@ class Pipeline:
         except Exception:
             logger.exception("Cloud outbox disabled — alerts will NOT reach "
                              "the app server")
-        # The recorder is built long before the outbox, so it is handed the
-        # sender here: every camera start/stop is then reported to the app
-        # server (POST /v1/ai/recordings/event) durably. Without this line the
-        # recorder is unchanged and simply reports nothing.
-        if outbox_sender is not None and recording_controller is not None:
-            recording_controller.set_event_sink(outbox_sender)
+        # Camera start/stop -> the app server, on its OWN best-effort reporter,
+        # NOT the outbox: a notification must never be able to hold up an alarm
+        # (see integration/recording_events). /recordings/status is the
+        # authoritative state, so a dropped event costs nothing. Without this
+        # the recorder is unchanged and simply reports nothing.
+        recording_events = None
+        if recording_controller is not None:
+            try:
+                from integration.recording_events import RecordingEventReporter
+                recording_events = RecordingEventReporter()
+                recording_events.start()
+                recording_controller.set_event_sink(recording_events)
+            except Exception:
+                logger.exception("recording-event reporter disabled")
         if outbox_sender is not None:
             try:
                 from alerts.cloud_alert_publisher import CloudAlertPublisher
@@ -299,7 +307,8 @@ class Pipeline:
         # the sender makes its last pass; whatever is still queued stays on disk
         # and goes out on the next start.
         self._shutdown = [
-            status_reporter, recording_controller, cloud_alert_publisher,
+            status_reporter, recording_controller, recording_events,
+            cloud_alert_publisher,
             outbox_sender, rule_engine, event_writer, enroll_worker, reid_runner,
             pose_runner, tracking_runner, detection_runner,
         ]

@@ -69,11 +69,9 @@ import threading
 import time
 
 from config.settings import settings
-from configuration.account_config import effective_edge_id
 from integration import call_log
 from integration.ceravis_api import (
     CeravisApiError, alert_id_of, is_configured, save_alert, save_snapshot,
-    send_recording_event,
 )
 from storage.outbox_store import PRIORITY_ALERT, PRIORITY_AMBIENT, OutboxStore
 
@@ -86,6 +84,31 @@ logger = logging.getLogger("outbox")
 # gets fixed instead of silently retried forever.
 _ATTENTION_STATUSES = {401, 403, 404, 413}
 
+# Job kinds this build no longer knows how to send. A device upgrading from an
+# older build can still have rows for them, so _deliver clears them instead of
+# retrying something that will never succeed. Never remove a kind from here
+# without being sure no device in the field still has such rows queued.
+_RETIRED_KINDS = {"recordingEvent"}
+
+# TWO delivery lanes over ONE queue, split by priority.
+#
+# Delivery is synchronous: a thread can only be inside one request at a time, so
+# on a single lane an alert waits for whatever is ALREADY in flight — a slow
+# ambient upload, or (2026-09-09) a doomed one retrying against a dead endpoint.
+# Priority ordering cannot help there, because the socket is already busy. With
+# two lanes the urgent one is idle and waiting at the moment an alarm is raised.
+#
+# The windows are DISJOINT, which is the whole trick: the two senders can never
+# select the same row, so there is no claim table, no lock and no double-send.
+# Falls, alerts and their media share the urgent lane, so an incident still
+# leaves in the order it happened.
+_LANE_URGENT = "urgent"
+_LANE_BULK = "bulk"
+_LANES = (
+    (_LANE_URGENT, PRIORITY_ALERT, None),        # priority >= ALERT
+    (_LANE_BULK, None, PRIORITY_ALERT - 1),      # priority <  ALERT (ambient)
+)
+
 
 class OutboxSender:
     """Drains OutboxStore -> the CERAVIS app server, urgent-first, forever."""
@@ -94,14 +117,17 @@ class OutboxSender:
         self._outbox = outbox
         self._outbox.set_drop_listener(self._log_drop)
         self._running = False
-        self._thread: threading.Thread | None = None
-        self._wake = threading.Event()
+        self._threads: list[threading.Thread] = []
+        self._wake: dict[str, threading.Event] = {
+            lane: threading.Event() for lane, _lo, _hi in _LANES}
         # Currently failing to deliver? Drives the once-per-transition logging
         # and the console-quiet-while-retrying behaviour. "offline" (no response)
         # and "rejecting" (server answered with an error) are tracked separately
         # so the log names which one it is.
-        self._degraded = False
-        self._problem: str | None = None    # None | "offline" | "rejecting"
+        # Per LANE, so the ambient lane failing cannot make the alert lane
+        # announce an outage it is not having (or clear one it is).
+        self._degraded: dict[str, bool] = {}
+        self._problem: dict[str, str] = {}   # lane -> "offline" | "rejecting"
         self._trimmed_at = 0.0
 
     # ---- lifecycle ---------------------------------------------------
@@ -109,21 +135,26 @@ class OutboxSender:
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="cloud-outbox")
-        self._thread.start()
+        for lane, lo, hi in _LANES:
+            thread = threading.Thread(target=self._run, args=(lane, lo, hi),
+                                      daemon=True, name=f"cloud-outbox-{lane}")
+            self._threads.append(thread)
+            thread.start()
         depth = self._outbox.stats()["pending"]
         logger.info("Cloud outbox on — %d upload(s) waiting, %.0fh window, "
-                    "cap %d", depth, settings.outbox_window_secs / 3600.0,
-                    settings.outbox_max_items)
+                    "cap %d, lanes: %s", depth,
+                    settings.outbox_window_secs / 3600.0,
+                    settings.outbox_max_items,
+                    ", ".join(lane for lane, _lo, _hi in _LANES))
 
     def stop(self) -> None:
         self._running = False
-        self._wake.set()
+        for event in self._wake.values():
+            event.set()
 
     def join(self, timeout: float | None = None) -> None:
-        if self._thread:
-            self._thread.join(timeout)
+        for thread in self._threads:
+            thread.join(timeout)
 
     def kick(self) -> None:
         """The server is reachable — drain now. Wired to the status heartbeat:
@@ -132,7 +163,8 @@ class OutboxSender:
         instead of each job waiting out its own retry timer. Safe to call when
         the queue is empty (a no-op) and safe to call often."""
         self._outbox.wake_all()
-        self._wake.set()
+        for event in self._wake.values():
+            event.set()
 
     # ---- what producers call -----------------------------------------
     # Queue, then wake the loop, so an upload on a healthy link goes out in the
@@ -158,36 +190,6 @@ class OutboxSender:
         self._queued("saveSnapshot", job_id, text)
         return job_id
 
-    def queue_recording_event(self, camera_id: str, status: str, start: str,
-                              *, end: str | None = None,
-                              seconds: float | None = None) -> str | None:
-        """Queue one recordings/event — a camera started or finished recording.
-
-        The wire shape lives HERE (not in the recorder) so the recorder stays
-        domain-level and the payload the backend receives is defined in one
-        place. `edgeId` is resolved NOW, not at delivery: the event is a fact
-        about the device as it was when the footage was recorded, so a
-        re-verification mid-outage must not relabel a queued event.
-
-        Queued at AMBIENT priority: it is a state notification, not evidence, so
-        a fall alert always overtakes it and — under real disk pressure — it is
-        shed before anything that proves an incident. The backend can always
-        recover the same information from /api/v1/recordings/timeline.
-        """
-        edge_id = effective_edge_id()
-        if not edge_id:
-            # Nothing to attribute the event to (unprovisioned/LAN dev box).
-            logger.debug("recordingEvent skipped: no edge_id yet (%s %s)",
-                         camera_id, status)
-            return None
-        payload = {"edgeId": edge_id, "camera_id": camera_id, "status": status,
-                   "segment": {"start": start, "end": end, "seconds": seconds}}
-        job_id = self._outbox.enqueue(
-            "recordingEvent", payload,
-            label=f"{camera_id} {status}", priority=PRIORITY_AMBIENT)
-        self._queued("recordingEvent", job_id, f"{camera_id} {status}")
-        return job_id
-
     def _queued(self, kind: str, job_id: str | None, label: str) -> None:
         if job_id is None:
             return
@@ -195,39 +197,43 @@ class OutboxSender:
         # server has seen anything — during an outage that QUEUED line is the
         # proof the detection was captured and is waiting, not lost.
         call_log.record(kind, True, label=label, direction="out", state="queued")
-        self._wake.set()
+        for event in self._wake.values():
+            event.set()
 
     # ---- loop --------------------------------------------------------
-    def _run(self) -> None:
+    def _run(self, lane: str, lo: int | None, hi: int | None) -> None:
+        wake = self._wake[lane]
         while self._running:
             wait = settings.outbox_poll_secs
             try:
-                wait = self._tick()
+                wait = self._tick(lane, lo, hi)
             except Exception:
-                logger.exception("outbox: sender tick failed")
+                logger.exception("outbox: %s sender tick failed", lane)
             if wait <= 0:
                 continue                 # a backlog drains back-to-back
-            self._wake.wait(timeout=wait)
-            self._wake.clear()
+            wake.wait(timeout=wait)
+            wake.clear()
 
-    def _tick(self) -> float:
-        """Deliver the next READY job. Returns how long to wait before looking
-        again; 0 means there is more to send right now.
+    def _tick(self, lane: str, lo: int | None, hi: int | None) -> float:
+        """Deliver this lane's next READY job. Returns how long to wait before
+        looking again; 0 means there is more to send right now.
 
         Ready = due (backoff elapsed) and dependency satisfied — so a job that
         is mid-backoff is stepped over rather than blocking the queue. When
-        nothing is ready, sleep exactly until the earliest one is due."""
-        self._trim_periodically()
+        nothing is ready, sleep exactly until the earliest one is due. The
+        priority window is what keeps the two lanes off each other's rows."""
+        if lane == _LANE_URGENT:
+            self._trim_periodically()    # one lane owns it; twice would be waste
         if not is_configured():
             return 5.0
         now = time.time()
-        job = self._outbox.next_ready(now)
+        job = self._outbox.next_ready(now, min_priority=lo, max_priority=hi)
         if job is not None:
-            self._deliver(job)
+            self._deliver(lane, job)
             return 0.0                   # keep draining while there is work
-        due_at = self._outbox.next_due_at()
+        due_at = self._outbox.next_due_at(min_priority=lo, max_priority=hi)
         if due_at is None:
-            return settings.outbox_poll_secs           # queue empty
+            return settings.outbox_poll_secs           # this lane is empty
         return max(0.05, min(due_at - now, settings.outbox_poll_secs))
 
     def _trim_periodically(self) -> None:
@@ -241,35 +247,48 @@ class OutboxSender:
         self._trimmed_at = now
         self._outbox.trim()
 
-    def _deliver(self, job: dict) -> None:
+    def _deliver(self, lane: str, job: dict) -> None:
+        if job["kind"] in _RETIRED_KINDS:
+            # A kind this build no longer sends. Rows for it can still be in the
+            # queue on a device upgrading from an older build, and since nothing
+            # here is ever dropped for failing, they would otherwise retry until
+            # the 48h window — the exact behaviour that delayed a fall alert on
+            # 2026-09-09. Clear them on sight, once, with the reason recorded.
+            self._outbox.mark_dead(
+                job["job_id"],
+                f"{job['kind']} is no longer sent from the outbox — moved to the "
+                "best-effort reporter (integration/recording_events.py)")
+            return
+
         # While deliveries are failing, the API client's own per-call console
         # record is silenced: the first failure was reported and the queue's
         # depth carries the rest, so a long outage cannot flush the log.
-        call_log.quiet_retries(self._degraded)
+        call_log.quiet_retries(any(self._degraded.values()))
         try:
             result_id = self._send(job)
         except CeravisApiError as exc:
-            self._failed(job, exc)
+            self._failed(lane, job, exc)
             return
         except Exception as exc:
             # A bug in our own send code is not a reason to lose the event — it
             # is retried like any other failure (bounded by the 48h window),
             # loudly, so nothing generated is ever thrown away.
             logger.exception("outbox: %s job raised — will retry", job["kind"])
-            self._failed(job, CeravisApiError(f"internal error: {exc}"))
+            self._failed(lane, job, CeravisApiError(f"internal error: {exc}"))
             return
         self._outbox.mark_sent(job["job_id"], result_id)
-        self._recovered()
+        self._recovered(lane)
 
-    def _recovered(self) -> None:
-        """A delivery just succeeded — clear any degraded/attention state and say
-        so once."""
+    def _recovered(self, lane: str) -> None:
+        """A delivery just succeeded — clear THIS lane's degraded state and say
+        so once. Attention is cleared globally: any success proves the server is
+        answering us again."""
         self._outbox.clear_attention()
-        if self._degraded:
-            logger.info("outbox: deliveries recovered — draining %d queued "
-                        "upload(s)", self._outbox.stats()["pending"])
-            self._degraded = False
-            self._problem = None
+        if self._degraded.get(lane):
+            logger.info("outbox[%s]: deliveries recovered — draining %d queued "
+                        "upload(s)", lane, self._outbox.stats()["pending"])
+            self._degraded[lane] = False
+            self._problem.pop(lane, None)
 
     def _send(self, job: dict) -> int | None:
         payload = job["payload"]
@@ -294,9 +313,6 @@ class OutboxSender:
                 alert_id=self._alert_id_for(job),
                 category=payload.get("category"))
             return None
-        if job["kind"] == "recordingEvent":
-            send_recording_event(payload)     # payload IS the wire body
-            return None
         raise CeravisApiError(f"unknown outbox job kind {job['kind']!r}")
 
     def _alert_id_for(self, job: dict):
@@ -313,7 +329,7 @@ class OutboxSender:
         parent = self._outbox.job(parent_id)
         return parent["result_id"] if parent else None
 
-    def _failed(self, job: dict, exc: CeravisApiError) -> None:
+    def _failed(self, lane: str, job: dict, exc: CeravisApiError) -> None:
         """A delivery attempt failed. The job is NEVER dropped here — it is
         rescheduled on a capped exponential backoff, and only the 48h age window
         (enforced by the store's trim) ever gives up on it. A code that usually
@@ -331,18 +347,18 @@ class OutboxSender:
         # One transition line, not one per retry: "offline" (no response at all)
         # and "rejecting" (the server answered with an error) are different news.
         problem = "offline" if status is None else "rejecting"
-        self._degraded = True
-        if self._problem != problem:
-            self._problem = problem
+        self._degraded[lane] = True
+        if self._problem.get(lane) != problem:
+            self._problem[lane] = problem
             if problem == "offline":
-                logger.warning("outbox: app server unreachable — %d upload(s) "
-                               "queued, retrying until the %.0fh window",
+                logger.warning("outbox[%s]: app server unreachable — %d upload(s) "
+                               "queued, retrying until the %.0fh window", lane,
                                self._outbox.stats()["pending"],
                                settings.outbox_window_secs / 3600.0)
             else:
-                logger.warning("outbox: app server rejecting uploads (HTTP %s) — "
-                               "%d queued and retrying; nothing is dropped",
-                               status, self._outbox.stats()["pending"])
+                logger.warning("outbox[%s]: app server rejecting uploads (HTTP %s)"
+                               " — %d queued and retrying; nothing is dropped",
+                               lane, status, self._outbox.stats()["pending"])
 
     # ---- console -----------------------------------------------------
     def _log_drop(self, job: dict, reason: str) -> None:
