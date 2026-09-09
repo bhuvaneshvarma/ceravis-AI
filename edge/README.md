@@ -177,7 +177,7 @@ Off by default. It is a speaker in someone's home, so the device stays silent
 until it is deliberately commissioned:
 
 ```bash
-# infra/env/jetson.env (or the device-local jetson.local.env)
+# edge/infra/env/jetson.env — the ONE env file, hand-edited, tracked in git
 TALKBACK_ENABLED=true
 ```
 
