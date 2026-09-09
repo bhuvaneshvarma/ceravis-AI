@@ -87,6 +87,82 @@ def digest_header(challenge: str, username: str, password: str,
     return header
 
 
+def parse_headers(block: str) -> tuple[str, dict[str, str]]:
+    """An HTTP head -> (status line, lower-cased headers)."""
+    first, _, rest = block.partition("\r\n")
+    headers = {}
+    for line in rest.split("\r\n"):
+        if ":" in line:
+            k, _, v = line.partition(":")
+            headers[k.strip().lower()] = v.strip()
+    return first, headers
+
+
+def request_bytes(host: str, port: int, authorization: str = "") -> bytes:
+    """The one POST /stream every path here sends, with or without auth."""
+    lines = [
+        "POST /stream HTTP/1.1",
+        f"Host: {host}:{port}",
+        "User-Agent: ceravis-edge",
+        f"Content-Type: multipart/mixed; boundary={CLIENT_BOUNDARY.decode()}",
+    ]
+    if authorization:
+        lines.append(f"Authorization: {authorization}")
+    return ("\r\n".join(lines) + "\r\n" + "\r\n").encode()
+
+
+async def _head(reader, timeout: float) -> tuple[str, dict[str, str]]:
+    try:
+        raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)
+    except asyncio.IncompleteReadError:
+        raise TalkbackError("closed", "The camera closed the connection.")
+    except asyncio.TimeoutError:
+        raise TalkbackError("timeout", "The camera did not answer in time.")
+    return parse_headers(raw.decode("utf-8", "replace"))
+
+
+async def attempt(host: str, port: int, username: str = "", password: str = "",
+                  timeout: float = 8.0) -> tuple[str, str]:
+    """ONE authentication attempt on a FRESH socket -> (status line, challenge).
+
+    With no credential it just reads the challenge; with one it reports what the
+    camera made of it. This exists for `tools.talkback diagnose`, because
+    `unauthorized` is the one failure whose cause is invisible from outside: the
+    difference between a wrong password, a firmware that wants the OTHER hash,
+    and a firmware using the published fixed account is only ever visible by
+    reading the challenge and trying each."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, limit=_MAX_PART_BYTES), timeout)
+    except asyncio.TimeoutError:
+        raise TalkbackError("unreachable", f"No answer from {host}:{port}.")
+    except OSError as exc:
+        raise TalkbackError(
+            "unreachable", f"Cannot reach {host}:{port} ({exc.strerror or exc}).")
+    try:
+        writer.write(request_bytes(host, port))
+        await writer.drain()
+        status, headers = await _head(reader, timeout)
+        challenge = headers.get("www-authenticate", "")
+        length = int(headers.get("content-length", "0") or 0)
+        if length:
+            await asyncio.wait_for(reader.readexactly(length), timeout)
+        if not username or not challenge.startswith("Digest"):
+            return status.strip(), challenge
+
+        writer.write(request_bytes(
+            host, port, digest_header(challenge, username, password)))
+        await writer.drain()
+        status, _ = await _head(reader, timeout)
+        return status.strip(), challenge
+    finally:
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), 2.0)
+        except (OSError, asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+
+
 class TapoTalkSession:
     """One open speaker session on one camera.
 
@@ -130,15 +206,7 @@ class TapoTalkSession:
             raise TalkbackError("protocol", "The camera sent an oversized header block.")
         return raw.decode("utf-8", "replace")
 
-    @staticmethod
-    def _parse_headers(block: str) -> tuple[str, dict[str, str]]:
-        first, _, rest = block.partition("\r\n")
-        headers = {}
-        for line in rest.split("\r\n"):
-            if ":" in line:
-                k, _, v = line.partition(":")
-                headers[k.strip().lower()] = v.strip()
-        return first, headers
+    _parse_headers = staticmethod(parse_headers)
 
     async def _read_body(self, headers: dict[str, str]) -> bytes:
         length = int(headers.get("content-length", "0") or 0)
@@ -154,15 +222,7 @@ class TapoTalkSession:
             raise TalkbackError("timeout", "The camera stopped sending mid-part.")
 
     def _request_bytes(self, authorization: str = "") -> bytes:
-        lines = [
-            "POST /stream HTTP/1.1",
-            f"Host: {self.host}:{self.port}",
-            "User-Agent: ceravis-edge",
-            f"Content-Type: multipart/mixed; boundary={CLIENT_BOUNDARY.decode()}",
-        ]
-        if authorization:
-            lines.append(f"Authorization: {authorization}")
-        return ("\r\n".join(lines) + "\r\n\r\n").encode()
+        return request_bytes(self.host, self.port, authorization)
 
     async def _send_part(self, content_type: str, body: bytes) -> None:
         head = [b"--" + CLIENT_BOUNDARY, f"Content-Type: {content_type}".encode()]
@@ -231,7 +291,9 @@ class TapoTalkSession:
                 "unauthorized",
                 "The camera rejected the credential. This must be the TP-Link "
                 "ACCOUNT password for the app the camera is paired to — not the "
-                "camera's RTSP/ONVIF username and password.")
+                "camera's RTSP/ONVIF username and password. To see what the "
+                "camera actually asked for, run: python3 -m tools.talkback "
+                "diagnose --camera <name>")
 
         await self._open_talk()
         self.opened_at = time.monotonic()
