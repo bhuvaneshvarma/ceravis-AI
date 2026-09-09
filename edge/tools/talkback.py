@@ -10,7 +10,8 @@ real thing, and it works over SSH with no browser, no HTTPS and no microphone.
     python -m tools.talkback list                          # what is commissioned
     python -m tools.talkback set    --camera KITCHEN       # store the password
     python -m tools.talkback test   --camera KITCHEN       # silent proof
-    python -m tools.talkback diagnose --camera KITCHEN     # why auth failed
+    python -m tools.talkback diagnose --camera KITCHEN --try-password
+                                                       # why auth failed
     python -m tools.talkback tone   --camera KITCHEN       # a beep in the room
     python -m tools.talkback play   --camera KITCHEN --file hello.wav
     python -m tools.talkback forget --camera KITCHEN
@@ -25,10 +26,12 @@ Exit code: 0 success, 1 a named failure (unreachable / wrong password / busy),
 import argparse
 import asyncio
 import getpass
+import hashlib
 import math
 import shutil
 import subprocess
 import sys
+from urllib.parse import urlparse
 
 from config.settings import settings
 from configuration.camera_config import CameraConfig
@@ -91,73 +94,130 @@ async def _speak(camera_id: str, audio: bytes) -> int:
         await hub.release(camera_id, session)
 
 
-async def _diagnose(camera_id: str, host: str) -> int:
+def _candidates(cam, cred, cloud_password: str, email: str) -> list:
+    """Every credential the camera could plausibly mean, from what this device
+    already knows. Each is (label, username, secret).
+
+    This exists because the handshake is PROVEN correct — it is byte-for-byte
+    what pytapo and go2rtc send — so a 401 can only be the secret value, and
+    which secret a Tapo firmware wants has changed more than once. Enumerating
+    is cheap: one local TCP round-trip each, a few milliseconds on the LAN.
+
+    Nothing here is a secret we did not already hold: the stored hashes, the
+    camera's own stream credentials out of cameras.json, and whatever the
+    operator typed at the prompt."""
+    def hashes(value: str) -> tuple[str, str]:
+        raw = value.encode()
+        return (hashlib.md5(raw).hexdigest().upper(),
+                hashlib.sha256(raw).hexdigest().upper())
+
+    out = [
+        ("account password, SHA256   (admin)", "admin", cred.sha256),
+        ("account password, MD5      (admin)", "admin", cred.md5),
+    ]
+
+    if cloud_password:
+        md5_up, sha_up = hashes(cloud_password)
+        out += [
+            ("account password, SHA256 lower-case", "admin", sha_up.lower()),
+            ("account password, MD5 lower-case", "admin", md5_up.lower()),
+            ("account password, sent as typed", "admin", cloud_password),
+        ]
+        if email:
+            out += [
+                (f"account password SHA256, username {email}", email, sha_up),
+                (f"account password as typed, username {email}", email, cloud_password),
+            ]
+
+    # The camera's OWN stream account (the Tapo app's "Camera Account", what we
+    # already use for RTSP/ONVIF). Newer firmware moved some local surfaces onto
+    # it, and if it works here the whole cloud-password step disappears from
+    # commissioning — worth knowing either way.
+    user = (cam.onvif_username or "").strip()
+    pw = (cam.onvif_password or "").strip()
+    if not (user and pw):
+        parsed = urlparse(cam.rtsp_url or "")
+        user, pw = (parsed.username or ""), (parsed.password or "")
+    if user and pw:
+        md5_up, sha_up = hashes(pw)
+        out += [
+            ("camera stream password SHA256 (admin)", "admin", sha_up),
+            ("camera stream password MD5    (admin)", "admin", md5_up),
+            (f"camera stream password SHA256 ({user})", user, sha_up),
+            (f"camera stream password as typed ({user})", user, pw),
+        ]
+
+    out.append(("fixed account (CVE-2022-37255 firmware)", "none", "TPL075526460603"))
+    return out
+
+
+async def _diagnose(camera_id: str, cam, host: str, cloud_password: str,
+                    email: str) -> int:
     """Answer the ONE question `test` cannot: the camera rejected us — why?
 
-    `unauthorized` covers three different faults that look identical from
-    outside, so this reads the challenge the camera actually sent and then tries
-    every credential shape it could have meant, on its own connection each time.
-    It reveals nothing secret: the challenge is what the camera broadcasts to any
-    caller, and only hashes are ever sent."""
+    Reads the challenge the camera actually sent, then tries every credential
+    shape it could have meant. Prints labels only: no secret is ever echoed."""
     port = settings.talkback_port
-    status, challenge = await attempt(host, port, timeout=settings.talkback_timeout_secs)
+    timeout = settings.talkback_timeout_secs
+    status, challenge = await attempt(host, port, timeout=timeout)
     print(f"  camera        {camera_id} at {host}:{port}")
     print(f"  first answer  {status}")
-    print(f"  challenge     {challenge or '(none — this is not a Tapo talk port)'}")
+    print(f"  challenge     {challenge or '(none - this is not a Tapo talk port)'}")
     if not challenge.startswith("Digest"):
         print("\n  Port 8800 answered but not with a Tapo Digest challenge. This "
               "model/firmware\n  does not expose the talk endpoint.")
         return 1
 
-    wants = "sha256" if 'encrypt_type="3"' in challenge else "md5"
-    print(f"  asks for      {wants.upper()} of the account password"
+    wants = "SHA256" if 'encrypt_type="3"' in challenge else "MD5"
+    print(f"  asks for      {wants} of the password"
           + (" (fixed-account firmware)" if 'username="none"' in challenge else ""))
 
     cred = credentials.get(camera_id)
     if cred is None:
-        print("\n  No credential stored yet — run `set` first.")
+        print("\n  No credential stored yet - run `set` first.")
         return 1
 
-    print("\n  Trying every shape the firmware could mean:")
-    trials = [
-        ("admin + MD5 hash", "admin", cred.md5),
-        ("admin + SHA256 hash", "admin", cred.sha256),
-        ("fixed account (CVE-2022-37255 firmware)", "none", "TPL075526460603"),
-    ]
+    trials = _candidates(cam, cred, cloud_password, email)
+    print(f"\n  Trying {len(trials)} credential shapes, one connection each:")
     accepted = []
-    for label, user, password in trials:
+    for label, user, secret in trials:
         try:
-            result, _ = await attempt(host, port, user, password,
-                                      timeout=settings.talkback_timeout_secs)
+            result, _ = await attempt(host, port, user, secret, timeout=timeout)
         except TalkbackError as exc:
             result = f"failed ({exc.code})"
         ok = " 200" in result
         if ok:
             accepted.append(label)
-        print(f"    {'ACCEPTED' if ok else 'rejected'}  {label:<42} {result}")
+        print(f"    {'ACCEPTED' if ok else 'rejected'}  {label:<44} {result}")
 
     print()
     if accepted:
-        print(f"  The camera ACCEPTS: {accepted[0]}.")
-        print("  So the stored password is right and the handshake works — if "
-              "`test` still fails,\n  the failure is the talk SESSION, not the "
-              "credential (mic/speaker disabled in the\n  Tapo app, or the app "
-              "is already talking to this camera).")
+        print(f"  ACCEPTED: {accepted[0]}")
+        print("  Store exactly that password with `set` and `test` will pass.")
         return 0
-    print("  The camera accepted NONE of them, so the stored password is not the "
-          "one it wants.")
-    print("  In order of likelihood:")
-    print("    1. It is the TP-Link ACCOUNT password (the email login for the "
-          "Tapo app),\n       not the camera's stream/RTSP password and not a "
-          "'Camera Account' password.")
-    print("    2. This camera is paired to a DIFFERENT TP-Link account than the "
-          "one you typed.")
-    print("    3. The account password was CHANGED after the camera was paired. "
-          "The camera\n       caches the credential and only refreshes it with "
-          "internet access — a camera on\n       an isolated hotspot can still "
-          "want the OLD password. Give it internet, or\n       re-pair it, or "
-          "try the previous password.")
-    print("    4. A typo — `set` does not echo. Just run `set` again.")
+
+    print("  The camera accepted NOTHING we can derive, so the secret it holds is "
+          "not one this\n  device knows. The handshake itself is proven correct "
+          "(it is byte-for-byte what\n  pytapo and go2rtc send), so this is the "
+          "credential VALUE, not the algorithm.")
+    print()
+    print("  By far the most likely cause, and it fits a recently changed password:")
+    print("    A Tapo camera authenticates local callers against a CACHED copy of "
+          "the account\n    credential, pushed to it by TP-Link's cloud. Change "
+          "the account password and the\n    camera keeps accepting the OLD one "
+          "until it next reaches the internet. These\n    cameras are on this "
+          "device's hotspot - if that has no upstream internet, they have\n    "
+          "never been told. The Tapo app still works because it authenticates "
+          "against the\n    cloud, not against the camera.")
+    print()
+    print("  Fix, in order of least effort:")
+    print("    1. Give the cameras internet once (join them to the house WiFi, or "
+          "give the\n       hotspot an upstream), open the Tapo app so the camera "
+          "syncs, then re-run\n       `set` + `test`.")
+    print("    2. Try the OLD password in `set` - the camera may still want it.")
+    print("    3. Re-pair the camera in the Tapo app, which forces a fresh "
+          "credential push.")
+    print("    4. Confirm this camera is on the SAME TP-Link account you typed.")
     return 1
 
 
@@ -172,6 +232,11 @@ def main(argv=None) -> int:
     ap.add_argument("--seconds", type=float, default=2.0, help="tone length")
     ap.add_argument("--freq", type=float, default=880.0)
     ap.add_argument("--volume", type=float, default=1.0)
+    ap.add_argument("--try-password", action="store_true",
+                    help="diagnose: prompt for a password to try "
+                         "live (never stored)")
+    ap.add_argument("--email", help="diagnose: also try the TP-Link "
+                                    "account email as the username")
     args = ap.parse_args(argv)
 
     if args.command == "list":
@@ -216,7 +281,12 @@ def main(argv=None) -> int:
 
     try:
         if args.command == "diagnose":
-            return asyncio.run(_diagnose(camera_id, camera_host(cam)))
+            typed = ""
+            if args.try_password:
+                typed = getpass.getpass(
+                    "Account password to try (not stored): ")
+            return asyncio.run(_diagnose(camera_id, cam, camera_host(cam),
+                                         typed, args.email or ""))
         if args.command == "test":
             result = asyncio.run(hub.probe(camera_id))
             print(f"OK — {result['host']} granted speaker session {result['session_id']} "
