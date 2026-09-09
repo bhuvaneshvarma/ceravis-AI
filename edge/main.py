@@ -23,6 +23,7 @@ from api.discovery_routes import router as discovery_router
 from api.network_routes import router as network_router
 from api.recording_routes import router as recording_router
 from api.system_routes import router as system_router
+from api.talkback_routes import router as talkback_router
 
 
 logging.basicConfig(
@@ -220,7 +221,8 @@ app.add_middleware(_FleetEdgePrefix)
 
 for _router in (account_router, camera_router, zone_router, recipient_router,
                 metrics_router, event_router, ai_router, recording_router,
-                discovery_router, network_router, system_router):
+                discovery_router, network_router, system_router,
+                talkback_router):
     app.include_router(_router)
 
 # Static UI (dashboard, cameras, zones) served same-origin.

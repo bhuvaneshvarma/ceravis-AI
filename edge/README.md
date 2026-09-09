@@ -38,6 +38,17 @@ edge/
 │                 (recording path names are deliberately SLASH-FREE — the record
 │                  toggle and disk layout never depend on the live slash-path)
 │
+├─ TALK-BACK  — the only audio that goes the OTHER way
+│   talkback/     the camera's own local speaker endpoint (TP-Link port 8800):
+│                 mpegts.py       G.711 A-law + the private stream_type 0x90 TS
+│                 protocol.py     Digest handshake + one talk session, asyncio
+│                 credentials.py  per-camera password HASHES (never the password)
+│                 sessions.py     ONE speaker per camera, and nothing more
+│                 A turn opens its own short-lived socket, asks for the TALK
+│                 session only (never the preview one), and closes when the
+│                 button is released — so the one-pull-per-camera rule holds and
+│                 ingestion, recording and live view are untouched.
+│
 └─ shared infrastructure
     config/         settings (env-driven, infra/env/jetson.env)
     schemas/        domain models (Camera, Zone, Recipient, Event)
@@ -51,7 +62,7 @@ edge/
     monitoring/     pipeline metrics + tegrastats
     common/         net / rtsp / clock / crops / letterbox helpers
     bootstrap/      pipeline assembly (build/start/stop) — keeps main.py thin
-    tools/          status + recordings CLIs
+    tools/          status + recordings + talkback CLIs
     static/         /ui pages (dashboard, cameras, zones, monitor, recordings);
                     live-view.js plays every camera tile over MediaMTX WebRTC
 ```
@@ -158,4 +169,48 @@ same hardware rather than a browser:
 
 ```bash
 gst-launch-1.0 rtspsrc location=rtsp://127.0.0.1:8554/<edge_id>/<CAM>   protocols=tcp latency=0 ! rtph264depay ! h264parse ! nvv4l2decoder   ! nvvidconv ! autovideosink sync=false
+```
+
+## Talk-back — speaking into the room
+
+Off by default. It is a speaker in someone's home, so the device stays silent
+until it is deliberately commissioned:
+
+```bash
+# infra/env/jetson.env (or the device-local jetson.local.env)
+TALKBACK_ENABLED=true
+```
+
+Then, per camera, once:
+
+```bash
+cd edge
+python3 -m tools.talkback set  --camera KITCHEN   # prompts, stores HASHES only
+python3 -m tools.talkback test --camera KITCHEN   # proves the chain, silently
+python3 -m tools.talkback tone --camera KITCHEN   # a beep, if you want a noise
+```
+
+The password is the **TP-Link account password** for the Tapo app the camera is
+paired to — *not* the camera's RTSP/ONVIF credentials, and not the edge_id. It
+is hashed on the way in (`data/talkback.json`, 0600, gitignored) and the
+plaintext is never stored, logged or returned by any endpoint.
+
+Carers use the **live wall**: hold the mic button on a tile and speak. Two rules
+are structural, not cosmetic — the button is **press-and-hold** (a toggle leaves
+hot microphones in living rooms), and **one speaker per camera** at a time; a
+second person is refused, never queued.
+
+A browser will only hand out a microphone on a **secure page**, so talk-back
+works on the fleet address (`https://edgeai.ceravishealth.in/<edge_id>/ui/`) and
+on `localhost`, and never on a plain `http://<device-ip>:8000` page. The UI says
+so rather than failing silently.
+
+What it costs while someone is talking: ~75 kbit/s out, well under 1% of one CPU
+core, no GPU, and one short-lived TCP connection to the camera. Nothing runs
+between turns. It never opens the camera's preview session, so the media
+backbone still pulls each camera exactly once.
+
+```bash
+python3 -m tools.talkback list        # what is commissioned, and where
+python tests/test_talkback.py         # offline proof of the bytes and the rules
 ```

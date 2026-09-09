@@ -48,6 +48,10 @@ edge/data/cameras.json
 edge/data/reboot_auth.json
 edge/data/last_reboot.json
 
+# Talk-back credentials: per-camera HASHES of the TP-Link account password
+# (never the password itself). Per-device secret — never committed.
+edge/data/talkback.json
+
 # Per-install runtime config — never ship a seeded/example copy
 edge/data/zones.json
 edge/data/account.json

@@ -595,3 +595,31 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.06);
   color: #dbe4ee; font-size: 15px; font-weight: 800; }
 .ptz-zoom button:hover { background: var(--teal); border-color: var(--teal); color: #fff; }
+
+/* ---- talk-back button on a camera tile (see static/talk.js) --------------
+   Press-and-hold, so the states a carer must be able to read at a glance are
+   "armed", "connecting" and "ON AIR". The live ring is driven by the real
+   microphone peak (--talk-level), never by an animation: silence looks silent. */
+.talk-btn {
+  position: absolute; right: 12px; bottom: 40px; z-index: 3;
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 13px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 700; color: #fff;
+  background: rgba(15,23,42,.62); border: 1px solid rgba(255,255,255,.22);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  transition: background .14s, border-color .14s, box-shadow .14s, transform .1s;
+  touch-action: none;            /* hold-to-talk must not scroll the page */
+  user-select: none; -webkit-user-select: none;
+}
+.talk-btn svg { width: 15px; height: 15px; flex: none; }
+.talk-btn:hover { background: rgba(15,23,42,.8); border-color: rgba(255,255,255,.4); }
+.talk-btn[data-talk="setup"] { border-style: dashed; color: #dbe4ee; }
+.talk-btn[data-talk="connecting"] { background: var(--teal); border-color: var(--teal); }
+.talk-btn[data-talk="live"] {
+  background: var(--orange); border-color: var(--orange); transform: scale(1.03);
+  box-shadow: 0 0 0 calc(3px + 9px * var(--talk-level, 0)) rgba(255,102,0,.28);
+}
+.talk-btn[data-talk="error"] { background: var(--bad); border-color: var(--bad); }
+.cam-tile.maximized .talk-btn { right: 24px; bottom: 56px; padding: 11px 18px; font-size: 14px; }
+.cam-tile.maximized .talk-btn svg { width: 18px; height: 18px; }
+@media (max-width: 640px) { .talk-btn .talk-label { display: none; } }

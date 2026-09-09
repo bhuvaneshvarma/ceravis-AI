@@ -261,4 +261,8 @@
   }
 
   global.liveView = liveView;
+  /* ONE resolver for "which edge is this page talking to" — the fleet prefix
+     when there is one, else the device's own account. Exported because talk.js
+     needs the SAME answer for its WebSocket, and two copies of this would drift. */
+  global.cvEdgeId = edgeId;
 })(window);

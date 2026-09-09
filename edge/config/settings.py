@@ -152,6 +152,25 @@ class Settings(BaseSettings):
     fall_clip_cooldown_secs: float = 60.0   # one clip per camera per incident
 
 
+    # ---- Talk-back (speaking through the camera speaker) --------------
+    # A carer holds the mic button on the live wall and their voice comes out of
+    # the camera in the room. It rides the camera's OWN local talk endpoint (see
+    # talkback.protocol) — a separate short-lived socket that asks for the talk
+    # session only, so the media backbone still pulls each camera exactly once
+    # and nothing here touches ingestion, recording or live view.
+    # Off by default: it is a speaker in someone's home, and it starts silent
+    # until the device is deliberately commissioned for it.
+    talkback_enabled: bool = False
+    talkback_port: int = 8800              # TP-Link's local media port (not ONVIF's)
+    talkback_timeout_secs: float = 8.0     # connect / handshake / write ceiling
+    talkback_mode: str = "aec"             # camera-side echo cancellation ("half" also exists)
+    # A held button that stops sending is a dropped phone, not a silent carer:
+    # release the camera so the next person can talk.
+    talkback_idle_timeout_secs: float = 10.0
+    # Hard ceiling on one continuous turn. Protects against a stuck button or a
+    # forgotten tab holding a household's speaker open indefinitely.
+    talkback_max_turn_secs: float = 300.0
+
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
     onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window
     # When multicast finds nothing (common on WiFi with AP/client isolation),
