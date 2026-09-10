@@ -125,6 +125,26 @@ class Settings(BaseSettings):
     # clip. Any absence shorter than this never becomes a gap.
     record_post_roll_secs: float = 10.0
     record_poll_secs: float = 0.5          # detection-buffer poll cadence
+    # ---- Recording trigger precision (kills night false-positive clips) ------
+    # A person box must occupy at least this fraction of the frame AREA to start
+    # a recording. Area (not height) so a FALLEN, horizontal person still passes
+    # — it is orientation-free. Rules out a person on a distant TV/monitor, a
+    # framed photo, or a tiny reflection, none of which are the room's subject.
+    record_min_person_area_frac: float = 0.010     # ~1% of the frame
+    # Flicker guard: a phantom (a chair the IR gain lifts over the bar for a
+    # moment) appears in a poll or two and vanishes; a real person is seen
+    # steadily. Require a qualifying person in >= confirm of the last `window`
+    # detection polls before OPENING a recording. Stopping still uses post-roll,
+    # so this only gates the START and never chops an active clip. At
+    # record_poll_secs=0.5 the default asks for ~1.5s of steady presence.
+    record_start_confirm_polls: int = 3
+    record_start_window_polls: int = 4
+    # A recording is refused when the person's FOOT point falls inside a zone
+    # whose name contains one of these words — the drawn "ignore" regions for a
+    # TV, a monitor wall, a framed photo, a mirror, or a specific chair that will
+    # not stop firing. Foot-point, so a real person standing IN FRONT of a
+    # wall-mounted screen (feet on the floor, below it) is still recorded.
+    ignore_zone_keywords: str = "ignore,exclude,tv,television,screen,monitor,photo,poster,mirror"
     # Recordings carry AAC AUDIO (video + AAC = the one MP4 combo every player
     # and browser accepts). The cameras speak G.711/PCM, which MP4 can only
     # hold as the 2023 'ipcm' box many players reject — so a tiny per-camera
@@ -186,7 +206,13 @@ class Settings(BaseSettings):
     # For 3-4 cameras dial this to 6-8 to keep GPU headroom.
     detection_weights: str = "yolo26m.pt"     # ultralytics auto-downloads
     detection_model_path: str = "models/detection/yolo26m.engine"
-    detection_confidence_threshold: float = 0.35
+    # A person must clear THIS to be a detection at all. Raised from 0.35: at
+    # night the IR/grayscale frame is out-of-distribution for YOLO, so furniture
+    # (a light high-back chair reads as a seated silhouette), reflections and
+    # sensor noise cross a low bar and spawn phantom "people". 0.45 is still
+    # permissive for a real, clearly-visible person while cutting the weakest
+    # phantoms across the WHOLE chain (recording, tracking, pose, rules).
+    detection_confidence_threshold: float = 0.45
     detection_input_size: int = 640
     detection_fps: float = 10.0
 

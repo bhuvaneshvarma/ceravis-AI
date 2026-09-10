@@ -22,9 +22,11 @@ import logging
 import shutil
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from detection.detection_buffer import DetectionBuffer
@@ -60,6 +62,12 @@ class RecordingController:
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
         self._last_person: dict[str, float] = {}   # camera_id -> monotonic time
+        # Recording-trigger precision (see _qualifying_person + _tick): a rolling
+        # window of "did a real person qualify this poll" per camera, so a phantom
+        # that flickers for a poll or two never opens a clip. Ignore zones (a TV,
+        # a photo, a mirror) are consulted through this resolver, foot-point.
+        self._qual_polls: dict[str, deque] = {}
+        self._zones = ZoneResolver()
         # camera_id -> when its CURRENT recording state began (edge-local wall
         # clock). ONE fact with two readers: /recordings/status reports it as
         # `since`, and a "finalized" event uses it as the stretch's `start` (so
@@ -276,13 +284,57 @@ class RecordingController:
             if on:
                 self._set(cam, False)
         self._last_person.clear()
+        self._qual_polls.clear()               # reset the persistence window
+
+    def _qualifying_person(self, cam: str, result) -> bool:
+        """Is there a box in this result that is plausibly a REAL person — not a
+        phantom the night IR frame conjured out of a chair, a reflection or a
+        screen? Two frame-relative, orientation-free gates (confidence is already
+        applied upstream at detection):
+
+          SIZE     the box must cover >= record_min_person_area_frac of the frame
+                   AREA (not height, so a FALLEN person still passes). Rules out
+                   a person on a distant TV, a framed photo, a tiny reflection.
+          NOT IGNORED  its FOOT point must not sit in a drawn ignore zone (a TV,
+                   a monitor wall, a photo, a mirror). Foot-point, so a real
+                   person standing in front of a wall screen is unaffected.
+
+        Frame size unknown (older producer) -> the size gate is skipped rather
+        than withholding footage on missing information."""
+        fa = float(result.frame_w) * float(result.frame_h)
+        min_area = settings.record_min_person_area_frac * fa if fa > 0 else 0.0
+        for d in result.detections:
+            if d.bbox.area < min_area:
+                continue                              # too small to be real
+            foot_x = (d.bbox.x1 + d.bbox.x2) / 2.0
+            if self._zones.is_excluded(cam, foot_x, d.bbox.y2):
+                continue                              # inside a drawn ignore region
+            return True
+        return False
+
+    def _present(self, cam: str, qualifies: bool) -> bool:
+        """PERSISTENCE: fold this poll's verdict into a rolling window and report
+        whether a person is present — >= confirm qualifying polls out of the last
+        `window`. A phantom that flickers for a poll or two never reaches the bar;
+        a real person builds to it in ~confirm*poll seconds. It only gates the
+        START of a clip: once recording, each sustained poll keeps this true and
+        post-roll is what ends the clip — the middle is never chopped."""
+        win = max(1, settings.record_start_window_polls)
+        need = max(1, settings.record_start_confirm_polls)
+        dq = self._qual_polls.get(cam)
+        if dq is None or dq.maxlen != win:
+            dq = deque(dq or (), maxlen=win)
+            self._qual_polls[cam] = dq
+        dq.append(1 if qualifies else 0)
+        return sum(dq) >= need
 
     def _tick(self) -> None:
         now = time.monotonic()
         wall = clock.now()
         for cam, result in self._detections.get_all().items():
             fresh = (wall - result.timestamp).total_seconds() <= _FRESH_SECS
-            if fresh and result.detections:          # YOLO only emits persons
+            qualifies = fresh and self._qualifying_person(cam, result)
+            if self._present(cam, qualifies):
                 self._last_person[cam] = now
             last = self._last_person.get(cam)
             want = last is not None and \
