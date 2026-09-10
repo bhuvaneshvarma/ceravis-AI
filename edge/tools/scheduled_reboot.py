@@ -47,20 +47,22 @@ def main() -> int:
         return 0
 
     # --- clock trust (RTC-less hardware) --------------------------------------
-    # This board boots at 1970 until NTP corrects it, and a wall-clock timer can
-    # then fire at a random daytime moment (see maintenance/reboot.py). Refuse to
-    # reboot unless the clock is trustworthy AND it is genuinely the nightly
-    # window — otherwise a clock step would reboot the device mid-day, and it
-    # would cold-boot back into 1970 and loop. Skipping is always a correct
-    # outcome (exit 0): a missed night is just a missed night.
-    if reboot.clock_synchronized() is False:
-        log.warning("SKIPPING reboot — the system clock is not NTP-synchronised "
-                    "yet; refusing to act on an untrustworthy clock")
+    # This board boots at 1970 until it is disciplined over the network, and a
+    # wall-clock timer can then fire at a random daytime moment (see
+    # maintenance/reboot.py). Refuse to reboot unless the clock is sane AND it is
+    # genuinely the nightly window AND we are not seconds past a boot — otherwise
+    # a clock step would reboot the device mid-day, cold-boot back into 1970 and
+    # loop. None of these can false-skip a healthy night. Skipping is always a
+    # correct outcome (exit 0): a missed night is just a missed night.
+    now_local = reboot.clock.now()
+    if not reboot.clock_trustworthy(now_local):
+        log.warning("SKIPPING reboot — clock reads %s (year %d); it has not been "
+                    "corrected from the RTC-less boot clock yet",
+                    now_local.isoformat(timespec="seconds"), now_local.year)
         call_log.record(
             "event", True,
-            label="INFO · Nightly reboot skipped · clock not NTP-synced")
+            label="INFO · Nightly reboot skipped · clock still on the 1970 boot value")
         return 0
-    now_local = reboot.clock.now()
     if not reboot.in_reboot_window(now_local):
         log.warning("SKIPPING reboot — fired at %s, outside the %02d:00–%02d:00 "
                     "window; this is a clock step, not the schedule",
@@ -71,6 +73,15 @@ def main() -> int:
             "event", True,
             label=("INFO · Nightly reboot skipped · fired outside the window at "
                    + now_local.strftime("%H:%M") + " (clock step, not schedule)"))
+        return 0
+    up = reboot.uptime_secs()
+    if up is not None and up < settings.reboot_min_uptime_secs:
+        log.warning("SKIPPING reboot — only up %.0fs (< %.0fs); too soon after a "
+                    "boot to reboot again (loop backstop)",
+                    up, settings.reboot_min_uptime_secs)
+        call_log.record(
+            "event", True,
+            label=f"INFO · Nightly reboot skipped · only {up:.0f}s since boot")
         return 0
 
     block = reboot.safety_block(_outbox())

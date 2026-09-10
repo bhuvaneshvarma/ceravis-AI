@@ -136,14 +136,22 @@ check("reports the scheduled window", "03:00" in st["scheduled"]["window"],
       st["scheduled"]["window"])
 st = reboot.status(_Outbox(1))
 check("status reflects a block", st["safe_to_reboot"] is False and st["blocked_reason"])
-check("status surfaces the clock (synced + now + in-window)",
-      "clock" in st and "synchronized" in st["clock"]
-      and "in_window_now" in st["clock"])
+check("status surfaces the clock (trustworthy + synced + now + in-window)",
+      "clock" in st and "trustworthy" in st["clock"]
+      and "synchronized" in st["clock"] and "in_window_now" in st["clock"])
 
 
 print("\n6. clock-trust guards (RTC-less hardware)")
 from datetime import datetime, timezone, timedelta            # noqa: E402
 IST = timezone(timedelta(hours=5, minutes=30))
+# The gate is a sane YEAR, NOT the NTP flag — the flag false-skipped a valid
+# 03:44 run on real L4T hardware and would skip the reboot forever there.
+check("a 1970 boot clock is NOT trustworthy",
+      not reboot.clock_trustworthy(datetime(1970, 1, 1, 3, 30, tzinfo=IST)))
+check("a real 2026 clock IS trustworthy",
+      reboot.clock_trustworthy(datetime(2026, 9, 10, 3, 30, tzinfo=IST)))
+check("uptime_secs() returns a float or None, never raises",
+      isinstance(reboot.uptime_secs(), (float, type(None))))
 prev_hour = settings.reboot_window_start_hour
 settings.reboot_window_start_hour = 3
 # The window is [03:00, 04:00 + ~20min grace for the randomised delay + latency).
@@ -168,7 +176,7 @@ check("00:10 inside a midnight-wrapping window",
 check("12:00 outside a midnight-wrapping window",
       not reboot.in_reboot_window(datetime(2026, 9, 7, 12, 0, tzinfo=IST)))
 settings.reboot_window_start_hour = prev_hour
-# clock_synchronized() must answer without raising, whatever the host is.
+# clock_synchronized() is advisory now — must still answer without raising.
 synced = reboot.clock_synchronized()
 check("clock_synchronized() returns True/False/None, never raises",
       synced in (True, False, None), repr(synced))
