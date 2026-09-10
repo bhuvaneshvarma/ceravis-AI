@@ -26,7 +26,6 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 from detection.detection_buffer import DetectionBuffer
@@ -55,19 +54,24 @@ def _record_root() -> Path:
 
 
 class RecordingController:
-    def __init__(self, detections: DetectionBuffer) -> None:
+    def __init__(self, detections: DetectionBuffer, frame_buffer=None) -> None:
         self._detections = detections
         self._cameras = CameraConfig()
         self._running = False
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
         self._last_person: dict[str, float] = {}   # camera_id -> monotonic time
-        # Recording-trigger precision (see _qualifying_person + _tick): a rolling
-        # window of "did a real person qualify this poll" per camera, so a phantom
-        # that flickers for a poll or two never opens a clip. Ignore zones (a TV,
-        # a photo, a mirror) are consulted through this resolver, foot-point.
+        # Recording-trigger precision (see _qualifying_person + _present): a
+        # rolling window of "did a real-sized person qualify this poll" per
+        # camera, so a phantom that flickers for a poll or two never opens a clip.
+        # (Ignore-zone masking happens upstream in DetectionRunner, so excluded
+        # boxes never reach this buffer at all.)
         self._qual_polls: dict[str, deque] = {}
-        self._zones = ZoneResolver()
+        # Saves one annotated still when a clip opens (audit of what triggered
+        # it). None frame_buffer or the setting off = no proof stills; recording
+        # is completely unaffected either way. See recording/proof.py.
+        from recording.proof import ProofWriter
+        self._proof = ProofWriter(frame_buffer)
         # camera_id -> when its CURRENT recording state began (edge-local wall
         # clock). ONE fact with two readers: /recordings/status reports it as
         # `since`, and a "finalized" event uses it as the stretch's `start` (so
@@ -287,29 +291,21 @@ class RecordingController:
         self._qual_polls.clear()               # reset the persistence window
 
     def _qualifying_person(self, cam: str, result) -> bool:
-        """Is there a box in this result that is plausibly a REAL person — not a
-        phantom the night IR frame conjured out of a chair, a reflection or a
-        screen? Two frame-relative, orientation-free gates (confidence is already
-        applied upstream at detection):
-
-          SIZE     the box must cover >= record_min_person_area_frac of the frame
-                   AREA (not height, so a FALLEN person still passes). Rules out
-                   a person on a distant TV, a framed photo, a tiny reflection.
-          NOT IGNORED  its FOOT point must not sit in a drawn ignore zone (a TV,
-                   a monitor wall, a photo, a mirror). Foot-point, so a real
-                   person standing in front of a wall screen is unaffected.
+        """Is there a box in this result plausibly big enough to be a REAL person
+        — not a person on a distant TV/monitor, a framed photo, or a tiny
+        reflection? The box must cover >= record_min_person_area_frac of the
+        frame AREA (not height, so a FALLEN, horizontal person still passes).
+        Confidence is already applied upstream at detection, and drawn ignore
+        regions (TV/photo/mirror) are already masked in DetectionRunner, so this
+        need only judge size.
 
         Frame size unknown (older producer) -> the size gate is skipped rather
         than withholding footage on missing information."""
         fa = float(result.frame_w) * float(result.frame_h)
         min_area = settings.record_min_person_area_frac * fa if fa > 0 else 0.0
         for d in result.detections:
-            if d.bbox.area < min_area:
-                continue                              # too small to be real
-            foot_x = (d.bbox.x1 + d.bbox.x2) / 2.0
-            if self._zones.is_excluded(cam, foot_x, d.bbox.y2):
-                continue                              # inside a drawn ignore region
-            return True
+            if d.bbox.area >= min_area:
+                return True
         return False
 
     def _present(self, cam: str, qualifies: bool) -> bool:
@@ -342,7 +338,10 @@ class RecordingController:
             if want and not self._recordable(cam):
                 want = False               # unplayable codec — see _recordable
             if want != self._recording.get(cam, False):
+                if want:                   # OFF -> ON: save the proof still first
+                    self._proof.capture(cam, result)
                 self._set(cam, want)
+        self._proof.sweep()                # throttled housekeeping (once per tick)
 
     def set_event_sink(self, sender) -> None:
         """Attach the cloud reporter (integration.outbox_sender.OutboxSender).

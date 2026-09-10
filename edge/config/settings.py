@@ -139,6 +139,12 @@ class Settings(BaseSettings):
     # record_poll_secs=0.5 the default asks for ~1.5s of steady presence.
     record_start_confirm_polls: int = 3
     record_start_window_polls: int = 4
+    # When a clip OPENS, save one still with the detected person box(es) + their
+    # confidence drawn on it, under data/recordings_proof/<device>/<date>/. A
+    # glance-able audit of what triggered a recording (an empty office with a
+    # green box on a white chair says "false positive" instantly). Self-expires
+    # on the recording retention window. Off = no proof stills are written.
+    record_proof_frames: bool = True
     # A recording is refused when the person's FOOT point falls inside a zone
     # whose name contains one of these words — the drawn "ignore" regions for a
     # TV, a monitor wall, a framed photo, a mirror, or a specific chair that will
