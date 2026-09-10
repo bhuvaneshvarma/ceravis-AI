@@ -312,12 +312,14 @@
       button.addEventListener(name, function (e) { e.stopPropagation(); release(); });
     });
     button.addEventListener("click", function (e) { e.stopPropagation(); });
+
     // Anything that takes the page away hangs up — a hot mic must not survive a
     // tab switch, and a backgrounded tab must not sit on a household's speaker.
+    // Named, because these outlive the button: a tile that goes away has to be
+    // able to take its listeners with it (destroy).
+    function onHidden() { if (document.hidden) hangUp(); }
     global.addEventListener("blur", release);
-    document.addEventListener("visibilitychange", function () {
-      if (document.hidden) hangUp();
-    });
+    document.addEventListener("visibilitychange", onHidden);
 
     setState("idle");
     return {
@@ -325,6 +327,12 @@
       release: release,
       isLive: function () { return pressed && open; },
       isHeld: function () { return open; },
+      /* Hang up AND stop listening to the page. Called when the tile goes. */
+      destroy: function () {
+        global.removeEventListener("blur", release);
+        document.removeEventListener("visibilitychange", onHidden);
+        hangUp();
+      },
     };
   }
 

@@ -119,4 +119,14 @@ def forget(camera_id: str) -> bool:
 
 
 def configured() -> set[str]:
-    return {cid for cid, e in _read().items() if e.get("md5")}
+    return set(summary())
+
+
+def summary() -> dict[str, dict]:
+    """Every commissioned camera and when it was set, from ONE read of the file.
+
+    Deliberately returns no hash material: this is what the inventory endpoint
+    renders, and the only safe thing to put in an API response is the fact that
+    a credential exists."""
+    return {cid: {"updated_at": e.get("updated_at")}
+            for cid, e in _read().items() if e.get("md5")}

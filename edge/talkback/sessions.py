@@ -65,16 +65,19 @@ class TalkbackHub:
     def cameras() -> list[dict]:
         """Every camera, with whether it is ready to be talked to. Never probes
         the network — this backs a page that renders on load."""
-        configured = credentials.configured()
+        # ONE read of the credential file for the whole list. Per-camera lookups
+        # re-read it once per camera, and this backs a page that re-syncs.
+        stored = credentials.summary()
         out = []
         for cam in CameraConfig().get_all():
+            entry = stored.get(cam.camera_id) or {}
             out.append({
                 "camera_id": cam.camera_id,
                 "camera_name": cam.camera_name,
                 "room_name": cam.room_name,
                 "host": camera_host(cam),
-                "configured": cam.camera_id in configured,
-                "credential_updated_at": credentials.updated_at(cam.camera_id),
+                "configured": bool(entry),
+                "credential_updated_at": entry.get("updated_at"),
                 "enabled": cam.is_enabled,
             })
         return out

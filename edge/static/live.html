@@ -61,7 +61,7 @@ async function sync() {
     // Which cameras can be spoken through. Guarded: talk-back is an ADDITION
     // to the live wall, and a missing/broken talk script must never take the
     // video wall down with it.
-    window.cvTalkPanel ? cvTalkPanel.refresh() : null,
+    window.cvTalkPanel ? cvTalkPanel.ensure() : null,
   ]);
   document.getElementById("empty").hidden = cams.length > 0;
   const liveN = Object.values(status).filter(s => s.health_state === "running").length;
@@ -76,7 +76,11 @@ async function sync() {
 
   const want = new Set(cams.map(c => c.camera_id));
   Object.keys(tiles).forEach(id => {
-    if (!want.has(id)) { streams[id]?.stop(); delete streams[id];
+    if (!want.has(id)) {
+      // Audio controls first: the talk handle may still be HOLDING this
+      // camera's speaker, and it must be handed back before the tile goes.
+      try { window.cvTalkPanel && cvTalkPanel.unmount(tiles[id]); } catch (e) {}
+      streams[id]?.stop(); delete streams[id];
       tiles[id].remove(); delete tiles[id]; }
   });
 
@@ -108,6 +112,9 @@ async function sync() {
       // that negotiates the camera's microphone. Every other page keeps the
       // video-only stream it has always had.
       audio: true,
+      onAudio: () => {
+        try { window.cvTalkPanel && cvTalkPanel.noteAudio(tile); } catch (e) {}
+      },
       onState: st => {
         tile.querySelector(".nosignal").style.display = st === "live" ? "none" : "flex";
         video.style.display = st === "live" ? "block" : "none";

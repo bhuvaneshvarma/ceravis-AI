@@ -203,6 +203,15 @@ check("the stored credential answers a challenge correctly",
       == hashlib.md5(SECRET.encode()).hexdigest().upper())
 check("the camera reports as configured", store.configured() == {"cam_1"})
 
+# summary() backs the inventory endpoint, so it must carry the FACT of a
+# credential and none of the material — a hash in an API response is a hash
+# someone can take away and grind offline.
+_summary = store.summary()
+check("summary names the commissioned camera", set(_summary) == {"cam_1"})
+check("summary carries when it was set", bool(_summary["cam_1"]["updated_at"]))
+check("summary leaks NO hash material",
+      "md5" not in _summary["cam_1"] and "sha256" not in _summary["cam_1"])
+
 if os.name == "posix":
     check("the file is not world-readable",
           oct((_TMP / "talkback.json").stat().st_mode)[-3:] == "600")

@@ -22,14 +22,30 @@
 
   var state = { enabled: false, byId: {} };
 
-  /* One read of the talk-back inventory, shared by every tile on the page. */
+  /* One read of the talk-back inventory, shared by every tile on the page.
+
+     `ensure` is what the live wall calls on every 5-second sync: this list only
+     changes when someone commissions a camera, so it is fetched ONCE and the
+     same promise handed back forever after. `refresh` forces a re-read, and is
+     called exactly where that can matter — after commissioning. */
+  var inflight = null;
+
+  function ensure() {
+    if (!inflight) inflight = refresh();
+    return inflight;
+  }
+
   function refresh() {
-    return api("/api/v1/talkback/cameras").then(function (r) {
+    inflight = api("/api/v1/talkback/cameras").then(function (r) {
       state.enabled = !!r.enabled;
       state.byId = {};
       (r.cameras || []).forEach(function (c) { state.byId[c.camera_id] = c; });
       return state;
-    }).catch(function () { return state; });
+    }).catch(function () {
+      inflight = null;             // a failed read must not be cached forever
+      return state;
+    });
+    return inflight;
   }
 
   function edgeIdOrEmpty() {
@@ -71,6 +87,7 @@
       pw.focus();
 
       function done(v) {
+        pw.value = "";              // the plaintext leaves with the dialog
         scrim.remove();
         document.removeEventListener("keydown", onKey);
         resolve(v);
@@ -150,14 +167,24 @@
     btn.onclick = function (e) {
       e.stopPropagation();
       on = !on;
-      if (on && !apply()) {                 // nothing to unmute
-        on = false;
-        apply();
-        toast("This camera is not sending any audio.", "warn", 4000);
+      // ALWAYS applied. Turning listening OFF is an action in its own right —
+      // guarding this behind `on` is how the button became one-way.
+      var has = apply();
+      if (on && !has) {
+        // No audio track YET. Usually the stream is still negotiating rather
+        // than the camera being deaf, so stay armed instead of refusing: the
+        // moment sound arrives, listening starts (audioArrived below). A camera
+        // with no microphone simply never arrives, and the button keeps saying
+        // so rather than lying that it is listening.
+        btn.dataset.listen = "waiting";
+        label.textContent = "Waiting for audio…";
       }
     };
 
     return {
+      /* The stream finally produced an audio track. If the carer already asked
+         to listen, honour it now — the click does not have to be repeated. */
+      audioArrived: function () { if (on) apply(); },
       /* Half-duplex on purpose: a speaker and a microphone in the same room,
          both live, is a feedback loop. The camera runs its own echo
          cancellation, but ducking the carer's side too is what keeps a real
@@ -177,6 +204,7 @@
      commissioned it sees no dead controls. */
   function mount(tile, camera, stream) {
     var listener = mountListen(tile, camera, stream);
+    if (listener) tile.cvListen = listener;
     if (!state.enabled || tile.querySelector(".talk-btn")) return null;
 
     var btn = document.createElement("button");
@@ -224,7 +252,24 @@
         if (listener) listener.duck(talking);
       },
     });
+    tile.cvTalk = handle;
     return handle;
+  }
+
+  /* Tear both controls down with their tile.
+
+     Not housekeeping: the talk handle owns a WebSocket that may still be
+     HOLDING the camera's speaker, plus window/document listeners that would
+     outlive the button. A tile removed mid-hold would otherwise sit on a
+     household's speaker until the hold window expired. */
+  function unmount(tile) {
+    if (tile.cvTalk) { tile.cvTalk.destroy(); tile.cvTalk = null; }
+    if (tile.cvListen) { tile.cvListen.stop(); tile.cvListen = null; }
+  }
+
+  /* The tile's stream produced an audio track. */
+  function noteAudio(tile) {
+    if (tile && tile.cvListen) tile.cvListen.audioArrived();
   }
 
   /* Rebuild BOTH controls after commissioning. The listen button goes too,
@@ -238,5 +283,6 @@
     return mount(tile, camera, stream);
   }
 
-  global.cvTalkPanel = { refresh: refresh, mount: mount, state: state };
+  global.cvTalkPanel = { refresh: refresh, ensure: ensure, mount: mount,
+                         unmount: unmount, noteAudio: noteAudio, state: state };
 })(window);

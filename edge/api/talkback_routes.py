@@ -153,7 +153,12 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
         await websocket.close(code=WS_UNAUTHORIZED, reason="edge_id required")
         return
 
-    holder = websocket.client.host if websocket.client else "unknown"
+    # Who to name in the "someone else is already speaking" message. Behind the
+    # fleet tunnel every socket arrives from the proxy, so the peer address
+    # would name Caddy at every house — the forwarded address is the only one
+    # that identifies an actual person.
+    forwarded = (websocket.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    holder = forwarded or (websocket.client.host if websocket.client else "unknown")
     try:
         session = await hub.open(camera_id, holder=holder)
     except TalkbackError as exc:

@@ -647,6 +647,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .listen-btn[data-listen="on"] { background: var(--teal); border-color: var(--teal); }
 .listen-btn[data-listen="ducked"] { background: rgba(53,152,157,.35);
   border-color: rgba(53,152,157,.5); color: #dbe4ee; }
+/* Asked for, but the stream has not produced an audio track yet — armed, not
+   listening. It becomes "on" by itself the moment sound arrives. */
+.listen-btn[data-listen="waiting"] { border-style: dashed;
+  border-color: rgba(53,152,157,.6); color: #dbe4ee; }
 .cam-tile.maximized .listen-btn { left: 24px; bottom: 56px; padding: 11px 18px; font-size: 14px; }
 .cam-tile.maximized .listen-btn svg { width: 18px; height: 18px; }
 @media (max-width: 640px) { .listen-btn .talk-label { display: none; } }
