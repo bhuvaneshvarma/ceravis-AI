@@ -102,9 +102,12 @@ async function sync() {
     };
     document.getElementById("wall").appendChild(tile);
     tiles[c.camera_id] = tile;
-    try { window.cvTalkPanel && cvTalkPanel.mount(tile, c); } catch (e) {}
     const video = tile.querySelector("video");
     streams[c.camera_id] = liveView(video, c.camera_id, {
+      // The live wall is the one page that also LISTENS, so it is the one page
+      // that negotiates the camera's microphone. Every other page keeps the
+      // video-only stream it has always had.
+      audio: true,
       onState: st => {
         tile.querySelector(".nosignal").style.display = st === "live" ? "none" : "flex";
         video.style.display = st === "live" ? "block" : "none";
@@ -112,6 +115,10 @@ async function sync() {
           st === "stalled" ? "SIGNAL STALLED" : st === "connecting" ? "CONNECTING…" : "NO SIGNAL";
       },
     });
+    // Audio controls last: the listen button drives the stream handle above,
+    // and both are additions — a failure here must never cost us the video.
+    try { window.cvTalkPanel &&
+      cvTalkPanel.mount(tile, c, streams[c.camera_id]); } catch (e) {}
   });
 }
 window.addEventListener("keydown", e => {

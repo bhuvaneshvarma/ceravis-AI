@@ -140,7 +140,17 @@
         }
 
         peer.addTransceiver("video", { direction: "recvonly" });
-        peer.ontrack = function (e) { videoEl.srcObject = e.streams[0]; };
+        // Audio is OPT-IN (opts.audio). Every page that only watches keeps the
+        // exact SDP it always had; the live wall asks for the camera's
+        // microphone so a carer can LISTEN as well as talk. It rides the same
+        // WHEP stream — no second connection to the camera, and the element
+        // stays muted until someone deliberately turns listening on.
+        if (opts.audio) peer.addTransceiver("audio", { direction: "recvonly" });
+        peer.ontrack = function (e) {
+          videoEl.srcObject = e.streams[0];
+          if (opts.onAudio && e.track && e.track.kind === "audio")
+            opts.onAudio(true);
+        };
         peer.onconnectionstatechange = function () {
           var s = peer.connectionState;
           if (s === "connected") { ok(); return; }
@@ -249,6 +259,20 @@
     connect();
 
     return {
+      /* Listening is just the element's mute flag: the track is already here.
+         Returns whether there was anything to unmute. Must be called from a
+         user gesture the first time — browsers refuse audio otherwise. */
+      listen: function (on) {
+        var stream = videoEl.srcObject;
+        var has = !!(stream && stream.getAudioTracks && stream.getAudioTracks().length);
+        videoEl.muted = !(on && has);
+        if (on && has) play();
+        return has;
+      },
+      hasAudio: function () {
+        var stream = videoEl.srcObject;
+        return !!(stream && stream.getAudioTracks && stream.getAudioTracks().length);
+      },
       stop: function () {
         stopped = true;
         clearInterval(watchdog);

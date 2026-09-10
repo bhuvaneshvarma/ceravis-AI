@@ -119,32 +119,61 @@
     warmTimer = setTimeout(releaseGraph, WARM_MS);
   }
 
-  /* ---- one talk turn ---------------------------------------------------- */
+  /* ---- one camera's talk channel ---------------------------------------- */
+
+  /* The session is HELD, not opened per sentence.
+
+     Opening a speaker session costs a TCP connect, a Digest round-trip and the
+     camera's own session setup — ~100-300 ms. Paying that on every press is the
+     difference between an intercom and a walkie-talkie that eats your first
+     syllable. So the first press connects, and every press after it is
+     instant: the socket and the camera session stay up, with the microphone
+     MUTED in the worklet, until nobody has spoken for the hold window.
+
+     Held is not free — a camera has one speaker, and holding it locks out other
+     carers and the Tapo app — so the window is finite and anything that takes
+     the page away (tab hidden, window blurred, the tile going) hangs up at once
+     rather than sitting on a household's speaker from a backgrounded tab. */
 
   function attach(button, cameraId, opts) {
     opts = opts || {};
     var onState = opts.onState || function () {};
     var ws = null;
-    var active = false;          // the button is down
-    var live = false;            // the socket is open and the worklet unmuted
+    var pressed = false;         // the button is physically down
+    var open = false;            // the socket is up and the camera session held
+    // Set SYNCHRONOUSLY, because opening is asynchronous: without it, two quick
+    // presses both see a null socket and race two sessions at one camera, and
+    // the second is refused as busy by our own first one.
+    var connecting = false;
     var connectTimer = null;
+    var holdTimer = null;
+    var pingTimer = null;
+    var holdMs = 75000;          // refreshed from the server's own hold window
 
-    function setState(s, detail) {
+    function setState(s, detail, stats) {
       button.dataset.talk = s;
-      onState(s, detail || "");
+      onState(s, detail || "", stats);
     }
 
-    function unhook() {
-      if (graph) graph.node.port.onmessage = null;
-    }
-
-    function stop(reason) {
-      if (!active && !live) return;
-      active = false;
-      live = false;
+    function clearTimers() {
       if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-      if (graph) graph.node.port.postMessage({ type: "mute", value: true });
-      unhook();
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    }
+
+    function mute(on) {
+      if (graph) graph.node.port.postMessage({ type: "mute", value: !!on });
+    }
+
+    /* Close the channel and give the camera back. */
+    function hangUp(reason) {
+      var had = open || pressed;
+      pressed = false;
+      open = false;
+      connecting = false;
+      clearTimers();
+      mute(true);
+      if (graph) graph.node.port.onmessage = null;
       if (ws) {
         var sock = ws;
         ws = null;
@@ -154,20 +183,46 @@
         } catch (e) {}
       }
       keepWarm();
-      setState(reason ? "error" : "idle", reason);
+      if (opts.onTalking) opts.onTalking(false);
+      if (had || reason) setState(reason ? "error" : "idle", reason);
     }
 
-    function start() {
-      if (active) return;
+    /* Stop speaking but KEEP the camera, so the next press is instant. */
+    function release() {
+      if (!pressed) return;
+      pressed = false;
+      mute(true);
+      if (opts.onTalking) opts.onTalking(false);
+      if (open) {
+        setState("ready");
+        if (holdTimer) clearTimeout(holdTimer);
+        // Hang up just before the server would, so the channel closes on our
+        // terms and the user sees "idle" rather than an unexplained drop.
+        holdTimer = setTimeout(function () { hangUp(); }, holdMs);
+      } else {
+        setState("idle");
+      }
+    }
+
+    function speak() {
+      if (!open || !pressed) return;
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+      mute(false);
+      if (opts.onTalking) opts.onTalking(true);
+      setState("live");
+    }
+
+    function connect() {
       var problem = contextError();
       if (problem) { setState("error", problem); return; }
-      active = true;
+      connecting = true;
       setState("connecting");
 
       Promise.all([acquireGraph(), edgeId()]).then(function (r) {
-        if (!active) { keepWarm(); return; }        // released during setup
         var node = r[0].node;
         var edge = r[1];
+        if (!connecting || ws) return;             // hung up, or already open
+        connecting = false;
         var scheme = location.protocol === "https:" ? "wss://" : "ws://";
         var url = scheme + location.host + PREFIX + "/api/v1/talkback/" +
           encodeURIComponent(cameraId) + "/stream" +
@@ -177,7 +232,7 @@
         ws.binaryType = "arraybuffer";
 
         connectTimer = setTimeout(function () {
-          stop("The device did not answer. Check the connection and try again.");
+          hangUp("The device did not answer. Check the connection and try again.");
         }, CONNECT_TIMEOUT_MS);
 
         ws.onmessage = function (ev) {
@@ -185,28 +240,36 @@
           try { msg = JSON.parse(ev.data); } catch (e) { return; }
           if (msg.type === "open") {
             if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-            if (!active) { stop(); return; }
-            live = true;
-            node.port.postMessage({ type: "mute", value: false });
-            setState("live");
+            open = true;
+            if (msg.mic_gain)
+              node.port.postMessage({ type: "gain", value: msg.mic_gain });
+            if (msg.hold_secs > 2) holdMs = (msg.hold_secs - 2) * 1000;
+            // A held-but-silent socket must survive the proxies in front of it;
+            // pings are control frames, so they never touch the server's hold
+            // window (only speech does).
+            pingTimer = setInterval(function () {
+              if (ws && ws.readyState === 1 && !pressed)
+                ws.send(JSON.stringify({ type: "ping" }));
+            }, 20000);
+            if (pressed) speak(); else release();
           } else if (msg.type === "stats") {
-            onState("live", "", msg);
+            setState(pressed ? "live" : "ready", "", msg);
           } else if (msg.type === "error") {
-            stop(msg.message || "Talk-back failed.");
+            hangUp(msg.message || "Talk-back failed.");
           }
         };
 
         ws.onclose = function (ev) {
-          if (!active && !live) return;
+          if (!ws) return;                         // our own hangUp
           // The close REASON is the server's sentence; codes only carry a class.
           var why = (ev.reason || "").replace(/^[a-z_]+:\s*/, "");
-          if (!why) {
+          if (!why && ev.code !== 1000 && ev.code !== 1001) {
             why = ev.code === 4409 ? "Someone else is already speaking to this camera."
               : ev.code === 4401 ? "This device did not accept the request."
               : ev.code === 4503 ? "Talk-back is switched off on this device."
               : "The talk connection closed.";
           }
-          stop(why);
+          hangUp(why);
         };
 
         ws.onerror = function () { /* onclose carries the outcome */ };
@@ -214,8 +277,8 @@
         node.port.onmessage = function (ev) {
           var d = ev.data;
           if (!d || d.type !== "audio") return;
-          if (opts.onLevel) opts.onLevel(d.peak || 0);
-          if (live && ws && ws.readyState === 1) {
+          if (opts.onLevel) opts.onLevel(pressed ? (d.peak || 0) : 0);
+          if (pressed && open && ws && ws.readyState === 1) {
             // Never let a slow link queue speech: past a second of backlog the
             // words being buffered are already stale, so drop them instead.
             if (ws.bufferedAmount > 8000) return;
@@ -223,10 +286,18 @@
           }
         };
       }).catch(function (err) {
-        active = false;
+        pressed = false;
+        connecting = false;
         keepWarm();
         setState("error", micError(err));
       });
+    }
+
+    function press() {
+      if (pressed) return;
+      pressed = true;
+      if (open) speak();                           // held channel: instant
+      else if (!ws && !connecting) connect();      // first press: ~200 ms
     }
 
     // Press and hold. `setPointerCapture` keeps the release ours even if the
@@ -235,21 +306,26 @@
       e.preventDefault();
       e.stopPropagation();
       try { button.setPointerCapture(e.pointerId); } catch (err) {}
-      start();
+      press();
     });
     ["pointerup", "pointercancel"].forEach(function (name) {
-      button.addEventListener(name, function (e) { e.stopPropagation(); stop(); });
+      button.addEventListener(name, function (e) { e.stopPropagation(); release(); });
     });
     button.addEventListener("click", function (e) { e.stopPropagation(); });
-    // Anything that takes the page away ends the turn — a hot mic must not
-    // survive a tab switch, a lock screen or a closed laptop.
-    global.addEventListener("blur", function () { stop(); });
+    // Anything that takes the page away hangs up — a hot mic must not survive a
+    // tab switch, and a backgrounded tab must not sit on a household's speaker.
+    global.addEventListener("blur", release);
     document.addEventListener("visibilitychange", function () {
-      if (document.hidden) stop();
+      if (document.hidden) hangUp();
     });
 
     setState("idle");
-    return { stop: stop, isLive: function () { return live; } };
+    return {
+      stop: hangUp,
+      release: release,
+      isLive: function () { return pressed && open; },
+      isHeld: function () { return open; },
+    };
   }
 
   global.cvTalk = { attach: attach, release: releaseGraph, contextError: contextError };

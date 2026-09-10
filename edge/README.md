@@ -195,10 +195,22 @@ paired to — *not* the camera's RTSP/ONVIF credentials, and not the edge_id. It
 is hashed on the way in (`data/talkback.json`, 0600, gitignored) and the
 plaintext is never stored, logged or returned by any endpoint.
 
-Carers use the **live wall**: hold the mic button on a tile and speak. Two rules
-are structural, not cosmetic — the button is **press-and-hold** (a toggle leaves
-hot microphones in living rooms), and **one speaker per camera** at a time; a
-second person is refused, never queued.
+Carers use the **live wall**. Each tile carries two controls:
+
+* **Listen** unmutes the camera's own microphone. It is already in the WHEP
+  stream the tile plays (the live wall is the only page that negotiates audio —
+  every other page keeps its video-only SDP), so listening costs no connection,
+  no protocol and no credential.
+* **Hold to talk** opens the speaker. The first press connects in ~200 ms and
+  the channel is then **HELD** (`TALKBACK_HOLD_SECS`), so every press after it
+  is instant. It is a window, not a lease: a camera has one speaker, and a held
+  session locks out other carers and the Tapo app, so silence hands the room
+  back and hiding the tab hangs up immediately.
+
+Three rules are structural, not cosmetic — the button is **press-and-hold** (a
+toggle leaves hot microphones in living rooms); **one speaker per camera** at a
+time, refused rather than queued; and listening **ducks while you talk**, because
+a live speaker and a live microphone in one room is a feedback loop.
 
 A browser will only hand out a microphone on a **secure page**, so talk-back
 works on the fleet address (`https://edgeai.ceravishealth.in/<edge_id>/ui/`) and

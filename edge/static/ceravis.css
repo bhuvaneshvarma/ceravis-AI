@@ -614,6 +614,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .talk-btn svg { width: 15px; height: 15px; flex: none; }
 .talk-btn:hover { background: rgba(15,23,42,.8); border-color: rgba(255,255,255,.4); }
 .talk-btn[data-talk="setup"] { border-style: dashed; color: #dbe4ee; }
+/* "ready" = the channel is HELD: the next press is instant. A quiet teal
+   edge, not a shout — nothing is being transmitted in this state. */
+.talk-btn[data-talk="ready"] { border-color: var(--teal); color: #eaf7f7;
+  box-shadow: 0 0 0 2px rgba(53,152,157,.25); }
 .talk-btn[data-talk="connecting"] { background: var(--teal); border-color: var(--teal); }
 .talk-btn[data-talk="live"] {
   background: var(--orange); border-color: var(--orange); transform: scale(1.03);
@@ -623,3 +627,26 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .cam-tile.maximized .talk-btn { right: 24px; bottom: 56px; padding: 11px 18px; font-size: 14px; }
 .cam-tile.maximized .talk-btn svg { width: 18px; height: 18px; }
 @media (max-width: 640px) { .talk-btn .talk-label { display: none; } }
+
+/* ---- listen (the camera's own microphone) --------------------------------
+   Sits beside the talk button and shares its shape, because they are two
+   halves of one thing. "ducked" is the half-duplex state: listening is on but
+   silenced for as long as the carer is speaking, so the room cannot howl. */
+.listen-btn {
+  position: absolute; left: 12px; bottom: 40px; z-index: 3;
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 13px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 700; color: #fff;
+  background: rgba(15,23,42,.62); border: 1px solid rgba(255,255,255,.22);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  transition: background .14s, border-color .14s, box-shadow .14s;
+  user-select: none; -webkit-user-select: none;
+}
+.listen-btn svg { width: 15px; height: 15px; flex: none; }
+.listen-btn:hover { background: rgba(15,23,42,.8); border-color: rgba(255,255,255,.4); }
+.listen-btn[data-listen="on"] { background: var(--teal); border-color: var(--teal); }
+.listen-btn[data-listen="ducked"] { background: rgba(53,152,157,.35);
+  border-color: rgba(53,152,157,.5); color: #dbe4ee; }
+.cam-tile.maximized .listen-btn { left: 24px; bottom: 56px; padding: 11px 18px; font-size: 14px; }
+.cam-tile.maximized .listen-btn svg { width: 18px; height: 18px; }
+@media (max-width: 640px) { .listen-btn .talk-label { display: none; } }

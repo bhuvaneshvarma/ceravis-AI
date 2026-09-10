@@ -164,12 +164,27 @@ class Settings(BaseSettings):
     talkback_port: int = 8800              # TP-Link's local media port (not ONVIF's)
     talkback_timeout_secs: float = 8.0     # connect / handshake / write ceiling
     talkback_mode: str = "aec"             # camera-side echo cancellation ("half" also exists)
-    # A held button that stops sending is a dropped phone, not a silent carer:
-    # release the camera so the next person can talk.
-    talkback_idle_timeout_secs: float = 10.0
-    # Hard ceiling on one continuous turn. Protects against a stuck button or a
-    # forgotten tab holding a household's speaker open indefinitely.
+    # How long a speaker session is HELD after the last word. The camera
+    # handshake costs ~100-300 ms, which is the difference between an intercom
+    # and a walkie-talkie that eats your first syllable — so the session stays
+    # open between presses and the second sentence starts instantly.
+    #
+    # It is a window, not a lease, because the camera has exactly ONE speaker: a
+    # held session locks out every other carer AND the Tapo app. This is the
+    # trade, and 90s is where it sits — long enough to hold a conversation,
+    # short enough that a walk-away hands the room back. It also covers the
+    # dropped phone: a client that stops sending is released, not waited on.
+    talkback_hold_secs: float = 90.0
+    # Ceiling on CONTINUOUS speech (a gap resets it). This is the stuck-button
+    # guard, and it is deliberately separate from the hold window above — the
+    # thing worth bounding is an open microphone, not a quiet connection.
     talkback_max_turn_secs: float = 300.0
+    # Outbound microphone gain, applied in the browser before G.711 encoding
+    # with a soft limiter (see static/talk-worklet.js) so raising it cannot
+    # clip into distortion. 1.0 = the microphone as captured. Raise it when a
+    # camera is far from the person, but remember the camera's OWN speaker
+    # volume lives in the Tapo app and is the bigger lever.
+    talkback_mic_gain: float = 1.0
 
     # ---- ONVIF (WiFi camera discovery / PTZ) --------------------------
     onvif_discovery_secs: float = 4.0      # WS-Discovery multicast listen window

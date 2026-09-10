@@ -50,8 +50,14 @@ class TalkProcessor extends AudioWorkletProcessor {
     this.filled = 0;
     this.peak = 0;
     this.muted = true;                          // starts silent: no hot mic
+    this.gain = 1;
     this.port.onmessage = (e) => {
-      if (e.data && e.data.type === "mute") this.muted = !!e.data.value;
+      if (!e.data) return;
+      if (e.data.type === "mute") this.muted = !!e.data.value;
+      // Clamped here, not at the caller: this is the last code that touches the
+      // samples, so it is the only place a bad number cannot get past.
+      else if (e.data.type === "gain")
+        this.gain = Math.max(0.1, Math.min(8, Number(e.data.value) || 1));
     };
   }
 
@@ -75,6 +81,12 @@ class TalkProcessor extends AudioWorkletProcessor {
       const a = Math.abs(v);
       if (a > this.peak) this.peak = a;
       if (this.muted) v = 0;
+      else if (this.gain !== 1) {
+        // Soft limiter, not a multiply. G.711 clips hard at full scale, so a
+        // plain gain turns a raised voice into a burst of noise; tanh bends the
+        // loud part instead of shearing it, and stays linear where it matters.
+        v = Math.tanh(v * this.gain);
+      }
 
       // Float [-1,1] -> 16-bit -> A-law, clipped rather than wrapped.
       let s = Math.round(v * 32767);

@@ -168,12 +168,18 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     await websocket.send_json({"type": "open", "camera_id": camera_id,
                                "session_id": session.session_id,
                                "sample_rate": SAMPLE_RATE, "codec": "alaw",
-                               "frame_bytes": FRAME_BYTES})
+                               "frame_bytes": FRAME_BYTES,
+                               "mic_gain": settings.talkback_mic_gain,
+                               "hold_secs": settings.talkback_hold_secs})
     logger.info("talk open on %s for %s", camera_id, holder)
 
     started = time.monotonic()
     last_audio = started
     last_stats = started
+    # When the CURRENT run of continuous speech began. Reset by any real gap, so
+    # the stuck-button ceiling measures an open microphone rather than a held
+    # connection — those are now different things (see talkback_hold_secs).
+    talking_since = 0.0
     reason = "client closed"
     # ONE long-lived receive task, waited on rather than cancelled. A fresh
     # wait_for(receive()) per iteration would cancel a receive mid-frame every
@@ -183,15 +189,17 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     try:
         while True:
             now = time.monotonic()
-            idle_left = settings.talkback_idle_timeout_secs - (now - last_audio)
-            turn_left = settings.talkback_max_turn_secs - (now - started)
-            if idle_left <= 0:
-                reason = "idle"
+            hold_left = settings.talkback_hold_secs - (now - last_audio)
+            turn_left = (settings.talkback_max_turn_secs - (now - talking_since)
+                         if talking_since else float("inf"))
+            if hold_left <= 0:
+                reason = "held too long without speech"
                 break
             if turn_left <= 0:
                 reason = "max turn length"
                 break
-            done, _ = await asyncio.wait({pending}, timeout=min(idle_left, turn_left))
+            done, _ = await asyncio.wait({pending},
+                                         timeout=min(hold_left, turn_left))
             if not done:
                 continue                        # a ceiling came due; re-check it
             message = pending.result()
@@ -201,6 +209,9 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
 
             chunk = message.get("bytes")
             if chunk is None:
+                # Text frames are control, never audio: they must NOT refresh the
+                # hold window, or a chatty client could hold a household's
+                # speaker forever without saying a word.
                 text = (message.get("text") or "").strip()
                 if '"stop"' in text:
                     reason = "client stopped"
@@ -210,7 +221,12 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
                 continue                        # keep-alive, or a client bug
             await session.send(chunk)
             hub.note_frame(camera_id)
-            last_audio = time.monotonic()
+            now = time.monotonic()
+            # A gap longer than a few frames means the button was released, so
+            # the next word starts a NEW turn against the stuck-button ceiling.
+            if not talking_since or now - last_audio > 1.0:
+                talking_since = now
+            last_audio = now
 
             if last_audio - last_stats >= 1.0:
                 last_stats = last_audio
