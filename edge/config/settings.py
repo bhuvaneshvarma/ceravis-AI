@@ -619,6 +619,10 @@ class Settings(BaseSettings):
     # timer and the API never disagree about when it runs.
     reboot_scheduled_enabled: bool = True
     reboot_window_start_hour: int = 3        # 03:00 local, randomised over 1h
+    # A scheduled reboot is refused in the first minutes after a boot. On RTC-less
+    # hardware a clock step can make the wall-clock timer fire right after boot;
+    # this is the final backstop that stops that ever becoming a boot→reboot loop.
+    reboot_min_uptime_secs: float = 600.0    # 10 min
     # A reboot must not strand an undelivered fall. The outbox is durable so
     # nothing is LOST, but delivery is delayed by the boot time — which is
     # exactly the delay an alert cannot afford. The scheduled run defers to

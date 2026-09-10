@@ -204,22 +204,42 @@ def safety_block(outbox=None) -> str | None:
 # =====================================================================
 #
 # The Jetson has no battery-backed RTC: on a cold boot it starts at the epoch
-# (1970-01-01) until systemd-timesyncd disciplines it over the network. A
-# realtime `OnCalendar` timer computed against a 1970 clock has its next-elapse
-# deep in the past the instant NTP steps the clock forward ~56 years — so systemd
-# fires it IMMEDIATELY, at whatever random daytime moment the sync landed, NOT at
-# 03:00. Because the reboot cold-boots straight back into 1970, that can loop.
-# `Persistent=false` does not help: it only governs runs missed while powered
-# OFF, not a clock step while running. So the scheduled path must verify the
-# clock itself before it acts — these two checks are that verification.
+# (1970-01-01) until it is disciplined over the network. A realtime `OnCalendar`
+# timer computed against a 1970 clock has its next-elapse deep in the past the
+# instant the clock steps forward ~56 years — so systemd fires it IMMEDIATELY, at
+# whatever random daytime moment the sync landed, NOT at 03:00. Because the reboot
+# cold-boots straight back into 1970, that can loop. `Persistent=false` does not
+# help: it only governs runs missed while powered OFF, not a clock step while
+# running. So the scheduled path must verify the clock and the window before it
+# acts. THREE independent checks, none of which can false-skip a healthy night:
+#   1. clock_trustworthy()  — the clock is not the 1970 boot clock (a YEAR test,
+#                             NOT the NTP 'synchronized' flag — see below).
+#   2. in_reboot_window()   — it really is 03:00–04:00, not a daytime clock step.
+#   3. uptime_secs()        — we are not seconds past a boot (loop backstop).
+
+_MIN_TRUSTWORTHY_YEAR = 2024        # anything earlier is the RTC-less boot clock
+
+
+def clock_trustworthy(now_local: datetime | None = None) -> bool:
+    """Is the wall clock sane enough to base a reboot decision on.
+
+    The PROVEN failure mode on this hardware is the 1970 boot clock, so the test
+    is a plausible YEAR. It deliberately does NOT gate on the NTP 'synchronized'
+    flag: on some L4T images timedatectl reports NTPSynchronized=no even when the
+    time is correct (a non-timesyncd NTP client, or timesyncd not the active
+    source), and gating on it skipped a valid 03:44 run and would skip the reboot
+    FOREVER on those boxes. The year test catches 1970 with no such false-skip;
+    in_reboot_window() catches a mid-day clock-step fire."""
+    n = now_local or clock.now()
+    return n.year >= _MIN_TRUSTWORTHY_YEAR
+
 
 def clock_synchronized() -> bool | None:
-    """Has the system clock been disciplined to a real time source yet.
-    True/False when it can be determined, None when it cannot (a non-systemd dev
-    box). Load-bearing on RTC-less hardware: a reboot decision taken on a 1970
-    clock fires at the wrong instant."""
-    # timesyncd creates this the moment it first syncs — the same signal
-    # systemd-time-wait-sync and time-sync.target gate on. Cheapest positive.
+    """Whether an NTP client reports the clock disciplined. ADVISORY ONLY — shown
+    in status so an operator can see the sync state; NOT a reboot gate (see
+    clock_trustworthy for why the flag is unreliable on L4T). True/False when it
+    can be read, None when it cannot (dev box / no NTP client)."""
+    # timesyncd creates this the moment it first syncs. Cheapest positive.
     try:
         if Path("/run/systemd/timesync/synchronized").exists():
             return True
@@ -241,6 +261,17 @@ def clock_synchronized() -> bool | None:
     return None                                    # can't tell (dev box)
 
 
+def uptime_secs() -> float | None:
+    """Seconds since boot from /proc/uptime, or None where it can't be read
+    (non-Linux dev box). Used to refuse a reboot in the first minutes after a
+    boot — a final backstop so nothing can turn into a boot→reboot loop."""
+    try:
+        with open("/proc/uptime", encoding="ascii") as fh:
+            return float(fh.read().split()[0])
+    except Exception:
+        return None
+
+
 def in_reboot_window(now_local: datetime | None = None,
                      grace_mins: int = 20) -> bool:
     """Is it REALLY the nightly reboot window right now.
@@ -249,7 +280,7 @@ def in_reboot_window(now_local: datetime | None = None,
     RandomizedDelaySec + a little service-start slack). A wall-clock timer that
     fired at a random daytime moment because the clock stepped forward at boot
     will NOT — so this is what turns those spurious fires into a safe skip.
-    The grace covers the randomised hour plus time-wait-sync + start latency."""
+    The grace covers the randomised hour plus start latency."""
     n = now_local or clock.now()
     start = settings.reboot_window_start_hour % 24
     minutes = n.hour * 60 + n.minute
@@ -378,13 +409,15 @@ def status(outbox=None) -> dict:
             "lockout_secs_remaining": round(lock_left, 1),
         },
         # The nightly reboot is a wall-clock decision, so whether the device even
-        # KNOWS the time is part of "will it reboot tonight". `synchronized:false`
-        # (or a `now_local` in 1970) means the clock hasn't been NTP-disciplined
-        # yet — the scheduled run refuses to act until it is.
+        # KNOWS the time is part of "will it reboot tonight". `trustworthy` is the
+        # actual gate (a 1970 boot clock reads false); `synchronized` is advisory
+        # (the NTP flag, unreliable on L4T — see clock_trustworthy).
         "clock": {
+            "trustworthy": clock_trustworthy(),
             "synchronized": clock_synchronized(),
             "now_local": clock.now_iso(),
             "in_window_now": in_reboot_window(),
+            "uptime_secs": uptime_secs(),
         },
         "safe_to_reboot": block is None,
         "blocked_reason": block,
