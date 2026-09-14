@@ -50,6 +50,24 @@ sudo systemctl enable systemd-time-wait-sync 2>/dev/null \
     && echo "systemd-time-wait-sync enabled (time-sync.target now means synced)" \
     || echo "note: systemd-time-wait-sync not available — the in-script clock guard still applies"
 
+# Persistent journal. By default this board keeps the journal in RAM (volatile),
+# so every power-cycle WIPES the record of what the nightly reboot did — leaving
+# `journalctl -u ceravis-reboot.service` empty and the reboot un-auditable after
+# the fact (the exact blind spot that made this hard to diagnose). Creating
+# /var/log/journal switches journald to on-disk; it self-caps at ~10% of the
+# disk, so it will not crowd out recordings. Best-effort.
+if [ ! -d /var/log/journal ]; then
+    if sudo mkdir -p /var/log/journal; then
+        sudo systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+        sudo journalctl --flush 2>/dev/null || true      # move RAM journal to disk now
+        echo "persistent journal enabled (/var/log/journal) — reboot history now survives"
+    else
+        echo "note: could not enable a persistent journal — decisions still land in data/cloud_calls.jsonl"
+    fi
+else
+    echo "persistent journal already on (/var/log/journal)"
+fi
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now ceravis-reboot.timer
 
