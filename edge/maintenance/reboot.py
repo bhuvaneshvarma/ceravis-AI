@@ -292,6 +292,58 @@ def in_reboot_window(now_local: datetime | None = None,
     return minutes >= lo or minutes < (hi - 24 * 60)
 
 
+def scheduled_decision(now_local: datetime | None = None,
+                       uptime: float | None = None,
+                       outbox=None) -> dict:
+    """Should the nightly reboot fire right now — with the reason for EVERY gate.
+
+    One pure, side-effect-free evaluation shared by the real run and the
+    `scheduled_reboot.py --explain` dry-run, so the decision is testable AND
+    observable on the device on demand, never a black box. Gates, in order:
+      enabled            REBOOT_SCHEDULED_ENABLED is on
+      clock_trustworthy  not the 1970 boot clock (year test)
+      in_window          really 03:00–04:00, not a daytime clock step
+      uptime_ok          not in the first minutes after a boot (loop backstop)
+      safety_clear       no undelivered critical alert queued
+    `reboot` is True only when every gate passes; `reason` names the first that
+    did not."""
+    now_local = now_local or clock.now()
+    if uptime is None:
+        uptime = uptime_secs()
+    min_up = settings.reboot_min_uptime_secs
+    gates = {
+        "enabled": bool(settings.reboot_scheduled_enabled),
+        "clock_trustworthy": clock_trustworthy(now_local),
+        "in_window": in_reboot_window(now_local),
+        "uptime_ok": uptime is None or uptime >= min_up,
+        "safety_clear": safety_block(outbox) is None,
+    }
+    reasons = {
+        "enabled": "scheduled reboot disabled (REBOOT_SCHEDULED_ENABLED=false)",
+        "clock_trustworthy": (f"clock reads {now_local.isoformat(timespec='seconds')} "
+                              f"(year {now_local.year}) — not corrected from the "
+                              f"1970 boot clock yet"),
+        "in_window": (f"fired at {now_local.strftime('%H:%M')}, outside the "
+                      f"{settings.reboot_window_start_hour % 24:02d}:00–"
+                      f"{(settings.reboot_window_start_hour + 1) % 24:02d}:00 "
+                      f"window (clock step, not the schedule)"),
+        "uptime_ok": (f"only {uptime:.0f}s since boot (< {min_up:.0f}s) — too soon "
+                      f"after a boot to reboot again"
+                      if uptime is not None else "uptime unknown"),
+        "safety_clear": safety_block(outbox) or "an alert is still queued",
+    }
+    first_fail = next((k for k in gates if not gates[k]), None)
+    return {
+        "reboot": first_fail is None,
+        "reason": ("all gates clear — rebooting" if first_fail is None
+                   else reasons[first_fail]),
+        "failed_gate": first_fail,
+        "gates": gates,
+        "now_local": now_local.isoformat(timespec="seconds"),
+        "uptime_secs": uptime,
+    }
+
+
 # =====================================================================
 # Execution + accountability
 # =====================================================================
@@ -330,11 +382,19 @@ def boot_report() -> dict | None:
 
 
 def perform(reason: str, actor: str, *, delay_secs: float | None = None) -> None:
-    """Log it, mark it, then reboot on a short delay.
+    """Log it, mark it, then reboot.
 
-    The delay exists so the HTTP response reaches the caller and the log line
-    reaches disk before the kernel goes down — a reboot nobody was told about
-    is indistinguishable from a crash."""
+    A positive delay exists so an HTTP response reaches the caller and the log
+    line reaches disk before the kernel goes down — a reboot nobody was told
+    about is indistinguishable from a crash. That path (the API) is a long-lived
+    server, so a background timer is safe there.
+
+    A delay of 0 is the SCHEDULED path: a short-lived script (tools/
+    scheduled_reboot.py) that exits the instant this returns. Running the reboot
+    in a daemon timer there is a race the reboot can LOSE — the interpreter tears
+    the daemon thread down at exit before `systemctl reboot` ever runs, which is
+    exactly how a nightly reboot silently does nothing. So with no delay we run
+    the command SYNCHRONOUSLY and let it take the machine down from this call."""
     delay = settings.reboot_delay_secs if delay_secs is None else delay_secs
     logger.warning("REBOOT requested (%s by %s) — going down in %.0fs",
                    reason, actor, delay)
@@ -344,14 +404,30 @@ def perform(reason: str, actor: str, *, delay_secs: float | None = None) -> None
 
     def _go() -> None:
         try:
-            subprocess.run(settings.reboot_command.split(), timeout=30,
-                           check=False)
+            r = subprocess.run(settings.reboot_command.split(), timeout=30,
+                               check=False, capture_output=True, text=True)
+            if r.returncode != 0:
+                # `systemctl reboot` normally never returns (the machine goes
+                # down). A non-zero return that we live to see means the reboot
+                # was REFUSED — almost always the sudoers/NOPASSWD rule is
+                # missing — so make it loud instead of a silent no-op.
+                logger.error("reboot command exited %d without rebooting: %s",
+                             r.returncode,
+                             (r.stderr or r.stdout or "").strip()[:200])
+                call_log.record(
+                    "event", False,
+                    label="Scheduled reboot command was REFUSED — device stayed up",
+                    error=(r.stderr or r.stdout or "").strip()[:200]
+                    or "check the NOPASSWD sudoers rule for /bin/systemctl reboot")
         except Exception:
             logger.exception("reboot command failed — device stayed up")
 
-    t = threading.Timer(delay, _go)
-    t.daemon = True
-    t.start()
+    if delay > 0:
+        t = threading.Timer(delay, _go)
+        t.daemon = True
+        t.start()
+    else:
+        _go()                                   # scheduled path: run it here, now
 
 
 # =====================================================================

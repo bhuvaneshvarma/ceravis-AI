@@ -9,10 +9,18 @@ reading the same files the service does. This process opens the same SQLite
 outbox and appends to the same console log, so operator and timer see one
 consistent story.
 
+Usage:
+  scheduled_reboot.py            # the real run: reboot if every gate is clear
+  scheduled_reboot.py --explain  # print the decision + every gate, NEVER reboot
+  scheduled_reboot.py --force    # reboot NOW, bypassing the time-of-day gates
+                                 # (still honours the safety deferral) — the
+                                 # end-to-end "does it actually reboot" test
+
 Exit codes are for `systemctl status` / journalctl:
   0  rebooting, or deliberately skipped tonight (both are correct outcomes)
   1  something failed and no decision could be made
 """
+import json
 import logging
 import sys
 from pathlib import Path
@@ -41,59 +49,70 @@ def _outbox():
         return None
 
 
-def main() -> int:
-    if not settings.reboot_scheduled_enabled:
+def _explain(decision: dict) -> int:
+    """Print the decision and every gate, and reboot NOTHING. The tool that ends
+    the guessing: run it on the device and read exactly what tonight's run will
+    do, with the real clock, window, uptime and outbox."""
+    verdict = "WOULD REBOOT" if decision["reboot"] else "WOULD SKIP"
+    print(f"\n  scheduled reboot decision: {verdict}")
+    print(f"  now (device-local): {decision['now_local']}")
+    up = decision["uptime_secs"]
+    print(f"  uptime: {up:.0f}s" if up is not None else "  uptime: unknown")
+    print(f"  window: {settings.reboot_window_start_hour % 24:02d}:00–"
+          f"{(settings.reboot_window_start_hour + 1) % 24:02d}:00 (+grace)")
+    print("  gates:")
+    for name, ok in decision["gates"].items():
+        print(f"    {'PASS' if ok else 'FAIL'}  {name}")
+    print(f"  => {decision['reason']}\n")
+    # Also dump machine-readable, so it can be grepped/piped.
+    print(json.dumps(decision, default=str))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    explain = "--explain" in argv or "--dry-run" in argv
+    force = "--force" in argv
+
+    if not settings.reboot_scheduled_enabled and not force:
         log.info("scheduled reboot is disabled (REBOOT_SCHEDULED_ENABLED=false)")
+        if explain:
+            return _explain(reboot.scheduled_decision(outbox=_outbox()))
         return 0
 
-    # --- clock trust (RTC-less hardware) --------------------------------------
-    # This board boots at 1970 until it is disciplined over the network, and a
-    # wall-clock timer can then fire at a random daytime moment (see
-    # maintenance/reboot.py). Refuse to reboot unless the clock is sane AND it is
-    # genuinely the nightly window AND we are not seconds past a boot — otherwise
-    # a clock step would reboot the device mid-day, cold-boot back into 1970 and
-    # loop. None of these can false-skip a healthy night. Skipping is always a
-    # correct outcome (exit 0): a missed night is just a missed night.
-    now_local = reboot.clock.now()
-    if not reboot.clock_trustworthy(now_local):
-        log.warning("SKIPPING reboot — clock reads %s (year %d); it has not been "
-                    "corrected from the RTC-less boot clock yet",
-                    now_local.isoformat(timespec="seconds"), now_local.year)
-        call_log.record(
-            "event", True,
-            label="INFO · Nightly reboot skipped · clock still on the 1970 boot value")
-        return 0
-    if not reboot.in_reboot_window(now_local):
-        log.warning("SKIPPING reboot — fired at %s, outside the %02d:00–%02d:00 "
-                    "window; this is a clock step, not the schedule",
-                    now_local.isoformat(timespec="seconds"),
-                    settings.reboot_window_start_hour % 24,
-                    (settings.reboot_window_start_hour + 1) % 24)
-        call_log.record(
-            "event", True,
-            label=("INFO · Nightly reboot skipped · fired outside the window at "
-                   + now_local.strftime("%H:%M") + " (clock step, not schedule)"))
-        return 0
-    up = reboot.uptime_secs()
-    if up is not None and up < settings.reboot_min_uptime_secs:
-        log.warning("SKIPPING reboot — only up %.0fs (< %.0fs); too soon after a "
-                    "boot to reboot again (loop backstop)",
-                    up, settings.reboot_min_uptime_secs)
-        call_log.record(
-            "event", True,
-            label=f"INFO · Nightly reboot skipped · only {up:.0f}s since boot")
+    # ONE decision, evaluated once (see maintenance/reboot.scheduled_decision):
+    # the clock is sane (not the 1970 boot clock), it is really the 03:00–04:00
+    # window (not a daytime clock step), we are not seconds past a boot (loop
+    # backstop), and no alert is queued. None of these can false-skip a healthy
+    # night. Skipping is always a correct outcome (exit 0).
+    decision = reboot.scheduled_decision(outbox=_outbox())
+
+    if explain:
+        return _explain(decision)
+
+    if force:
+        # The end-to-end execution test: bypass the time-of-day gates but keep
+        # the safety deferral, then reboot through the REAL path. Proves the
+        # reboot actually happens, at any hour, without waiting for 03:00.
+        block = reboot.safety_block(_outbox())
+        if block:
+            log.warning("--force: NOT rebooting — %s", block)
+            return 0
+        log.warning("--force: rebooting NOW (time-of-day gates bypassed)")
+        reboot.perform("forced test", "operator (--force)", delay_secs=0.0)
         return 0
 
-    block = reboot.safety_block(_outbox())
-    if block:
-        log.warning("SKIPPING tonight's reboot — %s", block)
-        call_log.record("event", True,
-                        label=f"INFO · Nightly reboot skipped · {block}")
+    if not decision["reboot"]:
+        log.warning("SKIPPING reboot — %s", decision["reason"])
+        call_log.record(
+            "event", True,
+            label=f"INFO · Nightly reboot skipped · {decision['reason']}")
         return 0
 
-    log.info("safety check clear — rebooting")
+    log.info("all gates clear — rebooting")
     # delay_secs=0: nothing is waiting on an HTTP response here, and systemd has
-    # already captured the log line.
+    # already captured the log line. perform() runs the reboot SYNCHRONOUSLY at
+    # delay 0 (a daemon timer would be killed when this short-lived script exits).
     reboot.perform("scheduled nightly", "systemd timer", delay_secs=0.0)
     return 0
 
