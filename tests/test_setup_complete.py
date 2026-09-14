@@ -110,17 +110,20 @@ check("the doctor checks the tunnel is really keyed", "frpc routes" in DOC)
 
 
 print("\n7. a missing file must not brick the service")
-# jetson.env is gitignored and generated, so a fresh clone legitimately has
-# none. systemd treats a BARE EnvironmentFile= as fatal and reports it as
-# "unavailable resources or another system error" — a message that names
-# nothing and sends you hunting the wrong thing.
+# jetson.env is gitignored and generated, so a fresh clone legitimately has none.
+# The 'tolerate missing' marker is `EnvironmentFile=-/path` — the '-' on the VALUE.
+# Putting it on the KEY (`-EnvironmentFile=`) is an unknown key systemd rejects and
+# IGNORES with a journal warning, silently dropping the file — the exact bug this
+# now guards against.
 for unit in ("ceravis.service", "ceravis-reboot.service"):
     u = io.open(ROOT / "edge/infra/systemd" / unit, encoding="utf-8").read()
     envlines = [l.strip() for l in u.splitlines()
-                if l.strip().startswith(("EnvironmentFile=", "-EnvironmentFile="))]
+                if l.strip().startswith("EnvironmentFile=")]
     check(f"{unit} has an EnvironmentFile", bool(envlines), str(envlines))
-    check(f"{unit} tolerates it missing (leading '-')",
-          all(l.startswith("-") for l in envlines), str(envlines))
+    check(f"{unit} tolerates it missing ('-' on the value: EnvironmentFile=-/…)",
+          all(l.startswith("EnvironmentFile=-/") for l in envlines), str(envlines))
+    check(f"{unit} has NO broken '-EnvironmentFile=' key",
+          not any(l.strip().startswith("-EnvironmentFile=") for l in u.splitlines()))
 
 
 
