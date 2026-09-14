@@ -108,9 +108,17 @@ settings.reboot_defer_on_pending_alerts = prev
 
 
 print("\n4. accountability marker")
+
+
+class _FakeProc:                       # stand-in for subprocess.CompletedProcess
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
 calls: list = []
 real_run = reboot.subprocess.run
-reboot.subprocess.run = lambda *a, **k: calls.append(a)      # never actually reboot
+reboot.subprocess.run = lambda *a, **k: (calls.append(a) or _FakeProc())  # never reboot
 try:
     reboot.perform("unit test", "pytest", delay_secs=0.01)
     check("marker written BEFORE the reboot fires", reboot._MARKER_FILE.exists())
@@ -118,12 +126,22 @@ try:
     check("marker records the reason", marker.get("reason") == "unit test", str(marker))
     check("marker records the actor", marker.get("actor") == "pytest")
     time.sleep(0.2)
-    check("the reboot command was invoked", len(calls) == 1, f"{len(calls)} call(s)")
+    check("the reboot command was invoked (delayed path)", len(calls) == 1,
+          f"{len(calls)} call(s)")
+    # The scheduled path passes delay 0 and then exits immediately — the reboot
+    # MUST run synchronously (a daemon timer would be killed on exit). So the
+    # command must already have been invoked by the time perform() returns, with
+    # NO sleep.
+    calls.clear()
+    reboot.perform("sync test", "pytest", delay_secs=0.0)
+    check("delay 0 runs the reboot SYNCHRONOUSLY (before perform returns)",
+          len(calls) == 1, f"{len(calls)} call(s) with no wait")
 finally:
     reboot.subprocess.run = real_run
 
 report = reboot.boot_report()
-check("boot_report returns the marker", report is not None and report.get("reason") == "unit test")
+check("boot_report returns the marker",         # "sync test" = the last perform above
+      report is not None and report.get("reason") == "sync test", str(report))
 check("marker is CLEARED so it reports once only", not reboot._MARKER_FILE.exists())
 check("boot_report is None when nothing rebooted us", reboot.boot_report() is None)
 
@@ -180,6 +198,29 @@ settings.reboot_window_start_hour = prev_hour
 synced = reboot.clock_synchronized()
 check("clock_synchronized() returns True/False/None, never raises",
       synced in (True, False, None), repr(synced))
+
+
+print("\n7. the one scheduled decision (shared by the run + --explain)")
+settings.reboot_window_start_hour = 3
+in_win = datetime(2026, 9, 14, 3, 30, tzinfo=IST)      # trustworthy + in window
+out_win = datetime(2026, 9, 14, 13, 23, tzinfo=IST)    # the real daytime fires
+d = reboot.scheduled_decision(now_local=in_win, uptime=100000, outbox=_Outbox(0))
+check("clean night in-window => reboot", d["reboot"] is True and d["failed_gate"] is None,
+      d["reason"])
+d = reboot.scheduled_decision(now_local=out_win, uptime=100000, outbox=_Outbox(0))
+check("a 13:23 daytime fire => skip on the window",
+      d["reboot"] is False and d["failed_gate"] == "in_window", d["reason"])
+d = reboot.scheduled_decision(now_local=in_win, uptime=30, outbox=_Outbox(0))
+check("seconds after boot => skip on uptime",
+      d["reboot"] is False and d["failed_gate"] == "uptime_ok", d["reason"])
+d = reboot.scheduled_decision(now_local=in_win, uptime=100000, outbox=_Outbox(3))
+check("a queued alert => skip on safety",
+      d["reboot"] is False and d["failed_gate"] == "safety_clear", d["reason"])
+d = reboot.scheduled_decision(
+    now_local=datetime(1970, 1, 1, 3, 30, tzinfo=IST), uptime=100000, outbox=_Outbox(0))
+check("the 1970 boot clock => skip on clock_trustworthy",
+      d["reboot"] is False and d["failed_gate"] == "clock_trustworthy", d["reason"])
+settings.reboot_window_start_hour = prev_hour
 
 
 if failures:
