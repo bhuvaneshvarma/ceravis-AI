@@ -1,0 +1,43 @@
+# CERAVIS fleet agent — keeps this device in touch with the Fleet Management
+# Server (health every ~60 s, admins' orders back). Installed by
+# setup/install_fleet_agent.sh, which substitutes the real repo path and user.
+# Don't edit the /etc copy by hand; re-run the installer instead.
+#
+# Its own unit on purpose: if the agent stops, the edge app is untouched; if the
+# edge app stops, the agent is still here to report exactly that. No per-device
+# settings — FMS_URL + FMS_ENROLL_KEY come from jetson.env (the same for every
+# device); on first start the agent enrolls itself and keeps its edge_id + key
+# in its StateDirectory (/var/lib/ceravis-fleet-agent), never in the repo.
+[Unit]
+Description=CERAVIS fleet agent (reports this device to the Fleet Management Server)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ceravis
+WorkingDirectory=/home/ceravis/ceravis2/edge/fleet
+EnvironmentFile=-/home/ceravis/ceravis2/edge/infra/env/jetson.env
+Environment=PYTHONPATH=/home/ceravis/ceravis2/edge/fleet
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=ceravis-fleet-agent
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 -m fms_agent
+Restart=always
+RestartSec=10
+
+# Kernel-enforced caps: the agent can never starve the AI pipeline it watches.
+CPUQuota=10%
+MemoryMax=128M
+TasksMax=32
+Nice=10
+
+# Hardening. (No NoNewPrivileges: the two allow-listed restarts go through sudo.)
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target
