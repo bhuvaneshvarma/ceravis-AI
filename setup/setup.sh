@@ -7,7 +7,7 @@
 #   [1/6] deps        — apt + pip stack, MediaMTX, hotspot
 #   [2/6] engines     — YOLO26m detect+pose AND the ReID engine -> FP16 TRT
 #   [3/6] tunnel      — frpc + the privileged apply-edge-id helper
-#   [4/6] services    — ceravis + the nightly reboot timer, started and enabled
+#   [4/6] services    — ceravis, the nightly reboot timer and the fleet agent
 #   [5/6] reboot pw   — password for the MANUAL reboot endpoint (optional)
 #   [6/6] doctor      — full verification gate
 #
@@ -53,6 +53,9 @@ fi
 stage "4/6" "systemd services"
 bash "$SCRIPTS_DIR/install_service.sh"
 bash "$SCRIPTS_DIR/install_reboot_timer.sh"
+# The fleet agent enrolls this device with the Fleet Management Server by
+# itself (FMS_URL + FMS_ENROLL_KEY from jetson.env) — no keys to copy.
+bash "$SCRIPTS_DIR/install_fleet_agent.sh"
 sudo systemctl restart ceravis
 
 # ---- [5/6] reboot password --------------------------------------------

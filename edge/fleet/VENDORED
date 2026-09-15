@@ -1,0 +1,12 @@
+# Vendored from github.com/bhuvaneshvarma/ceravis-FMS — DO NOT EDIT here.
+# source commit: 98d2056  (re-vendor with tools/vendor_agent.py)
+
+53905db579ad9e5062521d76aa03e3526367dc598d1e88de1bf7d8d907eebc4b  fms_agent/__init__.py
+e60a6ba566b8ae1c367d938ddef7027b5eb5a6a7d393d6fc23c828dc42fdf298  fms_agent/__main__.py
+2df81a4d66899c8d8fbf575b0dd51d90b6a6d7f6f71197fd3018a67fbeb05728  fms_agent/agent.py
+a8de08ed1d87e13b6375de1fef43169f7058635fab9ccd5ba28c2aab0b33022b  fms_agent/collect.py
+f02feefe25fb61127fc37bab15d2cc85683c8ec78b31d82eec24a03eacfe594e  fms_agent/commands.py
+ecd65d37acb0f1c5e3d5f2ce5e931a3b71e797ff2576dfb04242c1e6c3fa1910  fms_agent/config.py
+f36f7c82bcaa1117cae3559466f298e334ed256972d980d8b251d7c936ad4d03  fms_agent/identity.py
+8189da0507aa44f03042e275a32e7b0be03584396a8cffafcfef9bb9db37c1da  fms_agent/transport.py
+a7d01a4573e266d407afabfc847e690e05745b01c81c6ed7c4a1399dee66337e  fms_protocol/__init__.py

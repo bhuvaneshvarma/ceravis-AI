@@ -150,6 +150,12 @@ if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis.service'; then
 else
     warn "ceravis.service not installed" "bash setup/install_service.sh"
 fi
+if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis-fleet-agent.service'; then
+    [ "$(systemctl is-active ceravis-fleet-agent 2>/dev/null)" = "active" ]         && ok "ceravis-fleet-agent.service active"         || warn "fleet agent installed but not running" "journalctl -u ceravis-fleet-agent -n 30"
+    [ -e /var/lib/ceravis-fleet-agent/identity.json ]         && ok "enrolled with the Fleet Management Server"         || warn "not enrolled with the fleet yet" "journalctl -u ceravis-fleet-agent -n 20 says why"
+else
+    warn "fleet agent not installed" "bash setup/install_fleet_agent.sh"
+fi
 
 # ---- 10. Fleet tunnel + hotspot ------------------------------------
 echo "-- tunnel + hotspot"
