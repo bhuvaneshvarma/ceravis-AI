@@ -124,6 +124,14 @@ for unit in ("ceravis.service", "ceravis-reboot.service"):
           all(l.startswith("EnvironmentFile=-/") for l in envlines), str(envlines))
     check(f"{unit} has NO broken '-EnvironmentFile=' key",
           not any(l.strip().startswith("-EnvironmentFile=") for l in u.splitlines()))
+    # The reboot service imports the app's `pip --user` deps (pydantic_settings,
+    # …), which live under the service account — so it must NOT run as root, or
+    # the import fails and the nightly reboot silently never happens. (The
+    # installer substitutes the real account, but root here would be a regression.)
+    users = [l.split("=", 1)[1].strip() for l in u.splitlines()
+             if l.strip().startswith("User=")]
+    check(f"{unit} does NOT run as root (needs the service account's --user deps)",
+          users and all(usr != "root" for usr in users), str(users))
 
 
 

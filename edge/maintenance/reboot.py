@@ -29,7 +29,10 @@ Three things live here because they are one decision, not three:
 
 The SCHEDULED reboot deliberately does not take a password: it is the device
 restarting itself on a timer nobody is present for. Its authorisation is that
-systemd owns the timer, and root owns systemd.
+systemd owns the timer. The timer's service runs as the SERVICE ACCOUNT (not
+root — it must import the app's `pip --user` deps), and the reboot itself goes
+through the same NOPASSWD sudoers rule the manual path uses
+(settings.reboot_command = "sudo -n /bin/systemctl reboot").
 """
 
 import base64

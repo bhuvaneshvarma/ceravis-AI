@@ -11,7 +11,13 @@ UNIT_DIR="$REPO_DIR/edge/infra/systemd"
 SVC_USER="${SUDO_USER:-$USER}"
 
 for unit in ceravis-reboot.service ceravis-reboot.timer; do
+    # Substitute BOTH the repo path AND the service user. The user matters: the
+    # service runs scheduled_reboot.py, which imports the app's pip --user deps
+    # (pydantic_settings, …) that live under this account — so it MUST run as this
+    # user, not root, or the import fails and the reboot never happens. Mirrors
+    # install_service.sh so both units run as the same account.
     sed -e "s|/home/ceravis/ceravis2|$REPO_DIR|g" \
+        -e "s|^User=.*|User=$SVC_USER|" \
         "$UNIT_DIR/$unit" | sudo tee "/etc/systemd/system/$unit" >/dev/null
 done
 
