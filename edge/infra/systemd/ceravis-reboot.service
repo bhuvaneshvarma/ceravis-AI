@@ -16,11 +16,18 @@ Wants=time-sync.target
 
 [Service]
 Type=oneshot
-# Runs as root because it ends in `systemctl reboot`. It does NOT need the
-# reboot password: nobody is present at 03:00, and the authorisation here is
-# that root owns the timer. The password guards the MANUAL path, where a caller
-# is asserting they are allowed to take a care device offline.
-User=root
+# Runs as the SERVICE ACCOUNT (ceravis), NOT root — installer substitutes the
+# real user. This is load-bearing, and running as root was a real bug: the app's
+# Python deps (pydantic_settings, …) are installed `pip install --user` under the
+# service account, so root's interpreter can't import them and the script died at
+# `import settings` before evaluating a single gate — the timer fired nightly and
+# nothing happened. Running as this user also keeps edge/data/ files (marker,
+# call_log) owned by the app instead of root. The reboot itself is authorised by
+# the NOPASSWD sudoers rule granted to THIS user (see install_reboot_timer.sh) and
+# invoked via settings.reboot_command = "sudo -n /bin/systemctl reboot" — the same
+# command and rule the manual API path uses. No reboot password: nobody is present
+# at 03:00; the password guards only the MANUAL path.
+User=ceravis
 WorkingDirectory=/home/ceravis/ceravis2/edge
 # NOTE the '-' on the VALUE (EnvironmentFile=-/path): a MISSING env file must not
 # stop the service. The '-' belongs on the path, NOT the key — `-EnvironmentFile=`
