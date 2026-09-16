@@ -45,13 +45,33 @@ def _abs(p: str | Path) -> Path:
     return p if p.is_absolute() else (_EDGE_ROOT / p)
 
 
+def log_path() -> Path:
+    """Where MediaMTX's own output lands — the ONE place its death is explained."""
+    return _abs(settings.data_path) / "mediamtx.log"
+
+
+def recent_log(lines: int = 12) -> list[str]:
+    """Last few non-empty lines of MediaMTX's log.
+
+    When the backbone is down this is the actual cause — "unknown field" (a
+    config key this MediaMTX build rejects, so it exits on boot and NOTHING
+    binds), "address already in use", a missing cert. Surfaced on /system/status
+    so the reason is readable without SSH-ing to the device."""
+    try:
+        text = log_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return [ln.strip() for ln in text.splitlines() if ln.strip()][-max(1, lines):]
+
+
 class MediaMTXSupervisor:
     def __init__(self) -> None:
         self._proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
         self._running = False
         self._config_file = _abs(settings.data_path) / "mediamtx.yml"
-        self._log_file = _abs(settings.data_path) / "mediamtx.log"
+        self._log_file = log_path()
+        self._crash_reported = False
         self.available = False
 
     # ---- lifecycle ---------------------------------------------------
@@ -127,11 +147,25 @@ class MediaMTXSupervisor:
                 backoff = min(backoff * 2, 30.0)
                 continue
             backoff = 1.0
+            started_at = time.monotonic()
             while self._running and self._proc.poll() is None:
                 time.sleep(1.0)
             if self._running:                       # died — respawn
-                logger.warning("MediaMTX exited (code %s) — restarting",
-                               self._proc.returncode)
+                alive = time.monotonic() - started_at
+                logger.warning("MediaMTX exited (code %s after %.0fs) — restarting",
+                               self._proc.returncode, alive)
+                # A healthy run that later died re-arms the alarm; a crash-LOOP
+                # reports once, so a failing config cannot flood the console.
+                if alive >= 30.0:
+                    self._crash_reported = False
+                if not self._crash_reported:
+                    self._crash_reported = True
+                    call_log.record(
+                        "event", False,
+                        label="Media backbone DOWN — live view & recording are dead",
+                        error="mediamtx exited (code %s): %s" % (
+                            self._proc.returncode,
+                            " | ".join(recent_log(4)) or "see data/mediamtx.log"))
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
