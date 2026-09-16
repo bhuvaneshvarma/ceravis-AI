@@ -124,7 +124,13 @@ def aac_republish_cmd(src_path: str, out_path: str) -> str:
     keeps mic-less cameras publishing video-only instead of dying. (src_path is
     the slash live path; RTSP handles slashes fine.)"""
     port = settings.mediamtx_rtsp_port
-    return (f"{settings.ffmpeg_binary} -hide_banner -loglevel warning "
+    # -loglevel ERROR, not warning: a camera with duplicate DTS makes FFmpeg
+    # emit "Non-monotonous DTS" PER PACKET. It self-corrects ("changing to
+    # ...+1") so it is pure noise, but MediaMTX inherits this child's stdio
+    # into data/mediamtx.log — the ONE place its own death is explained —
+    # and the flood rotated that file (5 MB cap) before anyone could read
+    # it. Real faults still print; the per-packet chatter does not.
+    return (f"{settings.ffmpeg_binary} -hide_banner -loglevel error "
             f"-rtsp_transport tcp -i rtsp://127.0.0.1:{port}/{src_path} "
             f"-map 0:v:0 -map 0:a:0? -c:v copy "
             f"-c:a aac -ar 16000 -ac 1 -b:a 32k "
