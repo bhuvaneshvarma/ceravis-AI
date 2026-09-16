@@ -42,7 +42,14 @@ UTC_EXEMPT = {"edge/onvif/soap.py"}
 # outbox_sender schedules the next retry into a PERSISTED SQLite column
 # (outbox.next_attempt REAL). That has to be wall-clock epoch: a monotonic value
 # is meaningless after the restart the queue exists to survive.
-DEADLINE_EXEMPT = {"edge/integration/outbox_sender.py"}
+#
+# The fleet agent SIGNS a wall-clock timestamp into each request (HMAC replay
+# window); the FMS validates it against ITS clock, so a monotonic value would be
+# unverifiable. `clock_offset` is the device's measured skew, applied on purpose
+# — it is a correction, not a deadline. The real duration beside it already uses
+# time.monotonic().
+DEADLINE_EXEMPT = {"edge/integration/outbox_sender.py",
+                   "edge/fleet/fms_agent/transport.py"}
 
 RX_UTCNOW = re.compile(r"\bdatetime\.utcnow\s*\(")
 RX_NOW_UTC = re.compile(r"datetime\.now\(\s*timezone\.utc\s*\)")
