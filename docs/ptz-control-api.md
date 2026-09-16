@@ -330,7 +330,7 @@ Backend integrations should use the label-based `/api/v1/cameras/ptz` exclusivel
 | `ptz_max_move_ms` | `PTZ_MAX_MOVE_MS` | `2000` | Hard ceiling on one move; `durationMs` is clamped to it and a missing duration becomes it. |
 
 It lives in [edge/config/settings.py:157](edge/config/settings.py:157); override
-per-device in `infra/env/jetson.env` or the machine-local `jetson.env`, then
+per-device in `edge/infra/env/jetson.env` — the one env file — then
 `sudo systemctl restart ceravis`.
 
 ---
