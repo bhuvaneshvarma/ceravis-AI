@@ -22,6 +22,7 @@ import logging
 import shutil
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -53,13 +54,24 @@ def _record_root() -> Path:
 
 
 class RecordingController:
-    def __init__(self, detections: DetectionBuffer) -> None:
+    def __init__(self, detections: DetectionBuffer, frame_buffer=None) -> None:
         self._detections = detections
         self._cameras = CameraConfig()
         self._running = False
         self._thread: threading.Thread | None = None
         self._recording: dict[str, bool] = {}      # camera_id -> currently recording
         self._last_person: dict[str, float] = {}   # camera_id -> monotonic time
+        # Recording-trigger precision (see _qualifying_person + _present): a
+        # rolling window of "did a real-sized person qualify this poll" per
+        # camera, so a phantom that flickers for a poll or two never opens a clip.
+        # (Ignore-zone masking happens upstream in DetectionRunner, so excluded
+        # boxes never reach this buffer at all.)
+        self._qual_polls: dict[str, deque] = {}
+        # Saves one annotated still when a clip opens (audit of what triggered
+        # it). None frame_buffer or the setting off = no proof stills; recording
+        # is completely unaffected either way. See recording/proof.py.
+        from recording.proof import ProofWriter
+        self._proof = ProofWriter(frame_buffer)
         # camera_id -> when its CURRENT recording state began (edge-local wall
         # clock). ONE fact with two readers: /recordings/status reports it as
         # `since`, and a "finalized" event uses it as the stretch's `start` (so
@@ -276,13 +288,49 @@ class RecordingController:
             if on:
                 self._set(cam, False)
         self._last_person.clear()
+        self._qual_polls.clear()               # reset the persistence window
+
+    def _qualifying_person(self, cam: str, result) -> bool:
+        """Is there a box in this result plausibly big enough to be a REAL person
+        — not a person on a distant TV/monitor, a framed photo, or a tiny
+        reflection? The box must cover >= record_min_person_area_frac of the
+        frame AREA (not height, so a FALLEN, horizontal person still passes).
+        Confidence is already applied upstream at detection, and drawn ignore
+        regions (TV/photo/mirror) are already masked in DetectionRunner, so this
+        need only judge size.
+
+        Frame size unknown (older producer) -> the size gate is skipped rather
+        than withholding footage on missing information."""
+        fa = float(result.frame_w) * float(result.frame_h)
+        min_area = settings.record_min_person_area_frac * fa if fa > 0 else 0.0
+        for d in result.detections:
+            if d.bbox.area >= min_area:
+                return True
+        return False
+
+    def _present(self, cam: str, qualifies: bool) -> bool:
+        """PERSISTENCE: fold this poll's verdict into a rolling window and report
+        whether a person is present — >= confirm qualifying polls out of the last
+        `window`. A phantom that flickers for a poll or two never reaches the bar;
+        a real person builds to it in ~confirm*poll seconds. It only gates the
+        START of a clip: once recording, each sustained poll keeps this true and
+        post-roll is what ends the clip — the middle is never chopped."""
+        win = max(1, settings.record_start_window_polls)
+        need = max(1, settings.record_start_confirm_polls)
+        dq = self._qual_polls.get(cam)
+        if dq is None or dq.maxlen != win:
+            dq = deque(dq or (), maxlen=win)
+            self._qual_polls[cam] = dq
+        dq.append(1 if qualifies else 0)
+        return sum(dq) >= need
 
     def _tick(self) -> None:
         now = time.monotonic()
         wall = clock.now()
         for cam, result in self._detections.get_all().items():
             fresh = (wall - result.timestamp).total_seconds() <= _FRESH_SECS
-            if fresh and result.detections:          # YOLO only emits persons
+            qualifies = fresh and self._qualifying_person(cam, result)
+            if self._present(cam, qualifies):
                 self._last_person[cam] = now
             last = self._last_person.get(cam)
             want = last is not None and \
@@ -290,7 +338,10 @@ class RecordingController:
             if want and not self._recordable(cam):
                 want = False               # unplayable codec — see _recordable
             if want != self._recording.get(cam, False):
+                if want:                   # OFF -> ON: save the proof still first
+                    self._proof.capture(cam, result)
                 self._set(cam, want)
+        self._proof.sweep()                # throttled housekeeping (once per tick)
 
     def set_event_sink(self, sender) -> None:
         """Attach the cloud reporter (integration.outbox_sender.OutboxSender).

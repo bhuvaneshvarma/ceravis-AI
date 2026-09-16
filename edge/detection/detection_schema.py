@@ -86,3 +86,10 @@ class DetectionResult(BaseModel):
     timestamp: datetime
 
     detections: list[Detection]
+
+    # The size of the frame these boxes were found in. Lets any consumer judge a
+    # box's size as a FRACTION of the frame (resolution- and camera-independent)
+    # without reaching for the frame buffer — e.g. the recording trigger refusing
+    # to record a person too small to be real. 0 = not stamped (older producers).
+    frame_w: int = 0
+    frame_h: int = 0

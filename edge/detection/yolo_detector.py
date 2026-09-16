@@ -49,8 +49,10 @@ class YOLODetector:
         canvas, r, dw, dh = letterbox(frame, self._size)
         outputs = self._engine.infer(to_blob(canvas))
         dets = self._postprocess(outputs, camera_id, frame_id, timestamp, r, dw, dh)
+        fh, fw = frame.shape[:2]
         return DetectionResult(camera_id=camera_id, frame_id=frame_id,
-                               timestamp=timestamp, detections=dets)
+                               timestamp=timestamp, detections=dets,
+                               frame_w=int(fw), frame_h=int(fh))
 
     # ---- postprocess -------------------------------------------------
     def _postprocess(self, outputs, camera_id, frame_id, timestamp,

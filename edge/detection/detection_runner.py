@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime
 
+from common.zone_resolver import ZoneResolver
 from config.settings import settings
 from detection.detection_buffer import DetectionBuffer
 from detection.yolo_detector import YOLODetector
@@ -33,6 +34,13 @@ class DetectionRunner:
     ) -> None:
         self._frame_buffer = frame_buffer
         self._detection_buffer = detection_buffer
+        # Drawn IGNORE regions (a TV, a monitor wall, a framed photo, a mirror):
+        # a "person" whose FOOT point lands in one is dropped HERE, at the source,
+        # so it never becomes a track, a recording, a visitor snapshot or any
+        # event — one mechanism protecting the whole chain. Opt-in (no ignore
+        # zone drawn = no effect); foot-point, so a real person standing in FRONT
+        # of a wall screen is untouched.
+        self._zones = ZoneResolver()
         self._metrics = (
             metrics_registry.get_or_create("detection")
             if metrics_registry else None
@@ -123,9 +131,22 @@ class DetectionRunner:
                 latency = time.perf_counter() - t
                 if self._metrics:
                     self._metrics.record(latency)
+                result = self._drop_excluded(result)
                 self._detection_buffer.update(result)
                 self._frames_processed += 1
                 self._detections_generated += len(result.detections)
                 self._last_inference_time = clock.now()
             except Exception:
                 logger.exception("Detection failed camera=%s", camera_id)
+
+    def _drop_excluded(self, result):
+        """Remove person boxes whose FOOT point falls in a drawn ignore zone —
+        the single, source-level place a TV/photo/mirror region is masked from
+        every downstream consumer. No zones drawn -> returns the result
+        unchanged (the common case, and a cheap cached lookup)."""
+        kept = [d for d in result.detections
+                if not self._zones.is_excluded(
+                    result.camera_id, (d.bbox.x1 + d.bbox.x2) / 2.0, d.bbox.y2)]
+        if len(kept) != len(result.detections):
+            result.detections = kept
+        return result

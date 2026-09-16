@@ -121,7 +121,8 @@ class Pipeline:
         if via_mediamtx:
             try:
                 from recording.controller import RecordingController
-                recording_controller = RecordingController(detection_buffer)
+                recording_controller = RecordingController(
+                    detection_buffer, frame_buffer=frames)
                 recording_controller.start()
             except Exception:
                 logger.exception("RecordingController disabled")
