@@ -57,6 +57,9 @@ class _FakeZones:
 def _controller():
     c = RecordingController.__new__(RecordingController)   # skip MediaMTX/config init
     c._qual_polls = {}
+    c._recording = {}
+    c._backbone_ok = None
+    c._backbone_checked = 0.0
     return c
 
 
@@ -158,6 +161,28 @@ finally:
     settings.record_proof_frames, settings.record_retention_hours = o_enabled, o_ret
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+print("\n5. the recorder survives a MediaMTX outage and self-heals")
+# Recording used to be gated on a ONE-SHOT boot flag: a MediaMTX that was merely
+# LATE left recording dead until someone restarted the service. It now watches
+# the backbone itself, so an outage pauses recording and its return resumes it.
+import recording.controller as ctrlmod                            # noqa: E402
+c6 = _controller()
+c6._recording = {"camA": True}                                    # we think we are recording
+_orig_is_up = ctrlmod.mediamtx_client.is_up
+try:
+    ctrlmod.mediamtx_client.is_up = lambda: False
+    check("backbone DOWN -> the recorder pauses instead of erroring",
+          c6._backbone_up() is False)
+    check("and the stale record flags are dropped (MediaMTX reset them too)",
+          c6._recording == {}, str(c6._recording))
+    ctrlmod.mediamtx_client.is_up = lambda: True
+    c6._backbone_checked = 0.0                                    # bypass the throttle
+    check("backbone RETURNS -> recording resumes with no service restart",
+          c6._backbone_up() is True)
+finally:
+    ctrlmod.mediamtx_client.is_up = _orig_is_up
 
 
 if failures:

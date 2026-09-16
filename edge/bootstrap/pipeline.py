@@ -117,15 +117,21 @@ class Pipeline:
             logger.exception("DetectionRunner failed to start")
 
         # ---- person-triggered recording (MediaMTX fMP4 segments) ----
+        # Started UNCONDITIONALLY. It used to be gated on `via_mediamtx`, a
+        # ONE-SHOT boot decision: a MediaMTX that was merely LATE (a slow start
+        # behind the engine-building ExecStartPre, a port briefly in use, a
+        # crash-loop that later succeeded) left recording dead until someone
+        # restarted the service, with nothing on screen to say why. The
+        # controller now watches the backbone itself and idles quietly until it
+        # answers, so recording recovers on its own.
         recording_controller = None
-        if via_mediamtx:
-            try:
-                from recording.controller import RecordingController
-                recording_controller = RecordingController(
-                    detection_buffer, frame_buffer=frames)
-                recording_controller.start()
-            except Exception:
-                logger.exception("RecordingController disabled")
+        try:
+            from recording.controller import RecordingController
+            recording_controller = RecordingController(
+                detection_buffer, frame_buffer=frames)
+            recording_controller.start()
+        except Exception:
+            logger.exception("RecordingController disabled")
 
         # ---- best-shot buffer --------------------------------------
         # The best few crops per track, kept ready for the moment an identity

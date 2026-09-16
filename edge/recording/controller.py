@@ -47,6 +47,11 @@ _FRESH_SECS = 3.0
 # reconfigured while we run starts (or stops) being recorded on its own
 _CODEC_RECHECK_SECS = 60.0
 
+# how often to re-ask whether the media backbone is answering. Recording IS
+# MediaMTX's job, so when it is down there is nothing to flip — we idle and
+# pick straight back up when it returns, with no restart.
+_BACKBONE_RECHECK_SECS = 5.0
+
 
 def _record_root() -> Path:
     root = Path(settings.record_dir)
@@ -84,6 +89,11 @@ class RecordingController:
         # camera_id -> (checked_at_monotonic, is_h264). Recording is a REMUX, so
         # the clip inherits the camera's codec; see _recordable().
         self._codec_seen: dict[str, tuple[float, bool]] = {}
+        # Live backbone health (None = not yet checked). Recording used to be
+        # gated on a ONE-SHOT boot flag, so a MediaMTX that was merely LATE
+        # left recording dead until someone restarted the service.
+        self._backbone_ok: bool | None = None
+        self._backbone_checked = 0.0
         # Runtime ON/OFF (monitor button) — persisted so a deliberate "stop
         # filling the disk" choice survives restarts. Default from the env.
         self._lock = threading.Lock()
@@ -274,14 +284,39 @@ class RecordingController:
     def _run(self) -> None:
         while self._running:
             try:
-                if self.is_enabled():
-                    self._tick()
-                else:
+                if not self.is_enabled():
                     self._stop_all()          # idempotent — no-op once all off
+                elif self._backbone_up():
+                    self._tick()
             except Exception:
                 logger.exception("recording tick failed")
             time.sleep(settings.record_poll_secs)
         self._stop_all()                       # service stopping — close segments
+
+    def _backbone_up(self) -> bool:
+        """Is MediaMTX answering? Throttled, because this runs every poll.
+
+        On the DOWN edge the per-camera record flags are forgotten: MediaMTX
+        resets every path to `record: no` when it restarts, so our cached view
+        would otherwise say "already recording" and we would never re-issue the
+        flip. Clearing it makes the recovery self-healing instead of silent."""
+        now = time.monotonic()
+        if (self._backbone_ok is not None
+                and (now - self._backbone_checked) < _BACKBONE_RECHECK_SECS):
+            return self._backbone_ok
+        self._backbone_checked = now
+        up = mediamtx_client.is_up()
+        if up != self._backbone_ok:
+            if up:
+                logger.info("recording: media backbone is up — recording active")
+            else:
+                self._recording.clear()       # MediaMTX forgot the flags; so do we
+                logger.warning(
+                    "recording: media backbone is DOWN — recording PAUSED and "
+                    "will resume by itself when MediaMTX answers. Why it died: "
+                    "data/mediamtx.log")
+            self._backbone_ok = up
+        return up
 
     def _stop_all(self) -> None:
         for cam, on in list(self._recording.items()):

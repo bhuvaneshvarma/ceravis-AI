@@ -46,6 +46,10 @@ def _fmt(d: dict) -> str:
     mb = d.get("media_backbone", {})
     out += ["", "MEDIA BACKBONE",
             _line("mediamtx up", "yes" if mb.get("up") else "NO — links & recording dead")]
+    # Down is not enough to act on — print MediaMTX's own last words, which name
+    # the cause (a rejected config key means it exited on boot and nothing bound).
+    for ln in (mb.get("log_tail") or [])[-6:]:
+        out.append(f"    {ln}")
 
     out += ["", "CAMERAS"]
     for c in d.get("cameras", []) or [{"camera_id": "(none)"}]:

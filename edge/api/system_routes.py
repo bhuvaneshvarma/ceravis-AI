@@ -251,6 +251,16 @@ def _cloud_status(outbox=None) -> dict:
         return {"configured": False}
 
 
+def _backbone_log() -> list[str]:
+    """MediaMTX's last log lines — why the backbone is down. Never raises: a
+    status endpoint must answer even when the thing it reports on is broken."""
+    try:
+        from livestream.mediamtx_supervisor import recent_log
+        return recent_log(8)
+    except Exception:
+        return []
+
+
 @router.get("/api/v1/system/status")
 def system_status(request: Request):
     """Full live status for the ceravis-status CLI and the monitor. `status` is
@@ -322,7 +332,12 @@ def system_status(request: Request):
         # a blank/stale value and made a freshly-verified device look un-keyed.
         "edge_id": effective_edge_id(),
         "time": time_info,
-        "media_backbone": {"up": backbone_up, "binary": settings.mediamtx_binary},
+        # When it is DOWN, say WHY: MediaMTX's own last lines are the cause
+        # (a config key this build rejects -> it exits on boot and nothing
+        # binds; a port in use; a missing cert). Omitted while healthy.
+        "media_backbone": {"up": backbone_up,
+                           "binary": settings.mediamtx_binary,
+                           **({} if backbone_up else {"log_tail": _backbone_log()})},
         "cameras": cameras,
         "recording": recording,
         "storage": storage,
