@@ -20,7 +20,11 @@
     '<path d="M11 5 6 9H2v6h4l5 4V5Z"/>' +
     '<path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 
-  var state = { enabled: false, byId: {} };
+  // `error` is the difference between "this fleet has talk-back switched off"
+  // (render nothing — a dead control is worse than no control) and "we could
+  // not find out" (render something that SAYS so). Conflating the two is how a
+  // missing button becomes a mystery instead of a message.
+  var state = { enabled: false, byId: {}, error: "" };
 
   /* Every live listen control on the page, so that switching one room on can
      switch the rest off. Entries remove themselves in destroy(). */
@@ -47,11 +51,17 @@
                  (edge ? "?edge_id=" + encodeURIComponent(edge) : ""));
     }).then(function (r) {
       state.enabled = !!r.enabled;
+      state.error = "";
       state.byId = {};
       (r.cameras || []).forEach(function (c) { state.byId[c.camera_id] = c; });
       return state;
-    }).catch(function () {
+    }).catch(function (e) {
       inflight = null;             // a failed read must not be cached forever
+      state.enabled = false;
+      var d = (e && e.detail) || {};
+      state.error = d.message ||
+        "Could not read the talk-back settings from this device. The live " +
+        "video is unaffected; the microphone is unavailable until this answers.";
       return state;
     });
     return inflight;
@@ -220,12 +230,20 @@
         if (on) apply();
       },
       stop: function () { on = false; ducked = false; apply(); },
-      /* Drop out of the exclusive-listening roster with the tile. */
+      /* The BUTTON is being replaced but the room is still on screen. Leave the
+         audio exactly as the carer left it and just leave the roster — the
+         replacement adopts the live state on mount. Silencing a room here is
+         how commissioning one camera would mute another one mid-listen. */
+      detach: function () {
+        var i = listeners.indexOf(handle);
+        if (i >= 0) listeners.splice(i, 1);
+      },
+      /* The TILE is going. Stop the audio as well — there will be nothing left
+         to turn it off with. */
       destroy: function () {
         on = false; ducked = false;
         try { apply(); } catch (e) {}
-        var i = listeners.indexOf(handle);
-        if (i >= 0) listeners.splice(i, 1);
+        handle.detach();
       },
     };
     listeners.push(handle);
@@ -241,7 +259,28 @@
   function mount(tile, camera, stream) {
     var listener = mountListen(tile, camera, stream);
     if (listener) tile.cvListen = listener;
-    if (!state.enabled || tile.querySelector(".talk-btn")) return null;
+    if (tile.querySelector(".talk-btn")) return null;
+
+    // We could not find out whether talking is possible. Say that, on the tile,
+    // instead of leaving a carer to wonder where the microphone went.
+    if (state.error) {
+      var warn = document.createElement("button");
+      warn.className = "talk-btn";
+      warn.type = "button";
+      warn.dataset.talk = "error";
+      warn.innerHTML = MIC_SVG + '<span class="talk-label">Talk unavailable</span>';
+      warn.title = state.error;
+      warn.onclick = function (e) {
+        e.stopPropagation();
+        toast(state.error, "err", 6000);
+        // Ask again on demand: whatever was wrong may have been momentary.
+        refresh().then(function () { remount(tile, camera, stream); });
+      };
+      tile.appendChild(warn);
+      return null;
+    }
+
+    if (!state.enabled) return null;
 
     var btn = document.createElement("button");
     btn.className = "talk-btn";
@@ -317,16 +356,25 @@
      reference to it for ducking, and a stale one would leave a carer listening
      to their own voice coming back out of the room. */
   function remount(tile, camera, stream) {
-    // Detach the handles BEFORE the buttons go. The listen handle sits in the
-    // exclusive-listening roster and the talk handle may be holding a
-    // household's speaker; dropping their buttons does not release either.
-    unmount(tile);
+    // Release the handles BEFORE the buttons go — dropping a button releases
+    // neither the roster entry nor a held camera speaker. The TALK handle is
+    // destroyed, because it owns a socket that may be holding a household's
+    // speaker. The LISTEN handle is only detached: the room is still on screen
+    // and the carer may still be listening to it, so the replacement button
+    // adopts that rather than silencing it.
+    if (tile.cvTalk) { tile.cvTalk.destroy(); tile.cvTalk = null; }
+    if (tile.cvListen) { tile.cvListen.detach(); tile.cvListen = null; }
     tile.querySelectorAll(".talk-btn, .listen-btn").forEach(function (b) {
       b.remove();
     });
     return mount(tile, camera, stream);
   }
 
+  // `remount` is exported for one reason: it is the path that rebuilds a
+  // control over a room that may still be audible, which is exactly where the
+  // listen toggle went out of step before. A path that subtle should be
+  // reachable from a test, not only from a commissioning dialog.
   global.cvTalkPanel = { refresh: refresh, ensure: ensure, mount: mount,
-                         unmount: unmount, noteAudio: noteAudio, state: state };
+                         unmount: unmount, remount: remount,
+                         noteAudio: noteAudio, state: state };
 })(window);

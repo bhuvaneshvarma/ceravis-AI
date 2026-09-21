@@ -115,7 +115,17 @@
 
   function acquireGraph() {
     if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; }
-    if (graph) return Promise.resolve(graph);
+    if (graph) {
+      // A warm graph is not necessarily a RUNNING one. Browsers suspend an
+      // AudioContext when a tab is backgrounded, and one created outside a user
+      // gesture starts suspended — either way the worklet stops being scheduled
+      // and the carer talks into a microphone that produces nothing. Resume on
+      // every acquire, not only on the one that built it.
+      if (graph.ctx.state !== "running") {
+        return graph.ctx.resume().catch(function () {}).then(function () { return graph; });
+      }
+      return Promise.resolve(graph);
+    }
     return navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -292,6 +302,57 @@
       return true;
     }
 
+    /* Ask the device the same question over plain HTTPS, and say which link
+       actually broke.
+
+       A WebSocket is uniquely bad at explaining itself: a proxy that refuses
+       the upgrade, a tunnel that is down and a device that is off all arrive as
+       close code 1006 with an EMPTY reason. Nobody holding a phone can tell
+       those apart, and the logs that could are on a device in someone's house.
+
+       So when the socket fails without a sentence, we run the SILENT test
+       endpoint — the same one a technician runs at handover, which proves
+       reachability, credential and firmware without making a sound — and the
+       three outcomes are three different faults:
+
+         test OK          the device and camera are fine; the WEBSOCKET path is
+                          blocked (a proxy or network that does not pass them)
+         test errors      the device is reachable and is telling us exactly what
+                          is wrong with the camera; show its own words
+         test unreachable the device is not answering at all */
+    function diagnose(fallback) {
+      return edgeId().then(function (edge) {
+        return fetch(PREFIX + "/api/v1/talkback/" +
+                     encodeURIComponent(cameraId) + "/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ edgeId: edge }),
+        });
+      }).then(function (r) {
+        return r.json().then(function (b) { return b; },
+                             function () { return null; })
+          .then(function (body) {
+            if (r.ok) {
+              return "The camera answered a silent test in " +
+                ((body && body.elapsed_ms) || "?") + " ms, so this device and " +
+                "this camera are both fine. The live audio connection itself " +
+                "was blocked — that is a proxy or network in between that does " +
+                "not allow WebSockets.";
+            }
+            var d = (body && body.detail) || {};
+            if (r.status === 401 || r.status === 409)
+              return "This device did not accept the request (its edge_id does " +
+                     "not match the address this page was opened on).";
+            if (r.status === 503)
+              return "Talk-back is switched off on this device (TALKBACK_ENABLED).";
+            return d.message || fallback;
+          });
+      }).catch(function () {
+        return fallback + " The device did not answer a test either, so it is " +
+               "unreachable from here rather than refusing.";
+      });
+    }
+
     function speak() {
       if (!open || !pressed) return;
       if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
@@ -379,14 +440,24 @@
 
           // The close REASON is the server's sentence; codes only carry a class.
           var why = (ev.reason || "").replace(/^[a-z_]+:\s*/, "");
+          var vague = !why;
           if (!why && ev.code !== 1000 && ev.code !== 1001) {
             why = ev.code === 4409 ? "Someone else is already speaking to this camera."
               : ev.code === 4401 ? "This device did not accept the request."
               : ev.code === 4503 ? "Talk-back is switched off on this device."
               : rejoining ? "Lost the connection to this camera and could not get it back."
               : "The talk connection closed.";
+            vague = (ev.code !== 4409 && ev.code !== 4401 && ev.code !== 4503);
           }
           hangUp(why);
+          // The socket had nothing to say. Go and find out, then replace the
+          // message — toast() shows one at a time, so the vague sentence is
+          // superseded rather than stacked on.
+          if (vague && why) {
+            diagnose(why).then(function (better) {
+              if (better && better !== why) setState("error", better);
+            });
+          }
         };
 
         ws.onerror = function () { /* onclose carries the outcome */ };
@@ -433,15 +504,13 @@
     });
     button.addEventListener("click", function (e) { e.stopPropagation(); });
 
-    // Warm the MICROPHONE when the pointer arrives, so the first press pays for
-    // the camera handshake alone (~200 ms) instead of that plus ~300 ms of
-    // getUserMedia. Deliberately NOT the channel: opening a speaker session on
-    // a hover would take a household's speaker away from another carer because
-    // somebody's mouse crossed a tile. Silent — the worklet stays muted.
-    button.addEventListener("pointerenter", function () {
-      if (pressed || open || connecting || contextError()) return;
-      acquireGraph().catch(function () { /* the press will report it properly */ });
-    });
+    // There is deliberately NO warm-on-hover. It was tried and removed: opening
+    // the microphone without a user gesture leaves an AudioContext SUSPENDED
+    // (so a later press captures silence), can raise a permission prompt
+    // because a mouse crossed a tile, and leaves the microphone live with
+    // nothing scheduled to release it. Saving ~300 ms on the first press only
+    // is not worth any of those. The press warms it, and WARM_MS keeps it warm
+    // for the rest of the conversation.
 
     // Anything that takes the page away hangs up — a hot mic must not survive a
     // tab switch, and a backgrounded tab must not sit on a household's speaker.

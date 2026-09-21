@@ -1,0 +1,138 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Talk-back UI checks</title>
+<!--
+  The listen toggle broke twice, both times in a way no Python test could see:
+  once because a toggle's "off" path was written as a guard clause, and once
+  because the button remembered a state the audio path could contradict. Both
+  are behaviour in a DOM, so they are checked in a DOM.
+
+  Run: open this file in any browser (no server, no runner, no node), or serve
+  the repo and open it. It drives the REAL talk-panel.js against a model of what
+  live-view.js does with a track, and asserts what a carer would see.
+
+  It deliberately does NOT touch a microphone, a camera or a network.
+-->
+<style>
+  body { font: 14px/1.6 ui-monospace, Menlo, Consolas, monospace; padding: 24px;
+         background: #0f1520; color: #dbe4ee; }
+  h1 { font-size: 15px; letter-spacing: .08em; text-transform: uppercase;
+       color: #8391a6; }
+  .pass::before { content: "PASS  "; color: #46b17b; }
+  .fail::before { content: "FAIL  "; color: #e2574c; }
+  .fail { color: #e2574c; }
+  #summary { margin-top: 18px; padding-top: 12px; border-top: 1px solid #23304a;
+             font-weight: 700; }
+</style>
+<h1>Talk-back UI checks</h1>
+<div id="out">running…</div>
+<div id="summary"></div>
+
+<script src="../edge/static/ceravis.js"></script>
+<script src="../edge/static/talk.js"></script>
+<script src="../edge/static/talk-panel.js"></script>
+<script>
+(async function () {
+  const results = [];
+  const ok = (name, cond) => results.push({ name, cond: !!cond });
+
+  // --- stubs: the page's two dependencies, and nothing else ---------------
+  window.cvEdgeId = () => Promise.resolve("TEST-EDGE");
+  const realFetch = window.fetch;
+  window.fetch = (u, o) => {
+    if (String(u).includes("/talkback/cameras"))
+      return Promise.resolve(new Response(JSON.stringify({
+        enabled: true,
+        cameras: [{ camera_id: "cam_1", camera_name: "LOUNGE", configured: true },
+                  { camera_id: "cam_2", camera_name: "BEDROOM", configured: true }],
+      }), { headers: { "Content-Type": "application/json" } }));
+    return realFetch(u, o);
+  };
+
+  /* A faithful model of what live-view.js does: listening is a property of the
+     TRACK plus the element's mute flag, and a reconnect hands over a brand-new
+     track that arrives enabled. */
+  function makeStream() {
+    let muted = true, want = false, tracks = [{ enabled: false }];
+    return {
+      listen(on) {
+        want = !!on;
+        tracks.forEach(t => { t.enabled = want; });
+        muted = !want;
+        return tracks.length > 0;
+      },
+      listening() {
+        return !muted && tracks.length > 0 && tracks[0].enabled;
+      },
+      reconnect() {                       // a NEW track, which arrives enabled
+        tracks = [{ enabled: true }];
+        tracks.forEach(t => { t.enabled = want; });
+        muted = !want;
+      },
+    };
+  }
+
+  await cvTalkPanel.ensure();
+
+  const tile = document.createElement("div");
+  document.body.appendChild(tile);
+  const s1 = makeStream();
+  cvTalkPanel.mount(tile, { camera_id: "cam_1", camera_name: "LOUNGE" }, s1);
+  const btn = () => tile.querySelector(".listen-btn");
+  const label = () => btn().querySelector(".talk-label").textContent;
+
+  ok("mounts off", btn().dataset.listen === "off" && !s1.listening());
+
+  btn().click();
+  ok("one click starts listening", s1.listening() && label() === "Listening");
+
+  btn().click();
+  ok("a second click STOPS it (the toggle was one-way twice)",
+     !s1.listening() && btn().dataset.listen === "off" && label() === "Listen");
+
+  btn().click(); btn().click(); btn().click();
+  ok("an odd number of clicks leaves it on", s1.listening());
+  btn().click();
+  ok("an even number leaves it off", !s1.listening());
+
+  // Rebuilding a control over a room that is still audible: the desync that
+  // made the button start a click out of phase with the room.
+  btn().click();
+  ok("audible before the rebuild", s1.listening());
+  cvTalkPanel.remount(tile, { camera_id: "cam_1", camera_name: "LOUNGE" }, s1);
+  ok("commissioning does not silence the room", s1.listening());
+  ok("the rebuilt button adopts reality", btn().dataset.listen === "on");
+  btn().click();
+  ok("ONE click switches it off after a rebuild", !s1.listening());
+
+  // A reconnect must never overrule the carer's last decision, either way.
+  s1.reconnect();
+  ok("a reconnect does not un-mute a room switched off", !s1.listening());
+  btn().click(); s1.reconnect();
+  ok("a reconnect keeps a room switched on", s1.listening());
+
+  // One room at a time.
+  const tile2 = document.createElement("div");
+  document.body.appendChild(tile2);
+  const s2 = makeStream();
+  cvTalkPanel.mount(tile2, { camera_id: "cam_2", camera_name: "BEDROOM" }, s2);
+  tile2.querySelector(".listen-btn").click();
+  ok("turning one room on turns the other off", s2.listening() && !s1.listening());
+
+  // --- report -------------------------------------------------------------
+  const out = document.getElementById("out");
+  out.innerHTML = "";
+  results.forEach(r => {
+    const d = document.createElement("div");
+    d.className = r.cond ? "pass" : "fail";
+    d.textContent = r.name;
+    out.appendChild(d);
+  });
+  const failed = results.filter(r => !r.cond).length;
+  const sum = document.getElementById("summary");
+  sum.textContent = failed
+    ? failed + " of " + results.length + " CHECKS FAILED"
+    : "All " + results.length + " talk-back UI checks passed.";
+  sum.style.color = failed ? "#e2574c" : "#46b17b";
+})();
+</script>
