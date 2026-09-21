@@ -87,9 +87,13 @@ _STATE_FOR = {
 _SAY = {
     "ready": "Ready.",
     "needs_password": "Talk-back needs this home's TP-Link account password.",
-    "rejected": ("The camera refused this home's TP-Link password. If the "
-                 "password is right, remove the camera in the Tapo app and "
-                 "add it again — it is holding an old copy."),
+    # Deliberately says "the stored" password, not "this home's": a camera can
+    # be on its own override, and a message that names the wrong password sends
+    # someone to fix the wrong thing.
+    "rejected": ("The camera refused the stored TP-Link password. Enter the "
+                 "current Tapo app password; if it is still refused, remove the "
+                 "camera in the Tapo app and add it again — it is holding an "
+                 "old copy."),
     "unreachable": "The camera's speaker is not answering right now.",
     "unsupported": "This camera does not offer talk-back.",
     "unknown": "Not checked yet.",
