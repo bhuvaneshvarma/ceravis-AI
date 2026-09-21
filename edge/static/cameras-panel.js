@@ -52,6 +52,18 @@ function mountCameras(root, opts = {}) {
           <i class="info-i" title="Click a camera in the live wall to open it fullscreen and set its viewing angle.">i</i>
         </h2>
         <table class="tbl"><tbody id="c-table"></tbody></table>
+        <div id="t-card" hidden>
+          <hr class="sep" />
+          <h2>Talk-back <span class="faint">(speak through the camera)</span></h2>
+          <div class="hint mb">One password for the whole home: the <b>TP-Link account</b>
+            the Tapo app uses — not the camera password above. Every camera uses it,
+            including ones you add later. The device checks each camera by itself.</div>
+          <div id="t-status" class="talk-verdicts"></div>
+          <div class="row mt">
+            <button class="btn btn-ghost" id="t-set">Set TP-Link password</button>
+            <button class="btn btn-ghost" id="t-check">Check cameras</button>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -97,7 +109,59 @@ function mountCameras(root, opts = {}) {
   }
 
   /* ---- registered cameras (table + controls) + room list + live wall ---- */
+  /* Talk-back lives inside camera setup, not beside it: the one password is
+     entered here, where the cameras are, and each camera's state is the
+     device's own silent check. Hidden entirely when talk-back is switched off
+     or the talk panel is not on this page. */
+  async function talkStatus(res) {
+    const card = gid("t-card");
+    if (!card || !window.cvTalkPanel) return;
+    try {
+      if (!res) res = await api("/api/v1/talkback/cameras?edge_id=" +
+                                encodeURIComponent(await edgeId()));
+    } catch { card.hidden = true; return; }
+    if (destroyed) return;
+    card.hidden = !res.enabled;
+    if (!res.enabled) return;
+    const box = gid("t-status");
+    box.innerHTML = "";
+    const rows = (res.cameras || []).map(c => [c.camera_id, c.camera_name,
+      c.readiness || { state: c.configured ? "unknown" : "needs_password" }]);
+    rows.forEach(([cid, name, r]) => {
+      const row = document.createElement("div");
+      row.className = "talk-verdict";
+      row.dataset.state = r.state || "unknown";
+      const b = document.createElement("b");
+      b.textContent = prettyLabel(name || cid);
+      const t = document.createElement("span");
+      t.textContent = r.state === "ready" ? " ready" : " — " + (r.message || r.state);
+      row.append(b, t);
+      box.appendChild(row);
+    });
+    gid("t-set").textContent = res.home_configured ? "Change TP-Link password"
+                                                    : "Set TP-Link password";
+  }
+  gid("t-set").onclick = () => {
+    window.cvTalkPanel.commission().then(changed => { if (changed) talkStatus(); });
+  };
+  gid("t-check").onclick = async () => {
+    const b = gid("t-check");
+    b.disabled = true; b.textContent = "Checking…";
+    try {
+      const res = await api("/api/v1/talkback/check", { method: "POST",
+        body: JSON.stringify({ edgeId: await edgeId() }) });
+      await talkStatus();
+      cvNotify(res.all_ready ? "Talk-back is ready on every camera."
+        : `Talk-back ready on ${res.ready} of ${res.total} cameras.`, !!res.all_ready);
+    } catch (e) {
+      cvNotify(((e && e.detail) || {}).message || "The check did not complete.", false);
+    } finally { b.disabled = false; b.textContent = "Check cameras"; }
+  };
+
+  // The device re-checks cameras on a minutes scale; 30 s is plenty here.
+  let talkRead = 0;
   async function refresh() {
+    if (Date.now() - talkRead > 30000) { talkRead = Date.now(); talkStatus(); }
     let cams, status;
     try {
       [cams, status] = await Promise.all([

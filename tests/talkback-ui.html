@@ -44,7 +44,14 @@
       return Promise.resolve(new Response(JSON.stringify({
         enabled: true,
         cameras: [{ camera_id: "cam_1", camera_name: "LOUNGE", configured: true },
-                  { camera_id: "cam_2", camera_name: "BEDROOM", configured: true }],
+                  { camera_id: "cam_2", camera_name: "BEDROOM", configured: true },
+                  { camera_id: "cam_3", camera_name: "KITCHEN", configured: true,
+                    readiness: { state: "rejected", message: "refused" } },
+                  { camera_id: "cam_4", camera_name: "HALL", configured: true,
+                    readiness: { state: "unsupported" } },
+                  { camera_id: "cam_5", camera_name: "PORCH", configured: false },
+                  { camera_id: "cam_6", camera_name: "STUDY", configured: true,
+                    readiness: { state: "ready" } }],
       }), { headers: { "Content-Type": "application/json" } }));
     return realFetch(u, o);
   };
@@ -118,6 +125,28 @@
   cvTalkPanel.mount(tile2, { camera_id: "cam_2", camera_name: "BEDROOM" }, s2);
   tile2.querySelector(".listen-btn").click();
   ok("turning one room on turns the other off", s2.listening() && !s1.listening());
+
+  // The talk button shows what the device already KNOWS, before any press.
+  function talkFor(cid, name) {
+    const t = document.createElement("div");
+    document.body.appendChild(t);
+    cvTalkPanel.mount(t, { camera_id: cid, camera_name: name }, makeStream());
+    return t.querySelector(".talk-btn");
+  }
+  const refused = talkFor("cam_3", "KITCHEN");
+  ok("a camera that refused the password shows a SETUP button, not a mic",
+     refused && refused.dataset.talk === "setup" &&
+     /refused/.test(refused.textContent));
+  ok("a camera with no talk-back at all shows no dead control",
+     talkFor("cam_4", "HALL") === null);
+  const unset = talkFor("cam_5", "PORCH");
+  ok("a camera with no password yet asks for it",
+     unset && unset.dataset.talk === "setup" && /Set up talk/.test(unset.textContent));
+  const ready = talkFor("cam_6", "STUDY");
+  ok("a ready camera gets the real hold-to-talk button",
+     ready && ready.dataset.talk === "idle" && /Hold to talk/.test(ready.textContent));
+  ok("the setup dialog is reachable from camera setup",
+     typeof cvTalkPanel.commission === "function");
 
   // --- report -------------------------------------------------------------
   const out = document.getElementById("out");

@@ -80,8 +80,21 @@ async def lifespan(app: FastAPI):
     # If a reboot brought us down, say so on the way back up — otherwise a
     # restart is indistinguishable from a crash in the logs and on the console.
     reboot.boot_report()
+    # Talk-back runs with everything else: every camera's speaker is checked
+    # silently from boot, so a refused credential is known before a carer
+    # presses the button, not after. Best-effort — it must never block the API.
+    try:
+        from talkback.readiness import readiness
+        readiness.start()
+    except Exception:
+        logger.warning("talk-back readiness did not start", exc_info=True)
     logger.info("CERAVIS edge ready")
     yield
+    try:
+        from talkback.readiness import readiness
+        await readiness.stop()
+    except Exception:
+        pass
     pipeline.stop()
 
 

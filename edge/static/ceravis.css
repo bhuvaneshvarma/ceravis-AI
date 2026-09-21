@@ -672,3 +672,21 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 @media (max-width: 640px) {
   .listen-btn[data-listen="off"] .talk-label { display: none; }
 }
+
+
+/* ---- talk-back readiness, one row per camera ------------------------------
+   The device's own silent check, shown where the password is entered and in
+   the setup dialog. Colour is the state; the words always say it too. */
+.talk-verdicts { display: flex; flex-direction: column; gap: 6px; }
+.talk-verdict { font-size: 13px; padding: 7px 10px; border-radius: 8px;
+  border-left: 3px solid var(--line); background: rgba(15,23,42,.04); }
+.talk-verdict[data-state="ready"]          { border-left-color: var(--ok); }
+.talk-verdict[data-state="rejected"],
+.talk-verdict[data-state="needs_password"] { border-left-color: var(--bad); }
+.talk-verdict[data-state="unreachable"],
+.talk-verdict[data-state="unknown"]        { border-left-color: var(--warn); }
+.talk-verdict[data-state="unsupported"]    { border-left-color: var(--line); opacity: .7; }
+/* `hidden` must win inside the dialog: .btn and .talk-verdicts set their own
+   display, which would otherwise override the attribute and show controls that
+   have nothing to act on yet. */
+.cv-dialog [hidden] { display: none !important; }

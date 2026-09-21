@@ -197,8 +197,8 @@ _disk = (_TMP / "talkback.json").read_text()
 check("the plaintext password is NOWHERE on disk", SECRET not in _disk)
 check("the MD5 hash is what got stored",
       hashlib.md5(SECRET.encode()).hexdigest().upper() in _disk)
-check("nothing but hashes and a timestamp is kept",
-      set(json.loads(_disk)["cam_1"]) == {"md5", "sha256", "updated_at"})
+check("nothing but hashes, a timestamp and where it came from is kept",
+      set(json.loads(_disk)["cam_1"]) == {"md5", "sha256", "updated_at", "source"})
 check("the stored credential answers a challenge correctly",
       store.get("cam_1").password_for(CHALLENGE)[1]
       == hashlib.md5(SECRET.encode()).hexdigest().upper())
@@ -414,6 +414,213 @@ async def _backpressure():
 
 
 asyncio.run(_backpressure())
+
+
+# ---------------------------------------------------------------------------
+# One password for the whole home
+# ---------------------------------------------------------------------------
+print("\nOne TP-Link password for the whole home")
+
+store._FILE.unlink(missing_ok=True)
+check("no credential anywhere to begin with",
+      store.get("LOUNGE") is None and not store.home_configured())
+
+store.set_home_password("home-secret")
+check("a camera with no entry of its own uses the home password",
+      store.get("LOUNGE") is not None
+      and store.get("LOUNGE").md5 == hashlib.md5(b"home-secret").hexdigest().upper())
+check("so does a camera added later, with no extra step",
+      store.get("ADDED_NEXT_YEAR") is not None)
+check("the home password is reported as the home's",
+      store.resolve(["LOUNGE"])["LOUNGE"]["scope"] == "home")
+check("the home password is NOWHERE on disk in plaintext",
+      "home-secret" not in store._FILE.read_text())
+
+store.set_password("GARAGE", "other-account")
+check("a per-camera override wins over the home password",
+      store.get("GARAGE").md5 == hashlib.md5(b"other-account").hexdigest().upper()
+      and store.resolve(["GARAGE"])["GARAGE"]["scope"] == "camera")
+
+store.set_password("PORCH", "found-by-device", source="stream")
+cleared = store.set_home_password("new-home-secret")
+check("a new home password replaces the stale TYPED overrides",
+      "GARAGE" in cleared and store.resolve(["GARAGE"])["GARAGE"]["scope"] == "home")
+check("but keeps a credential the device PROVED by itself",
+      "PORCH" not in cleared
+      and store.resolve(["PORCH"])["PORCH"]["source"] == "stream")
+check("the inventory summary carries no hash material",
+      all(set(v) <= {"updated_at", "source"} for v in store.summary().values()))
+check("configured() never lists the home entry as a camera",
+      store.HOME not in store.configured())
+store._FILE.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# A background self-check never costs a carer a sentence
+# ---------------------------------------------------------------------------
+print("\nThe self-check yields to people")
+
+
+async def _preempt():
+    hub_mod.TapoTalkSession = _FakeSession
+    hub = hub_mod.TalkbackHub()
+
+    check_session = await hub.open("cam_9", "self-check", preemptible=True)
+    carer = await hub.open("cam_9", "carer")
+    check("a carer who presses during a self-check TAKES the camera",
+          hub.busy("cam_9") and hub._active["cam_9"].holder == "carer")
+    check("and the self-check's session is closed, not left open",
+          check_session.closed)
+
+    refused = None
+    try:
+        await hub.open("cam_9", "self-check", preemptible=True)
+    except TalkbackError as exc:
+        refused = exc
+    check("a self-check never takes a camera off a carer",
+          refused is not None and refused.code == "busy"
+          and hub._active["cam_9"].holder == "carer")
+    await hub.release("cam_9", carer)
+
+
+asyncio.run(_preempt())
+
+
+# ---------------------------------------------------------------------------
+# Readiness: known before anyone presses
+# ---------------------------------------------------------------------------
+print("\nReadiness, known before the press")
+
+from talkback import readiness as rd_mod                           # noqa: E402
+
+
+class _Cam:
+    def __init__(self, cid, pw=""):
+        self.camera_id = cid
+        self.camera_name = cid
+        self.is_enabled = True
+        self.rtsp_url = f"rtsp://isw:{pw}@10.0.0.5:554/stream1" if pw else "rtsp://10.0.0.5/s"
+        self.onvif_username = None
+        self.onvif_password = None
+        self.onvif_xaddr = ""
+
+
+class _Cams:
+    rows: list = []
+
+    def get_all(self):
+        return list(_Cams.rows)
+
+
+class _FakeHub:
+    """Answers probes from a script: camera id -> result or error code."""
+
+    def __init__(self):
+        self.script = {}
+        self.calls = []
+        self.held = set()
+
+    def busy(self, cid):
+        return cid in self.held
+
+    async def probe(self, cid, preemptible=False):
+        self.calls.append((cid, preemptible))
+        outcome = self.script.get(cid, "ok")
+        if outcome != "ok":
+            raise TalkbackError(outcome, f"{cid}: {outcome}")
+        return {"elapsed_ms": 42}
+
+
+async def _readiness():
+    store._FILE.unlink(missing_ok=True)
+    fake = _FakeHub()
+    rd_mod.hub = fake
+    rd_mod.CameraConfig = _Cams
+    attempts = []
+
+    async def no_stream_login(host, port, username="", password="", timeout=8.0):
+        attempts.append(username)
+        if not username:
+            return "HTTP/1.1 401", 'Digest realm="x",encrypt_type="3"'
+        return "HTTP/1.1 401 Unauthorized", ""
+
+    rd_mod.attempt = no_stream_login
+    _Cams.rows = [_Cam("LOUNGE", pw="streampw"), _Cam("LIVING_ROOM")]
+    r = rd_mod.Readiness()
+
+    await r.check_now()
+    check("with no password, a camera is reported as needing one",
+          r.get("LOUNGE")["state"] == "needs_password")
+    check("and nothing was probed — there was nothing to probe with",
+          fake.calls == [])
+    check("the camera's OWN stream password was tried, once",
+          attempts.count("admin") == 1)
+    await r.check_now()
+    check("and not tried again on the next check",
+          attempts.count("admin") == 1)
+
+    store.set_home_password("the-right-one")
+    fake.script = {"LOUNGE": "ok", "LIVING_ROOM": "unauthorized"}
+    await r.check_now()
+    check("after the home password: a camera that accepts it is READY",
+          r.get("LOUNGE")["state"] == "ready")
+    check("one that refuses it is REJECTED, with advice to re-pair",
+          r.get("LIVING_ROOM")["state"] == "rejected"
+          and "Tapo app" in r.get("LIVING_ROOM")["message"])
+    check("every probe was the pre-emptible kind",
+          all(pre for _, pre in fake.calls))
+
+    import time as _t
+    check("a refused camera is NOT retried quickly (lock-out risk)",
+          r._due["LIVING_ROOM"] - _t.monotonic() > 3000)
+    check("a ready camera is re-confirmed within the quarter hour",
+          r._due["LOUNGE"] - _t.monotonic() <= 600)
+
+    fake.held.add("LOUNGE")
+    fake.calls.clear()
+    await r.check_now()
+    check("a camera a carer is talking through is left alone",
+          ("LOUNGE", True) not in fake.calls and r.get("LOUNGE")["state"] == "ready")
+    fake.held.clear()
+
+    r.observe("LOUNGE", "unauthorized", "refused on a real press")
+    check("a REAL refused session updates readiness at once",
+          r.get("LOUNGE")["state"] == "rejected")
+    r.observe("LOUNGE")
+    check("and a real success restores it",
+          r.get("LOUNGE")["state"] == "ready")
+
+    fake.script["LIVING_ROOM"] = "ok"            # re-paired in the Tapo app
+    await r.check_now()
+    check("a re-paired camera comes back to ready with no one touching the device",
+          r.get("LIVING_ROOM")["state"] == "ready")
+
+    _Cams.rows = [_Cam("LOUNGE")]
+    await r.check_now()
+    check("a camera removed from setup drops out of readiness",
+          "LIVING_ROOM" not in r.all())
+
+    # A firmware that DOES accept its stream password: zero-input commissioning.
+    store._FILE.unlink(missing_ok=True)
+
+    async def stream_login_ok(host, port, username="", password="", timeout=8.0):
+        if not username:
+            return "HTTP/1.1 401", 'Digest realm="x",encrypt_type="3"'
+        ok = password == hashlib.sha256(b"streampw").hexdigest().upper()
+        return ("HTTP/1.1 200 OK" if ok else "HTTP/1.1 401"), ""
+
+    rd_mod.attempt = stream_login_ok
+    _Cams.rows = [_Cam("PORCH", pw="streampw")]
+    fake.script = {}
+    r2 = rd_mod.Readiness()
+    await r2.check_now()
+    check("a camera that accepts its own stream password needs NO setup at all",
+          r2.get("PORCH")["state"] == "ready"
+          and store.resolve(["PORCH"])["PORCH"]["source"] == "stream")
+    store._FILE.unlink(missing_ok=True)
+
+
+asyncio.run(_readiness())
 
 # ---------------------------------------------------------------------------
 shutil.rmtree(_TMP, ignore_errors=True)

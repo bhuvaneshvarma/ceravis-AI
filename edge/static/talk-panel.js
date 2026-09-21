@@ -39,7 +39,8 @@
   var inflight = null;
 
   function ensure() {
-    if (!inflight) inflight = refresh();
+    if (!inflight) { lastRead = Date.now(); inflight = refresh(); }
+    else sync();
     return inflight;
   }
 
@@ -75,77 +76,131 @@
      goes straight to the device, which stores only its hashes — so this dialog
      never has anything to prefill, and deliberately shows an empty field even
      for a camera that is already configured. */
-  function commission(camera) {
+  /* THE setup for talk-back: one password for the whole home.
+
+     Every camera in a home is paired to one TP-Link account, so this asks once
+     and every camera uses it — including a camera added next year. It goes
+     straight to the device, which stores only its hashes, so the field is never
+     prefilled. After saving, the device checks every camera silently and the
+     dialog shows what each one said, in place: a carer or technician sees
+     "LOUNGE ready, LIVING ROOM refused" instead of discovering it on a press. */
+  function commission() {
     return new Promise(function (resolve) {
       document.querySelectorAll(".cv-dialog-scrim").forEach(function (d) { d.remove(); });
       var scrim = document.createElement("div");
       scrim.className = "cv-dialog-scrim";
       scrim.innerHTML =
         '<div class="cv-dialog" role="dialog" aria-modal="true">' +
-        '<div class="cv-dialog-title">Enable talk-back</div>' +
+        '<div class="cv-dialog-title">Talk-back for this home</div>' +
         '<div class="cv-dialog-msg">' +
-          'To speak through <b></b>, this device needs the <b>TP-Link account ' +
-          'password</b> for the Tapo app this camera is paired to — not the ' +
-          "camera's stream username and password. It is stored as a one-way " +
-          'hash on this device and never sent anywhere else.' +
+          'Enter the <b>TP-Link account password</b> — the one used to sign in to ' +
+          'the Tapo app these cameras are paired to. Not the camera\'s stream ' +
+          'password. You enter it <b>once</b>; every camera in this home uses it. ' +
+          'It is stored as a one-way hash on this device and sent nowhere else.' +
         '</div>' +
         '<div class="mt"><input type="password" autocomplete="off" ' +
           'placeholder="TP-Link account password" data-cv="pw" style="width:100%"></div>' +
+        '<div class="talk-verdicts mt" data-cv="verdicts" hidden></div>' +
         '<div class="cv-dialog-msg" data-cv="err" style="color:var(--bad)" hidden></div>' +
         '<div class="cv-dialog-actions">' +
-          '<button class="btn btn-ghost" data-cv="cancel">Cancel</button>' +
-          '<button class="btn btn-primary" data-cv="ok">Save &amp; test</button>' +
+          '<button class="btn btn-ghost" data-cv="cancel">Close</button>' +
+          '<button class="btn btn-ghost" data-cv="recheck" hidden>Check again</button>' +
+          '<button class="btn btn-primary" data-cv="ok">Save &amp; check cameras</button>' +
         '</div></div>';
-      scrim.querySelector(".cv-dialog-msg b").textContent =
-        prettyLabel(camera.camera_name || camera.camera_id);
       document.body.appendChild(scrim);
 
       var pw = scrim.querySelector('[data-cv="pw"]');
       var err = scrim.querySelector('[data-cv="err"]');
       var ok = scrim.querySelector('[data-cv="ok"]');
+      var again = scrim.querySelector('[data-cv="recheck"]');
+      var list = scrim.querySelector('[data-cv="verdicts"]');
+      var changed = false;
       pw.focus();
 
-      function done(v) {
+      function done() {
         pw.value = "";              // the plaintext leaves with the dialog
         scrim.remove();
         document.removeEventListener("keydown", onKey);
-        resolve(v);
+        resolve(changed);
       }
       function fail(message) {
         err.textContent = message;
         err.hidden = false;
-        ok.disabled = false;
-        ok.textContent = "Save & test";
       }
+      function busy(on, label) {
+        ok.disabled = on; again.disabled = on;
+        ok.textContent = on ? label : "Save & check cameras";
+      }
+
+      /* One line per camera, in the camera's own words. */
+      function show(res) {
+        var cams = (res && res.cameras) || {};
+        list.innerHTML = "";
+        Object.keys(cams).forEach(function (cid) {
+          var v = cams[cid] || {};
+          var row = document.createElement("div");
+          row.className = "talk-verdict";
+          row.dataset.state = v.state || "unknown";
+          var name = (state.byId[cid] && state.byId[cid].camera_name) || cid;
+          var b = document.createElement("b");
+          b.textContent = prettyLabel(name);
+          var t = document.createElement("span");
+          t.textContent = v.state === "ready"
+            ? " ready" + (v.elapsed_ms != null ? " (" + v.elapsed_ms + " ms)" : "")
+            : " — " + (v.message || v.state);
+          row.appendChild(b); row.appendChild(t);
+          list.appendChild(row);
+        });
+        list.hidden = !Object.keys(cams).length;
+        again.hidden = !!(res && res.all_ready);
+        if (res && res.all_ready) toast("Talk-back is ready on every camera.", "ok");
+      }
+
       function save() {
         if (!pw.value) return fail("Enter the password.");
-        ok.disabled = true;
-        ok.textContent = "Testing…";
         err.hidden = true;
+        busy(true, "Checking cameras…");
         edgeIdOrEmpty().then(function (edge) {
-          return api("/api/v1/talkback/" + encodeURIComponent(camera.camera_id) +
-                     "/credential", {
+          return api("/api/v1/talkback/credential", {
             method: "PUT",
             body: JSON.stringify({ edgeId: edge, password: pw.value }),
-          }).then(function () {
-            // Prove it against the real camera before telling anyone it works.
-            return api("/api/v1/talkback/" + encodeURIComponent(camera.camera_id) +
-                       "/test", { method: "POST", body: JSON.stringify({ edgeId: edge }) });
           });
-        }).then(function () {
-          toast("Talk-back enabled for " + prettyLabel(camera.camera_name), "ok");
-          done(true);
+        }).then(function (res) {
+          changed = true;
+          pw.value = "";
+          show(res);
         }).catch(function (e) {
           var d = (e && e.detail) || e || {};
-          fail(d.message || d.detail || "The camera did not accept that password.");
-        });
+          fail(d.message || "Could not save the password on this device.");
+        }).then(function () { busy(false); });
       }
+
+      /* For right after re-pairing a camera in the Tapo app. */
+      function recheck() {
+        err.hidden = true;
+        busy(true, "Checking cameras…");
+        edgeIdOrEmpty().then(function (edge) {
+          return api("/api/v1/talkback/check", {
+            method: "POST", body: JSON.stringify({ edgeId: edge }),
+          });
+        }).then(function (res) {
+          changed = true;
+          show(res);
+        }).catch(function (e) {
+          var d = (e && e.detail) || e || {};
+          fail(d.message || "The check did not complete.");
+        }).then(function () { busy(false); });
+      }
+
       ok.onclick = save;
-      scrim.querySelector('[data-cv="cancel"]').onclick = function () { done(false); };
-      scrim.addEventListener("click", function (e) { if (e.target === scrim) done(false); });
+      again.onclick = recheck;
+      scrim.querySelector('[data-cv="cancel"]').onclick = done;
+      scrim.addEventListener("click", function (e) { if (e.target === scrim) done(); });
       var onKey = function (e) {
-        if (e.key === "Escape") { e.preventDefault(); done(false); }
-        else if (e.key === "Enter") { e.preventDefault(); save(); }
+        if (e.key === "Escape") { e.preventDefault(); done(); }
+        else if (e.key === "Enter" && document.activeElement === pw) {
+          e.preventDefault(); save();
+        }
       };
       document.addEventListener("keydown", onKey);
     });
@@ -292,19 +347,31 @@
     tile.appendChild(btn);
 
     var entry = state.byId[camera.camera_id] || {};
+    var ready = (entry.readiness || {}).state || "unknown";
     var label = btn.querySelector(".talk-label");
+    remember(tile, camera, stream, entry);
 
-    // Not commissioned yet: the button asks for the password instead of the
-    // microphone, and only becomes a talk button once the camera has answered.
-    if (!entry.configured) {
+    // The device checks every camera silently from boot, so by the time a carer
+    // looks, it already knows whether a press would work. A camera it knows
+    // WON'T work gets a button that fixes the cause, not a microphone that
+    // fails after the carer has started speaking.
+    if (!entry.configured || ready === "needs_password" || ready === "rejected") {
       btn.dataset.talk = "setup";
-      label.textContent = "Enable talk";
+      label.textContent = ready === "rejected" ? "Talk: password refused"
+                                               : "Set up talk";
+      btn.title = (entry.readiness && entry.readiness.message) ||
+        "Talk-back needs this home's TP-Link account password.";
       btn.onclick = function (e) {
         e.stopPropagation();
-        commission(camera).then(function (okDone) {
-          if (okDone) { refresh().then(function () { remount(tile, camera, stream); }); }
+        commission().then(function (changed) {
+          if (changed) refresh().then(remountAll);
         });
       };
+      return null;
+    }
+    if (ready === "unsupported") {
+      // A control that can never work is worse than no control.
+      btn.remove();
       return null;
     }
 
@@ -320,7 +387,10 @@
           // carer who is told what is happening waits; a carer shown nothing
           // presses again, and a second press is a second session.
           s === "reconnecting" ? "Reconnecting…" :
-          s === "error" ? "Try again" : "Hold to talk";
+          s === "error" ? "Try again" :
+          ready === "unreachable" ? "Speaker offline" : "Hold to talk";
+        if (s === "idle" && ready === "unreachable")
+          btn.title = entry.readiness.message || btn.title;
         if (s === "error" && detail) toast(detail, "err", 5000);
       },
       onLevel: function (peak) {
@@ -329,6 +399,12 @@
       },
       onTalking: function (talking) {
         if (listener) listener.duck(talking);
+      },
+      // Refused for a reason that will not change by pressing again (wrong
+      // password, no credential). The device already recorded it; re-read the
+      // inventory so THIS tile turns into the setup button for the next press.
+      onRefused: function () {
+        refresh().then(function () { remountIfIdle(tile); });
       },
     });
     tile.cvTalk = handle;
@@ -342,6 +418,7 @@
      outlive the button. A tile removed mid-hold would otherwise sit on a
      household's speaker until the hold window expired. */
   function unmount(tile) {
+    forget(tile);
     if (tile.cvTalk) { tile.cvTalk.destroy(); tile.cvTalk = null; }
     if (tile.cvListen) { tile.cvListen.destroy(); tile.cvListen = null; }
   }
@@ -349,6 +426,50 @@
   /* The tile's stream produced an audio track. */
   function noteAudio(tile) {
     if (tile && tile.cvListen) tile.cvListen.audioArrived();
+  }
+
+  /* Every tile this page mounted, so a home-wide change (one password for every
+     camera) can rebuild every tile, and so a periodic re-read can rebuild just
+     the tiles whose readiness actually changed. */
+  var mounted = [];
+
+  function signature(entry) {
+    return [entry.configured ? 1 : 0, (entry.readiness || {}).state || ""].join("|");
+  }
+  function remember(tile, camera, stream, entry) {
+    var row = mounted.filter(function (m) { return m.tile === tile; })[0];
+    if (!row) { row = { tile: tile }; mounted.push(row); }
+    row.camera = camera; row.stream = stream; row.sig = signature(entry);
+  }
+  function forget(tile) {
+    mounted = mounted.filter(function (m) { return m.tile !== tile; });
+  }
+  /* Never rebuild under a live conversation: remounting destroys the talk
+     handle, and the talk handle may be holding the camera's speaker. */
+  function remountIfIdle(tile) {
+    var row = mounted.filter(function (m) { return m.tile === tile; })[0];
+    if (!row || !tile.isConnected) return;
+    if (tile.cvTalk && tile.cvTalk.isHeld && tile.cvTalk.isHeld()) return;
+    remount(tile, row.camera, row.stream);
+  }
+  function remountAll() {
+    mounted.slice().forEach(function (m) { remountIfIdle(m.tile); });
+  }
+
+  /* The device re-checks cameras on its own (a camera re-paired in the Tapo app
+     turns ready within the hour, or at once on "Check again"). Re-read the
+     inventory every READINESS_MS, and rebuild only the tiles whose state moved. */
+  var READINESS_MS = 30000;
+  var lastRead = 0;
+  function sync() {
+    if (Date.now() - lastRead < READINESS_MS) return;
+    lastRead = Date.now();
+    refresh().then(function () {
+      mounted.slice().forEach(function (m) {
+        var entry = state.byId[m.camera.camera_id];
+        if (entry && signature(entry) !== m.sig) remountIfIdle(m.tile);
+      });
+    });
   }
 
   /* Rebuild BOTH controls after commissioning. The listen button goes too,
@@ -376,5 +497,7 @@
   // reachable from a test, not only from a commissioning dialog.
   global.cvTalkPanel = { refresh: refresh, ensure: ensure, mount: mount,
                          unmount: unmount, remount: remount,
+                         // Camera setup opens the same one-password dialog.
+                         commission: commission,
                          noteAudio: noteAudio, state: state };
 })(window);

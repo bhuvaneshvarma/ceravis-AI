@@ -37,6 +37,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketD
 from api.control_auth import check_edge_id, field
 from config.settings import settings
 from talkback import credentials
+from talkback.readiness import readiness
 from talkback.sessions import hub
 from talkback.mpegts import FRAME_BYTES, SAMPLE_RATE
 from talkback.protocol import TalkbackError
@@ -95,7 +96,14 @@ def list_cameras(edge_id: str | None = Query(None)) -> dict:
     check_edge_id(edge_id)
     return {
         "enabled": settings.talkback_enabled,
-        "cameras": [{**c, "busy": hub.busy(c["camera_id"])} for c in hub.cameras()],
+        # The ONE TP-Link account password for this home, set once in setup.
+        "home_configured": credentials.home_configured(),
+        "cameras": [{**c, "busy": hub.busy(c["camera_id"]),
+                     # What the device found the last time it checked, silently.
+                     # This is what lets the page say "needs the password"
+                     # BEFORE a carer presses, rather than after.
+                     "readiness": readiness.get(c["camera_id"])}
+                    for c in hub.cameras()],
         "active": hub.status(),
     }
 
@@ -113,8 +121,10 @@ def health(edge_id: str | None = Query(None)) -> dict:
     active = hub.status()
     return {
         "enabled": settings.talkback_enabled,
+        "home_configured": credentials.home_configured(),
         "active_sessions": len(active),
         "active": active,
+        "readiness": readiness.all(),
         "limits": {
             "hold_secs": settings.talkback_hold_secs,
             "max_turn_secs": settings.talkback_max_turn_secs,
@@ -123,6 +133,69 @@ def health(edge_id: str | None = Query(None)) -> dict:
             "codec": "alaw",
         },
     }
+
+
+# How long a "set the password" or "check now" request waits for the verdicts.
+# A camera check is ~0.1-1.5 s, or the timeout for one that is offline; past this
+# the answer comes back without the stragglers rather than hanging the page.
+_CHECK_WAIT_SECS = 30.0
+
+
+async def _verdicts() -> dict:
+    try:
+        return await asyncio.wait_for(readiness.check_now(), _CHECK_WAIT_SECS)
+    except asyncio.TimeoutError:
+        return readiness.all()
+
+
+def _summary(verdicts: dict) -> dict:
+    states = [v.get("state") for v in verdicts.values()]
+    return {"ready": states.count("ready"), "total": len(states),
+            "all_ready": bool(states) and all(s == "ready" for s in states)}
+
+
+@router.put("/credential")
+async def set_home_credential(body: dict = Body(...)) -> dict:
+    """Set THE TP-Link account password for this home, once, for every camera.
+
+    Every camera in a home is paired to one TP-Link account, so this is the only
+    password talk-back needs — typed once in camera setup, used by every camera
+    including ones added later. Replaces the per-camera entries an operator had
+    typed (they are the stale copies this supersedes), then checks every camera
+    silently and answers with what each one said."""
+    _require_enabled()
+    check_edge_id(field(body, "edgeId", "edge_id"))
+    password = field(body, "password", "cloudPassword", "cloud_password",
+                     "tplinkPassword", default="")
+    try:
+        cleared = credentials.set_home_password(password)
+    except ValueError as exc:
+        raise HTTPException(400, detail={"code": "invalid", "message": str(exc)})
+    verdicts = await _verdicts()
+    return {"configured": True, "scope": "home",
+            "updated_at": credentials.home_updated_at(),
+            "replaced_camera_overrides": cleared,
+            "cameras": verdicts, **_summary(verdicts)}
+
+
+@router.delete("/credential")
+def forget_home_credential(edge_id: str | None = Query(None)) -> dict:
+    _require_enabled()
+    check_edge_id(edge_id)
+    removed = credentials.forget_home()
+    readiness.kick()
+    return {"configured": False, "scope": "home", "removed": removed}
+
+
+@router.post("/check")
+async def check_all(body: dict = Body(default={})) -> dict:
+    """Check every camera's speaker NOW, silently, and report. The device already
+    does this on its own from boot; this is the "check again" button — for
+    right after re-pairing a camera in the Tapo app."""
+    _require_enabled()
+    check_edge_id(field(body, "edgeId", "edge_id"))
+    verdicts = await _verdicts()
+    return {"cameras": verdicts, **_summary(verdicts)}
 
 
 @router.put("/{camera_id}/credential")
@@ -138,7 +211,8 @@ def set_credential(camera_id: str, body: dict = Body(...)) -> dict:
         credentials.set_password(camera_id, password)
     except ValueError as exc:
         raise HTTPException(400, detail={"code": "invalid", "message": str(exc)})
-    return {"camera_id": camera_id, "configured": True,
+    readiness.kick()
+    return {"camera_id": camera_id, "configured": True, "scope": "camera",
             "updated_at": credentials.updated_at(camera_id)}
 
 
@@ -146,8 +220,9 @@ def set_credential(camera_id: str, body: dict = Body(...)) -> dict:
 def forget_credential(camera_id: str, edge_id: str | None = Query(None)) -> dict:
     _require_enabled()
     check_edge_id(edge_id)
-    return {"camera_id": camera_id, "configured": False,
-            "removed": credentials.forget(camera_id)}
+    removed = credentials.forget(camera_id)
+    readiness.kick()
+    return {"camera_id": camera_id, "configured": False, "removed": removed}
 
 
 @router.post("/{camera_id}/test")
@@ -199,7 +274,9 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     holder = forwarded or (websocket.client.host if websocket.client else "unknown")
     try:
         session = await hub.open(camera_id, holder=holder, client_id=client_id)
+        readiness.observe(camera_id)
     except TalkbackError as exc:
+        readiness.observe(camera_id, exc.code, str(exc))
         await websocket.close(
             code=WS_BUSY if exc.code == "busy" else WS_FAILED,
             # Close reasons are capped at 123 bytes by the protocol.

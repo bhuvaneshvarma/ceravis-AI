@@ -66,26 +66,43 @@ GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
 ```json
 {
   "enabled": true,
+  "home_configured": true,
   "cameras": [
     {
-      "camera_id": "cam_1",
+      "camera_id": "LOUNGE",
       "camera_name": "LOUNGE",
-      "room_name": "LIVING_ROOM",
+      "room_name": "LOUNGE",
       "host": "10.42.0.250",
       "configured": true,
-      "credential_updated_at": "2026-09-09T14:22:05+05:30",
+      "credential_scope": "home",
+      "credential_updated_at": "2026-09-21T16:40:02+05:30",
       "enabled": true,
-      "busy": false
+      "busy": false,
+      "readiness": {
+        "state": "ready",
+        "message": "Ready.",
+        "detail": "",
+        "checked_at": "2026-09-21T16:40:03+05:30",
+        "elapsed_ms": 103
+      }
     },
     {
-      "camera_id": "cam_2",
-      "camera_name": "BEDROOM",
-      "room_name": "BEDROOM",
-      "host": "10.42.0.218",
-      "configured": false,
-      "credential_updated_at": null,
+      "camera_id": "LIVING_ROOM",
+      "camera_name": "LIVING ROOM",
+      "room_name": "LIVING ROOM",
+      "host": "10.42.0.251",
+      "configured": true,
+      "credential_scope": "home",
+      "credential_updated_at": "2026-09-21T16:40:02+05:30",
       "enabled": true,
-      "busy": false
+      "busy": false,
+      "readiness": {
+        "state": "rejected",
+        "message": "The camera refused this home's TP-Link password. If the password is right, remove the camera in the Tapo app and add it again — it is holding an old copy.",
+        "detail": "The camera rejected the credential. ...",
+        "checked_at": "2026-09-21T16:40:04+05:30",
+        "elapsed_ms": null
+      }
     }
   ],
   "active": {}
@@ -95,12 +112,51 @@ GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
 | Field | Meaning |
 |---|---|
 | `enabled` | Device-wide switch. `false` ⇒ show nothing; every other call returns 503. |
-| `configured` | This camera has been **commissioned** (§4). `false` ⇒ offer "Enable talk", not a microphone. |
+| `home_configured` | This home's one TP-Link password has been set (§4). |
+| `configured` | This camera has a credential — its own, or the home's. |
+| `credential_scope` | `"home"` (the one password for the home) or `"camera"` (an override for a camera on a different TP-Link account). |
+| `readiness.state` | **What the device found when it last checked this camera, silently.** Draw the button from this — see the table below. |
+| `readiness.message` | A sentence for the carer. Show it as-is. |
 | `busy` | Somebody is holding this camera's speaker **right now**. |
 | `active` | Live sessions, same shape as `/health` below. Empty when nobody is talking. |
 
+**Draw the talk control from `readiness.state`**, not from `configured` alone.
+The device checks every camera by itself from boot, so it already knows whether
+a press would work — a carer should never find out by being refused mid-word.
+
+| `readiness.state` | What to show |
+|---|---|
+| `ready` | The hold-to-talk microphone. |
+| `unknown` | The microphone. (Not checked yet — the first ~minute after the device boots.) |
+| `needs_password` | A "Set up talk" button that opens the home password (§4). |
+| `rejected` | A "Talk: password refused" button that opens the same dialog, with `readiness.message`. |
+| `unreachable` | The microphone, labelled "Speaker offline" — pressing still tries, it may be back. |
+| `unsupported` | **Nothing.** This camera has no talk-back; a dead control is worse than none. |
+
 `credential_updated_at` is the **fact** of a credential and when it was set. No
 hash material is ever returned — a hash in an API response can be ground offline.
+
+### How the device keeps `readiness` true
+
+It runs with every other service from boot — no separate setup, nothing to start.
+
+| State | Re-checked | Why |
+|---|---|---|
+| `ready` | every 10 min | Catches a password change before a carer does. |
+| `rejected` | every 60 min | Slow **on purpose**: repeated failed logins are what cameras lock accounts out for. It is only there to notice a re-pair in the Tapo app. |
+| `unreachable` | every 2 min | A rebooting camera comes back fast. |
+| `needs_password` | when a password arrives | There is nothing to try until then. |
+
+Any password change — through this API or the CLI — re-checks every camera at
+once. A real press that is refused updates `readiness` immediately too. The
+check is the silent probe (§5): no sound in the room. It gives way to people: a
+carer who presses during a check takes the camera, and a check never takes one
+off a carer.
+
+**Zero-input cameras.** A camera with no credential gets one attempt, once per
+boot, with its **own stream password** (already in camera setup). If its firmware
+accepts that, it is commissioned with nothing typed at all
+(`readiness.state: ready`, credential source `stream`).
 
 ---
 
@@ -155,15 +211,24 @@ camera, not yet heard in the room.
 `frames_dropped` rising while `queued_ms` stays low is normal after a blip — it
 is the backlog being discarded rather than played late.
 
+`/health` also carries `home_configured` and a `readiness` map (camera id →
+the same object as in §2), for a fleet dashboard that wants every camera's
+talk-back state in one call.
+
 ---
 
-## 4. `PUT /{camera_id}/credential` — commission one camera
+## 4. `PUT /credential` — the ONE password for the whole home
 
-The **one** moment a TP-Link account password is handled. It is hashed on the
-device and discarded; nothing stores it, logs it, or can read it back.
+Every camera in a home is paired to one TP-Link account, so talk-back needs one
+password per **home**, not per camera. Set it once — the edge UI asks for it in
+**Setup → Cameras**, under "Talk-back" — and every camera uses it, including
+cameras added later. This is the only setup talk-back has.
+
+It is the **one** moment a TP-Link account password is handled. It is hashed on
+the device and discarded; nothing stores it, logs it, or can read it back.
 
 ```
-PUT /<edge_id>/api/v1/talkback/cam_1/credential
+PUT /<edge_id>/api/v1/talkback/credential
 Content-Type: application/json
 ```
 
@@ -171,14 +236,75 @@ Content-Type: application/json
 { "edgeId": "NrPq8...", "password": "the TP-Link ACCOUNT password" }
 ```
 
+The device then **checks every camera silently and answers with each verdict**,
+so whoever typed the password sees the result in the same response (up to ~30 s
+if a camera is offline):
+
 **200**
 
 ```json
-{ "camera_id": "cam_1", "configured": true,
+{
+  "configured": true,
+  "scope": "home",
+  "updated_at": "2026-09-21T16:40:02+05:30",
+  "replaced_camera_overrides": ["LOUNGE", "LIVING_ROOM"],
+  "ready": 1,
+  "total": 2,
+  "all_ready": false,
+  "cameras": {
+    "LOUNGE":      { "state": "ready",    "message": "Ready.", "elapsed_ms": 103, "...": "..." },
+    "LIVING_ROOM": { "state": "rejected", "message": "The camera refused this home's TP-Link password. ...", "...": "..." }
+  }
+}
+```
+
+A **200 with `all_ready: false` is not an error** — the password was stored; one
+or more cameras did not accept it. Show each camera's `message`.
+
+Setting the home password **replaces the per-camera passwords an operator typed
+earlier**: a password change makes every one of them wrong at once. Credentials
+the device proved for itself (a camera's own stream password) are kept.
+
+`DELETE /<edge_id>/api/v1/talkback/credential?edge_id=<edge_id>` forgets it.
+
+### `POST /check` — "check again"
+
+Re-checks every camera now and returns the same `cameras` / `ready` / `total` /
+`all_ready` shape. The device already does this on its own schedule; this is
+for right after re-pairing a camera in the Tapo app.
+
+```
+POST /<edge_id>/api/v1/talkback/check
+Content-Type: application/json
+
+{ "edgeId": "NrPq8..." }
+```
+
+### `PUT /{camera_id}/credential` — an override for one camera
+
+Only for a home whose cameras sit on **two different** TP-Link accounts. Same
+body as above; the camera's own entry then wins over the home password.
+
+```
+PUT /<edge_id>/api/v1/talkback/LOUNGE/credential
+Content-Type: application/json
+```
+
+```json
+{ "edgeId": "NrPq8...", "password": "the OTHER TP-Link account's password" }
+```
+
+**200**
+
+```json
+{ "camera_id": "LOUNGE", "configured": true, "scope": "camera",
   "updated_at": "2026-09-21T11:04:18+05:30" }
 ```
 
-| Result | Meaning |
+`DELETE /<edge_id>/api/v1/talkback/LOUNGE/credential?edge_id=<edge_id>` removes
+the override; the camera falls back to the home password.
+
+| Result (all three writes) | Meaning |
 |---|---|
 | `400` | Blank password. A blank can never silently replace a working credential. |
 | `401` / `409` | edge_id missing / wrong. |
@@ -188,20 +314,12 @@ Content-Type: application/json
 > authenticates local callers against a cached copy of that credential pushed by
 > TP-Link's cloud.
 >
-> **If a correct password is rejected with 401:** the account password was
-> changed while the camera had no internet, so the camera still wants the old
-> one. **Remove the camera in the Tapo app and re-add it.** That is the only
-> known fix, and it works.
-
-### `DELETE /{camera_id}/credential`
-
-```
-DELETE /<edge_id>/api/v1/talkback/cam_1/credential?edge_id=<edge_id>
-```
-
-```json
-{ "camera_id": "cam_1", "configured": false, "removed": true }
-```
+> **If a correct password is refused (`readiness.state: rejected`):** the camera
+> is holding an old copy — typically the account password changed while the
+> camera could not reach TP-Link's cloud. **Remove the camera in the Tapo app and
+> add it again.** That is the only known fix, and it works. You do not need to
+> touch this device afterwards: it re-checks by itself (within the hour, or at
+> once with `POST /check`).
 
 ---
 
@@ -308,7 +426,7 @@ Do not send audio before this frame arrives.
 | `4401` | edge_id missing or wrong. | **No** |
 | `4409` | Someone **else** holds this camera's speaker. | **No** |
 | `4503` | Talk-back is switched off on this device. | **No** |
-| `4500` | The camera handshake failed. The `reason` says why. | **No** |
+| `4500` | The camera handshake failed. The `reason` starts with the failure code (`unauthorized: …`). | **Only** for `unreachable`, `timeout`, `stalled`, `closed` — never for `unauthorized`, `no_credential`, `refused`, `protocol`. Retrying a refused password is what cameras lock accounts out for. |
 | `1006` / `1011` | The network dropped. | **Yes** — see §6.4 |
 
 The close `reason` is the device's own sentence, already written for a human.
@@ -435,8 +553,14 @@ onFrame(frame => {
 
 // 5. Reconnect on 1006/1011 only, with the SAME clientId.
 ws.onclose = ev => {
-  if ([1000, 1001, 4401, 4409, 4503, 4500].includes(ev.code))
+  const why = (/^([a-z_]+):/.exec(ev.reason || "") || [])[1];
+  const permanent = [1000, 1001, 4401, 4409, 4503].includes(ev.code) ||
+    ["unauthorized", "no_credential", "no_camera", "refused", "protocol"].includes(why);
+  if (permanent) {
+    if (why === "unauthorized" || why === "no_credential")
+      reloadInventory();                        // the button becomes "Set up talk"
     return fail(ev.reason);
+  }
   scheduleRejoin();                             // same clientId
 };
 ```
@@ -489,11 +613,17 @@ For a technician at a handover, with no app involved:
 ```bash
 cd edge
 python3 -m tools.talkback list                     # what is configured
-python3 -m tools.talkback set  --camera LOUNGE     # prompts for the password
-python3 -m tools.talkback test --camera LOUNGE     # silent proof of the chain
+python3 -m tools.talkback set                      # THE home password; checks every camera
+python3 -m tools.talkback test                     # silent check of every camera
+python3 -m tools.talkback set  --camera LOUNGE     # an override for one camera
+python3 -m tools.talkback test --camera LOUNGE     # silent proof for one camera
 python3 -m tools.talkback tone --camera LOUNGE     # makes an actual sound
 python3 -m tools.talkback diagnose --camera LOUNGE # when "unauthorized" hides three faults
 ```
 
+`set` and `test` without `--camera` exit 0 only when every camera is ready, so a
+commissioning script can gate on them. A password set here is picked up by the
+running service within 15 seconds — it watches the credential file.
+
 `diagnose` tries twelve credential shapes with one cheap local connection each
-and labels which the camera accepts. Use it before escalating a 401.
+and labels which the camera accepts. Use it before escalating a refusal.

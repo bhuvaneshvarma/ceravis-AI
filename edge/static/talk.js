@@ -39,6 +39,18 @@
             back by the device instead — see client_id below) */
   var FINAL_CODES = { 4401: 1, 4409: 1, 4503: 1, 1000: 1, 1001: 1 };
 
+  /* 4500 is "the camera handshake failed", and the device puts WHICH failure in
+     front of the reason ("unauthorized: …"). Some are a network blip worth
+     another try; these are not — the answer is the same however often we ask.
+     Retrying a refused password is also exactly what a camera locks an account
+     out for. This is the bug that showed a wrong password as "Reconnecting…". */
+  var FINAL_REASONS = { unauthorized: 1, no_credential: 1, no_camera: 1,
+                        no_host: 1, refused: 1, protocol: 1, busy: 1, disabled: 1 };
+  function reasonCode(reason) {
+    var m = /^([a-z_]+):/.exec(reason || "");
+    return m ? m[1] : "";
+  }
+
   /* The outbound queue, in FRAMES of 20 ms. Speech that cannot be sent now is
      speech that is already late; past this much backlog the oldest frames are
      the ones to lose, because the newest are the words still being said. */
@@ -435,8 +447,11 @@
           // blip, not a refusal. FINAL_CODES are the refusals, plus the device
           // closing a channel on schedule — asking again would only take a
           // household's speaker back off whoever the device just gave it to.
-          if (!FINAL_CODES[ev.code] && (pressed || wasOpen) &&
-              scheduleRejoin()) return;
+          var code = reasonCode(ev.reason);
+          var final = !!FINAL_CODES[ev.code] || !!FINAL_REASONS[code];
+          if (!final && (pressed || wasOpen) && scheduleRejoin()) return;
+          if (FINAL_REASONS[code] && code !== "busy" && opts.onRefused)
+            opts.onRefused(code);
 
           // The close REASON is the server's sentence; codes only carry a class.
           var why = (ev.reason || "").replace(/^[a-z_]+:\s*/, "");

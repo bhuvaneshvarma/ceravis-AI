@@ -94,6 +94,26 @@ async def _speak(camera_id: str, audio: bytes) -> int:
         await hub.release(camera_id, session)
 
 
+async def _check_all() -> int:
+    """Silently check every camera and print one line each. Exit 0 only when
+    every camera is ready, so a commissioning script can gate on it."""
+    rows = hub.cameras()
+    bad = 0
+    print()
+    for r in rows:
+        try:
+            res = await hub.probe(r["camera_id"])
+            print(f"  ready     {r['camera_name']:<20} {res['elapsed_ms']} ms "
+                  f"({res['auth']})")
+        except TalkbackError as exc:
+            bad += 1
+            hint = (" -> if the password is right, remove this camera in the "
+                    "Tapo app and add it again" if exc.code == "unauthorized" else "")
+            print(f"  {exc.code:<9} {r['camera_name']:<20}{hint}")
+    print(f"\n{len(rows) - bad} of {len(rows)} cameras ready.")
+    return 0 if rows and not bad else 1
+
+
 def _candidates(cam, cred, cloud_password: str, email: str) -> list:
     """Every credential the camera could plausibly mean, from what this device
     already knows. Each is (label, username, secret).
@@ -244,14 +264,34 @@ def main(argv=None) -> int:
         if not rows:
             print("no cameras registered")
             return 0
-        print(f"{'CAMERA':<22}{'HOST':<18}{'TALK-BACK':<12}CONFIGURED AT")
+        print(f"{'CAMERA':<22}{'HOST':<18}{'CREDENTIAL':<14}SET AT")
         for r in rows:
+            scope = r.get("credential_scope") or ""
             print(f"{r['camera_name'][:21]:<22}{r['host'] or '-':<18}"
-                  f"{'ready' if r['configured'] else 'not set':<12}"
+                  f"{(scope + ' password') if r['configured'] else 'not set':<14}"
                   f"{r['credential_updated_at'] or '-'}")
+        print(f"\nhome TP-Link password: "
+              f"{'set' if credentials.home_configured() else 'NOT SET'}"
+              f"  (set it once with: python -m tools.talkback set)")
         print(f"\ntalk-back is {'ENABLED' if settings.talkback_enabled else 'DISABLED'} "
               f"on this device (TALKBACK_ENABLED), port {settings.talkback_port}")
         return 0
+
+    # No --camera: the HOME. One TP-Link account password for every camera,
+    # then a silent check of each so the technician leaves knowing the answer.
+    if args.command in ("set", "test") and not args.camera:
+        if args.command == "set":
+            password = args.password or getpass.getpass(
+                "This home's TP-Link ACCOUNT password (the Tapo app login): ")
+            try:
+                cleared = credentials.set_home_password(password)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print("stored (hashes only) for the whole home"
+                  + (f"; replaced per-camera entries for {', '.join(cleared)}"
+                     if cleared else ""))
+        return asyncio.run(_check_all())
 
     if not args.camera:
         print("error: --camera is required", file=sys.stderr)
