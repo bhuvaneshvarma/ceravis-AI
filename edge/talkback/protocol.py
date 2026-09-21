@@ -34,9 +34,10 @@ import asyncio
 import hashlib
 import logging
 import os
+import socket
 import time
 
-from .mpegts import AudioMuxer
+from .mpegts import AudioMuxer, FRAME_MS
 
 logger = logging.getLogger("talkback.protocol")
 
@@ -46,6 +47,20 @@ DEVICE_BOUNDARY = b"--device-stream-boundary--"
 
 _MAX_HEADER_BYTES = 16 * 1024        # a header block this big is a broken peer
 _MAX_PART_BYTES = 4 * 1024 * 1024    # ditto for a part body
+
+# Backpressure is measured in MILLISECONDS OF SPEECH, never in bytes, because
+# milliseconds are what it costs: every byte sitting in this socket's write
+# buffer is a word the room has not heard yet.
+#
+# TCP gives us no way to withdraw something already queued, so the only lever on
+# a backlog is to stop adding to it. Past _QUEUE_STALE_MS the newest frame is
+# dropped — the room hears a short gap instead of falling permanently further
+# behind the carer's voice. Past _QUEUE_DEAD_MS the camera has stopped reading
+# altogether, and the session is torn down so the client's reconnect can open a
+# clean socket. That reconnect IS our drop-the-oldest: a new socket has no
+# backlog, which is the only way to discard one.
+_QUEUE_STALE_MS = 400
+_QUEUE_DEAD_MS = 4000
 
 
 class TalkbackError(RuntimeError):
@@ -182,6 +197,11 @@ class TapoTalkSession:
         self.challenge = ""
         self.bytes_sent = 0
         self.opened_at = 0.0
+        # Health, reported all the way up to the carer's screen.
+        self.frames_sent = 0
+        self.frames_dropped = 0
+        self.queued_ms = 0.0
+        self.peak_queued_ms = 0.0
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -259,6 +279,18 @@ class TapoTalkSession:
                 # 64 kB limit would turn that into a spurious protocol error.
                 asyncio.open_connection(self.host, self.port, limit=_MAX_PART_BYTES),
                 self.timeout)
+            # Nagle's algorithm exists to spare the network from small writes.
+            # This IS a stream of small writes — one 20 ms frame at a time — and
+            # coalescing them means holding a carer's voice back waiting for an
+            # ACK that has nothing to do with the room. Off, always.
+            sock = self._writer.get_extra_info("socket")
+            if sock is not None:
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    # A platform that will not take the option is not a reason
+                    # to refuse the call; it is a reason to say so once.
+                    logger.debug("TCP_NODELAY refused on %s", self.host)
         except asyncio.TimeoutError:
             raise TalkbackError("unreachable",
                                 f"No answer from {self.host}:{self.port}. The camera is "
@@ -347,12 +379,31 @@ class TapoTalkSession:
         session without making a sound (see hub.probe)."""
         await self._send_part("audio/mp2t", self._muxer.header())
 
+    def _queued_ms(self, per_frame: int) -> float:
+        """How much speech is already waiting in the socket, in milliseconds."""
+        transport = self._writer.transport if self._writer else None
+        if transport is None or per_frame <= 0:
+            return 0.0
+        try:
+            return transport.get_write_buffer_size() * FRAME_MS / per_frame
+        except Exception:
+            # Not every transport exposes its buffer. Reporting "empty" is the
+            # safe answer: it costs us the drop policy, never correctness.
+            return 0.0
+
     async def send(self, alaw: bytes) -> None:
-        """Push one chunk of 8 kHz mono A-law at the speaker."""
+        """Push one chunk of 8 kHz mono A-law at the speaker.
+
+        Deliberately does NOT await drain(). A drain per frame makes the handler
+        wait on the camera's flow control every 20 ms, which turns one slow
+        camera into a stalled carer — and the 8 s ceiling it needed meant a dead
+        camera could park a live microphone for eight seconds before admitting
+        it. The write buffer is bounded here instead, in milliseconds of speech,
+        so backpressure is measured rather than waited on."""
         if self._closed:
             raise TalkbackError("closed", "The speaker session is closed.")
         payload = self._muxer.frame(alaw)
-        self._writer.write(
+        part = (
             b"\r\n".join([
                 b"--" + CLIENT_BOUNDARY,
                 b"Content-Type: audio/mp2t",
@@ -360,15 +411,35 @@ class TapoTalkSession:
                 f"X-Session-Id: {self.session_id}".encode(),
                 f"Content-Length: {len(payload)}".encode(),
             ]) + b"\r\n\r\n" + payload + b"\r\n")
-        self.bytes_sent += len(alaw)
-        try:
-            # Bounded: a camera that stops reading must surface as an error, not
-            # as a handler parked forever holding the camera's talk lock.
-            await asyncio.wait_for(self._writer.drain(), self.timeout)
-        except asyncio.TimeoutError:
+
+        queued = self._queued_ms(len(part))
+        self.queued_ms = queued
+        self.peak_queued_ms = max(self.peak_queued_ms, queued)
+
+        if queued >= _QUEUE_DEAD_MS:
             raise TalkbackError("stalled", "The camera stopped accepting audio.")
+        if queued >= _QUEUE_STALE_MS:
+            # Everything queued ahead of this frame is already late. Adding to it
+            # would put the carer further behind with every word they say.
+            self.frames_dropped += 1
+            return
+
+        try:
+            self._writer.write(part)
         except OSError as exc:
             raise TalkbackError("closed", f"The camera dropped the connection ({exc}).")
+        self.bytes_sent += len(alaw)
+        self.frames_sent += 1
+
+    def health(self) -> dict:
+        """What this session is costing, for the carer's screen and the fleet."""
+        return {
+            "frames_sent": self.frames_sent,
+            "frames_dropped": self.frames_dropped,
+            "bytes_sent": self.bytes_sent,
+            "queued_ms": round(self.queued_ms),
+            "peak_queued_ms": round(self.peak_queued_ms),
+        }
 
     async def close(self) -> None:
         if self._closed:

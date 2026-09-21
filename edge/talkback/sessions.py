@@ -48,6 +48,11 @@ class _Holder:
 
     session: TapoTalkSession
     holder: str
+    # The BROWSER's own id for this microphone, not an address. A carer whose
+    # phone changes network keeps the same client_id and a different address,
+    # which is exactly the case where they must be allowed back in — see
+    # `open(takeover=...)`.
+    client_id: str = ""
     started: float = field(default_factory=time.monotonic)
     frames: int = 0
 
@@ -86,12 +91,21 @@ class TalkbackHub:
         return camera_id in self._active
 
     def status(self) -> dict:
-        return {
-            cid: {"holder": h.holder,
-                  "seconds": round(time.monotonic() - h.started, 1),
-                  "frames": h.frames}
-            for cid, h in self._active.items()
-        }
+        out = {}
+        for cid, h in self._active.items():
+            row = {"holder": h.holder,
+                   "client_id": h.client_id,
+                   "seconds": round(time.monotonic() - h.started, 1),
+                   "frames": h.frames}
+            # What the channel is actually costing right now. A carer who says
+            # "it sounds delayed" and a fleet dashboard asking the same question
+            # deserve the same number, from the same place.
+            try:
+                row.update(h.session.health())
+            except Exception:
+                pass
+            out[cid] = row
+        return out
 
     # -- sessions ---------------------------------------------------------- #
 
@@ -113,24 +127,49 @@ class TalkbackHub:
                 f"TP-Link account password for this camera first.")
         return cam, host, cred
 
-    async def open(self, camera_id: str, holder: str) -> TapoTalkSession:
+    async def open(self, camera_id: str, holder: str,
+                   client_id: str = "") -> TapoTalkSession:
         """Take the camera's speaker. Raises TalkbackError('busy') rather than
         queueing: the caller is a person holding a button, and a queue would put
-        their voice in the room at a moment they have stopped expecting it."""
+        their voice in the room at a moment they have stopped expecting it.
+
+        THE RECONNECT TRAP: a dropped WebSocket does not always tell this side
+        it dropped. A carer whose phone changed cell would then be refused from
+        their OWN session, by a socket that no longer exists, until the hold
+        window expired — the exact moment reconnecting matters most. So a
+        request carrying the SAME client_id as the current holder reclaims it
+        instead of bouncing off it. The id is minted by the browser per
+        microphone, so this can only ever hand a session back to the tab that
+        already had it."""
         cam, host, cred = self._resolve(camera_id)
+        stale = None
         async with self._lock:
             live = self._active.get(cam.camera_id)
             if live is not None:
-                raise TalkbackError(
-                    "busy",
-                    f"Someone is already speaking to {cam.camera_name} "
-                    f"({live.holder}).")
+                if client_id and live.client_id == client_id:
+                    # The same microphone coming back. Take the old session out
+                    # from under the lock and close it below — the camera has
+                    # ONE speaker and will not grant a second while this holds.
+                    stale = live
+                    self._active.pop(cam.camera_id, None)
+                else:
+                    raise TalkbackError(
+                        "busy",
+                        f"Someone is already speaking to {cam.camera_name} "
+                        f"({live.holder}).")
             session = TapoTalkSession(
                 host, cred, port=settings.talkback_port,
                 timeout=settings.talkback_timeout_secs, mode=settings.talkback_mode)
             # Placed under the lock BEFORE the network work, so a second request
             # arriving during the ~200 ms handshake is refused, not raced.
-            self._active[cam.camera_id] = _Holder(session, holder)
+            self._active[cam.camera_id] = _Holder(session, holder, client_id)
+        if stale is not None:
+            logger.info("talk takeover on %s by returning client %s",
+                        cam.camera_id, client_id)
+            try:
+                await stale.session.close()
+            except Exception:
+                logger.debug("stale talk session would not close", exc_info=True)
         try:
             await session.open()
             await session.start_audio()

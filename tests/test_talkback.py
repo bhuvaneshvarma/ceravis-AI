@@ -51,6 +51,7 @@ from talkback.credentials import TalkCredential                    # noqa: E402
 from talkback.mpegts import (FRAME_BYTES, STREAM_TYPE_PCMA_TAPO,   # noqa: E402
                              TS_PACKET, TS_SYNC, AudioMuxer, _crc32_mpeg,
                              linear_to_alaw, pcm16_to_alaw)
+from talkback import protocol as proto                            # noqa: E402
 from talkback.protocol import TalkbackError, digest_header         # noqa: E402
 
 FAILURES: list[str] = []
@@ -302,6 +303,117 @@ async def _failure_releases():
 
 
 asyncio.run(_failure_releases())
+
+
+# ---------------------------------------------------------------------------
+# Getting back in after a drop
+# ---------------------------------------------------------------------------
+print("\nReclaiming a session after a drop")
+
+
+async def _takeover():
+    """A carer whose network dropped must be able to reclaim their OWN session.
+
+    The device cannot always tell that a WebSocket died. Without this, the
+    holder of a camera would be a socket that no longer exists, and the person
+    it belonged to would be refused from their own microphone until the hold
+    window expired — precisely when getting back matters most."""
+    hub_mod.TapoTalkSession = _FakeSession
+    hub = hub_mod.TalkbackHub()
+
+    first = await hub.open("cam_3", "carer A", client_id="phone-1")
+    check("the first carer holds the camera", hub.busy("cam_3"))
+
+    other = None
+    try:
+        await hub.open("cam_3", "carer B", client_id="phone-2")
+    except TalkbackError as exc:
+        other = exc
+    check("a DIFFERENT client is still refused",
+          other is not None and other.code == "busy")
+
+    back = await hub.open("cam_3", "carer A", client_id="phone-1")
+    check("the SAME client reclaims it instead of bouncing off itself",
+          back is not first and hub.busy("cam_3"))
+    check("the stale session is closed, so the camera is not held twice",
+          first.closed)
+
+    nameless = None
+    try:
+        await hub.open("cam_3", "carer C", client_id="")
+    except TalkbackError as exc:
+        nameless = exc
+    check("a client with NO id can never take a session over",
+          nameless is not None and nameless.code == "busy")
+    await hub.release("cam_3", back)
+
+
+asyncio.run(_takeover())
+
+
+# ---------------------------------------------------------------------------
+# Backpressure: late speech is dropped, a dead camera is reported
+# ---------------------------------------------------------------------------
+print("\nBackpressure")
+
+
+class _FakeTransport:
+    """A socket whose write buffer we control."""
+
+    def __init__(self, queued=0):
+        self.queued = queued
+        self.written = 0
+
+    def get_write_buffer_size(self):
+        return self.queued
+
+
+class _FakeWriter:
+    def __init__(self, queued=0):
+        self.transport = _FakeTransport(queued)
+        self.chunks = []
+
+    def write(self, data):
+        self.chunks.append(data)
+
+
+async def _backpressure():
+    sess = proto.TapoTalkSession("10.0.0.9", object())
+    sess.session_id = "s1"
+    frame = bytes(160)                               # 20 ms of A-law
+
+    # An empty socket: the frame goes straight out, no waiting on drain().
+    sess._writer = _FakeWriter(0)
+    await sess.send(frame)
+    check("an idle socket takes the frame immediately",
+          len(sess._writer.chunks) == 1 and sess.frames_sent == 1)
+    per_frame = len(sess._writer.chunks[0])
+
+    # Past the stale budget: the frame is dropped rather than deepening a
+    # backlog of speech the room has already fallen behind.
+    sess._writer = _FakeWriter(int(per_frame * proto._QUEUE_STALE_MS / 20) + per_frame)
+    await sess.send(frame)
+    check("speech queued past the stale budget is DROPPED, not queued deeper",
+          sess._writer.chunks == [] and sess.frames_dropped == 1)
+    check("a dropped frame is not counted as sent", sess.frames_sent == 1)
+
+    # A camera that stopped reading altogether is an error, not a deeper queue.
+    sess._writer = _FakeWriter(int(per_frame * proto._QUEUE_DEAD_MS / 20) + per_frame)
+    stalled = None
+    try:
+        await sess.send(frame)
+    except TalkbackError as exc:
+        stalled = exc
+    check("a camera that stopped reading is reported as stalled",
+          stalled is not None and stalled.code == "stalled")
+
+    h = sess.health()
+    check("health reports what the channel is costing",
+          h["frames_sent"] == 1 and h["frames_dropped"] == 1
+          and "queued_ms" in h and "peak_queued_ms" in h)
+
+
+asyncio.run(_backpressure())
 
 # ---------------------------------------------------------------------------
 shutil.rmtree(_TMP, ignore_errors=True)

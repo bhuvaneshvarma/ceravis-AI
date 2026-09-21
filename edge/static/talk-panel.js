@@ -22,6 +22,10 @@
 
   var state = { enabled: false, byId: {} };
 
+  /* Every live listen control on the page, so that switching one room on can
+     switch the rest off. Entries remove themselves in destroy(). */
+  var listeners = [];
+
   /* One read of the talk-back inventory, shared by every tile on the page.
 
      `ensure` is what the live wall calls on every 5-second sync: this list only
@@ -36,7 +40,12 @@
   }
 
   function refresh() {
-    inflight = api("/api/v1/talkback/cameras").then(function (r) {
+    // The inventory names the rooms in a home, so it is authenticated like
+    // everything else here — which means resolving the edge id BEFORE asking.
+    inflight = edgeIdOrEmpty().then(function (edge) {
+      return api("/api/v1/talkback/cameras" +
+                 (edge ? "?edge_id=" + encodeURIComponent(edge) : ""));
+    }).then(function (r) {
       state.enabled = !!r.enabled;
       state.byId = {};
       (r.cameras || []).forEach(function (c) { state.byId[c.camera_id] = c; });
@@ -152,36 +161,52 @@
       prettyLabel(camera.camera_name || camera.camera_id));
     tile.appendChild(btn);
 
-    var on = false;
+    // ADOPT REALITY, never assume "off". This button gets rebuilt — by
+    // commissioning, by a tile refresh — while the stream underneath it keeps
+    // playing. A rebuilt button that assumed silence was the bug: it started a
+    // click out of phase with the room, so the press that should have switched
+    // a room off only re-asserted that it was on.
+    var on = stream.listening ? stream.listening() : false;
     var ducked = false;
     var label = btn.querySelector(".talk-label");
 
+    // Re-assert rather than toggle. `stream.listen()` is idempotent, so calling
+    // it with what we already want costs nothing and guarantees the button and
+    // the audio path cannot drift apart between clicks.
     function apply() {
-      var wanted = on && !ducked;
-      var has = stream.listen(wanted);
-      btn.dataset.listen = on ? (ducked ? "ducked" : "on") : "off";
-      label.textContent = on ? (ducked ? "Muted while talking" : "Listening") : "Listen";
+      var has = stream.listen(on && !ducked);
+      var live = stream.listening ? stream.listening() : (on && has);
+      var s = on ? (ducked ? "ducked" : (live ? "on" : "waiting")) : "off";
+      btn.dataset.listen = s;
+      label.textContent =
+        s === "on" ? "Listening" :
+        s === "ducked" ? "Muted while talking" :
+        // Asked for, but no audio track has arrived yet. Usually the stream is
+        // still negotiating rather than the camera being deaf, so stay armed:
+        // the moment sound arrives, listening starts (audioArrived below). A
+        // camera with no microphone simply never arrives, and the button keeps
+        // saying so rather than lying that it is listening.
+        s === "waiting" ? "Waiting for audio…" : "Listen";
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
       return has;
     }
 
     btn.onclick = function (e) {
       e.stopPropagation();
-      on = !on;
+      // The question is never "what did I set last time", it is "is this room
+      // audible right now" — the one answer a rebuild cannot invalidate.
+      on = !(stream.listening ? stream.listening() : on);
+      // ONE room at a time. Two rooms playing at once is not more monitoring,
+      // it is a wall of noise where nobody can tell which room a sound came
+      // from — and it is the other way a carer ends up unable to switch a room
+      // off: the one they muted was never the one they could hear.
+      if (on) listeners.forEach(function (l) { if (l !== handle) l.stop(); });
       // ALWAYS applied. Turning listening OFF is an action in its own right —
       // guarding this behind `on` is how the button became one-way.
-      var has = apply();
-      if (on && !has) {
-        // No audio track YET. Usually the stream is still negotiating rather
-        // than the camera being deaf, so stay armed instead of refusing: the
-        // moment sound arrives, listening starts (audioArrived below). A camera
-        // with no microphone simply never arrives, and the button keeps saying
-        // so rather than lying that it is listening.
-        btn.dataset.listen = "waiting";
-        label.textContent = "Waiting for audio…";
-      }
+      apply();
     };
 
-    return {
+    var handle = {
       /* The stream finally produced an audio track. If the carer already asked
          to listen, honour it now — the click does not have to be repeated. */
       audioArrived: function () { if (on) apply(); },
@@ -195,7 +220,18 @@
         if (on) apply();
       },
       stop: function () { on = false; ducked = false; apply(); },
+      /* Drop out of the exclusive-listening roster with the tile. */
+      destroy: function () {
+        on = false; ducked = false;
+        try { apply(); } catch (e) {}
+        var i = listeners.indexOf(handle);
+        if (i >= 0) listeners.splice(i, 1);
+      },
     };
+    listeners.push(handle);
+    // The stream may already have been playing before this button existed.
+    apply();
+    return handle;
   }
 
   /* Add the tile's audio controls. Listening needs nothing commissioned, so it
@@ -241,6 +277,10 @@
           s === "live" ? "On air" :
           s === "ready" ? "Talk" :
           s === "connecting" ? "Connecting…" :
+          // The channel dropped and is coming back by itself. Named, because a
+          // carer who is told what is happening waits; a carer shown nothing
+          // presses again, and a second press is a second session.
+          s === "reconnecting" ? "Reconnecting…" :
           s === "error" ? "Try again" : "Hold to talk";
         if (s === "error" && detail) toast(detail, "err", 5000);
       },
@@ -264,7 +304,7 @@
      household's speaker until the hold window expired. */
   function unmount(tile) {
     if (tile.cvTalk) { tile.cvTalk.destroy(); tile.cvTalk = null; }
-    if (tile.cvListen) { tile.cvListen.stop(); tile.cvListen = null; }
+    if (tile.cvListen) { tile.cvListen.destroy(); tile.cvListen = null; }
   }
 
   /* The tile's stream produced an audio track. */
@@ -277,6 +317,10 @@
      reference to it for ducking, and a stale one would leave a carer listening
      to their own voice coming back out of the room. */
   function remount(tile, camera, stream) {
+    // Detach the handles BEFORE the buttons go. The listen handle sits in the
+    // exclusive-listening roster and the talk handle may be holding a
+    // household's speaker; dropping their buttons does not release either.
+    unmount(tile);
     tile.querySelectorAll(".talk-btn, .listen-btn").forEach(function (b) {
       b.remove();
     });

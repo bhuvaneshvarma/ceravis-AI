@@ -83,13 +83,45 @@ def _require_enabled() -> None:
 
 
 @router.get("/cameras")
-def list_cameras() -> dict:
+def list_cameras(edge_id: str | None = Query(None)) -> dict:
     """Every camera and whether it is ready to be talked to. Read-only, no
-    network access — safe to call on every page load."""
+    network access — safe to call on every page load.
+
+    Authenticated like every other control surface even though it only reads:
+    this router is reachable from the internet through the fleet tunnel, and the
+    list names the rooms in someone's home and the address of every camera in
+    it. On a device with no edge_id yet (LAN development) check_edge_id is a
+    no-op, so this does not get in the way of a bench."""
+    check_edge_id(edge_id)
     return {
         "enabled": settings.talkback_enabled,
         "cameras": [{**c, "busy": hub.busy(c["camera_id"])} for c in hub.cameras()],
         "active": hub.status(),
+    }
+
+
+@router.get("/health")
+def health(edge_id: str | None = Query(None)) -> dict:
+    """What talk-back is doing right now, in numbers.
+
+    Separate from /cameras because /cameras backs a page that renders on load
+    and must stay cheap and cacheable, while this is a live gauge: queue depth,
+    dropped frames, who is holding which room. `queued_ms` is the one number
+    that answers "why does it sound delayed" — it is milliseconds of the
+    carer's voice still waiting in the socket to the camera."""
+    check_edge_id(edge_id)
+    active = hub.status()
+    return {
+        "enabled": settings.talkback_enabled,
+        "active_sessions": len(active),
+        "active": active,
+        "limits": {
+            "hold_secs": settings.talkback_hold_secs,
+            "max_turn_secs": settings.talkback_max_turn_secs,
+            "sample_rate": SAMPLE_RATE,
+            "frame_bytes": FRAME_BYTES,
+            "codec": "alaw",
+        },
     }
 
 
@@ -141,6 +173,12 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     so the page can show a real ON AIR state instead of hoping.
     """
     edge_id = websocket.query_params.get("edge_id") or websocket.query_params.get("edgeId")
+    # The browser's own id for THIS microphone. It is what lets a carer who
+    # dropped off the network reclaim their own session instead of being told
+    # the room is busy by a socket that no longer exists. Bounded, because it
+    # is echoed into logs and into the busy message other carers read.
+    client_id = (websocket.query_params.get("client_id")
+                 or websocket.query_params.get("clientId") or "")[:64]
 
     # Everything that can be refused is refused BEFORE accept(), so a rejected
     # caller never reaches the camera and never holds its lock.
@@ -160,7 +198,7 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     forwarded = (websocket.headers.get("x-forwarded-for") or "").split(",")[0].strip()
     holder = forwarded or (websocket.client.host if websocket.client else "unknown")
     try:
-        session = await hub.open(camera_id, holder=holder)
+        session = await hub.open(camera_id, holder=holder, client_id=client_id)
     except TalkbackError as exc:
         await websocket.close(
             code=WS_BUSY if exc.code == "busy" else WS_FAILED,
@@ -175,7 +213,9 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
                                "sample_rate": SAMPLE_RATE, "codec": "alaw",
                                "frame_bytes": FRAME_BYTES,
                                "mic_gain": settings.talkback_mic_gain,
-                               "hold_secs": settings.talkback_hold_secs})
+                               "hold_secs": settings.talkback_hold_secs,
+                               "client_id": client_id,
+                               "max_turn_secs": settings.talkback_max_turn_secs})
     logger.info("talk open on %s for %s", camera_id, holder)
 
     started = time.monotonic()
@@ -238,7 +278,11 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
                 await websocket.send_json({
                     "type": "stats",
                     "seconds": round(last_audio - started, 1),
-                    "bytes": session.bytes_sent})
+                    "bytes": session.bytes_sent,
+                    # The channel's own health, on the same frame the page is
+                    # already reading. A carer should not have to poll a second
+                    # endpoint to find out their voice is arriving late.
+                    **session.health()})
     except WebSocketDisconnect:
         reason = "disconnected"
     except TalkbackError as exc:

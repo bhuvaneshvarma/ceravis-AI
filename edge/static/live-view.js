@@ -80,6 +80,12 @@
     var lastProgress = 0;
     var state = "";
 
+    // The carer's LISTENING decision, remembered across reconnects. A new peer
+    // hands us a brand-new audio track, and a new track arrives enabled — so
+    // without this, a room somebody deliberately switched off starts talking
+    // again the moment ICE reconnects.
+    var wantAudio = false;
+
     videoEl.muted = true;
     videoEl.autoplay = true;
     videoEl.playsInline = true;
@@ -97,6 +103,10 @@
       try { videoEl.srcObject = null; } catch (e) {  }
     }
     function play() { var p = videoEl.play(); if (p && p.catch) p.catch(function () {  }); }
+    function audioTracks() {
+      var s = videoEl.srcObject;
+      return (s && s.getAudioTracks) ? s.getAudioTracks() : [];
+    }
 
     // React to connection-state changes AFTER a peer is live.
     function handleConnState(peer) {
@@ -148,8 +158,14 @@
         if (opts.audio) peer.addTransceiver("audio", { direction: "recvonly" });
         peer.ontrack = function (e) {
           videoEl.srcObject = e.streams[0];
-          if (opts.onAudio && e.track && e.track.kind === "audio")
-            opts.onAudio(true);
+          if (e.track && e.track.kind === "audio") {
+            // Silence is enforced on the TRACK, not just the element: a muted
+            // element still decodes, and `muted` is the one piece of state an
+            // autoplay retry or a stray play() is allowed to fight with.
+            e.track.enabled = wantAudio;
+            videoEl.muted = !wantAudio;
+            if (opts.onAudio) opts.onAudio(true);
+          }
         };
         peer.onconnectionstatechange = function () {
           var s = peer.connectionState;
@@ -263,18 +279,30 @@
          Returns whether there was anything to unmute. Must be called from a
          user gesture the first time — browsers refuse audio otherwise. */
       listen: function (on) {
-        var stream = videoEl.srcObject;
-        var has = !!(stream && stream.getAudioTracks && stream.getAudioTracks().length);
-        videoEl.muted = !(on && has);
-        if (on && has) play();
-        return has;
+        var tracks = audioTracks();
+        wantAudio = !!on;
+        // BOTH, and in this order: the track stops producing sound at all, and
+        // the element stops playing what it no longer receives. Muting only the
+        // element leaves a decoder running on a stream nobody is listening to,
+        // and leaves "off" resting on a flag that autoplay can flip back.
+        tracks.forEach(function (t) { t.enabled = wantAudio; });
+        videoEl.muted = !wantAudio;
+        if (wantAudio && tracks.length) play();
+        return tracks.length > 0;
       },
-      hasAudio: function () {
-        var stream = videoEl.srcObject;
-        return !!(stream && stream.getAudioTracks && stream.getAudioTracks().length);
+      /* Is this room AUDIBLE right now — the fact, not a flag somebody set.
+         A toggle that remembers its own state drifts out of step with the
+         element every time a control is rebuilt or a peer is replaced, and a
+         toggle that is out of step by one is a toggle that will not switch
+         off. So the button asks this on every click instead of remembering. */
+      listening: function () {
+        var tracks = audioTracks();
+        return !videoEl.muted && tracks.length > 0 && tracks[0].enabled;
       },
+      hasAudio: function () { return audioTracks().length > 0; },
       stop: function () {
         stopped = true;
+        wantAudio = false;
         clearInterval(watchdog);
         clearGrace();
         clearReconnect();

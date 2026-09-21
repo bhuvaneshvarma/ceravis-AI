@@ -625,6 +625,17 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   background: var(--orange); border-color: var(--orange); transform: scale(1.03);
   box-shadow: 0 0 0 calc(3px + 9px * var(--talk-level, 0)) rgba(255,102,0,.28);
 }
+/* The channel dropped and is being rebuilt. Amber, not red: nothing has
+   failed yet, and the carer's last words are still queued to land when it
+   returns. It pulses so it cannot be mistaken for a settled state. */
+.talk-btn[data-talk="reconnecting"] {
+  background: var(--warn, #b8791b); border-color: var(--warn, #b8791b);
+  animation: cv-talk-rejoin 1.1s ease-in-out infinite;
+}
+@keyframes cv-talk-rejoin { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) {
+  .talk-btn[data-talk="reconnecting"] { animation: none; }
+}
 .talk-btn[data-talk="error"] { background: var(--bad); border-color: var(--bad); }
 .cam-tile.maximized .talk-btn { right: 24px; bottom: 56px; padding: 11px 18px; font-size: 14px; }
 .cam-tile.maximized .talk-btn svg { width: 18px; height: 18px; }
@@ -655,4 +666,9 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   border-color: rgba(53,152,157,.6); color: #dbe4ee; }
 .cam-tile.maximized .listen-btn { left: 24px; bottom: 56px; padding: 11px 18px; font-size: 14px; }
 .cam-tile.maximized .listen-btn svg { width: 18px; height: 18px; }
-@media (max-width: 640px) { .listen-btn .talk-label { display: none; } }
+/* The label is the only unambiguous "this room is off" on a small screen —
+   colour alone is not a state a carer should have to interpret. So the pill
+   collapses to its icon when idle, and speaks the moment it is doing anything. */
+@media (max-width: 640px) {
+  .listen-btn[data-listen="off"] .talk-label { display: none; }
+}
