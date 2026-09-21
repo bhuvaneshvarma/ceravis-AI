@@ -84,15 +84,25 @@
      prefilled. After saving, the device checks every camera silently and the
      dialog shows what each one said, in place: a carer or technician sees
      "LOUNGE ready, LIVING ROOM refused" instead of discovering it on a press. */
-  function commission() {
+  /* `camera` given = the per-camera override: for the rare camera paired to a
+     DIFFERENT TP-Link account than the rest of the home. Same dialog, same
+     verdicts, scoped to that one camera. */
+  function commission(camera) {
+    var only = camera && camera.camera_id ? camera : null;
+    var onlyName = only ? prettyLabel(only.camera_name || only.camera_id) : "";
     return new Promise(function (resolve) {
       document.querySelectorAll(".cv-dialog-scrim").forEach(function (d) { d.remove(); });
       var scrim = document.createElement("div");
       scrim.className = "cv-dialog-scrim";
       scrim.innerHTML =
         '<div class="cv-dialog" role="dialog" aria-modal="true">' +
-        '<div class="cv-dialog-title">Talk-back for this home</div>' +
-        '<div class="cv-dialog-msg">' +
+        '<div class="cv-dialog-title" data-cv="title">Talk-back for this home</div>' +
+        '<div class="cv-dialog-msg" data-cv="only" hidden>' +
+          'A password for <b data-cv="only-name"></b> only. Use this when that ' +
+          'camera is paired to a <b>different TP-Link account</b> from the rest ' +
+          'of the home. It takes priority over the home password for this camera.' +
+        '</div>' +
+        '<div class="cv-dialog-msg" data-cv="home">' +
           'Enter the <b>TP-Link account password</b> — the one used to sign in to ' +
           'the Tapo app these cameras are paired to. Not the camera\'s stream ' +
           'password. You enter it <b>once</b>; every camera in this home uses it. ' +
@@ -108,6 +118,12 @@
           '<button class="btn btn-primary" data-cv="ok">Save &amp; check cameras</button>' +
         '</div></div>';
       document.body.appendChild(scrim);
+      if (only) {
+        scrim.querySelector('[data-cv="title"]').textContent = "Talk-back for " + onlyName;
+        scrim.querySelector('[data-cv="only-name"]').textContent = onlyName;
+        scrim.querySelector('[data-cv="only"]').hidden = false;
+        scrim.querySelector('[data-cv="home"]').hidden = true;
+      }
 
       var pw = scrim.querySelector('[data-cv="pw"]');
       var err = scrim.querySelector('[data-cv="err"]');
@@ -135,6 +151,13 @@
       /* One line per camera, in the camera's own words. */
       function show(res) {
         var cams = (res && res.cameras) || {};
+        if (only) {
+          var one = {};
+          if (cams[only.camera_id]) one[only.camera_id] = cams[only.camera_id];
+          cams = one;
+          res = { cameras: one, all_ready: !!(one[only.camera_id] &&
+                                              one[only.camera_id].state === "ready") };
+        }
         list.innerHTML = "";
         Object.keys(cams).forEach(function (cid) {
           var v = cams[cid] || {};
@@ -153,7 +176,9 @@
         });
         list.hidden = !Object.keys(cams).length;
         again.hidden = !!(res && res.all_ready);
-        if (res && res.all_ready) toast("Talk-back is ready on every camera.", "ok");
+        if (res && res.all_ready)
+          toast(only ? "Talk-back is ready on " + onlyName + "."
+                     : "Talk-back is ready on every camera.", "ok");
       }
 
       function save() {
@@ -161,10 +186,16 @@
         err.hidden = true;
         busy(true, "Checking cameras…");
         edgeIdOrEmpty().then(function (edge) {
-          return api("/api/v1/talkback/credential", {
-            method: "PUT",
-            body: JSON.stringify({ edgeId: edge, password: pw.value }),
-          });
+          var body = JSON.stringify({ edgeId: edge, password: pw.value });
+          if (!only)
+            return api("/api/v1/talkback/credential", { method: "PUT", body: body });
+          // One camera: store its override, then have the device check it.
+          return api("/api/v1/talkback/" + encodeURIComponent(only.camera_id) +
+                     "/credential", { method: "PUT", body: body })
+            .then(function () {
+              return api("/api/v1/talkback/check", { method: "POST",
+                body: JSON.stringify({ edgeId: edge }) });
+            });
         }).then(function (res) {
           changed = true;
           pw.value = "";

@@ -233,9 +233,14 @@ async def test_camera(camera_id: str, body: dict = Body(default={})) -> dict:
     _require_enabled()
     check_edge_id(field(body, "edgeId", "edge_id"))
     try:
-        return await hub.probe(camera_id)
+        result = await hub.probe(camera_id)
     except TalkbackError as exc:
+        # A test IS a check: what it found is the camera's readiness now, so a
+        # per-camera "Test" button and the live wall agree immediately.
+        readiness.observe(camera_id, exc.code, str(exc))
         raise _http(exc)
+    readiness.observe(camera_id)
+    return result
 
 
 @router.websocket("/{camera_id}/stream")

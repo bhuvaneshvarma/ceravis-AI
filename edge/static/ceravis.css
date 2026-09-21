@@ -690,3 +690,9 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
    display, which would otherwise override the attribute and show controls that
    have nothing to act on yet. */
 .cv-dialog [hidden] { display: none !important; }
+
+/* Setup -> Cameras -> Talk-back: one row per camera, with its own actions. */
+.talk-cam { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; }
+.talk-cam .talk-src { font-size: 12px; margin-top: 2px; }
+.talk-acts { display: flex; gap: 6px; flex-wrap: wrap; }

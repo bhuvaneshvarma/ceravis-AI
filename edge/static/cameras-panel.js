@@ -125,17 +125,61 @@ function mountCameras(root, opts = {}) {
     if (!res.enabled) return;
     const box = gid("t-status");
     box.innerHTML = "";
-    const rows = (res.cameras || []).map(c => [c.camera_id, c.camera_name,
-      c.readiness || { state: c.configured ? "unknown" : "needs_password" }]);
-    rows.forEach(([cid, name, r]) => {
+    // One row per camera, each with its own actions: test it, give it its own
+    // password (a camera on a different TP-Link account), or put it back on
+    // the home password.
+    (res.cameras || []).forEach(c => {
+      const r = c.readiness || { state: c.configured ? "unknown" : "needs_password" };
+      const name = prettyLabel(c.camera_name || c.camera_id);
       const row = document.createElement("div");
-      row.className = "talk-verdict";
+      row.className = "talk-verdict talk-cam";
       row.dataset.state = r.state || "unknown";
+      const text = document.createElement("div");
       const b = document.createElement("b");
-      b.textContent = prettyLabel(name || cid);
+      b.textContent = name;
       const t = document.createElement("span");
-      t.textContent = r.state === "ready" ? " ready" : " — " + (r.message || r.state);
-      row.append(b, t);
+      t.textContent = r.state === "ready"
+        ? " ready" + (r.elapsed_ms != null ? ` (${r.elapsed_ms} ms)` : "")
+        : " — " + (r.message || r.state);
+      const src = document.createElement("div");
+      src.className = "faint talk-src";
+      src.textContent = !c.configured ? "No password yet"
+        : c.credential_scope === "camera" ? "Uses its own password"
+        : "Uses the home password";
+      text.append(b, t, src);
+
+      const acts = document.createElement("div");
+      acts.className = "talk-acts";
+      const btn = (label, fn) => {
+        const x = document.createElement("button");
+        x.className = "btn btn-ghost btn-sm"; x.type = "button"; x.textContent = label;
+        x.onclick = async () => { x.disabled = true; try { await fn(x); } finally { x.disabled = false; } };
+        acts.appendChild(x);
+      };
+      btn("Test", async (x) => {
+        x.textContent = "Testing…";
+        try {
+          const ok = await api(`/api/v1/talkback/${encodeURIComponent(c.camera_id)}/test`,
+            { method: "POST", body: JSON.stringify({ edgeId: await edgeId() }) });
+          cvNotify(`${name}: talk-back works (${ok.elapsed_ms} ms). No sound was played.`, true);
+        } catch (e) {
+          cvNotify(`${name}: ${((e && e.detail) || {}).message || "the test failed."}`, false, 6000);
+        }
+        x.textContent = "Test";
+        talkStatus();
+      });
+      btn("Own password", async () => {
+        const changed = await window.cvTalkPanel.commission(c);
+        if (changed) talkStatus();
+      });
+      if (c.credential_scope === "camera") btn("Use home password", async () => {
+        await api(`/api/v1/talkback/${encodeURIComponent(c.camera_id)}/credential?edge_id=` +
+                  encodeURIComponent(await edgeId()), { method: "DELETE" });
+        await api("/api/v1/talkback/check", { method: "POST",
+          body: JSON.stringify({ edgeId: await edgeId() }) }).catch(() => {});
+        talkStatus();
+      });
+      row.append(text, acts);
       box.appendChild(row);
     });
     gid("t-set").textContent = res.home_configured ? "Change TP-Link password"
