@@ -42,8 +42,13 @@ is no API key and no bearer token.
 | `PUT`, `POST` | JSON body field `edgeId` (alias: `edge_id`) |
 
 The WebSocket carries it as a **query parameter** because a browser cannot set
-headers on a WebSocket handshake. It is checked **before** the socket is
-accepted, so a wrong caller never reaches the camera and never makes a noise.
+headers on a WebSocket handshake. It is checked before the camera is ever
+dialled, so a wrong caller never reaches the camera and never makes a noise.
+
+The socket is **accepted first** and then refused with a reason (§6.2). Closing a
+WebSocket before accepting it becomes an HTTP 403 on the handshake, which a
+browser reports as code `1006` with an empty reason, so no refusal could ever say
+why. Until 2026-09-22 that is exactly what happened.
 
 | Result | Meaning |
 |---|---|
@@ -314,12 +319,22 @@ the override; the camera falls back to the home password.
 > authenticates local callers against a cached copy of that credential pushed by
 > TP-Link's cloud.
 >
-> **If a correct password is refused (`readiness.state: rejected`):** the camera
-> is holding an old copy — typically the account password changed while the
-> camera could not reach TP-Link's cloud. **Remove the camera in the Tapo app and
-> add it again.** That is the only known fix, and it works. You do not need to
-> touch this device afterwards: it re-checks by itself (within the hour, or at
-> once with `POST /check`).
+> **If a correct password is refused (`readiness.state: rejected`)**, check in
+> this order (the device gives the same list, from `edge/talkback/advice.py`):
+>
+> 1. In the Tapo app, **Me > Tapo Lab > Third-Party Compatibility is ON**.
+> 2. The camera **belongs to** the account whose password was entered. A camera
+>    *shared* from another account expects the **owner's** password.
+> 3. That account signs in with an **email and password**, not Google or Apple.
+> 4. Enter that account's current password again.
+> 5. Only then: remove the camera in the Tapo app and add it again. This can
+>    reset the camera's stream password, WiFi and address.
+>
+> Re-pairing is last on purpose. On 2026-09-21 both bench cameras refused the
+> current password straight after being re-paired, with internet, and the code
+> from the day it last worked was refused too. So it is not the one fix. You do not
+> need to touch this device after fixing the account: it re-checks by itself, or
+> at once with `POST /check`.
 
 ---
 
@@ -356,7 +371,8 @@ press takes. Anything under ~300 ms is healthy.
 | `428` | `no_credential` | Not commissioned yet — call §4 first. |
 | `409` | `no_host` | The camera has no usable address on file. |
 | `409` | `busy` | Someone is already speaking to this camera. |
-| `401` | `unauthorized` | The camera rejected the credential (see the re-pair note in §4). |
+| `424` | `unauthorized` | **The camera** refused the TP-Link password. Deliberately not `401`: a `401` from this API always means *your edge_id* is wrong. `message` carries the checklist. |
+| `429` | `cooldown` | Paused after repeated refusals, so our own retries cannot lock the camera out (§6.5). `Retry-After` is set. Setting the password again lifts it at once. |
 | `502` | `unreachable` | No answer on port 8800 — offline, or the firmware has no talk port. |
 | `502` | `refused` / `protocol` / `closed` | The camera answered, but not with talk-back. |
 | `504` | `timeout` / `stalled` | The camera went quiet mid-handshake, or stopped reading. |
@@ -374,8 +390,13 @@ Errors carry a structured detail:
 
 ```
 wss://edgeai.ceravishealth.in/<edge_id>/api/v1/talkback/cam_1/stream
-    ?client_id=<your-id>&edge_id=<edge_id>
+    ?client_id=<your-id>&edge_id=<edge_id>&name=<carer display name>
 ```
+
+`name` is optional (up to 40 printable characters). It is the only thing another
+carer is told when they are refused: "Someone is already speaking to LOUNGE
+(Nurse Priya)". Without it they are told only that someone is. The caller's
+address is never shown to other carers.
 
 ### 6.1 What you send
 
@@ -411,12 +432,17 @@ Do not send audio before this frame arrives.
   "queued_ms": 20, "peak_queued_ms": 140 }
 ```
 
-**On a mid-session failure:**
+**On ANY refusal or failure, before the close:** an error frame with the FULL
+sentence. The close reason says the same thing but is cut at 123 bytes by the
+WebSocket protocol, so show the error frame's `message`.
 
 ```json
-{ "type": "error", "code": "stalled",
-  "message": "The camera stopped accepting audio." }
+{ "type": "error", "code": "unauthorized",
+  "message": "The camera refused the TP-Link password. Check, in order: (1) ..." }
 ```
+
+`code` is the same stable value as the close reason's prefix. Decide on it: see
+§6.3 for which codes are final and which are worth a reconnect.
 
 ### 6.3 Close codes
 
@@ -425,13 +451,13 @@ Do not send audio before this frame arrives.
 | `1000` / `1001` | The device closed the channel on schedule (hold window, max turn). | **No** |
 | `4401` | edge_id missing or wrong. | **No** |
 | `4409` | Someone **else** holds this camera's speaker. | **No** |
+| `4429` | Paused after repeated refusals of the same password (§6.5). | **No** |
 | `4503` | Talk-back is switched off on this device. | **No** |
-| `4500` | The camera handshake failed. The `reason` starts with the failure code (`unauthorized: …`). | **Only** for `unreachable`, `timeout`, `stalled`, `closed` — never for `unauthorized`, `no_credential`, `refused`, `protocol`. Retrying a refused password is what cameras lock accounts out for. |
-| `1006` / `1011` | The network dropped. | **Yes** — see §6.4 |
+| `4500` | The camera handshake failed, or the camera failed mid-session. The error frame's `code` (and the reason's prefix) says which. | **Only** for `unreachable`, `timeout`, `stalled`, `closed` — never for `unauthorized`, `no_credential`, `refused`, `protocol`. Retrying a refused password is what cameras lock accounts out for. |
+| `1006` / `1011` | The network or a proxy dropped the connection. Since every refusal now carries a code, a `1006` really is the network. | **Yes** — see §6.4 |
 
-The close `reason` is the device's own sentence, already written for a human.
-Show it. Codes only carry a class; reasons are capped at 123 bytes by the
-WebSocket protocol itself.
+Codes only carry a class; the sentence is in the error frame (full) and the close
+reason (byte-capped).
 
 ### 6.4 `client_id` — how a carer gets back in
 
@@ -465,7 +491,8 @@ Recommended client behaviour, and what [talk.js](../edge/static/talk.js) does:
 | **One speaker per camera** | hard | Two people in one room at once is unusable, not degraded. Refused, never queued. |
 | **Hold window** | `hold_secs` (90 s) | The session stays open between presses, so only the first pays the ~200 ms handshake. Released after this much silence. |
 | **Max continuous speech** | `max_turn_secs` (300 s) | The stuck-button guard. A gap of more than 1 s resets it. |
-| **Backpressure** | 400 ms / 4000 ms | Late speech is dropped; a camera that stopped reading ends the session. |
+| **Backpressure** | 400 ms / 4000 ms | Late speech is dropped; a camera that stopped reading ends the session (`4500 stalled`, reconnect). |
+| **Lock-out guard** | 3 refusals in a row | The same password refused 3 times in a row pauses that camera for 15 min, then 30, 60 and at most 3 h. While paused, nothing dials it: HTTP `429` / WS `4429`, with the time it resumes. Setting the password again lifts the pause at once. `GET /health` shows it under `guard`. This exists because on 2026-09-21 a camera took ~25 refused logins in one afternoon, almost all of them automatic retries. |
 
 Holding is **not free**: a camera has one speaker, and holding it locks out other
 carers **and the Tapo app**. Hang up when the user navigates away.
@@ -537,11 +564,21 @@ const ws = new WebSocket(
   `${WSS}/${id}/stream?client_id=${clientId}&edge_id=${edgeId}`);
 ws.binaryType = "arraybuffer";
 
+const FINAL = ["unauthorized", "no_credential", "no_camera", "no_host",
+               "refused", "protocol", "busy", "cooldown", "disabled", "edge_id"];
+let sentence = "";
 ws.onmessage = ev => {
   const m = JSON.parse(ev.data);
   if (m.type === "open")  startCapture();       // not before
   if (m.type === "stats") showLatency(m.queued_ms);
-  if (m.type === "error") fail(m.message);
+  if (m.type === "error") {                     // arrives BEFORE the close
+    sentence = m.message;                       // the full sentence: show this one
+    if (FINAL.includes(m.code)) {
+      if (m.code === "unauthorized" || m.code === "no_credential")
+        reloadInventory();                      // the button becomes "Set up talk"
+      fail(sentence);
+    }
+  }
 };
 
 // 4. Send 160-byte A-law frames, oldest-dropped under backpressure.
@@ -551,16 +588,12 @@ onFrame(frame => {
   while (outbox.length > 5) outbox.shift();     // drop the OLDEST, keep newest
 });
 
-// 5. Reconnect on 1006/1011 only, with the SAME clientId.
+// 5. Reconnect only when the answer could change, with the SAME clientId.
 ws.onclose = ev => {
   const why = (/^([a-z_]+):/.exec(ev.reason || "") || [])[1];
-  const permanent = [1000, 1001, 4401, 4409, 4503].includes(ev.code) ||
-    ["unauthorized", "no_credential", "no_camera", "refused", "protocol"].includes(why);
-  if (permanent) {
-    if (why === "unauthorized" || why === "no_credential")
-      reloadInventory();                        // the button becomes "Set up talk"
-    return fail(ev.reason);
-  }
+  const permanent = [1000, 1001, 4401, 4409, 4429, 4503].includes(ev.code) ||
+    FINAL.includes(why);
+  if (permanent) return fail(sentence || ev.reason);
   scheduleRejoin();                             // same clientId
 };
 ```

@@ -48,8 +48,14 @@ UTC_EXEMPT = {"edge/onvif/soap.py"}
 # unverifiable. `clock_offset` is the device's measured skew, applied on purpose
 # — it is a correction, not a deadline. The real duration beside it already uses
 # time.monotonic().
+#
+# The talk-back lock-out guard persists a camera's pause in a file that the
+# service AND the command line (a separate process) both honour, across
+# restarts. A monotonic deadline means nothing to another process — the same
+# reason as the outbox's next_attempt.
 DEADLINE_EXEMPT = {"edge/integration/outbox_sender.py",
-                   "edge/fleet/fms_agent/transport.py"}
+                   "edge/fleet/fms_agent/transport.py",
+                   "edge/talkback/guard.py"}
 
 RX_UTCNOW = re.compile(r"\bdatetime\.utcnow\s*\(")
 RX_NOW_UTC = re.compile(r"datetime\.now\(\s*timezone\.utc\s*\)")

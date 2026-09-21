@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 
-from . import credentials
+from . import credentials, guard
 from .protocol import DEFAULT_PORT, TalkbackError, TapoTalkSession
 
 logger = logging.getLogger("talkback.sessions")
@@ -53,6 +53,11 @@ class _Holder:
     # which is exactly the case where they must be allowed back in — see
     # `open(takeover=...)`.
     client_id: str = ""
+    # What OTHER carers are told when they are refused ("already speaking to
+    # LOUNGE (Nurse Priya)"). A display name the client supplies, never the
+    # address: an IP means nothing to a carer and is not theirs to see. The
+    # address stays in `holder`, for /health and the logs.
+    label: str = ""
     # The device's own silent self-check, not a person. A carer who presses
     # during one takes the camera from it instead of being told it is busy —
     # a background check must never cost anyone a sentence.
@@ -96,12 +101,24 @@ class TalkbackHub:
         return out
 
     def busy(self, camera_id: str) -> bool:
-        return camera_id in self._active
+        return self.canonical(camera_id) in self._active
+
+    @staticmethod
+    def canonical(camera_id: str) -> str:
+        """The id a camera is KEPT under. Callers may say `LIVING_ROOM`,
+        `living room` or the raw id; every table here is keyed by one of them,
+        and a lookup under a different spelling silently misses — which is how
+        a session could be opened under one name and never released under
+        another, leaving that camera "busy" until a restart."""
+        cam = (CameraConfig().get_by_id(camera_id)
+               or CameraConfig().get_by_label(camera_id))
+        return cam.camera_id if cam is not None else camera_id
 
     def status(self) -> dict:
         out = {}
         for cid, h in self._active.items():
             row = {"holder": h.holder,
+                   "label": h.label,
                    "client_id": h.client_id,
                    "seconds": round(time.monotonic() - h.started, 1),
                    "frames": h.frames}
@@ -136,7 +153,8 @@ class TalkbackHub:
         return cam, host, cred
 
     async def open(self, camera_id: str, holder: str,
-                   client_id: str = "", preemptible: bool = False) -> TapoTalkSession:
+                   client_id: str = "", preemptible: bool = False,
+                   label: str = "", force: bool = False) -> TapoTalkSession:
         """Take the camera's speaker. Raises TalkbackError('busy') rather than
         queueing: the caller is a person holding a button, and a queue would put
         their voice in the room at a moment they have stopped expecting it.
@@ -150,6 +168,11 @@ class TalkbackHub:
         microphone, so this can only ever hand a session back to the tab that
         already had it."""
         cam, host, cred = self._resolve(camera_id)
+        # Before ANY connection: a camera that has refused this credential again
+        # and again is paused, and asking it once more is how cameras lock
+        # accounts out (talkback.guard). `force` is for a technician who knows.
+        if not force:
+            guard.check(cam.camera_id, cred, cam.camera_name)
         stale = None
         async with self._lock:
             live = self._active.get(cam.camera_id)
@@ -170,14 +193,15 @@ class TalkbackHub:
                 else:
                     raise TalkbackError(
                         "busy",
-                        f"Someone is already speaking to {cam.camera_name} "
-                        f"({live.holder}).")
+                        f"Someone is already speaking to {cam.camera_name}"
+                        + (f" ({live.label})." if live.label else "."))
             session = TapoTalkSession(
                 host, cred, port=settings.talkback_port,
                 timeout=settings.talkback_timeout_secs, mode=settings.talkback_mode)
             # Placed under the lock BEFORE the network work, so a second request
             # arriving during the ~200 ms handshake is refused, not raced.
             self._active[cam.camera_id] = _Holder(session, holder, client_id,
+                                                  label=label,
                                                   preemptible=preemptible)
         if stale is not None:
             logger.info("talk takeover on %s by %s", cam.camera_id,
@@ -190,26 +214,39 @@ class TalkbackHub:
         try:
             await session.open()
             await session.start_audio()
-        except BaseException:
+        except BaseException as exc:
             async with self._lock:
-                self._active.pop(cam.camera_id, None)
+                # Only OUR entry: a returning client may already have replaced it.
+                live = self._active.get(cam.camera_id)
+                if live is not None and live.session is session:
+                    self._active.pop(cam.camera_id, None)
             await session.close()
+            # Only a REFUSAL counts against the credential. A camera that was
+            # offline or slow said nothing about the password.
+            if isinstance(exc, TalkbackError) and exc.code == "unauthorized":
+                guard.refused(cam.camera_id, cred)
             raise
+        guard.accepted(cam.camera_id)
         return session
 
     async def release(self, camera_id: str, session: TapoTalkSession) -> None:
+        """Give the camera back. Found by SESSION, not by the id the caller
+        used: the id may be spelled differently from the one it was opened
+        under, and a missed release keeps a household's speaker locked."""
         async with self._lock:
-            live = self._active.get(camera_id)
-            if live is not None and live.session is session:
-                self._active.pop(camera_id, None)
+            for cid, live in list(self._active.items()):
+                if live.session is session:
+                    self._active.pop(cid, None)
+                    break
         await session.close()
 
     def note_frame(self, camera_id: str) -> None:
-        live = self._active.get(camera_id)
+        live = self._active.get(self.canonical(camera_id))
         if live is not None:
             live.frames += 1
 
-    async def probe(self, camera_id: str, preemptible: bool = False) -> dict:
+    async def probe(self, camera_id: str, preemptible: bool = False,
+                    force: bool = False) -> dict:
         """Prove the whole chain — reachable, credential accepted, speaker
         session granted — WITHOUT making a sound. This is the check a technician
         runs at handover, so it must never surprise a resident with a noise.
@@ -218,7 +255,7 @@ class TalkbackHub:
         presses during it takes the camera, and it never takes one off a carer."""
         t0 = time.monotonic()
         session = await self.open(camera_id, holder="self-check" if preemptible
-                                  else "probe", preemptible=preemptible)
+                                  else "probe", preemptible=preemptible, force=force)
         try:
             return {
                 "ok": True,

@@ -37,7 +37,7 @@
        4401 the device did not accept us      4503 talk-back is switched off
        4409 somebody ELSE is holding the room (our OWN stale session is handed
             back by the device instead — see client_id below) */
-  var FINAL_CODES = { 4401: 1, 4409: 1, 4503: 1, 1000: 1, 1001: 1 };
+  var FINAL_CODES = { 4401: 1, 4409: 1, 4429: 1, 4503: 1, 1000: 1, 1001: 1 };
 
   /* 4500 is "the camera handshake failed", and the device puts WHICH failure in
      front of the reason ("unauthorized: …"). Some are a network blip worth
@@ -45,6 +45,7 @@
      Retrying a refused password is also exactly what a camera locks an account
      out for. This is the bug that showed a wrong password as "Reconnecting…". */
   var FINAL_REASONS = { unauthorized: 1, no_credential: 1, no_camera: 1,
+                        cooldown: 1, edge_id: 1,
                         no_host: 1, refused: 1, protocol: 1, busy: 1, disabled: 1 };
   function reasonCode(reason) {
     var m = /^([a-z_]+):/.exec(reason || "");
@@ -208,6 +209,10 @@
     // link gets many attempts and a slow one gets fewer — both stop at the same
     // wall-clock moment, which is the thing a carer actually experiences.
     var clientId = mintClientId();
+    // The device's FULL sentence for the last failure, from its error frame.
+    // The close reason carries the same words but is cut at 123 bytes by the
+    // WebSocket protocol, so this is the one to show when both arrive.
+    var lastSentence = "";
     var rejoinTimer = null;
     var rejoinDelay = REJOIN_MIN_MS;
     var rejoinUntil = 0;
@@ -409,6 +414,7 @@
           if (msg.type === "open") {
             if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
             open = true;
+            lastSentence = "";
             // Back on the air. Reset the ladder so the NEXT drop, whenever it
             // comes, gets its own fast first retry rather than inheriting the
             // backoff this one ended on.
@@ -432,7 +438,17 @@
             setState(pressed ? "live" : "ready", "", msg);
             if (opts.onHealth) opts.onHealth(msg);
           } else if (msg.type === "error") {
-            hangUp(msg.message || "Talk-back failed.");
+            // The device says WHY before it closes. A refusal is final: say so
+            // and, for a password problem, let the page redraw the tile into its
+            // setup button. A failure the network could be behind (camera slow,
+            // camera stopped reading) is left to onclose, which reconnects.
+            lastSentence = msg.message || "";
+            var c = msg.code || "";
+            if (FINAL_REASONS[c]) {
+              if (c !== "busy" && c !== "cooldown" && c !== "edge_id" && opts.onRefused)
+                opts.onRefused(c);
+              hangUp(lastSentence || "Talk-back failed.");
+            }
           }
         };
 
@@ -449,12 +465,14 @@
           // household's speaker back off whoever the device just gave it to.
           var code = reasonCode(ev.reason);
           var final = !!FINAL_CODES[ev.code] || !!FINAL_REASONS[code];
-          if (!final && (pressed || wasOpen) && scheduleRejoin()) return;
-          if (FINAL_REASONS[code] && code !== "busy" && opts.onRefused)
+          if (!final && (pressed || wasOpen || rejoining) && scheduleRejoin()) return;
+          if (FINAL_REASONS[code] && code !== "busy" && code !== "cooldown" &&
+              code !== "edge_id" && opts.onRefused)
             opts.onRefused(code);
 
-          // The close REASON is the server's sentence; codes only carry a class.
-          var why = (ev.reason || "").replace(/^[a-z_]+:\s*/, "");
+          // The device's sentence: the full one from its error frame when there
+          // was one, else the (byte-capped) close reason. Codes only carry a class.
+          var why = lastSentence || (ev.reason || "").replace(/^[a-z_]+:\s*/, "");
           var vague = !why;
           if (!why && ev.code !== 1000 && ev.code !== 1001) {
             why = ev.code === 4409 ? "Someone else is already speaking to this camera."

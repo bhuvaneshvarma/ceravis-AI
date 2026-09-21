@@ -37,6 +37,7 @@ import os
 import socket
 import time
 
+from .advice import refused_detail
 from .mpegts import AudioMuxer, FRAME_MS
 
 logger = logging.getLogger("talkback.protocol")
@@ -319,13 +320,7 @@ class TapoTalkSession:
         status_line, headers = self._parse_headers(await self._readline_block())
         await self._read_body(headers)
         if " 200" not in status_line:
-            raise TalkbackError(
-                "unauthorized",
-                "The camera rejected the credential. This must be the TP-Link "
-                "ACCOUNT password for the app the camera is paired to — not the "
-                "camera's RTSP/ONVIF username and password. To see what the "
-                "camera actually asked for, run: python3 -m tools.talkback "
-                "diagnose --camera <name>")
+            raise TalkbackError("unauthorized", refused_detail())
 
         await self._open_talk()
         self.opened_at = time.monotonic()

@@ -35,7 +35,8 @@ from urllib.parse import urlparse
 
 from config.settings import settings
 from configuration.camera_config import CameraConfig
-from talkback import credentials
+from talkback import credentials, guard
+from talkback.advice import refused_lines
 from talkback.sessions import camera_host, hub
 from talkback.mpegts import FRAME_BYTES, SAMPLE_RATE, linear_to_alaw
 from talkback.protocol import TalkbackError, attempt
@@ -94,23 +95,27 @@ async def _speak(camera_id: str, audio: bytes) -> int:
         await hub.release(camera_id, session)
 
 
-async def _check_all() -> int:
+async def _check_all(force: bool = False) -> int:
     """Silently check every camera and print one line each. Exit 0 only when
     every camera is ready, so a commissioning script can gate on it."""
     rows = hub.cameras()
     bad = 0
+    refused = False
     print()
     for r in rows:
         try:
-            res = await hub.probe(r["camera_id"])
+            res = await hub.probe(r["camera_id"], force=force)
             print(f"  ready     {r['camera_name']:<20} {res['elapsed_ms']} ms "
                   f"({res['auth']})")
         except TalkbackError as exc:
             bad += 1
-            hint = (" -> if the password is right, remove this camera in the "
-                    "Tapo app and add it again" if exc.code == "unauthorized" else "")
-            print(f"  {exc.code:<9} {r['camera_name']:<20}{hint}")
+            refused |= exc.code == "unauthorized"
+            note = f"  {exc}" if exc.code == "cooldown" else ""
+            print(f"  {exc.code:<12} {r['camera_name']:<20}{note}")
     print(f"\n{len(rows) - bad} of {len(rows)} cameras ready.")
+    if refused:
+        print("\n  A camera refused the password. Check, in this order:")
+        print(refused_lines())
     return 0 if rows and not bad else 1
 
 
@@ -172,7 +177,7 @@ def _candidates(cam, cred, cloud_password: str, email: str) -> list:
 
 
 async def _diagnose(camera_id: str, cam, host: str, cloud_password: str,
-                    email: str) -> int:
+                    email: str, force: bool = False) -> int:
     """Answer the ONE question `test` cannot: the camera rejected us — why?
 
     Reads the challenge the camera actually sent, then tries every credential
@@ -197,8 +202,15 @@ async def _diagnose(camera_id: str, cam, host: str, cloud_password: str,
         print("\n  No credential stored yet - run `set` first.")
         return 1
 
+    # Every shape below is a real login attempt on the camera. On 2026-09-21 two
+    # diagnose runs were ~24 of the ~25 refused logins a camera took in one
+    # afternoon — the pattern cameras lock accounts out for. So a paused camera
+    # is not diagnosed without --force, and every refusal here is counted.
+    if not force:
+        guard.check(camera_id, cred, getattr(cam, "camera_name", camera_id))
     trials = _candidates(cam, cred, cloud_password, email)
-    print(f"\n  Trying {len(trials)} credential shapes, one connection each:")
+    print(f"\n  Trying {len(trials)} credential shapes, one connection each "
+          f"(each is a real login attempt - run this once, not repeatedly):")
     accepted = []
     for label, user, secret in trials:
         try:
@@ -212,32 +224,17 @@ async def _diagnose(camera_id: str, cam, host: str, cloud_password: str,
 
     print()
     if accepted:
+        guard.accepted(camera_id)
         print(f"  ACCEPTED: {accepted[0]}")
         print("  Store exactly that password with `set` and `test` will pass.")
         return 0
+    guard.refused(camera_id, cred, count=len(trials))
 
-    print("  The camera accepted NOTHING we can derive, so the secret it holds is "
-          "not one this\n  device knows. The handshake itself is proven correct "
-          "(it is byte-for-byte what\n  pytapo and go2rtc send), so this is the "
-          "credential VALUE, not the algorithm.")
-    print()
-    print("  By far the most likely cause, and it fits a recently changed password:")
-    print("    A Tapo camera authenticates local callers against a CACHED copy of "
-          "the account\n    credential, pushed to it by TP-Link's cloud. Change "
-          "the account password and the\n    camera keeps accepting the OLD one "
-          "until it next reaches the internet. These\n    cameras are on this "
-          "device's hotspot - if that has no upstream internet, they have\n    "
-          "never been told. The Tapo app still works because it authenticates "
-          "against the\n    cloud, not against the camera.")
-    print()
-    print("  Fix, in order of least effort:")
-    print("    1. Give the cameras internet once (join them to the house WiFi, or "
-          "give the\n       hotspot an upstream), open the Tapo app so the camera "
-          "syncs, then re-run\n       `set` + `test`.")
-    print("    2. Try the OLD password in `set` - the camera may still want it.")
-    print("    3. Re-pair the camera in the Tapo app, which forces a fresh "
-          "credential push.")
-    print("    4. Confirm this camera is on the SAME TP-Link account you typed.")
+    print("  The camera accepted NOTHING derived from the password entered. The")
+    print("  handshake is proven correct (byte-for-byte what pytapo and go2rtc")
+    print("  send, and unchanged since it worked), so the camera is holding a")
+    print("  secret other than this password. Check, in this order:")
+    print(refused_lines())
     return 1
 
 
@@ -257,6 +254,9 @@ def main(argv=None) -> int:
                          "live (never stored)")
     ap.add_argument("--email", help="diagnose: also try the TP-Link "
                                     "account email as the username")
+    ap.add_argument("--force", action="store_true",
+                    help="test/diagnose: ignore the lock-out pause (a camera "
+                         "that refused the same password again and again)")
     args = ap.parse_args(argv)
 
     if args.command == "list":
@@ -291,7 +291,7 @@ def main(argv=None) -> int:
             print("stored (hashes only) for the whole home"
                   + (f"; replaced per-camera entries for {', '.join(cleared)}"
                      if cleared else ""))
-        return asyncio.run(_check_all())
+        return asyncio.run(_check_all(force=args.force))
 
     if not args.camera:
         print("error: --camera is required", file=sys.stderr)
@@ -326,9 +326,9 @@ def main(argv=None) -> int:
                 typed = getpass.getpass(
                     "Account password to try (not stored): ")
             return asyncio.run(_diagnose(camera_id, cam, camera_host(cam),
-                                         typed, args.email or ""))
+                                         typed, args.email or "", force=args.force))
         if args.command == "test":
-            result = asyncio.run(hub.probe(camera_id))
+            result = asyncio.run(hub.probe(camera_id, force=args.force))
             print(f"OK — {result['host']} granted speaker session {result['session_id']} "
                   f"in {result['elapsed_ms']} ms (auth: {result['auth']}). No audio sent.")
             return 0
@@ -340,6 +340,8 @@ def main(argv=None) -> int:
         return asyncio.run(_speak(camera_id, audio))
     except TalkbackError as exc:
         print(f"error [{exc.code}]: {exc}", file=sys.stderr)
+        if exc.code == "unauthorized":
+            print("\n  Check, in this order:\n" + refused_lines(), file=sys.stderr)
         return 1
 
 

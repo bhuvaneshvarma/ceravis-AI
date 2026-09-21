@@ -18,9 +18,18 @@ because a browser cannot set headers on a WebSocket handshake; that is the same
 choice the recordings endpoints already made, for the same reason.
 
 This matters more here than anywhere else in the API: this endpoint is reachable
-through the fleet tunnel, and it makes a noise in someone's home. So the gate is
-checked BEFORE the socket is accepted, and a session is refused — never queued —
-if that camera already has a speaker.
+through the fleet tunnel, and it makes a noise in someone's home. So the edge_id
+is checked before the camera is ever dialled, and a session is refused — never
+queued — if that camera already has a speaker.
+
+The socket IS accepted before a refusal, deliberately. Closing a WebSocket before
+accept() is, by the ASGI spec, an HTTP 403 on the handshake: the browser sees
+code 1006 and an EMPTY reason, whatever we meant to say. Until 2026-09-22 every
+refusal here went out that way, so a wrong password looked exactly like a network
+blip — the client retried it, each retry was another refused login on the
+camera, and nobody could see why. Accepting first costs nothing (the camera is
+not touched until the checks pass) and lets every refusal carry its real code
+and sentence.
 
 The wire is deliberately dumb: the client sends raw 8 kHz mono G.711 A-law as
 binary frames, and JSON text frames for control. The browser does the encoding
@@ -36,7 +45,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketD
 
 from api.control_auth import check_edge_id, field
 from config.settings import settings
-from talkback import credentials
+from talkback import credentials, guard
 from talkback.readiness import readiness
 from talkback.sessions import hub
 from talkback.mpegts import FRAME_BYTES, SAMPLE_RATE
@@ -49,8 +58,30 @@ router = APIRouter(prefix="/api/v1/talkback", tags=["Talkback"])
 # Close codes the browser reads back to the user. 4000+ is the application range.
 WS_UNAUTHORIZED = 4401
 WS_BUSY = 4409
+WS_PAUSED = 4429          # talkback.guard: refused locally to protect the camera
 WS_UNAVAILABLE = 4503
 WS_FAILED = 4500
+
+# The WebSocket protocol caps a close reason at 123 BYTES. Our sentences carry
+# multi-byte characters (an em dash is three), so a character count is not a
+# byte count — and an over-long reason fails the close itself.
+_REASON_BYTES = 120
+
+
+def _reason(code: str, message: str) -> str:
+    raw = f"{code}: {message}".encode("utf-8")[:_REASON_BYTES]
+    return raw.decode("utf-8", "ignore")
+
+
+async def _refuse(websocket: WebSocket, close_code: int, code: str, message: str) -> None:
+    """Tell the client why: a JSON frame with the FULL sentence, then a close
+    whose code and (truncated) reason say the same. The socket must already be
+    accepted; see the module docstring for why that matters."""
+    try:
+        await websocket.send_json({"type": "error", "code": code, "message": message})
+        await websocket.close(code=close_code, reason=_reason(code, message))
+    except Exception:
+        pass
 
 # One chunk of speech is at most this many bytes of A-law. A frame far larger
 # than a mouthful of audio is a client bug or an attempt to flood the camera.
@@ -64,7 +95,11 @@ def _http(exc: TalkbackError) -> HTTPException:
         "no_credential": 428,        # Precondition Required: commission it first
         "no_host": 409,
         "busy": 409,
-        "unauthorized": 401,
+        # NOT 401. A 401 from this API means YOUR edge_id is wrong, and clients
+        # reasonably react to it by logging out or refreshing credentials. The
+        # camera refusing ITS password is a failed dependency, not your auth.
+        "unauthorized": 424,
+        "cooldown": 429,
         "unreachable": 502,
         "refused": 502,
         "timeout": 504,
@@ -72,7 +107,9 @@ def _http(exc: TalkbackError) -> HTTPException:
         "protocol": 502,
         "closed": 502,
     }.get(exc.code, 500)
-    return HTTPException(status, detail={"code": exc.code, "message": str(exc)})
+    headers = {"Retry-After": "900"} if exc.code == "cooldown" else None
+    return HTTPException(status, detail={"code": exc.code, "message": str(exc)},
+                         headers=headers)
 
 
 def _require_enabled() -> None:
@@ -125,6 +162,9 @@ def health(edge_id: str | None = Query(None)) -> dict:
         "active_sessions": len(active),
         "active": active,
         "readiness": readiness.all(),
+        # Cameras paused after repeated refusals (talkback.guard), so support can
+        # see at once why a camera is not being asked.
+        "guard": guard.snapshot(),
         "limits": {
             "hold_secs": settings.talkback_hold_secs,
             "max_turn_secs": settings.talkback_max_turn_secs,
@@ -207,6 +247,9 @@ def set_credential(camera_id: str, body: dict = Body(...)) -> dict:
     _require_enabled()
     check_edge_id(field(body, "edgeId", "edge_id"))
     password = field(body, "password", "cloudPassword", "cloud_password", default="")
+    # Stored under the id the camera is KEPT under, or a password saved for
+    # "living_room" is never found when LIVING_ROOM is dialled.
+    camera_id = hub.canonical(camera_id)
     try:
         credentials.set_password(camera_id, password)
     except ValueError as exc:
@@ -220,6 +263,7 @@ def set_credential(camera_id: str, body: dict = Body(...)) -> dict:
 def forget_credential(camera_id: str, edge_id: str | None = Query(None)) -> dict:
     _require_enabled()
     check_edge_id(edge_id)
+    camera_id = hub.canonical(camera_id)
     removed = credentials.forget(camera_id)
     readiness.kick()
     return {"camera_id": camera_id, "configured": False, "removed": removed}
@@ -232,8 +276,12 @@ async def test_camera(camera_id: str, body: dict = Body(default={})) -> dict:
     anyone in the room."""
     _require_enabled()
     check_edge_id(field(body, "edgeId", "edge_id"))
+    camera_id = hub.canonical(camera_id)
+    # `force` skips the lock-out pause (talkback.guard). For a technician who has
+    # just fixed the account and wants the answer now; never for a carer.
+    force = str(field(body, "force", default="")).lower() in ("1", "true", "yes")
     try:
-        result = await hub.probe(camera_id)
+        result = await hub.probe(camera_id, force=force)
     except TalkbackError as exc:
         # A test IS a check: what it found is the camera's readiness now, so a
         # per-camera "Test" button and the live wall agree immediately.
@@ -259,16 +307,26 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     # is echoed into logs and into the busy message other carers read.
     client_id = (websocket.query_params.get("client_id")
                  or websocket.query_params.get("clientId") or "")[:64]
+    # A display name for the "someone is already speaking" message other carers
+    # see. Supplied by the client, so it is only ever DISPLAYED: bounded, and
+    # stripped of anything that is not a printable character.
+    label = "".join(ch for ch in (websocket.query_params.get("name") or "")
+                    if ch.isprintable())[:40].strip()
+    camera_id = hub.canonical(camera_id)
 
-    # Everything that can be refused is refused BEFORE accept(), so a rejected
-    # caller never reaches the camera and never holds its lock.
+    # Accept FIRST, so a refusal can say why (module docstring). Nothing below
+    # touches the camera until the edge_id has been checked.
+    await websocket.accept()
     if not settings.talkback_enabled:
-        await websocket.close(code=WS_UNAVAILABLE, reason="talk-back disabled")
+        await _refuse(websocket, WS_UNAVAILABLE, "disabled",
+                      "Talk-back is switched off on this device.")
         return
     try:
         check_edge_id(edge_id)
     except HTTPException:
-        await websocket.close(code=WS_UNAUTHORIZED, reason="edge_id required")
+        await _refuse(websocket, WS_UNAUTHORIZED, "edge_id",
+                      "This device did not accept the request (edge_id missing "
+                      "or for another device).")
         return
 
     # Who to name in the "someone else is already speaking" message. Behind the
@@ -278,18 +336,17 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     forwarded = (websocket.headers.get("x-forwarded-for") or "").split(",")[0].strip()
     holder = forwarded or (websocket.client.host if websocket.client else "unknown")
     try:
-        session = await hub.open(camera_id, holder=holder, client_id=client_id)
+        session = await hub.open(camera_id, holder=holder, client_id=client_id,
+                                 label=label)
         readiness.observe(camera_id)
     except TalkbackError as exc:
         readiness.observe(camera_id, exc.code, str(exc))
-        await websocket.close(
-            code=WS_BUSY if exc.code == "busy" else WS_FAILED,
-            # Close reasons are capped at 123 bytes by the protocol.
-            reason=f"{exc.code}: {exc}"[:120])
+        await _refuse(websocket,
+                      {"busy": WS_BUSY, "cooldown": WS_PAUSED}.get(exc.code, WS_FAILED),
+                      exc.code, str(exc))
         logger.info("talk refused on %s: %s", camera_id, exc)
         return
 
-    await websocket.accept()
     await websocket.send_json({"type": "open", "camera_id": camera_id,
                                "session_id": session.session_id,
                                "sample_rate": SAMPLE_RATE, "codec": "alaw",
@@ -308,6 +365,11 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     # connection — those are now different things (see talkback_hold_secs).
     talking_since = 0.0
     reason = "client closed"
+    # How the socket is closed at the end. A normal 1000 tells the client "done,
+    # do not come back" — right for a hold window running out, WRONG for a
+    # camera that stopped reading mid-sentence, where a reconnect onto a clean
+    # socket is exactly the recovery (protocol._QUEUE_DEAD_MS).
+    close_code, close_reason = 1000, ""
     # ONE long-lived receive task, waited on rather than cancelled. A fresh
     # wait_for(receive()) per iteration would cancel a receive mid-frame every
     # time a ceiling is re-checked, and a cancelled receive can take a frame of
@@ -370,6 +432,7 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     except TalkbackError as exc:
         reason = exc.code
         logger.warning("talk failed on %s: %s", camera_id, exc)
+        close_code, close_reason = WS_FAILED, _reason(exc.code, str(exc))
         try:
             await websocket.send_json({"type": "error", "code": exc.code,
                                        "message": str(exc)})
@@ -384,7 +447,7 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
         # would otherwise lock a household out of its own intercom.
         await hub.release(camera_id, session)
         try:
-            await websocket.close()
+            await websocket.close(code=close_code, reason=close_reason)
         except Exception:
             pass
         logger.info("talk closed on %s after %.1fs (%s)",

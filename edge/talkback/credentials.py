@@ -35,6 +35,8 @@ from pathlib import Path
 
 from common.clock import now_iso
 
+from . import guard
+
 logger = logging.getLogger("talkback.credentials")
 
 _DATA = Path(__file__).resolve().parents[1] / "data"
@@ -109,6 +111,9 @@ def set_password(camera_id: str, password: str, source: str = "operator") -> Non
         data = _read()
         data[camera_id] = entry
         _write(data)
+    # A person set a password: whatever pause the old one earned is over, even
+    # if they typed the same one again — re-entering it is a deliberate retry.
+    guard.reset([camera_id])
     logger.info("talkback credential stored for %s (%s)", camera_id, source)
 
 
@@ -130,6 +135,7 @@ def set_home_password(password: str) -> list[str]:
             del data[cid]
         data[HOME] = entry
         _write(data)
+    guard.reset()                      # every camera may use it: clear them all
     logger.info("talkback home credential stored (cleared %d per-camera)", len(cleared))
     return cleared
 

@@ -148,6 +148,84 @@
   ok("the setup dialog is reachable from camera setup",
      typeof cvTalkPanel.commission === "function");
 
+  // --- the microphone channel against a device that SAYS why it refuses ----
+  // Since 2026-09-22 the device accepts the socket and then sends an error frame
+  // (full sentence) followed by a coded close. Before, every refusal arrived as
+  // an anonymous 1006 and the client retried a wrong password as a "blip".
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const sockets = [];
+  navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [{ stop() {} }] });
+  window.AudioContext = class {
+    constructor() { this.state = "running"; this.audioWorklet = { addModule: async () => {} };
+                    this.destination = {}; }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createGain() { return { gain: { value: 1 }, connect(x) { return x; } }; }
+    resume() { return Promise.resolve(); } close() {}
+  };
+  window.AudioWorkletNode = class {
+    constructor() { this.port = { postMessage() {}, onmessage: null }; }
+    connect(x) { return x; } disconnect() {}
+  };
+  window.WebSocket = class {
+    constructor(u) { this.url = u; this.readyState = 0; this.sent = []; this.bufferedAmount = 0;
+                     sockets.push(this); }
+    send(d) { this.sent.push(d); }
+    close() { this.readyState = 3; }
+    deny(code, errCode, sentence, reason) {   // accept, error frame, coded close
+      this.readyState = 1;
+      this.onmessage && this.onmessage({ data: JSON.stringify(
+        { type: "error", code: errCode, message: sentence }) });
+      this.readyState = 3;
+      this.onclose && this.onclose({ code, reason });
+    }
+  };
+
+  function channel() {
+    const b = document.createElement("button");
+    document.body.appendChild(b);
+    const seen = { states: [], refused: 0 };
+    const h = cvTalk.attach(b, "LOUNGE", {
+      onState: (s, d) => seen.states.push(d ? s + ":" + d : s),
+      onRefused: () => seen.refused++,
+    });
+    const press = () => b.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1 }));
+    return { h, seen, press, last: () => seen.states[seen.states.length - 1] };
+  }
+
+  const FULL = "The camera refused the TP-Link password. Check, in order: (1) Third-Party Compatibility is ON (2) …";
+  let c1 = channel(); c1.press(); await sleep(30);
+  let n = sockets.length;
+  sockets[n - 1].deny(4500, "unauthorized", FULL, "unauthorized: The camera refused the TP-L");
+  await sleep(700);
+  ok("a refused password ends the turn at once — no 'Reconnecting…' loop",
+     c1.last().startsWith("error:") && !c1.seen.states.includes("reconnecting"));
+  ok("…showing the device's FULL sentence, not the byte-capped close reason",
+     c1.last() === "error:" + FULL);
+  ok("…never re-dialling the camera", sockets.length === n);
+  ok("…and asking the page to redraw the tile as a setup button", c1.seen.refused === 1);
+  c1.h.destroy();
+
+  let c2 = channel(); c2.press(); await sleep(30);
+  n = sockets.length;
+  sockets[n - 1].deny(4429, "cooldown", "Talk-back on LOUNGE is paused until 18:40 …",
+                      "cooldown: Talk-back on LOUNGE is paused");
+  await sleep(700);
+  ok("a paused camera (4429) is final too, and is not treated as a password problem",
+     c2.last().startsWith("error:Talk-back on LOUNGE is paused") && sockets.length === n
+     && c2.seen.refused === 0);
+  c2.h.destroy();
+
+  let c3 = channel(); c3.press(); await sleep(30);
+  n = sockets.length;
+  sockets[n - 1].deny(4500, "unreachable", "The camera did not answer in time.",
+                      "unreachable: The camera did not answer in time.");
+  await sleep(60);
+  ok("a camera that did not answer, while the button is held, is retried",
+     c3.seen.states.includes("reconnecting"));
+  await sleep(500);
+  ok("…on a fresh socket", sockets.length === n + 1);
+  c3.h.destroy();
+
   // --- report -------------------------------------------------------------
   const out = document.getElementById("out");
   out.innerHTML = "";

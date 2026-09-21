@@ -190,6 +190,11 @@ print("\nCredential storage")
 
 store._DATA = _TMP
 store._FILE = _TMP / "talkback.json"
+# The lock-out guard keeps its own small file next to the credentials. Point it
+# at the scratch directory too, or these checks would write into edge/data.
+from talkback import guard as guard_mod                             # noqa: E402
+guard_mod._DATA = _TMP
+guard_mod._FILE = _TMP / "talkback_guard.json"
 
 SECRET = "Sup3rSecret!Passw0rd"
 store.set_password("cam_1", SECRET)
@@ -269,13 +274,14 @@ async def _second(hub, cid):
 
 async def _race():
     first, second = await asyncio.gather(
-        _hub.open("cam_1", "first carer"), _second(_hub, "cam_1"),
+        _hub.open("cam_1", "203.0.113.7", label="first carer"), _second(_hub, "cam_1"),
         return_exceptions=True)
     check("the first speaker gets the camera", not isinstance(first, Exception))
     check("a second speaker arriving mid-handshake is REFUSED, not queued",
           isinstance(second, TalkbackError) and second.code == "busy")
-    check("the busy message names who is holding it",
-          isinstance(second, TalkbackError) and "first carer" in str(second))
+    check("the busy message names who is holding it — by name, not address",
+          isinstance(second, TalkbackError) and "first carer" in str(second)
+          and "203.0.113.7" not in str(second))
     await _hub.release("cam_1", first)
     check("releasing frees the camera", not _hub.busy("cam_1"))
     third = await _hub.open("cam_1", "next carer")
@@ -621,6 +627,160 @@ async def _readiness():
 
 
 asyncio.run(_readiness())
+
+
+# ---------------------------------------------------------------------------
+# The lock-out guard: our own retries must never lock a camera out
+# ---------------------------------------------------------------------------
+print("\nLock-out guard")
+
+import time as _time                                                # noqa: E402
+
+guard_mod._FILE.unlink(missing_ok=True)
+_credA = TalkCredential(md5="A" * 32, sha256="A" * 64)
+_credB = TalkCredential(md5="B" * 32, sha256="B" * 64)
+
+guard_mod.refused("CAM", _credA)
+guard_mod.refused("CAM", _credA)
+check("two refusals are forgiven (typos happen)",
+      guard_mod.paused_until("CAM", _credA) == 0)
+guard_mod.refused("CAM", _credA)
+_u3 = guard_mod.paused_until("CAM", _credA)
+check("the third refusal in a row pauses the camera for ~15 min",
+      840 < _u3 - _time.time() <= 900)
+guard_mod.refused("CAM", _credA, count=3)
+check("repeated refusals lengthen the pause, capped at 3 h",
+      10700 < guard_mod.paused_until("CAM", _credA) - _time.time() <= 10800)
+check("the pause belongs to THAT credential — a different one is not paused",
+      guard_mod.paused_until("CAM", _credB) == 0)
+_blocked = None
+try:
+    guard_mod.check("CAM", _credA, "LOUNGE")
+except TalkbackError as exc:
+    _blocked = exc
+check("a paused camera is refused locally, with a sentence saying until when",
+      _blocked is not None and _blocked.code == "cooldown"
+      and "paused until" in str(_blocked) and "LOUNGE" in str(_blocked))
+check("the pause is on disk, so the command line honours it too",
+      "CAM" in json.loads(guard_mod._FILE.read_text()))
+check("no password material is written to the guard file",
+      "A" * 16 not in guard_mod._FILE.read_text())
+guard_mod.accepted("CAM")
+check("the camera accepting the password clears everything",
+      guard_mod.paused_until("CAM", _credA) == 0)
+
+for _ in range(4):
+    guard_mod.refused("LOUNGE", _credA)
+store.set_home_password("typed-again")
+check("setting a password (even the same one) lifts the pause at once",
+      guard_mod.paused_until("LOUNGE", _credA) == 0)
+store._FILE.unlink(missing_ok=True)
+guard_mod._FILE.unlink(missing_ok=True)
+
+
+async def _guard_in_the_hub():
+    """The hub must consult the guard BEFORE dialling, count only refusals,
+    and give `force` to a technician."""
+    dialled = []
+
+    class _Refusing(_FakeSession):
+        async def open(self):
+            dialled.append(1)
+            raise TalkbackError("unauthorized", "refused")
+
+    class _Offline(_FakeSession):
+        async def open(self):
+            dialled.append(1)
+            raise TalkbackError("unreachable", "no answer")
+
+    hub = hub_mod.TalkbackHub()
+    cred = TalkCredential(md5="C" * 32, sha256="C" * 64)
+    hub_mod.TalkbackHub._resolve = lambda self, cid: (
+        type("C", (), {"camera_id": cid, "camera_name": cid})(), "10.0.0.9", cred)
+
+    hub_mod.TapoTalkSession = _Offline
+    for _ in range(5):
+        try:
+            await hub.open("G1", "carer")
+        except TalkbackError:
+            pass
+    check("an OFFLINE camera never earns a pause (it said nothing about the password)",
+          guard_mod.paused_until("G1", cred) == 0)
+
+    hub_mod.TapoTalkSession = _Refusing
+    for _ in range(3):
+        try:
+            await hub.open("G2", "carer")
+        except TalkbackError:
+            pass
+    before = len(dialled)
+    fourth = None
+    try:
+        await hub.open("G2", "carer")
+    except TalkbackError as exc:
+        fourth = exc
+    check("after three refusals the fourth attempt is refused WITHOUT dialling",
+          fourth is not None and fourth.code == "cooldown" and len(dialled) == before)
+    check("and it does not leave the camera marked busy", not hub.busy("G2"))
+
+    hub_mod.TapoTalkSession = _FakeSession
+    session = await hub.open("G2", "technician", force=True)
+    check("`force` lets a technician through the pause", hub.busy("G2"))
+    check("a success clears the pause", guard_mod.paused_until("G2", cred) == 0)
+    await hub.release("G2", session)
+    guard_mod._FILE.unlink(missing_ok=True)
+
+
+asyncio.run(_guard_in_the_hub())
+
+
+# ---------------------------------------------------------------------------
+# One camera, many spellings: a session is always given back
+# ---------------------------------------------------------------------------
+print("\nCamera ids are canonical")
+
+
+async def _spellings():
+    hub = hub_mod.TalkbackHub()
+    hub_mod.TapoTalkSession = _FakeSession
+    # The camera is KEPT as LIVING_ROOM; callers may spell it otherwise.
+    hub_mod.TalkbackHub._resolve = lambda self, cid: (
+        type("C", (), {"camera_id": "LIVING_ROOM", "camera_name": "LIVING ROOM"})(),
+        "10.0.0.9", TalkCredential(md5="D" * 32, sha256="D" * 64))
+    session = await hub.open("living room", "carer", label="Nurse Priya")
+    check("a session opened under another spelling is kept under the real id",
+          "LIVING_ROOM" in hub._active)
+    refused = None
+    try:
+        await hub.open("LIVING_ROOM", "someone else")
+    except TalkbackError as exc:
+        refused = exc
+    check("the busy message names the CARER, never an address",
+          refused is not None and "Nurse Priya" in str(refused)
+          and "carer" not in str(refused))
+    await hub.release("living room", session)
+    check("released under a different spelling, the camera is free again",
+          not hub._active)
+
+
+asyncio.run(_spellings())
+
+
+# ---------------------------------------------------------------------------
+# One source for the "password refused" advice
+# ---------------------------------------------------------------------------
+print("\nRefusal advice")
+
+from talkback import advice                                        # noqa: E402
+
+check("the protocol error carries the shared checklist",
+      advice.refused_detail().startswith("The camera refused")
+      and "Third-Party Compatibility" in advice.refused_detail())
+check("re-pairing is the LAST step, not the first",
+      "remove the camera" in advice.REFUSED_STEPS[-1].lower()
+      and all("remove the camera" not in s.lower() for s in advice.REFUSED_STEPS[:-1]))
+check("readiness tells the carer the short version",
+      rd_mod._SAY["rejected"] == advice.REFUSED_SHORT)
 
 # ---------------------------------------------------------------------------
 shutil.rmtree(_TMP, ignore_errors=True)

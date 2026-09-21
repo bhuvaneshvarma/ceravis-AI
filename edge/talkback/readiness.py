@@ -50,11 +50,14 @@ import logging
 import time
 from urllib.parse import urlparse
 
-from common.clock import now_iso
+from datetime import datetime
+
+from common.clock import local_tz, now_iso
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 
-from . import credentials
+from . import credentials, guard
+from .advice import REFUSED_SHORT
 from .protocol import TalkbackError, attempt
 from .sessions import camera_host, hub
 
@@ -87,13 +90,9 @@ _STATE_FOR = {
 _SAY = {
     "ready": "Ready.",
     "needs_password": "Talk-back needs this home's TP-Link account password.",
-    # Deliberately says "the stored" password, not "this home's": a camera can
-    # be on its own override, and a message that names the wrong password sends
-    # someone to fix the wrong thing.
-    "rejected": ("The camera refused the stored TP-Link password. Enter the "
-                 "current Tapo app password; if it is still refused, remove the "
-                 "camera in the Tapo app and add it again — it is holding an "
-                 "old copy."),
+    # The carer's sentence; the installer's checklist is in `detail`. Both come
+    # from talkback.advice, the one place this advice is written.
+    "rejected": REFUSED_SHORT,
     "unreachable": "The camera's speaker is not answering right now.",
     "unsupported": "This camera does not offer talk-back.",
     "unknown": "Not checked yet.",
@@ -218,10 +217,23 @@ class Readiness:
             self._due[cid] = time.monotonic() + _EVERY["unreachable"]
             return
 
+        # Paused after repeated refusals (talkback.guard): the answer has not
+        # changed, and asking again is the lock-out risk. Keep the last verdict,
+        # say until when, and come back when the pause ends.
+        cred = credentials.get(cid)
+        until = guard.paused_until(cid, cred) if cred is not None else 0.0
+        if until:
+            row = self._state.get(cid)
+            if row is not None:
+                row["paused_until"] = datetime.fromtimestamp(
+                    until, local_tz()).isoformat(timespec="seconds")
+            self._due[cid] = time.monotonic() + max(60.0, until - time.time())
+            return
+
         try:
             result = await hub.probe(cid, preemptible=True)
         except TalkbackError as exc:
-            if exc.code == "busy":
+            if exc.code in ("busy", "cooldown"):
                 self._due[cid] = time.monotonic() + _EVERY["unreachable"]
                 return
             state = _STATE_FOR.get(exc.code, "unreachable")
@@ -269,6 +281,8 @@ class Readiness:
         evidence than any scheduled check, so the live wall reflects it at once:
         a carer who is refused flips the button to "needs password" for the next
         person, instead of the next person finding out the same way."""
+        if code == "cooldown":
+            return                          # refused locally; the camera said nothing
         if not code:
             self._record(cid, "ready", "")
         elif code in _STATE_FOR:

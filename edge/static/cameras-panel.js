@@ -147,6 +147,21 @@ function mountCameras(root, opts = {}) {
         : c.credential_scope === "camera" ? "Uses its own password"
         : "Uses the home password";
       text.append(b, t, src);
+      // This page is the INSTALLER's: under a refused camera, show the checklist
+      // the device wrote (talkback.advice), and when a paused camera resumes.
+      if (r.state === "rejected" && r.detail) {
+        const why = document.createElement("div");
+        why.className = "faint talk-src";
+        why.textContent = r.detail;
+        text.appendChild(why);
+      }
+      if (r.paused_until) {
+        const held = document.createElement("div");
+        held.className = "faint talk-src";
+        held.textContent = "Paused until " + String(r.paused_until).slice(11, 16) +
+          " so repeated refused logins cannot lock the camera. Setting the password again resumes at once.";
+        text.appendChild(held);
+      }
 
       const acts = document.createElement("div");
       acts.className = "talk-acts";
