@@ -69,6 +69,7 @@ Thumbs.db
 /CERAVIS_System_Status_Report.xlsx
 /MEMORY.md
 /data/
+/TALKBACK_INTEGRATION_GUIDE.md
 # The API/architecture manuals live under docs/. Two of them are deliberately
 # LOCAL ONLY — kept in the working tree, never committed.
 /docs/identity-architecture.md
