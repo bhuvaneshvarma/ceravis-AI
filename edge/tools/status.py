@@ -28,6 +28,17 @@ def _line(label: str, value) -> str:
     return f"  {label:<22} {value}"
 
 
+def _light(il: dict) -> str:
+    """'colour' / 'NIGHT (IR)' with the colour-variation reading behind it."""
+    if not il:
+        return ""
+    mode = "NIGHT (IR)" if il.get("night_vision") else "colour"
+    chroma = il.get("chroma")
+    return (f"light={mode}"
+            f"{'' if chroma is None else f' chroma={chroma}'}"
+            f"{' onvif=' + il['onvif_ir_cut'] if il.get('onvif_ir_cut') else ''}")
+
+
 def _fmt(d: dict) -> str:
     out = [f"CERAVIS edge — {str(d.get('status', '?')).upper()}   "
            f"v{d.get('version', '?')}   device={d.get('device_id', '?')}   "
@@ -61,7 +72,8 @@ def _fmt(d: dict) -> str:
                          f"{state}  {c.get('resolution') or '-'}  "
                          f"codec={c.get('codec') or '-'}"
                          f"{'/' + c['profile'] if c.get('profile') else ''}  "
-                         f"readers={c.get('readers')}  ptz={'y' if c.get('ptz') else 'n'}"))
+                         f"readers={c.get('readers')}  ptz={'y' if c.get('ptz') else 'n'}"
+                         f"  {_light(c.get('illumination') or {})}"))
 
     rec = d.get("recording", {})
     out += ["", "RECORDING",

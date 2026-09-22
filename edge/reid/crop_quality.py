@@ -57,12 +57,17 @@ class Quality:
     truncated: bool = False
 
 
-def _sharpness(crop: np.ndarray) -> float:
+def _sharpness(crop: np.ndarray, denoise: bool = False) -> float:
     """Variance of the Laplacian, normalised. Cheap and the standard blur proxy.
 
     Computed on a DOWNSCALED grayscale copy: full-resolution Laplacian on every
     candidate crop would cost more than the gate saves, and blur is a
-    low-frequency property that survives downscaling."""
+    low-frequency property that survives downscaling.
+
+    `denoise` (infrared crops): a Laplacian measures sensor NOISE as readily as
+    edges, and an IR frame is noisy — a motion-blurred smear would score as
+    sharp. A light Gaussian first removes the pixel-level noise and keeps the
+    edges, so the number means "detail" again."""
     if not _HAVE_CV2 or crop.size == 0:
         return 1.0                               # cannot judge -> do not block
     g = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -70,13 +75,17 @@ def _sharpness(crop: np.ndarray) -> float:
     if h > 128:
         g = cv2.resize(g, (max(8, int(w * 128 / h)), 128),
                        interpolation=cv2.INTER_AREA)
-    return float(cv2.Laplacian(g.astype(np.float32), cv2.CV_32F).var())
+    g = g.astype(np.float32)
+    if denoise:
+        g = cv2.GaussianBlur(g, (3, 3), 0)
+    return float(cv2.Laplacian(g, cv2.CV_32F).var())
 
 
 def assess(crop: np.ndarray, bbox, frame_w: int, frame_h: int,
-           confidence: float = 1.0) -> Quality:
+           confidence: float = 1.0, ir: bool = False) -> Quality:
     """Judge one person crop. `bbox` is the source box in FRAME coordinates —
-    needed for the truncation test, which cannot be seen from the crop alone."""
+    needed for the truncation test, which cannot be seen from the crop alone.
+    `ir`: the crop comes from an infrared camera (noise-robust sharpness)."""
     if crop is None or crop.size == 0:
         return Quality(False, 0.0, "empty crop")
 
@@ -101,9 +110,11 @@ def assess(crop: np.ndarray, bbox, frame_w: int, frame_h: int,
         return Quality(False, 0.0, "truncated at the frame edge",
                        area, aspect, 0.0, True)
 
-    sharp = _sharpness(crop)
-    if sharp < settings.crop_min_sharpness:
-        return Quality(False, 0.0, f"too blurred (lap var {sharp:.1f})",
+    sharp = _sharpness(crop, denoise=ir)
+    floor = settings.crop_min_sharpness_ir if ir else settings.crop_min_sharpness
+    if sharp < floor:
+        return Quality(False, 0.0, f"too blurred{' in IR' if ir else ''} "
+                                   f"(lap var {sharp:.1f})",
                        area, aspect, sharp, truncated)
 
     # ---- passed: build the ranking score -----------------------------

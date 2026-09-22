@@ -355,10 +355,21 @@ async function pollState() {
           ${who} — <b style="color:${c}">${t.posture || "detecting…"}</b>
           ${t.posture_confidence ? `<span class="faint">${Math.round(t.posture_confidence*100)}%</span>` : ""}
           ${t.view_label ? `<span class="faint">· ${t.view_label}</span>` : ""}
+          ${nightNote(M.state[M.cam], t)}
         </span>`;
       }).join("");
 
   draw();
+}
+
+// Night vision: the camera is streaming infrared. By day nothing is shown; at
+// night say so, and HOW the target is known when it is not a gallery match
+// ("held" = kept on the tracker's continuity, "context" = the only person home).
+function nightNote(camState, t) {
+  const il = camState && camState.illumination;
+  if (!il || !il.night_vision) return "";
+  const how = { continuity: "held", context: "context" }[t && t.identity_basis];
+  return `<span class="faint">· night vision${how ? ` · ${how}` : ""}</span>`;
 }
 
 function updateHeader() {

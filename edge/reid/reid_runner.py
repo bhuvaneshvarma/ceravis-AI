@@ -5,14 +5,17 @@ import queue
 import threading
 import time
 
+from common import clock
+from common.freshness import TRACK_FRESH_SECS, is_fresh
 from config.settings import settings
 from enrollment.enrollment_manager import EnrollmentManager
+from ingestion import illumination
 from reid.faiss_index import FaissGallery
 from reid.identity_buffer import IdentityBuffer
 from reid.identity_schema import Identity
 from reid.recency_buffer import RecencyBuffer
 from reid.track_memory import TrackMemory
-from reid.target_lock import TargetLockManager
+from reid.target_lock import NightContext, TargetLockManager
 from reid.target_registry import TargetRegistry
 from tracking.track_buffer import TrackBuffer
 from tracking.track_feature_buffer import TrackFeatureBuffer
@@ -33,6 +36,11 @@ class ReIDRunner:
     NON-occluded appearances to a background thread for adaptive learning.
 
     No frame access, no inference on this path — so it can't lag the stream.
+
+    Night vision: per camera per tick it tells the lock manager whether the
+    camera is on infrared and — only when this is the single person in the
+    whole home and the recipient is locked nowhere else — who a lone person
+    there would be (NightContext). Night learning goes to the infrared store.
     """
 
     def __init__(
@@ -69,7 +77,7 @@ class ReIDRunner:
         # Adaptive online-learning on a separate low-rate thread so its disk I/O
         # never blocks identity decisions. The tick only does a cheap, throttled
         # hand-off onto this queue.
-        self._adapt_q: "queue.Queue[tuple[str, object, str]]" = queue.Queue(maxsize=64)
+        self._adapt_q: "queue.Queue[tuple[str, object, str, str]]" = queue.Queue(maxsize=64)
         self._adapt_thread: threading.Thread | None = None
         self._last_adapt_attempt = 0.0
         self._last_adapt_rebuild = 0.0
@@ -151,6 +159,29 @@ class ReIDRunner:
             return fire('heartbeat')
         return None
 
+    def _sole_recipient(self, camera_id: str, boxes: dict) -> str | None:
+        """Who a lone person on this infrared camera would be — or None when
+        context identity must not be used right now.
+
+        All of: the setting is on; exactly ONE person here and NO fresh person
+        on any other camera (one person in the whole home); the recipient is not
+        locked on another camera (else this is somebody else); and we know who
+        the recipient is — the only enrolled one, or the last one ever locked."""
+        if not settings.night_context_lock or len(boxes) != 1:
+            return None
+        now = clock.now()
+        for cam, res in self._tracks.get_all().items():
+            if (cam != camera_id and res.tracks
+                    and is_fresh(res.timestamp, now, TRACK_FRESH_SECS)):
+                return None
+        if any(cam != camera_id for cam in self._targets.all()):
+            return None
+        enrolled = self._gallery.recipient_ids()
+        if len(enrolled) == 1:
+            return enrolled[0]
+        last = self._targets.last_recipient()
+        return last if last in enrolled else None
+
     def _tick(self) -> None:
         for camera_id, track_result in self._tracks.get_all().items():
             if not track_result.tracks:
@@ -167,7 +198,13 @@ class ReIDRunner:
                 self.memory.prune(camera_id, set())
                 self._identities.prune(camera_id, set())
                 continue
-            if settings.reid_event_driven:
+            ir = illumination.is_ir(camera_id)
+            # An UNLOCKED infrared camera is evaluated every tick, not only on
+            # track-set changes: the night context identity needs a person to
+            # have been seen steadily, which an event-only cadence would stretch
+            # to the 20 s heartbeat. By day, and once locked, nothing changes.
+            night_search = ir and self._targets.get(camera_id) is None
+            if settings.reid_event_driven and not night_search:
                 ids = frozenset(t.track_id for t in track_result.tracks)
                 if self._identity_event(camera_id, ids) is None:
                     # Nothing changed — BoT-SORT carries identity, so the gallery
@@ -189,7 +226,11 @@ class ReIDRunner:
                 rec = self._features.get(camera_id, tid)
                 return rec.smooth if rec is not None else None
 
-            outcome = self._manager.update(camera_id, boxes, feat_for)
+            night = (NightContext(ir=True,
+                                  sole_recipient=self._sole_recipient(camera_id,
+                                                                      boxes))
+                     if ir else None)
+            outcome = self._manager.update(camera_id, boxes, feat_for, night)
 
             # Apply the lock decision to the shared registry (pose + UI read it).
             # released = confirmed mismatch; lost = the locked track is gone from
@@ -228,17 +269,24 @@ class ReIDRunner:
                 # available anywhere, and it costs nothing to collect. This
                 # is what bootstraps the negative pool without asking a
                 # family to enrol every visitor they ever have.
-                if (outcome.target_track_id is not None
+                # Only from a lock resting on a gallery verification — a night
+                # guess must never teach the pool that the real recipient is a
+                # stranger. (By day every lock is verified: unchanged.)
+                if (outcome.target_track_id is not None and outcome.trusted
                         and tid != outcome.target_track_id):
                     self.memory.add_negative(rec.smooth)
 
+            modality = (illumination.Modality.IR if ir
+                        else illumination.Modality.COLOR).value
             for tid, (rid, is_target, score, view) in outcome.identities.items():
                 self._identities.update(Identity(
                     track_id=tid, camera_id=camera_id, frame_id=fid, timestamp=ts,
                     recipient_id=rid if is_target else None,
                     is_target=is_target, confidence=float(score),
                     view_label=view if is_target else None,
-                    recency_score=(outcome.recency if is_target else None)))
+                    recency_score=(outcome.recency if is_target else None),
+                    identity_basis=(outcome.basis if is_target else None),
+                    modality=modality))
             # The target flag is sticky, so a released lock (or the target moving
             # to a new track_id) must have the OLD track's flag cleared — else the
             # green dot and the recipient rules keep following the wrong person.
@@ -262,14 +310,27 @@ class ReIDRunner:
             if outcome.adaptive is not None:
                 tid, rid, score = outcome.adaptive
                 rec = self._features.get(camera_id, tid)
-                if rec is not None:
-                    if score >= settings.reid_recency_min_push_score:
-                        self._recency.push(rid, rec.curr)
-                    self._queue_adapt(camera_id, tid, rid, score, rec.curr)
+                # The feature must be of the camera's CURRENT modality — right
+                # after a switch a stale record could otherwise be filed under
+                # the wrong gallery.
+                if rec is not None and rec.modality == modality:
+                    if not ir:
+                        if score >= settings.reid_recency_min_push_score:
+                            self._recency.push(rid, rec.curr)
+                        self._queue_adapt(camera_id, tid, rid, score, rec.curr)
+                    elif outcome.learn_ir and settings.reid_ir_adaptive_enabled:
+                        # Night: the evidence is a strong verification carried
+                        # on this very track (learnable), not tonight's score.
+                        self._recency.push(rid, rec.curr, modality)
+                        self._queue_adapt(camera_id, tid, rid, score, rec.curr,
+                                          modality=modality, gate=False)
 
     # ---- adaptive online learning (off the inference tick) -----------
-    def _queue_adapt(self, camera_id, track_id, rid, score, emb) -> None:
-        if not settings.reid_adaptive_enabled or score < settings.reid_adaptive_min_score:
+    def _queue_adapt(self, camera_id, track_id, rid, score, emb,
+                     modality: str = "color", gate: bool = True) -> None:
+        if not settings.reid_adaptive_enabled:
+            return
+        if gate and score < settings.reid_adaptive_min_score:
             return
         now = time.monotonic()
         if now - self._last_adapt_attempt < settings.reid_adaptive_min_interval_secs:
@@ -280,29 +341,31 @@ class ReIDRunner:
             rec = self._postures.get(camera_id, track_id)
             label = rec.posture.value if rec is not None else ""
         try:
-            self._adapt_q.put_nowait((rid, emb.copy(), label))
+            self._adapt_q.put_nowait((rid, emb.copy(), label, modality))
         except queue.Full:
             pass
 
     def _adaptive_loop(self) -> None:
         while self._running:
             try:
-                rid, emb, label = self._adapt_q.get(timeout=1.0)
+                rid, emb, label, modality = self._adapt_q.get(timeout=1.0)
             except queue.Empty:
                 continue
             try:
                 added = self._enroll_mgr.append_adaptive(
                     rid, emb, label,
                     cap=settings.reid_adaptive_max,
-                    dedup_cos=settings.reid_adaptive_dedup_cos)
+                    dedup_cos=settings.reid_adaptive_dedup_cos,
+                    modality=modality)
                 if not added:
                     continue
-                logger.info("reid: adaptive sample saved for %s (label=%s)",
+                logger.info("reid: adaptive %s sample saved for %s (label=%s)",
+                            "infrared" if modality == "ir" else "colour",
                             rid, label or "—")
                 now = time.monotonic()
                 if now - self._last_adapt_rebuild >= settings.reid_adaptive_rebuild_secs:
-                    emb_all, ids, labels = self._enroll_mgr.load_gallery()
-                    self._gallery.rebuild(emb_all, ids, labels)
+                    emb_all, ids, labels, mods = self._enroll_mgr.load_gallery()
+                    self._gallery.rebuild(emb_all, ids, labels, mods)
                     self._last_adapt_rebuild = now
                     logger.info("reid: adaptive store updated for %s "
                                 "(gallery now %d vectors)", rid, len(ids))

@@ -12,6 +12,7 @@ import numpy as np
 
 from config.settings import settings
 from common import clock
+from ingestion.illumination import Modality
 
 
 logger = logging.getLogger("enrollment")
@@ -20,6 +21,17 @@ logger = logging.getLogger("enrollment")
 # Used to anchor a relative data_dir so recipient media/embeddings live in the
 # same place regardless of the process working directory.
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
+
+# The gallery's stores, per modality: (vectors file, aligned labels file).
+# Colour is the original pair — embeddings.npy is the file the cloud keeps
+# (uploadEmbeddingFile) and is untouched by night vision. The infrared pair is
+# derived on the device: the IR copy of every enrollment crop, plus the real
+# infrared looks learned live at night. Both are regenerable, so neither leaves
+# the device.
+_ENROLLED = {Modality.COLOR.value: ("embeddings.npy", "labels_emb.json"),
+             Modality.IR.value: ("embeddings_ir.npy", "labels_emb.json")}
+_ADAPTIVE = {Modality.COLOR.value: ("adaptive.npy", "adaptive_labels.json"),
+             Modality.IR.value: ("adaptive_ir.npy", "adaptive_ir_labels.json")}
 
 
 class EnrollmentManager:
@@ -30,7 +42,9 @@ class EnrollmentManager:
         data/recipients/<recipient_id>/
             photos/        uploaded / live-captured images
             videos/        enrollment videos
-            body/          embeddings.npy  (K, dim) ReID embeddings
+            body/          embeddings.npy  (K, dim) ReID embeddings (colour)
+                           embeddings_ir.npy  the same crops, infrared view
+                           adaptive[_ir].npy  live-learned looks per modality
             status.json    enrollment job state
     """
 
@@ -152,16 +166,18 @@ class EnrollmentManager:
         return sorted((root / "videos").glob("*"))
 
     # ---- embeddings --------------------------------------------------
-    def save_embeddings(self, recipient_id: str, embeddings: np.ndarray) -> None:
+    def save_embeddings(self, recipient_id: str, embeddings: np.ndarray,
+                        modality: str = Modality.COLOR.value) -> None:
         """Persist this recipient's embeddings (overwrites — worker passes the
         full set it computed for the recipient)."""
         root = self.create_recipient_folder(recipient_id)
-        np.save(root / "body" / "embeddings.npy",
+        np.save(root / "body" / _ENROLLED[modality][0],
                 embeddings.astype(np.float32))
 
-    def load_embeddings(self, recipient_id: str) -> np.ndarray:
+    def load_embeddings(self, recipient_id: str,
+                        modality: str = Modality.COLOR.value) -> np.ndarray:
         root = self.get_recipient_folder(recipient_id)
-        f = root / "body" / "embeddings.npy" if root else None
+        f = root / "body" / _ENROLLED[modality][0] if root else None
         if f and f.exists():
             return np.load(f).astype(np.float32)
         return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32)
@@ -177,9 +193,10 @@ class EnrollmentManager:
     # Stored SEPARATELY from the enrolled set (which is never overwritten),
     # capped FIFO (newest kept), and included in the gallery so they help match
     # the recipient through appearance/clothing changes.
-    def load_adaptive(self, recipient_id: str) -> np.ndarray:
+    def load_adaptive(self, recipient_id: str,
+                      modality: str = Modality.COLOR.value) -> np.ndarray:
         root = self.get_recipient_folder(recipient_id)
-        f = root / "body" / "adaptive.npy" if root else None
+        f = root / "body" / _ADAPTIVE[modality][0] if root else None
         if f and f.exists():
             try:
                 return np.load(f).astype(np.float32)
@@ -187,9 +204,10 @@ class EnrollmentManager:
                 pass
         return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32)
 
-    def _load_adaptive_labels(self, recipient_id: str) -> list[str]:
+    def _load_adaptive_labels(self, recipient_id: str,
+                              modality: str = Modality.COLOR.value) -> list[str]:
         root = self.get_recipient_folder(recipient_id)
-        f = root / "body" / "adaptive_labels.json" if root else None
+        f = root / "body" / _ADAPTIVE[modality][1] if root else None
         if f and f.exists():
             try:
                 return list(json.loads(f.read_text()))
@@ -198,12 +216,15 @@ class EnrollmentManager:
         return []
 
     def append_adaptive(self, recipient_id: str, embedding: np.ndarray,
-                        label: str = "", *, cap: int, dedup_cos: float) -> bool:
+                        label: str = "", *, cap: int, dedup_cos: float,
+                        modality: str = Modality.COLOR.value) -> bool:
         """
         Add a live embedding to the recipient's adaptive store if it is novel
         (max cosine vs existing enrolled+adaptive < dedup_cos). FIFO-evicts the
         oldest beyond `cap`. Returns True if it was added (so the caller can
         rebuild the gallery). Writes are atomic; enrolled vectors are untouched.
+        `modality` picks the store — an infrared look is compared with, and
+        filed among, infrared looks only.
         """
         emb = np.asarray(embedding, dtype=np.float32).ravel()
         norm = float(np.linalg.norm(emb))
@@ -211,8 +232,8 @@ class EnrollmentManager:
             return False
         emb = emb / norm
 
-        enrolled = self.load_embeddings(recipient_id)
-        adaptive = self.load_adaptive(recipient_id)
+        enrolled = self.load_embeddings(recipient_id, modality)
+        adaptive = self.load_adaptive(recipient_id, modality)
         existing = [a for a in (enrolled, adaptive) if a.ndim == 2 and a.shape[0]]
         if existing:
             stack = np.concatenate(existing, axis=0)
@@ -221,18 +242,19 @@ class EnrollmentManager:
 
         adaptive = (np.concatenate([adaptive, emb[None, :]], axis=0)
                     if adaptive.shape[0] else emb[None, :])
-        labels = self._load_adaptive_labels(recipient_id)
+        labels = self._load_adaptive_labels(recipient_id, modality)
         labels.append(label)
         if adaptive.shape[0] > cap:
             adaptive, labels = self._prune_redundant(adaptive, labels, cap)
 
+        vec_name, label_name = _ADAPTIVE[modality]
         body = self.create_recipient_folder(recipient_id) / "body"
         body.mkdir(parents=True, exist_ok=True)
-        tmp = body / "adaptive.npy.tmp"
+        tmp = body / f"{vec_name}.tmp"
         with open(tmp, "wb") as fh:               # atomic save (temp + replace)
             np.save(fh, adaptive.astype(np.float32))
-        os.replace(tmp, body / "adaptive.npy")
-        (body / "adaptive_labels.json").write_text(json.dumps(labels))
+        os.replace(tmp, body / vec_name)
+        (body / label_name).write_text(json.dumps(labels))
         return True
 
     @staticmethod
@@ -264,9 +286,14 @@ class EnrollmentManager:
         if af and af.exists():
             last = datetime.fromtimestamp(af.stat().st_mtime,
                                           clock.local_tz()).isoformat()
+        ir = Modality.IR.value
         return {
             "enrolled": int(enrolled.shape[0]),
             "adaptive": int(adaptive.shape[0]),
+            # Night vision: the IR copy of the enrollment set, and the real
+            # infrared looks learned so far (grows night by night).
+            "enrolled_ir": int(self.load_embeddings(recipient_id, ir).shape[0]),
+            "adaptive_ir": int(self.load_adaptive(recipient_id, ir).shape[0]),
             "adaptive_cap": settings.reid_adaptive_max,
             "last_adaptive_capture": last,
             "adaptive_labels": dict(Counter(lbl for lbl in labels if lbl)),
@@ -285,17 +312,20 @@ class EnrollmentManager:
             out += [""] * (n - len(out))
         return out[:n]
 
-    def load_gallery(self) -> tuple[np.ndarray, list[str], list[str]]:
-        """Concatenate every recipient's enrolled + adaptive embeddings, with a
-        parallel recipient-id list and a per-vector view/pose label list."""
+    def load_gallery(self) -> tuple[np.ndarray, list[str], list[str], list[str]]:
+        """Concatenate every recipient's enrolled + adaptive embeddings, colour
+        and infrared, with parallel recipient-id, view/pose-label and modality
+        lists (FaissGallery.rebuild takes all four)."""
         all_emb: list[np.ndarray] = []
         ids: list[str] = []
         labels: list[str] = []
+        mods: list[str] = []
+        stores = ([(m, *_ENROLLED[m]) for m in _ENROLLED]
+                  + [(m, *_ADAPTIVE[m]) for m in _ADAPTIVE])
         for root in sorted(self.base_path.glob("*")):
             if not root.is_dir():
                 continue
-            for fname, lname in (("embeddings.npy", "labels_emb.json"),
-                                 ("adaptive.npy", "adaptive_labels.json")):
+            for mod, fname, lname in stores:
                 f = root / "body" / fname
                 if not f.exists():
                     continue
@@ -307,10 +337,11 @@ class EnrollmentManager:
                     all_emb.append(arr)
                     ids.extend([root.name] * arr.shape[0])
                     labels.extend(self._labels_aligned(root, lname, arr.shape[0]))
+                    mods.extend([mod] * arr.shape[0])
         if not all_emb:
             return (np.zeros((0, settings.reid_embedding_dim), dtype=np.float32),
-                    [], [])
-        return np.concatenate(all_emb, axis=0), ids, labels
+                    [], [], [])
+        return np.concatenate(all_emb, axis=0), ids, labels, mods
 
     # ---- status ------------------------------------------------------
     def set_status(self, recipient_id: str, **fields) -> None:

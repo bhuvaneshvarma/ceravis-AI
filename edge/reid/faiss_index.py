@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from config.settings import settings
+from ingestion.illumination import Modality
 
 try:
     import faiss  # type: ignore
@@ -17,6 +18,8 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger("reid")
+
+_COLOR, _IR = Modality.COLOR.value, Modality.IR.value
 
 
 @dataclass(slots=True, frozen=True)
@@ -37,6 +40,13 @@ class FaissGallery:
       - Read path (query) holds a stable reference.
       - Write path (enrollment) builds a new index and atomically swaps.
       - Lock only guards the reference rebind, not the search.
+
+    Every vector carries a MODALITY — "color" or "ir" (see
+    ingestion/illumination.py). A query is matched against vectors of its own
+    modality only: a daylight query sees exactly the colour gallery it always
+    saw, a night query sees the infrared gallery. A recipient with no vector of
+    the query's modality falls back to all of theirs, so no one is ever
+    unmatchable merely for lacking a night (or a day) look.
     """
 
     def __init__(self, dim: int | None = None) -> None:
@@ -53,6 +63,9 @@ class FaissGallery:
         # scan is exact and trivially cheap.
         self._emb: np.ndarray = np.zeros((0, self._dim), dtype=np.float32)
         self._id_rows: dict[str, list[int]] = {}
+        # modality -> recipient -> rows (with the per-recipient fallback applied)
+        self._mod_rows: dict[str, dict[str, list[int]]] = {}
+        self._mod_counts: dict[str, int] = {}
 
     # ---- build -------------------------------------------------------
     def rebuild(
@@ -60,6 +73,7 @@ class FaissGallery:
         embeddings: np.ndarray,  # (N, dim) float32, L2-normalized
         recipient_ids: list[str],
         labels: list[str] | None = None,   # per-vector view/pose label (optional)
+        modalities: list[str] | None = None,  # per-vector "color"/"ir" (default color)
     ) -> None:
         if embeddings.ndim != 2 or embeddings.shape[1] != self._dim:
             raise ValueError(f"Expected (N,{self._dim}) embeddings")
@@ -73,13 +87,26 @@ class FaissGallery:
         new_rows: dict[str, list[int]] = {}
         for i, rid in enumerate(recipient_ids):
             new_rows.setdefault(rid, []).append(i)
+        mods = (list(modalities) if modalities is not None
+                else [_COLOR] * len(recipient_ids))
+        mod_rows: dict[str, dict[str, list[int]]] = {}
+        for mod in (_COLOR, _IR):
+            per: dict[str, list[int]] = {}
+            for rid, rows in new_rows.items():
+                own = [i for i in rows if mods[i] == mod]
+                per[rid] = own or rows          # none of this modality -> all
+            mod_rows[mod] = per
+        counts = {mod: sum(1 for m in mods if m == mod) for mod in (_COLOR, _IR)}
         with self._swap_lock:
             self._index = new_index
             self._ids = list(recipient_ids)
             self._labels = new_labels
             self._emb = new_emb
             self._id_rows = new_rows
-        logger.info("FAISS gallery rebuilt: %d entries", len(recipient_ids))
+            self._mod_rows = mod_rows
+            self._mod_counts = counts
+        logger.info("FAISS gallery rebuilt: %d entries (%d colour, %d infrared)",
+                    len(recipient_ids), counts[_COLOR], counts[_IR])
 
     # ---- query -------------------------------------------------------
     def search(
@@ -112,6 +139,7 @@ class FaissGallery:
         margin: float | None = None,
         min_votes: int | None = None,
         vote_floor: float | None = None,
+        modality: str = "color",
     ) -> MatchResult:
         """
         Score the query against EVERY enrolled+adaptive vector of each recipient,
@@ -125,16 +153,22 @@ class FaissGallery:
             * #vectors of best with cos ≥ vote_floor ≥ min_votes  (majority agree)
         This is far steadier than a single top-1 vector, and is what you asked
         for: lock on by agreement of the whole stored set, at that moment.
+
+        `modality` picks the vectors compared against ("color" or "ir"); an "ir"
+        query defaults to the infrared threshold.
         """
         alpha = settings.reid_hybrid_alpha if alpha is None else alpha
         top_k = settings.reid_hybrid_top_k if top_k is None else top_k
-        threshold = settings.reid_match_threshold if threshold is None else threshold
+        if threshold is None:
+            threshold = (settings.reid_ir_match_threshold if modality == _IR
+                         else settings.reid_match_threshold)
         margin = settings.reid_match_margin if margin is None else margin
         min_votes = settings.reid_hybrid_min_votes if min_votes is None else min_votes
         vote_floor = settings.reid_hybrid_vote_floor if vote_floor is None else vote_floor
 
         # Snapshot references so an atomic rebuild can't race us.
-        emb, id_rows, labels = self._emb, self._id_rows, self._labels
+        emb, labels = self._emb, self._labels
+        id_rows = self._mod_rows.get(modality) or self._id_rows
         if emb.shape[0] == 0:
             return MatchResult(None, 0.0, None, 0.0, False)
 
@@ -168,3 +202,11 @@ class FaissGallery:
     @property
     def size(self) -> int:
         return self._index.ntotal
+
+    def recipient_ids(self) -> list[str]:
+        """Every recipient with at least one vector in the gallery."""
+        return list(self._id_rows)
+
+    def counts(self) -> dict[str, int]:
+        """Vectors per modality — {"color": n, "ir": m}."""
+        return dict(self._mod_counts)

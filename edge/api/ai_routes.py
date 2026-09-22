@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from common.freshness import TRACK_FRESH_SECS, is_fresh
+from ingestion import illumination
 from config.settings import settings
 from common import clock
 
@@ -73,6 +74,9 @@ def ai_state(request: Request, camera_id: str | None = None):
                 "recency_score": (round(identity.recency_score, 3)
                                   if identity and identity.recency_score is not None
                                   else None),
+                # How the target is known: "verified" (gallery match — always
+                # by day), or at night "continuity" / "context".
+                "identity_basis": identity.identity_basis if identity else None,
             })
         fd = frame_buf.get(cam) if frame_buf else None
         out[cam] = {
@@ -87,6 +91,8 @@ def ai_state(request: Request, camera_id: str | None = None):
             # different stream resolutions. null falls back to the video width.
             "frame_w": fd.width if fd else None,
             "frame_h": fd.height if fd else None,
+            # Colour or infrared (night vision) right now, and the evidence.
+            "illumination": illumination.describe(cam),
             "tracks": entries,
         }
     return out

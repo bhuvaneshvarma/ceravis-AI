@@ -21,6 +21,7 @@ from common import clock, event_snapshots
 from config.settings import settings
 from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
+from ingestion import illumination
 from ingestion.camera_status import codec_warning, substream_warning
 from integration import call_log
 from maintenance import reboot
@@ -243,6 +244,10 @@ def _camera_status(manager=None) -> list[dict]:
             # stream ffprobe read as "High", so report what is really there.
             "profile": wire.get("profile"),
             "resolution": f"{w}x{h}" if w and h else None,
+            # Colour or infrared right now, with the measured colour variation
+            # and the camera's own IrCutFilter report — what the thresholds in
+            # settings.illumination_* are tuned against on site.
+            "illumination": illumination.describe(cam.camera_id),
             "width": w,
             "height": h,
             "readers": len(info.get("readers") or []),

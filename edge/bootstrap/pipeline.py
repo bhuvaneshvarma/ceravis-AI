@@ -89,6 +89,20 @@ class Pipeline:
         self._camera_manager = camera_manager
         frames = camera_manager.frame_buffer
 
+        # ---- night vision (which cameras are on infrared) ------------
+        # The ONE owner of each camera's colour/infrared state; tracking, ReID,
+        # the rules and the API read it (ingestion/illumination.py). Not
+        # started = every camera reads as colour = the daytime behaviour.
+        illumination_monitor = None
+        if settings.illumination_enabled:
+            try:
+                from ingestion.illumination import IlluminationMonitor
+                illumination_monitor = IlluminationMonitor(frames)
+                illumination_monitor.start()
+            except Exception:
+                logger.exception("Night-vision monitor disabled — every camera "
+                                 "treated as colour")
+
         # ---- buffers (always on) -----------------------------------
         detection_buffer = DetectionBuffer()
         track_buffer = TrackBuffer()
@@ -317,7 +331,7 @@ class Pipeline:
             status_reporter, recording_controller, recording_events,
             cloud_alert_publisher,
             outbox_sender, rule_engine, event_writer, enroll_worker, reid_runner,
-            pose_runner, tracking_runner, detection_runner,
+            pose_runner, tracking_runner, detection_runner, illumination_monitor,
         ]
 
         for url in lan_urls():

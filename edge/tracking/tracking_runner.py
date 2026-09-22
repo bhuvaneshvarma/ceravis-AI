@@ -10,6 +10,7 @@ from common.crops import crop_person
 from config.settings import settings
 from detection.detection_buffer import DetectionBuffer
 from detection.detection_schema import BoundingBox, DetectionClass
+from ingestion import illumination
 from ingestion.frame_buffer import FrameBuffer
 from reid import crop_quality
 from tracking.botsort import BoTSORT
@@ -75,6 +76,9 @@ class TrackingRunner:
         self._last_shot: dict[str, float] = {}
 
         self._trackers: dict[str, BoTSORT] = {}
+        # Illumination epoch per camera as last seen — a change means the camera
+        # switched between colour and infrared (ingestion/illumination.py).
+        self._light_epoch: dict[str, int] = {}
         self._last_seen_frame: dict[str, int] = {}
         self._last_embed: dict[str, float] = {}
 
@@ -179,6 +183,7 @@ class TrackingRunner:
             if self._last_seen_frame.get(camera_id) == det_result.frame_id:
                 continue
             self._last_seen_frame[camera_id] = det_result.frame_id
+            ir = self._follow_light(camera_id)
 
             persons = [d for d in det_result.detections
                        if d.class_name == DetectionClass.PERSON]
@@ -195,7 +200,7 @@ class TrackingRunner:
                   d.bbox.width, d.bbox.height] for d in persons], dtype=np.float32)
             scores = np.array([d.confidence for d in persons], dtype=np.float32)
 
-            feats = self._maybe_embed(camera_id, persons)
+            feats = self._maybe_embed(camera_id, persons, ir)
             stracks = self._tracker(camera_id).update(dets_xywh, scores, feats)
 
             out: list[Track] = []
@@ -215,9 +220,11 @@ class TrackingRunner:
                         smooth=st.smooth_feat.copy(),
                         curr=(st.curr_feat.copy() if st.curr_feat is not None
                               else st.smooth_feat.copy()),
-                        frame_id=det_result.frame_id, timestamp=det_result.timestamp)
+                        frame_id=det_result.frame_id, timestamp=det_result.timestamp,
+                        modality=(illumination.Modality.IR if ir
+                                  else illumination.Modality.COLOR).value)
 
-            self._capture_shots(camera_id, out, det_result.frame_id)
+            self._capture_shots(camera_id, out, det_result.frame_id, ir)
 
             self._tracks.update(TrackResult(
                 camera_id=camera_id, frame_id=det_result.frame_id,
@@ -227,7 +234,28 @@ class TrackingRunner:
             if self._shots is not None:
                 self._shots.prune(camera_id, alive)
 
-    def _capture_shots(self, camera_id: str, tracks, frame_id: int) -> None:
+    def _follow_light(self, camera_id: str) -> bool:
+        """Is this camera on infrared right now — and if it has just SWITCHED,
+        drop every track's appearance history (motion is kept, no track is
+        lost), so no feature ever mixes a colour look with an infrared one.
+        The feature records go too: ReID holds its lock on the tracker's
+        continuity until a fresh single-modality look arrives."""
+        light = illumination.state(camera_id)
+        ir = light is not None and light.modality is illumination.Modality.IR
+        epoch = light.epoch if light is not None else 0
+        prev = self._light_epoch.setdefault(camera_id, epoch)
+        if prev != epoch:
+            self._light_epoch[camera_id] = epoch
+            if camera_id in self._trackers:
+                self._trackers[camera_id].reset_appearance()
+            if self._features is not None:
+                self._features.prune(camera_id, set())
+            logger.info("%s: switched to %s — appearance history reset",
+                        camera_id, "infrared" if ir else "colour")
+        return ir
+
+    def _capture_shots(self, camera_id: str, tracks, frame_id: int,
+                       ir: bool = False) -> None:
         """Offer each track's current crop to its best-shot ring.
 
         Runs AFTER association because that is the first point a crop can be
@@ -249,7 +277,7 @@ class TrackingRunner:
             crop, _, _ = crop_person(fd.frame, t.bbox.x1, t.bbox.y1,
                                      t.bbox.x2, t.bbox.y2,
                                      settings.crop_padding_frac)
-            q = crop_quality.assess(crop, t.bbox, fw, fh, t.confidence)
+            q = crop_quality.assess(crop, t.bbox, fw, fh, t.confidence, ir=ir)
             if q.ok:
                 self._shots.offer(camera_id, t.track_id, crop, q, frame_id)
 
@@ -293,7 +321,8 @@ class TrackingRunner:
                     return True
         return False
 
-    def _maybe_embed(self, camera_id: str, persons) -> np.ndarray | None:
+    def _maybe_embed(self, camera_id: str, persons,
+                     ir: bool = False) -> np.ndarray | None:
         """OSNet embeddings per person, gated to keep the common case cheap.
 
         Two gates now, both cheap and both before the model:
@@ -305,6 +334,10 @@ class TrackingRunner:
         A refused crop still yields a zero row, so the returned array stays
         aligned 1:1 with `persons`; BoT-SORT reads a zero feature as "no
         appearance evidence" and falls back to motion for that box.
+
+        On an infrared camera (`ir`) both gates and the embedding switch to
+        their IR forms: noise-robust sharpness, and luminance-only embedding
+        into the IR gallery's space.
         """
         if not self._with_reid or self._extractor is None or self._frames is None:
             return None
@@ -323,13 +356,13 @@ class TrackingRunner:
         for d in persons:
             crop, _, _ = crop_person(fd.frame, d.bbox.x1, d.bbox.y1,
                                      d.bbox.x2, d.bbox.y2, settings.crop_padding_frac)
-            q = crop_quality.assess(crop, d.bbox, fw, fh, d.confidence)
+            q = crop_quality.assess(crop, d.bbox, fw, fh, d.confidence, ir=ir)
             if not q.ok:
                 self._rejected[q.reason.split(" (")[0]] = \
                     self._rejected.get(q.reason.split(" (")[0], 0) + 1
                 out.append(zero)
                 continue
-            out.append(self._extractor.embed(crop))
+            out.append(self._extractor.embed(crop, ir=ir))
         if self._metrics:
             self._metrics.record(time.perf_counter() - t)
         self._last_embed[camera_id] = now

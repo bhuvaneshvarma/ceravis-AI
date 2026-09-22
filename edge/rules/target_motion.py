@@ -110,6 +110,9 @@ class TargetMotionDetector:
         # fusion hysteresis
         self._window: deque = deque(maxlen=max(1, settings.motion_confirm_n))
 
+        # colour/infrared epoch of the camera (ingestion/illumination.py)
+        self._scene_epoch: int | None = None
+
     # ---- public ------------------------------------------------------
     def reset(self) -> None:
         self._cam = None
@@ -123,15 +126,21 @@ class TargetMotionDetector:
         # CAMERA and the lighting, not the person, so relearning it from scratch
         # after every movement would leave the channel permanently un-calibrated.
         self._window.clear()
+        self._scene_epoch = None
 
-    def update(self, camera_id: str, keypoints, bbox, frame, now: datetime
-               ) -> MotionVerdict:
+    def update(self, camera_id: str, keypoints, bbox, frame, now: datetime,
+               scene_epoch: int | None = None) -> MotionVerdict:
         """One tick. `keypoints` may be None (pose dropout), `frame` may be None
         (no FrameBuffer, e.g. under test) — the detector degrades to whichever
-        channel is available and says so in the verdict."""
+        channel is available and says so in the verdict. `scene_epoch` is the
+        camera's colour/infrared epoch; a change re-learns the pixel channel."""
         if camera_id != self._cam:                   # first sight / camera hop
             self.reset()
             self._cam = camera_id
+        if scene_epoch is not None:
+            if self._scene_epoch is not None and scene_epoch != self._scene_epoch:
+                self._relearn_scene()
+            self._scene_epoch = scene_epoch
         dt = 0.0 if self._last_tick is None else max(
             0.0, (now - self._last_tick).total_seconds())
         self._last_tick = now
@@ -188,6 +197,21 @@ class TargetMotionDetector:
             moved_joints=moved_joints, pixel_diff=pixel_diff,
             pixel_thresh=self._last_thr, pose_ready=pose_ready,
             pixel_ready=pixel_ready)
+
+    def _relearn_scene(self) -> None:
+        """The camera switched between colour and infrared. The whole picture
+        changed at once, so neither the pixel reference nor the learned noise
+        floor describes it any more (IR noise is not colour noise), and a diff
+        against the old reference would read as a huge "movement" that restarts
+        the 60-minute clock. Re-seed both instead. Until the floor is re-learned
+        the pixel channel reports NOT READY, so the clock HOLDS — neither reset
+        by a fake movement nor advanced by stillness nobody verified."""
+        logger.info("stillness: camera switched colour/infrared — pixel channel "
+                    "re-learning the scene (no_motion clock held at %.0fs)",
+                    self._still_accum)
+        self._ref_sig = None
+        self._mad_hist.clear()
+        self._window.clear()
 
     # ---- pose channel ------------------------------------------------
     def _pose_channel(self, keypoints, bbox):
@@ -271,6 +295,11 @@ class TargetMotionDetector:
             return 0.0, False, True
 
         sig = self._signature(frame, self._roi)
+        if sig is not None and self._ref_sig is None:
+            # Re-seeding after a colour/infrared switch (the ROI is kept — same
+            # camera, same place). The new floor is not learned yet: NOT READY.
+            self._ref_sig = sig
+            return None, False, False
         if sig is None or self._ref_sig is None or sig.shape != self._ref_sig.shape:
             return None, False, False
         mad = float(np.mean(np.abs(sig - self._ref_sig)))

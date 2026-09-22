@@ -487,6 +487,78 @@ class Settings(BaseSettings):
     # the lock — the clean gallery acquire takes over instead.
     target_reacquire_ttl_secs: float = 8.0
 
+    # ---- Night vision (ingestion/illumination.py) -------------------
+    # When a room goes dark the camera streams INFRARED: monochrome, and its
+    # brightness is IR reflectance, not visible colour. Detection, pose and
+    # motion are shape-driven and barely notice. Identity does — a colour-trained
+    # appearance model cannot vouch for a person it only knows in colour. So the
+    # modality of every camera is tracked (ONE owner) and identity switches to
+    # night rules on the cameras that need them. A camera in colour runs EXACTLY
+    # the daytime path; every rule below only ever acts on an infrared camera.
+    #
+    # Master switch. False = every camera reads as colour, i.e. the behaviour
+    # before night vision existed.
+    illumination_enabled: bool = True
+    illumination_poll_secs: float = 1.0          # one 160-px frame measurement / camera
+    # Colour VARIATION (90th percentile of per-pixel chroma distance from the
+    # frame's own median chroma; a uniform tint scores ~0). IR frames measure
+    # ~0-2, lit colour rooms well above 6. Between the two is a dead band where
+    # the image alone is not decisive: the current mode holds, or a camera that
+    # reports its IR-cut filter over ONVIF settles it. /system/status shows the
+    # live value per camera, which is how these are tuned on site.
+    illumination_ir_max_chroma: float = 3.0
+    illumination_color_min_chroma: float = 6.0
+    # Agreeing decisive samples in a row before a camera switches (~3 s) — a
+    # passing headlight or a flicking lamp cannot flap it.
+    illumination_confirm_samples: int = 3
+    # Ask each ONVIF camera for its IrCutFilter position (read-only). A camera
+    # that does not report it (Tapo) is asked again only every recheck_secs.
+    illumination_onvif: bool = True
+    illumination_onvif_poll_secs: float = 300.0
+    illumination_onvif_recheck_secs: float = 3600.0
+
+    # ReID on an infrared camera. The IR gallery holds (a) every enrollment
+    # crop re-embedded as luminance only — built automatically, back-filled for
+    # recipients enrolled before night vision — and (b) real infrared looks of
+    # the recipient learned live at night (below). An IR query is matched
+    # against the IR gallery only; a colour query against the colour gallery
+    # only, exactly as before. Separate bars so night can be tuned from night
+    # data without moving the daytime numbers — they start AT the daytime
+    # values, precision first.
+    reid_ir_match_threshold: float = 0.55
+    reid_ir_acquire_min_score: float = 0.60
+    # Night lock rules. By day a lock that stops matching is released after
+    # target_mismatch_release_checks. At night "stops matching" is mostly the
+    # model being blind, not a different person, so a lock is HELD on the
+    # tracker's own continuity unless something positively CONTRADICTS it
+    # (another enrolled person matches, or the look is a known non-target).
+    night_hold_lock: bool = True
+    # Context identity: at night, if exactly ONE person is visible in the whole
+    # home, the recipient is not locked anywhere else, and that person has been
+    # seen steadily for night_context_min_track_secs without contradicting the
+    # recipient's looks, they are taken to be the recipient (identity basis
+    # "context", shown as such). Such a lock never teaches the gallery.
+    night_context_lock: bool = True
+    night_context_min_track_secs: float = 3.0
+    # ...and must have MOVED (centre or height shifted by this fraction of its
+    # size) — the known night phantom, a white chair the IR gain lifts into a
+    # steady "person", never does. Draw an ignore zone over a chair that keeps
+    # firing (detection drops it before anything else sees it).
+    night_context_min_move_frac: float = 0.15
+    # Learn the recipient's REAL infrared look. Only from a lock whose identity
+    # was established by a gallery match on this very track and never broken
+    # since (e.g. verified in lamplight, carried by the tracker when the lights
+    # go out), only in solitude — so every night the gallery gets better at the
+    # night. Same cap / dedup / throttle as the daytime adaptive store.
+    reid_ir_adaptive_enabled: bool = True
+    # Crop sharpness at night is measured after a light denoise: infrared sensor
+    # noise inflates the Laplacian variance and would pass a smear as "sharp".
+    crop_min_sharpness_ir: float = 8.0
+    # Visitor snapshots: on an infrared camera, while the recipient is not
+    # located anywhere, an unidentified person may well BE the recipient — hold
+    # their visitor snapshot rather than report the recipient as a visitor.
+    visitor_ir_hold: bool = True
+
     # ---- Posture (sitting / standing / walking / fallen) ------------
     # Walking is scale-normalized (motion relative to the person's own body
     # size) and temporally confirmed, so a chair-swivel near the camera is no

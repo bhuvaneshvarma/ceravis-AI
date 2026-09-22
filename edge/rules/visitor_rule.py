@@ -28,6 +28,12 @@ Five gates, each answering a different way this can go wrong:
 
 Per TRACK, not per home: two visitors are two subjects, and each gets its own
 session, motion state and cooldown.
+
+NIGHT VISION: on an infrared camera the recipient may simply be unrecognised,
+so while the recipient is located NOWHERE an unidentified person there is held
+rather than reported — the care recipient walking to the bathroom at 2 am is not
+a visitor. The moment the recipient is placed (on any camera, by any lock
+basis), everyone else is a visitor again, in the dark as in daylight.
 """
 
 import time
@@ -36,6 +42,7 @@ from collections import deque
 
 from common import clock
 from config.settings import settings
+from ingestion import illumination
 from rules.rule_context import RuleContext
 from schemas.event import Event
 
@@ -60,6 +67,7 @@ class VisitorRule:
         now = clock.now()
         events: list[Event] = []
         seen: set[tuple] = set()
+        located: list[bool] = []                  # lazily: recipient placed anywhere?
 
         for camera_id, result in ctx.fresh_tracks(now).items():
             target_tid = ctx_target(ctx, camera_id)
@@ -77,6 +85,8 @@ class VisitorRule:
                     continue
                 if self._identity_hold(ctx, key):
                     continue                       # could be the recipient arriving
+                if self._night_hold(ctx, camera_id, now, located):
+                    continue                       # could be the recipient, in the dark
                 if not self._due(key):
                     continue
                 if not self._well_imaged(ctx, camera_id, track.track_id):
@@ -140,6 +150,22 @@ class VisitorRule:
         if first is None:
             return True
         return (time.monotonic() - first) < settings.visitor_identity_grace_secs
+
+    @staticmethod
+    def _night_hold(ctx: RuleContext, camera_id: str, now, located: list) -> bool:
+        """On an infrared camera, hold an unidentified person while the
+        recipient is located nowhere — they may BE the recipient, unrecognised
+        in the dark. Evaluated at most once per tick (`located` caches it). If
+        the recipient's whereabouts cannot be read, nothing is held."""
+        if not settings.visitor_ir_hold or not illumination.is_ir(camera_id):
+            return False
+        if not located:
+            find = getattr(ctx, "find_recipient", None)
+            try:
+                located.append(find is None or find(now) is not None)
+            except Exception:
+                located.append(True)
+        return not located[0]
 
     # ---- rate limits ---------------------------------------------------
     def _due(self, key: tuple) -> bool:

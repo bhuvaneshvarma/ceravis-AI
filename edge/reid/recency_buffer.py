@@ -27,6 +27,11 @@ discriminative than one averaged look — the same set-to-set logic the gallery
 uses, applied to a sliding window of seconds instead of a library of months.
 
 Vectors only. No frames are retained.
+
+Each look is tagged with the modality it was seen in (colour / infrared) and is
+only ever compared with a query of the same modality: in the minutes after the
+lights go out, the target's colour looks say nothing about an infrared query,
+and letting them VETO it would drop the recipient exactly at lights-out.
 """
 
 import time
@@ -39,7 +44,7 @@ from config.settings import settings
 
 
 class RecencyBuffer:
-    """recipient_id -> deque[(monotonic_ts, L2-normalized embedding)]."""
+    """recipient_id -> deque[(monotonic_ts, L2-normalized embedding, modality)]."""
 
     __slots__ = ("_lock", "_mem")
 
@@ -48,7 +53,8 @@ class RecencyBuffer:
         self._mem: dict[str, deque] = {}
 
     # ---- write -------------------------------------------------------
-    def push(self, recipient_id: str, emb: np.ndarray) -> None:
+    def push(self, recipient_id: str, emb: np.ndarray,
+             modality: str = "color") -> None:
         """Remember one confident, non-occluded look at the target."""
         if not settings.reid_recency_enabled or not recipient_id or emb is None:
             return
@@ -63,10 +69,11 @@ class RecencyBuffer:
                 # (re)size on first use or after a settings change
                 dq = deque(dq or (), maxlen=settings.reid_recency_max)
                 self._mem[recipient_id] = dq
-            dq.append((time.monotonic(), v))
+            dq.append((time.monotonic(), v, modality))
 
     # ---- read --------------------------------------------------------
-    def score(self, recipient_id: str, query: np.ndarray) -> float | None:
+    def score(self, recipient_id: str, query: np.ndarray,
+              modality: str = "color") -> float | None:
         """Max cosine between the query and the target's live recent looks.
 
         None means "no usable memory" — no entries, or every entry has aged out
@@ -89,7 +96,8 @@ class RecencyBuffer:
                 dq.popleft()
             if not dq:
                 return None
-            live = [v for _ts, v in dq if v.shape[0] == q.shape[0]]
+            live = [v for _ts, v, m in dq
+                    if m == modality and v.shape[0] == q.shape[0]]
         if not live:
             return None
         return float(np.max(np.stack(live, axis=0) @ q))
@@ -104,7 +112,7 @@ class RecencyBuffer:
             dq = self._mem.get(recipient_id)
             if not dq:
                 return 0
-            return sum(1 for ts, _v in dq if ts >= cutoff)
+            return sum(1 for ts, _v, _m in dq if ts >= cutoff)
 
     # ---- maintenance -------------------------------------------------
     def forget(self, recipient_id: str) -> None:

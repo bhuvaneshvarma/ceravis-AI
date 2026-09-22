@@ -11,6 +11,11 @@ frame-to-frame association and gallery matching, and we never embed twice.
 We keep both:
   * smooth — the track's EMA feature (noise-robust): used for gallery matching.
   * curr   — the latest raw feature: used for adaptive online-learning capture.
+
+Each record also says which picture it came from — colour or infrared (see
+ingestion/illumination.py) — because the two are matched against different
+galleries. The tracker drops appearance history on a modality switch, so a
+record is never a blend of the two.
 """
 
 from dataclasses import dataclass
@@ -26,6 +31,7 @@ class TrackFeature:
     curr: np.ndarray
     frame_id: int
     timestamp: datetime
+    modality: str = "color"
 
 
 class TrackFeatureBuffer:
@@ -38,10 +44,12 @@ class TrackFeatureBuffer:
         self._feats: dict[str, dict[int, TrackFeature]] = {}
 
     def update(self, camera_id: str, track_id: int, smooth: np.ndarray,
-               curr: np.ndarray, frame_id: int, timestamp: datetime) -> None:
+               curr: np.ndarray, frame_id: int, timestamp: datetime,
+               modality: str = "color") -> None:
         with self._lock:
             self._feats.setdefault(camera_id, {})[track_id] = TrackFeature(
-                smooth=smooth, curr=curr, frame_id=frame_id, timestamp=timestamp)
+                smooth=smooth, curr=curr, frame_id=frame_id, timestamp=timestamp,
+                modality=modality)
 
     def get(self, camera_id: str, track_id: int) -> TrackFeature | None:
         with self._lock:

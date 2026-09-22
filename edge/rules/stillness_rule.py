@@ -34,6 +34,7 @@ from datetime import datetime
 
 from common import clock
 from config.settings import settings
+from ingestion import illumination
 from pose.posture_classifier import Posture
 from rules.target_motion import TargetMotionDetector
 from schemas.event import Event
@@ -99,7 +100,8 @@ class StillnessRule:
             fd = ctx.frames.get(cam)
             frame = fd.frame if fd is not None else None
 
-        verdict = self._motion.update(cam, kps, s.track.bbox, frame, now)
+        verdict = self._motion.update(cam, kps, s.track.bbox, frame, now,
+                                      scene_epoch=illumination.epoch(cam))
         self.last_verdict = verdict
         if verdict.moving:
             self._nm.reset()

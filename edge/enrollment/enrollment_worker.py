@@ -9,6 +9,7 @@ import numpy as np
 
 from enrollment.enrollment_manager import EnrollmentManager
 from common import clock
+from ingestion.illumination import Modality
 
 
 logger = logging.getLogger("enrollment")
@@ -31,6 +32,11 @@ class EnrollmentWorker:
     re-run later — nothing is lost.
 
     Video frames are sampled; live captures arrive as already-saved photos.
+
+    Night vision: every crop is embedded twice — as it is (the colour gallery,
+    embeddings.npy, which the cloud keeps) and as luminance only (the infrared
+    gallery, embeddings_ir.npy, device-local). Recipients enrolled before the
+    infrared gallery existed are back-filled from their stored media on start.
     """
 
     VIDEO_SAMPLE_EVERY = 15          # ~ every 0.5 s at 30 fps
@@ -39,7 +45,9 @@ class EnrollmentWorker:
     def __init__(self, manager: EnrollmentManager, gallery=None) -> None:
         self._mgr = manager
         self._gallery = gallery       # shared FaissGallery (same one ReID queries)
-        self._q: "queue.Queue[str]" = queue.Queue()
+        # (job, recipient_id): "enroll" = the full pipeline, "ir" = only build
+        # the infrared gallery from already-stored media (back-fill).
+        self._q: "queue.Queue[tuple[str, str]]" = queue.Queue()
         self._detector = None
         self._extractor = None
         self._reid_error: str | None = None
@@ -61,6 +69,7 @@ class EnrollmentWorker:
         # restart finishes them automatically — no manual re-enroll needed.
         self._rebuild_gallery()
         self._resume_pending()
+        self._backfill_ir()
 
     def stop(self) -> None:
         self._running = False
@@ -72,7 +81,7 @@ class EnrollmentWorker:
     def enqueue(self, recipient_id: str) -> None:
         self._mgr.set_status(recipient_id, state="queued",
                              message="waiting for embedding worker")
-        self._q.put(recipient_id)
+        self._q.put(("enroll", recipient_id))
 
     # ---- engines (lazy) ---------------------------------------------
     def _ensure_engines(self) -> bool:
@@ -113,8 +122,17 @@ class EnrollmentWorker:
     def _run(self) -> None:
         while self._running:
             try:
-                recipient_id = self._q.get(timeout=1.0)
+                job, recipient_id = self._q.get(timeout=1.0)
             except queue.Empty:
+                continue
+            if job == "ir":
+                try:
+                    self._process_ir(recipient_id)
+                except Exception:
+                    # Night-gallery back-fill is an enhancement: a failure is
+                    # logged and the recipient stays fully enrolled for day use.
+                    logger.exception("enroll: IR gallery back-fill failed for %s",
+                                     recipient_id)
                 continue
             try:
                 self._process(recipient_id)
@@ -154,6 +172,7 @@ class EnrollmentWorker:
         arr = np.stack(embeddings, axis=0).astype(np.float32)
         self._mgr.save_embeddings(recipient_id, arr)
         self._mgr.save_embedding_labels(recipient_id, good_labels)
+        self._save_ir(recipient_id, good_crops)
         # Keep a few small JPEG crops of the person for future reference.
         refs = self._mgr.save_reference_crops(recipient_id, good_crops)
         self._rebuild_gallery()
@@ -163,6 +182,53 @@ class EnrollmentWorker:
                              message=f"enrolled — {len(embeddings)} embeddings, "
                                      f"{refs} reference image(s)")
         logger.info("enroll: %s ready (%d embeddings)", recipient_id, len(embeddings))
+
+    # ---- infrared gallery -------------------------------------------
+    def _save_ir(self, recipient_id: str, crops: list[np.ndarray]) -> int:
+        """Embed the SAME crops as luminance only — the infrared gallery, row-
+        aligned with the colour one (so the view labels line up). Returns the
+        number of vectors saved."""
+        ir = [self._extractor.embed(c, ir=True) for c in crops]
+        ir = [e for e in ir if np.linalg.norm(e) > 0]
+        if ir:
+            self._mgr.save_embeddings(recipient_id,
+                                      np.stack(ir, axis=0).astype(np.float32),
+                                      Modality.IR.value)
+        return len(ir)
+
+    def _process_ir(self, recipient_id: str) -> None:
+        """Back-fill: build the infrared gallery from stored media for a
+        recipient enrolled before it existed. Leaves the colour gallery, the
+        enrollment status and the cloud copy exactly as they are."""
+        if not self._ensure_engines():
+            return                          # retried on the next start
+        crops, _labels = self._collect_crops(recipient_id)
+        n = self._save_ir(recipient_id, crops)
+        if n:
+            self._rebuild_gallery()
+        logger.info("enroll: %s infrared gallery built (%d vectors)",
+                    recipient_id, n)
+
+    def _backfill_ir(self) -> None:
+        """Queue the infrared back-fill for every enrolled recipient that has
+        a colour gallery and stored media but no infrared gallery yet."""
+        try:
+            roots = sorted(self._mgr.base_path.glob("*"))
+        except Exception:
+            logger.exception("enroll: could not scan for IR back-fill")
+            return
+        for root in roots:
+            rid = root.name
+            if not root.is_dir():
+                continue
+            if self._mgr.load_embeddings(rid).shape[0] == 0:
+                continue                    # not enrolled (yet)
+            if self._mgr.load_embeddings(rid, Modality.IR.value).shape[0] > 0:
+                continue                    # already has one
+            if not (self._mgr.media_names(rid) or self._mgr.list_videos(rid)):
+                continue                    # nothing to build it from
+            logger.info("enroll: queueing infrared gallery back-fill for %s", rid)
+            self._q.put(("ir", rid))
 
     # ---- crop extraction --------------------------------------------
     def _collect_crops(self, recipient_id: str):
@@ -277,8 +343,8 @@ class EnrollmentWorker:
     def _rebuild_gallery(self) -> None:
         if self._gallery is None:
             return
-        emb, ids, labels = self._mgr.load_gallery()
+        emb, ids, labels, mods = self._mgr.load_gallery()
         try:
-            self._gallery.rebuild(emb, ids, labels)
+            self._gallery.rebuild(emb, ids, labels, mods)
         except Exception:
             logger.exception("enroll: gallery rebuild failed")

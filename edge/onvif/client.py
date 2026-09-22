@@ -31,6 +31,7 @@ logger = logging.getLogger("onvif")
 
 _MEDIA_NS = "http://www.onvif.org/ver10/media/wsdl"
 _PTZ_NS = "http://www.onvif.org/ver20/ptz/wsdl"
+_IMAGING_NS = "http://www.onvif.org/ver20/imaging/wsdl"
 _SCHEMA_NS = "http://www.onvif.org/ver10/schema"
 
 
@@ -80,6 +81,7 @@ class OnvifCamera:
         self.password = password
         self._media_url: str | None = None
         self._ptz_url: str | None = None
+        self._imaging_url: str | None = None
         self._ptz_advertised = False           # camera exposes a PTZ service
         self._resolved = False
 
@@ -110,6 +112,8 @@ class OnvifCamera:
                 elif _PTZ_NS in ns:
                     self._ptz_url = url
                     self._ptz_advertised = True
+                elif _IMAGING_NS in ns:
+                    self._imaging_url = url
         except OnvifError as exc:
             logger.info("GetServices failed (%s) — trying GetCapabilities", exc)
         if not (self._media_url and self._ptz_advertised):
@@ -118,6 +122,7 @@ class OnvifCamera:
         # xaddr so calls still go somewhere the camera answers.
         self._media_url = self._media_url or self.xaddr
         self._ptz_url = self._ptz_url or self._media_url
+        self._imaging_url = self._imaging_url or self._media_url
 
     def _capabilities_fallback(self) -> None:
         """Older cameras answer GetCapabilities but not GetServices. It reports
@@ -132,6 +137,9 @@ class OnvifCamera:
             return
         media = body.find(".//Media/XAddr")
         ptz = body.find(".//PTZ/XAddr")
+        imaging = body.find(".//Imaging/XAddr")
+        if imaging is not None and imaging.text and not self._imaging_url:
+            self._imaging_url = imaging.text
         if media is not None and media.text and not self._media_url:
             self._media_url = media.text
         if ptz is not None and ptz.text:
@@ -195,6 +203,38 @@ class OnvifCamera:
                             tzinfo=timezone.utc)
         except ValueError as exc:
             raise OnvifError(f"camera reported an invalid datetime: {exc}")
+
+    # ---- imaging (read-only) --------------------------------------------
+    def ir_cut_filter(self) -> str | None:
+        """The camera's IR-cut filter position, as ONVIF Imaging reports it:
+        'ON' (filter in — colour), 'OFF' (filter out — infrared night vision) or
+        'AUTO' (the camera switches on its own light sensor, which says nothing
+        about which state it is in RIGHT NOW). None when the camera does not
+        report the field — Tapo's imaging settings carry only brightness /
+        contrast / saturation / sharpness — or refuses the operation.
+
+        Read-only: this never calls SetImagingSettings. Raises OnvifError only
+        when the camera cannot be reached or rejects the credentials, so the
+        caller can tell "unreachable, ask again" from "does not report it"."""
+        self._services()
+        body = self._call(self._media_url,
+                          f'<GetVideoSources xmlns="{_MEDIA_NS}"/>')
+        src = body.find(".//VideoSources")
+        token = src.get("token") if src is not None else None
+        if not token:
+            return None
+        try:
+            body = self._call(
+                self._imaging_url,
+                f'<GetImagingSettings xmlns="{_IMAGING_NS}">'
+                f"<VideoSourceToken>{token}</VideoSourceToken>"
+                "</GetImagingSettings>")
+        except OnvifError as exc:
+            if str(exc).startswith("SOAP fault"):
+                return None                    # the camera does not offer it
+            raise
+        mode = (body.findtext(".//IrCutFilter") or "").strip().upper()
+        return mode if mode in ("ON", "OFF", "AUTO") else None
 
     # ---- media profiles ------------------------------------------------
     def profiles(self) -> list[Profile]:

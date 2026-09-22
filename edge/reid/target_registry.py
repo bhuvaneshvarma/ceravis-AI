@@ -58,6 +58,12 @@ class TargetRegistry:
             entry = self._targets.get(camera_id)
             return entry[1] if entry else None
 
+    def last_recipient(self) -> str | None:
+        """The last recipient ever locked on any camera (None before the
+        first lock)."""
+        with self._lock:
+            return self._last_recipient
+
     def is_fresh(self, camera_id: str) -> bool:
         return self.get(camera_id) is not None
 

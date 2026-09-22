@@ -201,6 +201,19 @@ class BoTSORT:
         self.frame_id = 0
         self.max_time_lost = int(frame_rate / 30.0 * track_buffer)
 
+    def reset_appearance(self) -> None:
+        """Forget every track's appearance history; keep the motion state.
+
+        Called when the camera switches between colour and infrared: an EMA
+        feature learned in colour compared against infrared embeddings is a
+        comparison across two different pictures of the world, and would both
+        weaken association and hand ReID a blended look that belongs to neither
+        gallery. Kalman state is untouched, so no track is lost — each simply
+        re-seeds its appearance from its next embedding."""
+        for t in self.tracked_stracks + self.lost_stracks:
+            t.smooth_feat = None
+            t.curr_feat = None
+
     def _get_dists(self, tracks: list[STrack], dets: list[STrack]) -> np.ndarray:
         iou = matching.iou_distance(tracks, dets)
         if self.with_reid:

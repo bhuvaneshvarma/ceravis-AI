@@ -7,6 +7,7 @@ import numpy as np
 
 from config.settings import settings
 from detection.trt_engine import TensorRTEngine
+from ingestion.illumination import monochrome
 
 
 logger = logging.getLogger("reid")
@@ -42,9 +43,15 @@ class ReIDExtractor:
         img = img.transpose(2, 0, 1)[None, ...]            # HWC -> NCHW
         return np.ascontiguousarray(img, dtype=np.float32)
 
-    def embed(self, crop: np.ndarray) -> np.ndarray:
+    def embed(self, crop: np.ndarray, ir: bool = False) -> np.ndarray:
+        """`ir` embeds the crop's luminance only — the IR-gallery space. Used
+        for a crop from an infrared camera, and for the IR copy of every
+        enrollment crop, so both sides of a night match are prepared the SAME
+        way (ingestion.illumination.monochrome)."""
         if crop is None or crop.size == 0 or crop.shape[0] < 16 or crop.shape[1] < 8:
             return np.zeros(settings.reid_embedding_dim, dtype=np.float32)
+        if ir:
+            crop = monochrome(crop)
         out = self._engine.infer(self._preprocess(crop))
         emb = out[0].ravel().astype(np.float32)
         return emb / (np.linalg.norm(emb) + 1e-9)
