@@ -159,13 +159,25 @@
   btn().click(); s1.reconnect();
   ok("a reconnect keeps a room switched on", s1.listening());
 
-  // One room at a time.
+  // Every room is its own toggle: a carer can hear the whole house at once.
   const tile2 = document.createElement("div");
   document.body.appendChild(tile2);
   const s2 = makeStream();
   cvTalkPanel.mount(tile2, { camera_id: "cam_2", camera_name: "BEDROOM" }, s2);
-  tile2.querySelector(".listen-btn").click();
-  ok("turning one room on turns the other off", s2.listening() && !s1.listening());
+  const btn2 = () => tile2.querySelector(".listen-btn");
+  btn2().click();
+  ok("a second room can be listened to WITHOUT switching the first off",
+     s2.listening() && s1.listening());
+  ok("and both buttons say so", btn().dataset.listen === "on" && btn2().dataset.listen === "on");
+  btn2().click();
+  ok("switching one off leaves the other listening", !s2.listening() && s1.listening());
+  btn2().click();
+  ok("and it comes back on its own", s2.listening() && s1.listening());
+  cvTalkPanel.unmount(tile2);
+  ok("a tile going away silences only its own room",
+     !s2.listening() && s1.listening());
+  document.body.appendChild(tile2);
+  cvTalkPanel.mount(tile2, { camera_id: "cam_2", camera_name: "BEDROOM" }, s2);
 
   // The talk button shows what the device already KNOWS, before any press.
   function talkFor(cid, name) {
@@ -310,6 +322,8 @@
   ok("listening stays ON while talking — a resident's reply is heard",
      sD.listening() && tileD.querySelector(".listen-btn").dataset.listen === "on"
      && talkD.dataset.talk === "live");
+  ok("…and so do the OTHER rooms the carer is listening to",
+     s1.listening() && tile.querySelector(".listen-btn").dataset.listen === "on");
   await sleep(300);
   ok("and the Listen ring shows the room's level coming in, while On air",
      tileD.querySelector(".listen-btn").style.getPropertyValue("--listen-level") === "0.80");

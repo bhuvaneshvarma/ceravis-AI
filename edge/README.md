@@ -206,7 +206,11 @@ Carers use the **live wall**. Each tile carries two controls:
 * **Listen** unmutes the camera's own microphone. It is already in the WHEP
   stream the tile plays (the live wall is the only page that negotiates audio —
   every other page keeps its video-only SDP), so listening costs no connection,
-  no protocol and no credential.
+  no protocol and no credential. Every room is its OWN toggle: a carer can
+  listen to as many rooms as they like at once, and to any of them while
+  talking. Each button reads the live audio path rather than a remembered flag,
+  and its ring shows that room's level — so "which room was that?" is answered
+  by the tile the ring moved on.
 * **Hold to talk** speaks through the camera for as long as the button is held
   — there is no time limit. Each camera has its own socket
   (`/api/v1/talkback/{camera_id}/stream`); connecting claims that camera's

@@ -645,6 +645,12 @@ you paint the button: a listen toggle that remembers its own state drifts out of
 step with the audio path every time the control is rebuilt, and a toggle that is
 out of step by one is a toggle that will not switch off.
 
+**Rooms are independent.** Each tile's Listen is its own toggle: a carer may
+listen to several rooms at once, and to any of them while talking into one. Show
+each room's level (WebRTC `inbound-rtp.audioLevel`) so a carer can see which room
+a sound came from; that, not muting the others, is what keeps several rooms
+legible. The first click on each must come from a user gesture.
+
 ### 7.7 The latency budget
 
 | Leg | Cost |

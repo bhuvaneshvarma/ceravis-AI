@@ -26,10 +26,6 @@
   // missing button becomes a mystery instead of a message.
   var state = { enabled: false, byId: {}, error: "" };
 
-  /* Every live listen control on the page, so that switching one room on can
-     switch the rest off. Entries remove themselves in destroy(). */
-  var listeners = [];
-
   /* One read of the talk-back inventory, shared by every tile on the page.
 
      `ensure` is what the live wall calls on every 5-second sync; it re-reads at
@@ -313,44 +309,43 @@
       // The question is never "what did I set last time", it is "is this room
       // audible right now" — the one answer a rebuild cannot invalidate.
       on = !(stream.listening ? stream.listening() : on);
-      // ONE room at a time. Two rooms playing at once is not more monitoring,
-      // it is a wall of noise where nobody can tell which room a sound came
-      // from — and it is the other way a carer ends up unable to switch a room
-      // off: the one they muted was never the one they could hear.
-      if (on) listeners.forEach(function (l) { if (l !== handle) l.stop(); });
       // ALWAYS applied. Turning listening OFF is an action in its own right —
       // guarding this behind `on` is how the button became one-way.
       apply();
     };
 
+    /* EVERY ROOM IS ITS OWN TOGGLE. Any number can be listened to at once —
+       the microphone is already in each tile's stream, so a second room costs
+       no connection and takes nothing from the first. Rooms were once
+       exclusive to stop a carer losing track of which one they could hear;
+       what actually fixes that is telling them, so each button reads the live
+       audio path (never a remembered flag) and its ring shows THAT room's
+       level. The room a sound came from is the tile the ring moved on. */
+
     var handle = {
       /* The stream finally produced an audio track. If the carer already asked
          to listen, honour it now — the click does not have to be repeated. */
       audioArrived: function () { if (on) apply(); },
-      /* FULL DUPLEX: the room stays audible while the carer talks, so a resident
-         who answers mid-sentence is heard. Echo is cancelled at both ends
-         instead of by muting — the camera runs its own echo cancellation
-         (talkback_mode "aec"), and the carer's microphone asks the browser for
-         it (talk.js). Headphones remove any echo that is left. */
-      stop: function () { on = false; apply(); },
+      /* FULL DUPLEX: every room a carer is listening to stays audible while
+         they talk, so a resident who answers mid-sentence is heard. Echo is
+         cancelled at both ends instead of by muting — the camera runs its own
+         echo cancellation (talkback_mode "aec"), and the carer's microphone
+         asks the browser for it (talk.js), which cancels everything the page
+         is playing, not just the room being spoken to. Headphones remove any
+         echo that is left. */
       /* The BUTTON is being replaced but the room is still on screen. Leave the
-         audio exactly as the carer left it and just leave the roster — the
-         replacement adopts the live state on mount. Silencing a room here is
-         how commissioning one camera would mute another one mid-listen. */
-      detach: function () {
-        meterOn(false);
-        var i = listeners.indexOf(handle);
-        if (i >= 0) listeners.splice(i, 1);
-      },
+         audio exactly as the carer left it — the replacement adopts the live
+         state on mount. Silencing a room here is how commissioning one camera
+         would mute another one mid-listen. */
+      detach: function () { meterOn(false); },
       /* The TILE is going. Stop the audio as well — there will be nothing left
          to turn it off with. */
       destroy: function () {
         on = false;
         try { apply(); } catch (e) {}
-        handle.detach();
+        meterOn(false);
       },
     };
-    listeners.push(handle);
     // The stream may already have been playing before this button existed.
     apply();
     return handle;
