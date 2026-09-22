@@ -5,15 +5,17 @@ camera's own speaker**, and **listens back**, end to end.
 
 ```
   Carer's browser  ──►  your backend  ──►  frp tunnel  ──►  edge device  ──►  Tapo camera
-   mic -> A-law       (adds nothing,       (per-home URL)   (one speaker      (port 8800,
-   20 ms frames        or is skipped                         per camera)       G.711 A-law)
-   over a WebSocket    entirely)
+   mic -> A-law       (adds nothing,       (per-home URL)   (keeps a line     (port 8800,
+   20 ms frames over   or is skipped                         open to each      G.711 A-law)
+   ONE page session    entirely)                             camera; one
+                                                             voice at a time)
 ```
 
 Source of truth: [edge/api/talkback_routes.py](../edge/api/talkback_routes.py)
-(the routes), [edge/talkback/sessions.py](../edge/talkback/sessions.py) (who may
-hold a speaker), [edge/talkback/protocol.py](../edge/talkback/protocol.py) (the
-camera wire), [edge/static/talk.js](../edge/static/talk.js) (a complete, working
+(the routes), [edge/talkback/sessions.py](../edge/talkback/sessions.py) (the
+floor: who may speak), [edge/talkback/lines.py](../edge/talkback/lines.py) (the
+edge's line to each camera), [edge/talkback/protocol.py](../edge/talkback/protocol.py)
+(the camera wire), [edge/static/talk.js](../edge/static/talk.js) (a complete, working
 browser client you can copy).
 
 > **Read §7 before writing any code.** Two rules decide whether this works at
@@ -42,8 +44,8 @@ is no API key and no bearer token.
 | `PUT`, `POST` | JSON body field `edgeId` (alias: `edge_id`) |
 
 The WebSocket carries it as a **query parameter** because a browser cannot set
-headers on a WebSocket handshake. It is checked before the camera is ever
-dialled, so a wrong caller never reaches the camera and never makes a noise.
+headers on a WebSocket handshake. It is checked before anything else, so a wrong
+caller never reaches a camera and never makes a noise.
 
 The socket is **accepted first** and then refused with a reason (§6.2). Closing a
 WebSocket before accepting it becomes an HTTP 403 on the handshake, which a
@@ -83,12 +85,14 @@ GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
       "credential_updated_at": "2026-09-21T16:40:02+05:30",
       "enabled": true,
       "busy": false,
+      "floor": { "state": "free" },
       "readiness": {
         "state": "ready",
         "message": "Ready.",
         "detail": "",
         "checked_at": "2026-09-21T16:40:03+05:30",
-        "elapsed_ms": 103
+        "elapsed_ms": 103,
+        "line": "open"
       }
     },
     {
@@ -101,16 +105,17 @@ GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
       "credential_updated_at": "2026-09-21T16:40:02+05:30",
       "enabled": true,
       "busy": false,
+      "floor": { "state": "free" },
       "readiness": {
         "state": "rejected",
         "message": "The camera refused this home's TP-Link password. If the password is right, remove the camera in the Tapo app and add it again — it is holding an old copy.",
         "detail": "The camera rejected the credential. ...",
         "checked_at": "2026-09-21T16:40:04+05:30",
-        "elapsed_ms": null
+        "elapsed_ms": null,
+        "line": "closed"
       }
     }
-  ],
-  "active": {}
+  ]
 }
 ```
 
@@ -120,10 +125,12 @@ GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
 | `home_configured` | This home's one TP-Link password has been set (§4). |
 | `configured` | This camera has a credential — its own, or the home's. |
 | `credential_scope` | `"home"` (the one password for the home) or `"camera"` (an override for a camera on a different TP-Link account). |
-| `readiness.state` | **What the device found when it last checked this camera, silently.** Draw the button from this — see the table below. |
+| `readiness.state` | **What the camera's talk line says right now.** Draw the button from this — see the table below. |
 | `readiness.message` | A sentence for the carer. Show it as-is. |
-| `busy` | Somebody is holding this camera's speaker **right now**. |
-| `active` | Live sessions, same shape as `/health` below. Empty when nobody is talking. |
+| `readiness.detail` | The camera's own reason, for an installer (e.g. the refused-password checklist). |
+| `readiness.line` | `open` / `closed`: whether the edge's talk line to this camera is up. |
+| `floor` | Who may speak into this camera now: `{"state": "free"}`, or `{"state": "speaking" \| "holding", "by": "Nurse Priya", "client_id": "…"}`. |
+| `busy` | `true` when the floor is not free. |
 
 **Draw the talk control from `readiness.state`**, not from `configured` alone.
 The device checks every camera by itself from boot, so it already knows whether
@@ -132,40 +139,46 @@ a press would work — a carer should never find out by being refused mid-word.
 | `readiness.state` | What to show |
 |---|---|
 | `ready` | The hold-to-talk microphone. |
-| `unknown` | The microphone. (Not checked yet — the first ~minute after the device boots.) |
+| `connecting` | The microphone. (The line is opening — at boot, or after the camera ended it.) |
 | `needs_password` | A "Set up talk" button that opens the home password (§4). |
 | `rejected` | A "Talk: password refused" button that opens the same dialog, with `readiness.message`. |
+| `paused` | The same, with `readiness.detail` saying until when (lock-out guard, §6.4). |
 | `unreachable` | The microphone, labelled "Speaker offline" — pressing still tries, it may be back. |
+| `in_use` | The microphone, labelled "Speaker in use" — someone is talking from the Tapo app. |
 | `unsupported` | **Nothing.** This camera has no talk-back; a dead control is worse than none. |
 
 `credential_updated_at` is the **fact** of a credential and when it was set. No
 hash material is ever returned — a hash in an API response can be ground offline.
 
-### How the device keeps `readiness` true
+### The camera line — why a press never waits for the camera
 
-It runs with every other service from boot — no separate setup, nothing to start.
+The edge keeps **its own talk session open to every camera** from boot (the
+*line*), and re-opens it by itself when the camera ends it. A press therefore
+never waits for the camera's ~100–300 ms handshake, and an open line is itself the
+proof that the camera works: there is no separate periodic check.
 
-| State | Re-checked | Why |
+| When the line fails | Retried | Why |
 |---|---|---|
-| `ready` | every 10 min | Catches a password change before a carer does. |
-| `rejected` | every 60 min | Slow **on purpose**: repeated failed logins are what cameras lock accounts out for. It is only there to notice a re-pair in the Tapo app. |
-| `unreachable` | every 2 min | A rebooting camera comes back fast. |
-| `needs_password` | when a password arrives | There is nothing to try until then. |
+| the camera ended it after being open a while | at once | normal — reboot, idle timeout |
+| the camera ended it straight after granting it | growing wait | it is refusing something |
+| `rejected` (password) | every 60 min | slow **on purpose**: cameras lock accounts out for repeated failed logins |
+| `unreachable` | 2 s, doubling to 2 min | a rebooting camera comes back fast |
+| `needs_password` | when a password arrives | nothing to try until then |
 
-Any password change — through this API or the CLI — re-checks every camera at
-once. A real press that is refused updates `readiness` immediately too. The
-check is the silent probe (§5): no sound in the room. It gives way to people: a
-carer who presses during a check takes the camera, and a check never takes one
-off a carer.
+Any password change — through this API or the CLI — retries every line at once.
+
+`TALKBACK_LINE_ALWAYS=false` opens lines only while at least one carer's page is
+connected, which leaves the camera's speaker free for the Tapo app when nobody is
+watching. **How long a camera keeps a line is firmware-specific and measured, not
+assumed** — see the line record in §3.
 
 **Zero-input cameras.** A camera with no credential gets one attempt, once per
 boot, with its **own stream password** (already in camera setup). If its firmware
-accepts that, it is commissioned with nothing typed at all
-(`readiness.state: ready`, credential source `stream`).
+accepts that, it is commissioned with nothing typed at all.
 
 ---
 
-## 3. `GET /health` — is the channel healthy
+## 3. `GET /health` — the lines, the floors, and the line record
 
 The live gauge. Poll it from a dashboard; do **not** poll it per page render.
 
@@ -178,47 +191,48 @@ GET /<edge_id>/api/v1/talkback/health?edge_id=<edge_id>
 ```json
 {
   "enabled": true,
-  "active_sessions": 1,
-  "active": {
-    "cam_1": {
-      "holder": "203.0.113.44",
-      "client_id": "cmf8q2x1-3-k9d2af",
-      "seconds": 12.4,
-      "frames": 620,
-      "frames_sent": 618,
-      "frames_dropped": 2,
-      "bytes_sent": 98880,
-      "queued_ms": 20,
-      "peak_queued_ms": 140
+  "home_configured": true,
+  "settings": { "line_always": true, "line_keepalive_secs": 0.0,
+                "floor_hold_secs": 5.0, "codec": "alaw",
+                "sample_rate": 8000, "frame_bytes": 160 },
+  "lines": {
+    "LOUNGE": {
+      "state": "ready", "line": "open", "elapsed_ms": 103,
+      "open_secs": 5421.3, "opens": 2, "drops": 1, "idle_secs": 12.0,
+      "frames_sent": 3012, "frames_dropped": 0, "queued_ms": 0,
+      "history": [
+        { "at": "2026-09-22T09:10:02+05:30", "event": "open", "connect_ms": 98 },
+        { "at": "2026-09-22T10:40:11+05:30", "event": "dropped", "after_secs": 5409.2 },
+        { "at": "2026-09-22T10:40:12+05:30", "event": "open", "connect_ms": 103 }
+      ]
     }
   },
-  "limits": {
-    "hold_secs": 90.0,
-    "max_turn_secs": 300.0,
-    "sample_rate": 8000,
-    "frame_bytes": 160,
-    "codec": "alaw"
-  }
+  "clients": 3,
+  "floors": {
+    "LOUNGE": { "state": "speaking", "by": "Nurse Priya", "client_id": "pg-…",
+                "holder": "203.0.113.44", "seconds": 4.2, "frames": 210 }
+  },
+  "guard": {}
 }
 ```
 
-**`queued_ms` is the number that answers "why does it sound delayed".** It is
-milliseconds of the carer's voice still sitting in the device's socket to the
-camera, not yet heard in the room.
+**The line record answers "how long does a camera keep the line".** Every line
+keeps its last 20 events: each `open` (with how long the camera took), each
+`dropped` (with how long it had been open), each `failed` (with why). If a
+firmware turns out to close *silent* lines after some time, set
+`TALKBACK_LINE_KEEPALIVE_SECS` below that time and one silent frame is sent after
+that many idle seconds. The CLI prints the same record:
+`python3 -m tools.talkback lines`.
+
+**`queued_ms` answers "why does it sound delayed"**: milliseconds of the carer's
+voice still waiting on the device to reach the camera.
 
 | `queued_ms` | Reading |
 |---|---|
 | `0 – 60` | Healthy. This is the normal state on a LAN. |
 | `60 – 400` | The link is struggling; the carer will hear themselves lag. |
 | `>= 400` | Frames are being **dropped** on purpose — newest kept, oldest lost. |
-| `>= 4000` | The camera stopped reading; the session is torn down and the client reconnects. |
-
-`frames_dropped` rising while `queued_ms` stays low is normal after a blip — it
-is the backlog being discarded rather than played late.
-
-`/health` also carries `home_configured` and a `readiness` map (camera id →
-the same object as in §2), for a fleet dashboard that wants every camera's
-talk-back state in one call.
+| `>= 4000` | The camera stopped reading; the line is closed and re-opened clean. |
 
 ---
 
@@ -338,11 +352,12 @@ the override; the camera falls back to the home password.
 
 ---
 
-## 5. `POST /{camera_id}/test` — prove the chain, silently
+## 5. `POST /{camera_id}/test` — is this camera's line open
 
-Opens a real speaker session and closes it **without sending audio**. This is
-the handover check: it proves reachability, the credential and the firmware
-without startling anyone in the room.
+The handover check. If the camera's line is open it answers at once; if not, it
+tries to open it now and says why it cannot. **Silent** — a line carries no sound
+until somebody speaks. `"force": true` skips the lock-out pause, for a technician
+who has just fixed the account.
 
 ```
 POST /<edge_id>/api/v1/talkback/cam_1/test
@@ -356,12 +371,11 @@ Content-Type: application/json
 **200**
 
 ```json
-{ "ok": true, "camera_id": "cam_1", "host": "10.42.0.250",
-  "session_id": "6", "elapsed_ms": 103, "auth": "sha256" }
+{ "ok": true, "camera_id": "cam_1", "host": "10.42.0.250", "line": "open",
+  "connect_ms": 103, "open_secs": 5421.3, "auth": "sha256" }
 ```
 
-`elapsed_ms` is the real handshake cost, and it is the floor on how long a first
-press takes. Anything under ~300 ms is healthy.
+`connect_ms` is what the camera took to grant the line when it last opened.
 
 ### Error codes — every one of them
 
@@ -370,12 +384,12 @@ press takes. Anything under ~300 ms is healthy.
 | `404` | `no_camera` | No camera with that id or label. |
 | `428` | `no_credential` | Not commissioned yet — call §4 first. |
 | `409` | `no_host` | The camera has no usable address on file. |
-| `409` | `busy` | Someone is already speaking to this camera. |
 | `424` | `unauthorized` | **The camera** refused the TP-Link password. Deliberately not `401`: a `401` from this API always means *your edge_id* is wrong. `message` carries the checklist. |
-| `429` | `cooldown` | Paused after repeated refusals, so our own retries cannot lock the camera out (§6.5). `Retry-After` is set. Setting the password again lifts it at once. |
+| `429` | `cooldown` | Paused after repeated refusals, so our own retries cannot lock the camera out (§6.4). `Retry-After` is set. Setting the password again lifts it at once. |
 | `502` | `unreachable` | No answer on port 8800 — offline, or the firmware has no talk port. |
-| `502` | `refused` / `protocol` / `closed` | The camera answered, but not with talk-back. |
-| `504` | `timeout` / `stalled` | The camera went quiet mid-handshake, or stopped reading. |
+| `502` | `refused` | The camera's speaker is in use from the Tapo app, or switched off in it. |
+| `502` | `protocol` | Something answered on the talk port, but not a Tapo talk endpoint. |
+| `504` | `timeout` | The line did not open in time. |
 
 Errors carry a structured detail:
 
@@ -386,120 +400,86 @@ Errors carry a structured detail:
 
 ---
 
-## 6. `WS /{camera_id}/stream` — the live microphone
+## 6. `WS /session` — one standby connection per page
 
 ```
-wss://edgeai.ceravishealth.in/<edge_id>/api/v1/talkback/cam_1/stream
-    ?client_id=<your-id>&edge_id=<edge_id>&name=<carer display name>
+wss://edgeai.ceravishealth.in/<edge_id>/api/v1/talkback/session
+    ?edge_id=<edge_id>&client_id=<page id>&name=<carer display name>
 ```
 
-`name` is optional (up to 40 printable characters). It is the only thing another
-carer is told when they are refused: "Someone is already speaking to LOUNGE
-(Nurse Priya)". Without it they are told only that someone is. The caller's
-address is never shown to other carers.
+A page opens **one** of these when it loads and keeps it open. It claims nothing
+and blocks nobody — a hundred carers can have the live view open. A press only
+**claims the floor** over it; nothing is connected on the press, and the camera's
+line is already open (§2), so speech starts as soon as the floor is granted.
+
+| Query | Required | Meaning |
+|---|---|---|
+| `edge_id` | yes | The home's edge id. Checked before anything else. |
+| `client_id` | recommended | The page's own id (up to 64 chars). Send the same one on every reconnect: a page that drops mid-sentence and comes back within the floor hold keeps its floor. |
+| `name` | recommended | Shown to other carers: "Nurse Priya is speaking to LOUNGE". Up to 40 printable characters; display only. Addresses are never shown. |
 
 ### 6.1 What you send
 
-| Frame | Content |
-|---|---|
-| **binary** | Raw **8 kHz mono G.711 A-law**. 160 bytes = 20 ms. Send as you capture. |
-| **text** | `{"type":"ping"}` — keeps proxies from idling the socket out. |
-| **text** | `{"type":"stop"}` — a clean hang-up. |
+| Frame | Content | When |
+|---|---|---|
+| text `{"type":"claim","camera":"LOUNGE"}` | ask for the floor | on press |
+| **binary** | 160 bytes of **8 kHz mono G.711 A-law** = 20 ms | every 20 ms while held and granted |
+| text `{"type":"release"}` | give the floor back | on release |
+| text `{"type":"ping"}` | keeps proxies from idling the socket | every 20 s |
+| text `{"type":"stop"}` | closing the page | once, then close |
 
-A binary frame larger than 8000 bytes (1 second) is ignored as a client bug.
-
-> **Control frames deliberately do NOT refresh the hold window.** Only speech
-> does. A chatty client cannot hold a household's speaker without saying a word.
+Speech goes to the camera whose floor this page holds; a page holds at most one.
 
 ### 6.2 What you receive
 
-**On success, immediately:**
-
 ```json
-{ "type": "open", "camera_id": "cam_1", "session_id": "6",
-  "sample_rate": 8000, "codec": "alaw", "frame_bytes": 160,
-  "mic_gain": 1.0, "hold_secs": 90.0, "max_turn_secs": 300.0,
-  "client_id": "cmf8q2x1-3-k9d2af" }
+{ "type": "welcome", "client_id": "pg-…", "codec": "alaw", "sample_rate": 8000,
+  "frame_bytes": 160, "mic_gain": 1.0, "floor_hold_secs": 5.0,
+  "cameras": { "LOUNGE": { "readiness": { "state": "ready", "line": "open", … },
+                           "floor": { "state": "free" } } } }
 ```
 
-Do not send audio before this frame arrives.
+| Message | Meaning |
+|---|---|
+| `welcome` | The session is ready; every camera's line and floor, now. Send nothing before it. |
+| `{"type":"granted","camera":…}` | The floor is yours — start sending audio. |
+| `{"type":"refused","camera":…,"code":…,"message":…}` | Not granted. Show `message`. `code`: `busy` (someone else is speaking or just spoke), `unauthorized` / `no_credential` / `cooldown` (the camera's password — the button should become "Set up talk"), `unreachable` / `refused` / `timeout` (the camera, not you), `no_camera`. |
+| `{"type":"floor","camera":…,"state":"free"\|"speaking"\|"holding","by":…,"client_id":…}` | Sent to **every** page whenever a floor changes, so each button can say who is talking before anyone presses. |
+| `{"type":"camera","camera":…,"readiness":{…}}` | A camera's line changed (dropped, re-opened, refused). |
+| `{"type":"stats","camera":…,"frames_sent":…,"queued_ms":…}` | About once a second while you speak. |
+| `{"type":"released","camera":…,"reason":"no audio"}` | The edge released your floor: no audio arrived for 3 s (a frozen page). |
+| `{"type":"taken","camera":…,"by":…}` | A higher-priority user took the floor (reserved for a future doctor role; nobody has priority today). |
 
-**Roughly once a second while speech is flowing:**
+**Close codes** (the connection itself, not a press): `4503` talk-back is switched
+off, `4401` wrong edge_id, `4000` the same page connected again (this socket is the
+stale one) — do **not** reconnect on these. On anything else (`1006` etc.),
+reconnect with the same `client_id`: 0.5 s, then ×1.8, up to 10 s.
 
-```json
-{ "type": "stats", "seconds": 12.4, "bytes": 98880,
-  "frames_sent": 618, "frames_dropped": 2,
-  "queued_ms": 20, "peak_queued_ms": 140 }
-```
-
-**On ANY refusal or failure, before the close:** an error frame with the FULL
-sentence. The close reason says the same thing but is cut at 123 bytes by the
-WebSocket protocol, so show the error frame's `message`.
-
-```json
-{ "type": "error", "code": "unauthorized",
-  "message": "The camera refused the TP-Link password. Check, in order: (1) ..." }
-```
-
-`code` is the same stable value as the close reason's prefix. Decide on it: see
-§6.3 for which codes are final and which are worth a reconnect.
-
-### 6.3 Close codes
-
-| Code | Meaning | Retry? |
-|---|---|---|
-| `1000` / `1001` | The device closed the channel on schedule (hold window, max turn). | **No** |
-| `4401` | edge_id missing or wrong. | **No** |
-| `4409` | Someone **else** holds this camera's speaker. | **No** |
-| `4429` | Paused after repeated refusals of the same password (§6.5). | **No** |
-| `4503` | Talk-back is switched off on this device. | **No** |
-| `4500` | The camera handshake failed, or the camera failed mid-session. The error frame's `code` (and the reason's prefix) says which. | **Only** for `unreachable`, `timeout`, `stalled`, `closed` — never for `unauthorized`, `no_credential`, `refused`, `protocol`. Retrying a refused password is what cameras lock accounts out for. |
-| `1006` / `1011` | The network or a proxy dropped the connection. Since every refusal now carries a code, a `1006` really is the network. | **Yes** — see §6.4 |
-
-Codes only carry a class; the sentence is in the error frame (full) and the close
-reason (byte-capped).
-
-### 6.4 `client_id` — how a carer gets back in
-
-**Mint one id per microphone control, keep it for the life of that control, and
-send it on every connect including reconnects.**
-
-A dropped WebSocket does not always tell the device it dropped. Without
-`client_id`, the holder of a camera would be a socket that no longer exists, and
-the carer it belonged to would be refused from **their own** microphone until the
-90-second hold window expired — exactly when getting back matters most.
-
-A connect carrying the **same `client_id` as the current holder reclaims that
-session**. A different id, or no id at all, is refused with `4409` as normal.
-Because the id is minted by the client per microphone, this can only ever hand a
-session back to the control that already had it.
-
-Recommended client behaviour, and what [talk.js](../edge/static/talk.js) does:
-
-* retry on `1006`/`1011` only, never on the **No** rows above
-* backoff `300 ms -> 1.8x -> 3 s`, giving up after **15 s total**
-* keep capturing while reconnecting, into a **5-frame (100 ms) queue**, and drop
-  the **oldest** frames when it overflows — the newest are the words still being
-  said
-* show a distinct "Reconnecting…" state. A carer shown nothing presses again,
-  and a second press is a second session.
-
-### 6.5 The rules the device enforces
+### 6.3 The floor — who may speak
 
 | Rule | Value | Why |
 |---|---|---|
-| **One speaker per camera** | hard | Two people in one room at once is unusable, not degraded. Refused, never queued. |
-| **Hold window** | `hold_secs` (90 s) | The session stays open between presses, so only the first pays the ~200 ms handshake. Released after this much silence. |
-| **Max continuous speech** | `max_turn_secs` (300 s) | The stuck-button guard. A gap of more than 1 s resets it. |
-| **Backpressure** | 400 ms / 4000 ms | Late speech is dropped; a camera that stopped reading ends the session (`4500 stalled`, reconnect). |
-| **Session lease** | hold window + 30 s | A session with no speech for longer than this is an orphan (its client vanished without the device being told) and is reclaimed: at once when another carer asks for that camera, otherwise within 15 s. No leak can lock a room. `GET /health` shows `idle_seconds` per session. |
-| **Lock-out guard** | 3 refusals in a row | The same password refused 3 times in a row pauses that camera for 15 min, then 30, 60 and at most 3 h. While paused, nothing dials it: HTTP `429` / WS `4429`, with the time it resumes. Setting the password again lifts the pause at once. `GET /health` shows it under `guard`. This exists because on 2026-09-21 a camera took ~25 refused logins in one afternoon, almost all of them automatic retries. |
+| **One voice per camera** | hard | Two instructions at once are unintelligible to the person in the room. Refused, never queued. |
+| **No time limit** | while held | A carer speaks for as long as they hold the button. |
+| **Floor hold** | `floor_hold_secs` (5 s) | After release the floor stays with that carer so they can answer the resident; others are told "free in N s". Then it is free for anyone. |
+| **Audio stops** | 3 s | A page holding the floor that sends no audio for 3 s is released — a frozen page must not hold a room. |
+| **One camera per page** | — | Claiming another camera lets go of the first at once. |
+| **Priority** | — | A higher priority takes the floor from a lower one. Everyone is equal today; only a verified source may ever raise it. |
 
-Holding is **not free**: a camera has one speaker, and holding it locks out other
-carers **and the Tapo app**. Hang up when the user navigates away.
+### 6.4 The line's own rules
 
-**One talk channel per page.** A browser has one microphone. Pressing talk on a second camera must hang up the first camera's held channel before opening the new one, and the microphone's audio must go to that one channel only. Two held channels hold two rooms' speakers for nothing, and a shared microphone wired to both will send speech to the wrong room or cut off mid-sentence. [talk.js](../edge/static/talk.js) does this (`owner` / `claim()`).
+| Rule | Value | Why |
+|---|---|---|
+| **Backpressure** | 400 ms / 4000 ms | Late speech is dropped; a camera that stopped reading has its line closed and re-opened clean. |
+| **Lock-out guard** | 3 refusals in a row | The same password refused 3 times in a row pauses that camera for 15 min, then 30, 60 and at most 3 h. While paused nothing dials it (HTTP `429`, readiness `paused`). Setting the password again lifts it. |
 
+### 6.5 Listening at the same time
+
+Listening is **full duplex**: the room stays audible while a carer talks, so a
+resident who answers mid-sentence is heard. Echo is cancelled at both ends — the
+camera runs its own echo cancellation (`TALKBACK_MODE=aec`), and the carer's
+microphone must be opened with `echoCancellation: true` (§7.2). Headphones remove
+whatever echo is left on a loud speakerphone.
 
 ---
 
@@ -537,12 +517,13 @@ navigator.mediaDevices.getUserMedia({
 })
 ```
 
-The camera runs its own AEC, but the room's echo comes back through the
-**carer's** speaker too. Ask for all three.
+Listening stays on while the carer talks (§6.5), so the room's voice plays from
+the carer's own speaker while their microphone is live: echo cancellation here is
+what keeps it out of the room. Ask for all three.
 
 ### 7.3 Your backend is optional
 
-The WebSocket goes **browser -> fleet tunnel -> edge**. Your backend does not
+The session goes **browser -> fleet tunnel -> edge**. Your backend does not
 need to be in the media path and should not be: every hop you add is latency in
 a healthcare intercom. The backend's only job is to tell the app the `edge_id`
 of the house being viewed.
@@ -554,70 +535,54 @@ in the "someone else is speaking" message.
 ### 7.4 Minimum viable integration
 
 ```js
-// 1. One id per microphone control, for the life of that control.
-const clientId = "app-" + crypto.randomUUID();
-
-// 2. Only offer a mic for cameras that are enabled AND configured.
+// 1. When the live view opens: which cameras can talk, and ONE session for the page.
 const inv = await fetch(`${BASE}/cameras?edge_id=${edgeId}`).then(r => r.json());
-if (!inv.enabled) return;                       // device-wide switch is off
-const cam = inv.cameras.find(c => c.camera_id === id);
-if (!cam.configured) return showCommissionButton(cam);
-
-// 3. Open on the FIRST press, not on page load. It takes a household's speaker.
-const ws = new WebSocket(
-  `${WSS}/${id}/stream?client_id=${clientId}&edge_id=${edgeId}`);
+if (!inv.enabled) return;                          // device-wide switch is off
+const pageId = "app-" + crypto.randomUUID();       // keep it for the page's life
+const ws = new WebSocket(`${WSS}/session?edge_id=${edgeId}` +
+                         `&client_id=${pageId}&name=${encodeURIComponent(me.name)}`);
 ws.binaryType = "arraybuffer";
 
-const FINAL = ["unauthorized", "no_credential", "no_camera", "no_host",
-               "refused", "protocol", "busy", "cooldown", "disabled", "edge_id"];
-let sentence = "";
 ws.onmessage = ev => {
   const m = JSON.parse(ev.data);
-  if (m.type === "open")  startCapture();       // not before
-  if (m.type === "stats") showLatency(m.queued_ms);
-  if (m.type === "error") {                     // arrives BEFORE the close
-    sentence = m.message;                       // the full sentence: show this one
-    if (FINAL.includes(m.code)) {
-      if (m.code === "unauthorized" || m.code === "no_credential")
-        reloadInventory();                      // the button becomes "Set up talk"
-      fail(sentence);
-    }
-  }
+  if (m.type === "welcome") drawButtons(m.cameras);          // readiness + floor
+  if (m.type === "floor")   showFloor(m.camera, m.state, m.by, m.client_id === pageId);
+  if (m.type === "camera")  redrawButton(m.camera, m.readiness);
+  if (m.type === "granted") startSendingAudio(m.camera);
+  if (m.type === "refused") showRefusal(m.camera, m.message);    // show as-is
+  if (m.type === "released" || m.type === "taken") stopSendingAudio();
 };
 
-// 4. Send 160-byte A-law frames, oldest-dropped under backpressure.
+// 2. Press = claim.  Release = release.  Nothing to connect.
+onPress(camera   => ws.send(JSON.stringify({ type: "claim", camera })));
+onRelease(()     => { stopSendingAudio(); ws.send(JSON.stringify({ type: "release" })); });
+
+// 3. While granted: 160-byte A-law frames every 20 ms, oldest dropped under backpressure.
 onFrame(frame => {
   outbox.push(frame);
   while (outbox.length && ws.bufferedAmount < 960) ws.send(outbox.shift());
-  while (outbox.length > 5) outbox.shift();     // drop the OLDEST, keep newest
+  while (outbox.length > 5) outbox.shift();
 });
 
-// 5. Reconnect only when the answer could change, with the SAME clientId.
-ws.onclose = ev => {
-  const why = (/^([a-z_]+):/.exec(ev.reason || "") || [])[1];
-  const permanent = [1000, 1001, 4401, 4409, 4429, 4503].includes(ev.code) ||
-    FINAL.includes(why);
-  if (permanent) return fail(sentence || ev.reason);
-  scheduleRejoin();                             // same clientId
-};
+// 4. Keep it open: ping every 20 s; reconnect (same pageId) unless 4000/4401/4503.
+setInterval(() => ws.send(JSON.stringify({ type: "ping" })), 20000);
 ```
+
+The complete, tested client is [edge/static/talk.js](../edge/static/talk.js).
 
 ### 7.5 Press-and-hold, not a toggle
 
 **Do not ship a toggle.** A toggle leaves hot microphones open in living rooms.
 Press-and-hold cannot: releasing, losing the page, switching tabs or letting the
-pointer slip all end the turn. Hang up on `visibilitychange` — a backgrounded tab
-must not sit on a household's speaker.
+pointer slip all end the turn. Release on `visibilitychange` — a backgrounded tab
+must not keep a live microphone. (The standby session itself may stay open: it
+claims nothing.)
 
-### 7.6 Listening back, and why it must duck
+### 7.6 Listening back — at the same time as talking
 
 The camera's microphone is already in the WHEP live stream. To hear a room, add a
 `recvonly` audio transceiver to the existing WebRTC offer — **no second
-connection to the camera**.
-
-**Listening must be half-duplex with talking.** A live speaker and a live
-microphone in one room howl; camera-side AEC is not enough. Mute the incoming
-audio for as long as the carer is speaking.
+connection to the camera**. Keep it playing while the carer talks (§6.5).
 
 Mute it on the **track** (`track.enabled = false`), not only on the element — a
 muted element still decodes, and an element's `muted` flag is the one piece of
@@ -635,8 +600,9 @@ out of step by one is a toggle that will not switch off.
 | Edge -> camera (`TCP_NODELAY` on, no per-frame drain) | ~1–5 ms on a LAN |
 | Camera decode -> speaker | ~40–80 ms, and not ours to change |
 
-**The first press** additionally pays the camera handshake (~100–300 ms,
-measurable with §5). Every press after it, within `hold_secs`, pays none of it.
+**No press pays for a connection or a camera handshake**: the page's session and
+the camera's line are both already open. The only one-time cost is the browser
+starting the microphone (~100–300 ms) on the first press after a while.
 
 Bandwidth is ~75 kbit/s out and is never the bottleneck. If it sounds delayed,
 read `queued_ms` from §3 — that is where the answer is.
@@ -654,7 +620,8 @@ python3 -m tools.talkback set                      # THE home password; checks e
 python3 -m tools.talkback test                     # silent check of every camera
 python3 -m tools.talkback set  --camera LOUNGE     # an override for one camera
 python3 -m tools.talkback test --camera LOUNGE     # silent proof for one camera
-python3 -m tools.talkback tone --camera LOUNGE     # makes an actual sound
+python3 -m tools.talkback lines                    # the line record (§3)
+python3 -m tools.talkback tone --camera LOUNGE     # a beep, through the service's own session
 python3 -m tools.talkback diagnose --camera LOUNGE # when "unauthorized" hides three faults
 ```
 
