@@ -29,6 +29,12 @@ from .protocol import DEFAULT_PORT, TalkbackError, TapoTalkSession
 
 logger = logging.getLogger("talkback.sessions")
 
+# How long past the hold window a session may sit with no activity before it is
+# reclaimed. The WebSocket handler ends a held session at `talkback_hold_secs`
+# by itself; this LEASE only ever catches a session nothing is ending — an
+# orphan. It is the guarantee that no leak, present or future, can lock a room.
+LEASE_GRACE_SECS = 30.0
+
 
 def camera_host(camera) -> str:
     """Where this camera lives on the network, from what we already store.
@@ -64,6 +70,12 @@ class _Holder:
     preemptible: bool = False
     started: float = field(default_factory=time.monotonic)
     frames: int = 0
+    # Refreshed by every frame of speech. A holder silent for longer than the
+    # hold window plus LEASE_GRACE_SECS is not a person, it is a leak.
+    last_activity: float = field(default_factory=time.monotonic)
+
+    def expired(self, now: float) -> bool:
+        return now - self.last_activity > settings.talkback_hold_secs + LEASE_GRACE_SECS
 
 
 class TalkbackHub:
@@ -117,10 +129,13 @@ class TalkbackHub:
     def status(self) -> dict:
         out = {}
         for cid, h in self._active.items():
+            now = time.monotonic()
             row = {"holder": h.holder,
                    "label": h.label,
                    "client_id": h.client_id,
-                   "seconds": round(time.monotonic() - h.started, 1),
+                   "seconds": round(now - h.started, 1),
+                   # The number that tells a live conversation from a leak.
+                   "idle_seconds": round(now - h.last_activity, 1),
                    "frames": h.frames}
             # What the channel is actually costing right now. A carer who says
             # "it sounds delayed" and a fleet dashboard asking the same question
@@ -176,9 +191,20 @@ class TalkbackHub:
         stale = None
         async with self._lock:
             live = self._active.get(cam.camera_id)
+            if live is not None and live.expired(time.monotonic()):
+                # An orphan (see LEASE_GRACE_SECS): give the room back to the
+                # person asking for it now, instead of calling it busy.
+                logger.warning("talk: reclaimed orphaned session on %s (idle %.0fs, "
+                               "%d frames)", cam.camera_id,
+                               time.monotonic() - live.last_activity, live.frames)
+                stale = live
+                self._active.pop(cam.camera_id, None)
+                live = None
             if live is not None:
                 if live.preemptible and not preemptible:
                     # A person outranks the self-check, always.
+                    logger.info("talk takeover on %s by a carer (over the "
+                                "self-check)", cam.camera_id)
                     stale = live
                     self._active.pop(cam.camera_id, None)
                 elif preemptible:
@@ -188,6 +214,8 @@ class TalkbackHub:
                     # The same microphone coming back. Take the old session out
                     # from under the lock and close it below — the camera has
                     # ONE speaker and will not grant a second while this holds.
+                    logger.info("talk takeover on %s by returning client %s",
+                                cam.camera_id, client_id)
                     stale = live
                     self._active.pop(cam.camera_id, None)
                 else:
@@ -204,9 +232,6 @@ class TalkbackHub:
                                                   label=label,
                                                   preemptible=preemptible)
         if stale is not None:
-            logger.info("talk takeover on %s by %s", cam.camera_id,
-                        "a carer (over the self-check)" if stale.preemptible
-                        else f"returning client {client_id}")
             try:
                 await stale.session.close()
             except Exception:
@@ -244,6 +269,25 @@ class TalkbackHub:
         live = self._active.get(self.canonical(camera_id))
         if live is not None:
             live.frames += 1
+            live.last_activity = time.monotonic()
+
+    async def reap_stale(self) -> list[str]:
+        """Reclaim every orphaned session (see LEASE_GRACE_SECS) and close its
+        socket to the camera, so the speaker is free again for carers AND for
+        the Tapo app. Called on the readiness tick; cheap when there is none."""
+        now = time.monotonic()
+        async with self._lock:
+            dead = [(cid, h) for cid, h in self._active.items() if h.expired(now)]
+            for cid, _ in dead:
+                self._active.pop(cid, None)
+        for cid, h in dead:
+            logger.warning("talk: reclaimed orphaned session on %s (idle %.0fs, "
+                           "%d frames)", cid, now - h.last_activity, h.frames)
+            try:
+                await h.session.close()
+            except Exception:
+                logger.debug("orphaned talk session would not close", exc_info=True)
+        return [cid for cid, _ in dead]
 
     async def probe(self, camera_id: str, preemptible: bool = False,
                     force: bool = False) -> dict:

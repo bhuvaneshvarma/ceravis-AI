@@ -767,6 +767,59 @@ asyncio.run(_spellings())
 
 
 # ---------------------------------------------------------------------------
+# The lease: an orphaned session can never lock a room
+# ---------------------------------------------------------------------------
+print("\nOrphaned sessions are reclaimed")
+
+
+async def _lease():
+    """2026-09-22: LOUNGE was held for 592 s with 0 frames by a session whose
+    carer had left, and every carer after was told the room was busy. Whatever
+    leaks a session, the lease hands the room back."""
+    hub = hub_mod.TalkbackHub()
+    hub_mod.TapoTalkSession = _FakeSession
+    cred = TalkCredential(md5="F" * 32, sha256="F" * 64)
+    hub_mod.TalkbackHub._resolve = lambda self, cid: (
+        type("C", (), {"camera_id": cid, "camera_name": cid})(), "10.0.0.9", cred)
+    ttl = hub_mod.settings.talkback_hold_secs + hub_mod.LEASE_GRACE_SECS
+
+    orphan = await hub.open("L1", "gone", client_id="old-tab")
+    hub._active["L1"].last_activity -= ttl + 1          # silent for too long
+    fresh = await hub.open("L1", "carer", client_id="new-tab")
+    check("a carer asking for a room held by an orphan GETS it (not 'busy')",
+          hub._active["L1"].session is fresh)
+    check("and the orphan's socket to the camera is closed", orphan.closed)
+    await hub.release("L1", fresh)
+
+    live = await hub.open("L2", "talking")
+    hub.note_frame("L2")
+    refused = None
+    try:
+        await hub.open("L2", "someone else", client_id="x")
+    except TalkbackError as exc:
+        refused = exc
+    check("a LIVE conversation is never reclaimed",
+          refused is not None and refused.code == "busy")
+
+    hub._active["L2"].last_activity -= ttl + 1
+    reaped = await hub.reap_stale()
+    check("the periodic tick reclaims an orphan nobody asked for",
+          reaped == ["L2"] and not hub._active and live.closed)
+    check("and reports idle time, the number that tells a leak from a call",
+          "idle_seconds" in (await _status_of(hub)))
+
+
+async def _status_of(hub):
+    s = await hub.open("L3", "carer")
+    row = hub.status()["L3"]
+    await hub.release("L3", s)
+    return row
+
+
+asyncio.run(_lease())
+
+
+# ---------------------------------------------------------------------------
 # One source for the "password refused" advice
 # ---------------------------------------------------------------------------
 print("\nRefusal advice")

@@ -93,6 +93,9 @@ class FakeCameraSession:
         self.closed = False
 
     async def open(self):
+        if SCRIPT["open"] == "slow":
+            await asyncio.sleep(0.8)            # a camera handshake in flight
+            return
         if SCRIPT["open"] != "ok":
             raise TalkbackError(SCRIPT["open"], LONG_SENTENCE)
 
@@ -251,6 +254,22 @@ async def main():
     SCRIPT["send"] = "ok"
     await asyncio.sleep(0.2)
     check("and the speaker is released", not hub._active)
+
+    print("\nThe carer leaves DURING the camera handshake")
+    # The 2026-09-22 bench fault: LOUNGE held for 592 s with 0 frames, so every
+    # carer after was told "someone is already speaking". A page reloaded while
+    # the ~200 ms camera handshake was in flight left the session orphaned.
+    SCRIPT["open"] = "slow"
+    ws = await websockets.connect(url())
+    await asyncio.sleep(0.2)                     # handshake has started
+    await ws.close()                             # the page goes away
+    await asyncio.sleep(1.5)                     # the handshake completes
+    check("a session whose carer left mid-handshake is given back, not orphaned",
+          not hub._active)
+    SCRIPT["open"] = "ok"
+    msgs, code, reason = await session(url(extra="&client_id=next-carer"), frames=1)
+    check("and the next carer can talk at once",
+          msgs and msgs[0].get("type") == "open")
 
 
 asyncio.run(main())

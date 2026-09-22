@@ -492,10 +492,14 @@ Recommended client behaviour, and what [talk.js](../edge/static/talk.js) does:
 | **Hold window** | `hold_secs` (90 s) | The session stays open between presses, so only the first pays the ~200 ms handshake. Released after this much silence. |
 | **Max continuous speech** | `max_turn_secs` (300 s) | The stuck-button guard. A gap of more than 1 s resets it. |
 | **Backpressure** | 400 ms / 4000 ms | Late speech is dropped; a camera that stopped reading ends the session (`4500 stalled`, reconnect). |
+| **Session lease** | hold window + 30 s | A session with no speech for longer than this is an orphan (its client vanished without the device being told) and is reclaimed: at once when another carer asks for that camera, otherwise within 15 s. No leak can lock a room. `GET /health` shows `idle_seconds` per session. |
 | **Lock-out guard** | 3 refusals in a row | The same password refused 3 times in a row pauses that camera for 15 min, then 30, 60 and at most 3 h. While paused, nothing dials it: HTTP `429` / WS `4429`, with the time it resumes. Setting the password again lifts the pause at once. `GET /health` shows it under `guard`. This exists because on 2026-09-21 a camera took ~25 refused logins in one afternoon, almost all of them automatic retries. |
 
 Holding is **not free**: a camera has one speaker, and holding it locks out other
 carers **and the Tapo app**. Hang up when the user navigates away.
+
+**One talk channel per page.** A browser has one microphone. Pressing talk on a second camera must hang up the first camera's held channel before opening the new one, and the microphone's audio must go to that one channel only. Two held channels hold two rooms' speakers for nothing, and a shared microphone wired to both will send speech to the wrong room or cut off mid-sentence. [talk.js](../edge/static/talk.js) does this (`owner` / `claim()`).
+
 
 ---
 

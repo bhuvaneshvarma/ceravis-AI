@@ -347,16 +347,14 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
         logger.info("talk refused on %s: %s", camera_id, exc)
         return
 
-    await websocket.send_json({"type": "open", "camera_id": camera_id,
-                               "session_id": session.session_id,
-                               "sample_rate": SAMPLE_RATE, "codec": "alaw",
-                               "frame_bytes": FRAME_BYTES,
-                               "mic_gain": settings.talkback_mic_gain,
-                               "hold_secs": settings.talkback_hold_secs,
-                               "client_id": client_id,
-                               "max_turn_secs": settings.talkback_max_turn_secs})
-    logger.info("talk open on %s for %s", camera_id, holder)
-
+    # FROM HERE ON the camera's speaker is ours, and it is given back in ONE
+    # place: the `finally` below. Everything after hub.open() lives inside that
+    # try — including telling the client it is open. That send used to sit
+    # outside it, and a carer whose page went away during the ~200 ms camera
+    # handshake (a reload, a closed tab, a dropped network) made it raise: the
+    # handler left, the release never ran, and the camera stayed "busy" with
+    # zero frames until the service restarted. On 2026-09-22 that held LOUNGE for
+    # ten minutes and told every carer "someone is already speaking".
     started = time.monotonic()
     last_audio = started
     last_stats = started
@@ -374,8 +372,18 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
     # wait_for(receive()) per iteration would cancel a receive mid-frame every
     # time a ceiling is re-checked, and a cancelled receive can take a frame of
     # someone's voice with it.
-    pending = asyncio.ensure_future(websocket.receive())
+    pending = None
     try:
+        await websocket.send_json({"type": "open", "camera_id": camera_id,
+                                   "session_id": session.session_id,
+                                   "sample_rate": SAMPLE_RATE, "codec": "alaw",
+                                   "frame_bytes": FRAME_BYTES,
+                                   "mic_gain": settings.talkback_mic_gain,
+                                   "hold_secs": settings.talkback_hold_secs,
+                                   "client_id": client_id,
+                                   "max_turn_secs": settings.talkback_max_turn_secs})
+        logger.info("talk open on %s for %s", camera_id, holder)
+        pending = asyncio.ensure_future(websocket.receive())
         while True:
             now = time.monotonic()
             hold_left = settings.talkback_hold_secs - (now - last_audio)
@@ -427,7 +435,8 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
                     # already reading. A carer should not have to poll a second
                     # endpoint to find out their voice is arriving late.
                     **session.health()})
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, OSError):
+        # The carer left — including before the "open" frame could be sent.
         reason = "disconnected"
     except TalkbackError as exc:
         reason = exc.code
@@ -442,7 +451,8 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
         reason = "internal"
         logger.exception("talk stream crashed on %s", camera_id)
     finally:
-        pending.cancel()
+        if pending is not None:
+            pending.cancel()
         # The camera's speaker is released on EVERY exit path — a crash here
         # would otherwise lock a household out of its own intercom.
         await hub.release(camera_id, session)

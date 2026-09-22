@@ -162,8 +162,11 @@
     createGain() { return { gain: { value: 1 }, connect(x) { return x; } }; }
     resume() { return Promise.resolve(); } close() {}
   };
+  const workletPosts = [];
+  const worklets = [];
   window.AudioWorkletNode = class {
-    constructor() { this.port = { postMessage() {}, onmessage: null }; }
+    constructor() { this.port = { postMessage: m => workletPosts.push(m), onmessage: null };
+                    worklets.push(this); }
     connect(x) { return x; } disconnect() {}
   };
   window.WebSocket = class {
@@ -171,6 +174,11 @@
                      sockets.push(this); }
     send(d) { this.sent.push(d); }
     close() { this.readyState = 3; }
+    grant() {                                  // the device says the speaker is ours
+      this.readyState = 1;
+      this.onmessage && this.onmessage({ data: JSON.stringify(
+        { type: "open", hold_secs: 90, mic_gain: 1 }) });
+    }
     deny(code, errCode, sentence, reason) {   // accept, error frame, coded close
       this.readyState = 1;
       this.onmessage && this.onmessage({ data: JSON.stringify(
@@ -225,6 +233,54 @@
   await sleep(500);
   ok("…on a fresh socket", sockets.length === n + 1);
   c3.h.destroy();
+
+  // --- two cameras, one microphone (the live wall's real shape) -----------
+  // The bench case: talk to LIVING ROOM, then LOUNGE, then LIVING ROOM again.
+  // The shared microphone used to follow whichever button connected LAST, so
+  // the third press was "On air" into nothing.
+  // A handler that is missing counts as the bug it is (a hang-up that unwired
+  // the shared microphone), reported below rather than crashing the page.
+  const frameIn = () => {
+    const h = worklets[worklets.length - 1].port.onmessage;
+    if (typeof h === "function")
+      h({ data: { type: "audio", frame: new ArrayBuffer(160), peak: 0.2 } });
+  };
+  const audioSent = ws => ws.sent.filter(d => d instanceof ArrayBuffer).length;
+  const living = channel(), lounge = channel();
+  const up = ch => ch.h.release();
+
+  living.press(); await sleep(30);
+  const wsLiving = sockets[sockets.length - 1]; wsLiving.grant();
+  frameIn();
+  ok("talking to LIVING ROOM sends its audio there", audioSent(wsLiving) === 1);
+  up(living);
+
+  lounge.press(); await sleep(30);
+  ok("pressing LOUNGE hangs up LIVING ROOM's held channel (one room at a time)",
+     wsLiving.readyState === 3 && wsLiving.sent.includes('{"type":"stop"}')
+     && living.last() === "idle");
+  const wsLounge = sockets[sockets.length - 1]; wsLounge.grant();
+  frameIn();
+  ok("LOUNGE's audio goes to LOUNGE only",
+     audioSent(wsLounge) === 1 && audioSent(wsLiving) === 1);
+  up(lounge);
+
+  const socketsBefore = sockets.length;
+  living.press(); await sleep(30);
+  if (sockets.length > socketsBefore) sockets[sockets.length - 1].grant();
+  const wsLiving2 = sockets[sockets.length - 1];
+  const counts = sockets.map(audioSent);
+  frameIn();
+  const gained = sockets.filter((w, i) => audioSent(w) > counts[i]);
+  ok("back to LIVING ROOM: the frame is SENT (not dropped), and not to LOUNGE",
+     gained.length === 1 && gained[0] !== wsLounge);
+  const mutesBefore = workletPosts.filter(m => m.type === "mute" && m.value).length;
+  lounge.h.stop();                             // LOUNGE's hold timer runs out
+  ok("another channel hanging up never mutes the microphone in use",
+     workletPosts.filter(m => m.type === "mute" && m.value).length === mutesBefore);
+  frameIn();
+  ok("…so LIVING ROOM keeps talking", audioSent(wsLiving2) === 2);
+  living.h.destroy(); lounge.h.destroy();
 
   // --- report -------------------------------------------------------------
   const out = document.getElementById("out");

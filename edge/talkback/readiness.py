@@ -170,6 +170,9 @@ class Readiness:
                     seen = stamp
                     self._due.clear()
                 try:
+                    # The lease: an orphaned speaker session is given back
+                    # within one tick of expiring (talkback.sessions).
+                    await hub.reap_stale()
                     await self._sweep()
                 except Exception:
                     # A self-check must never take talk-back down with it.

@@ -117,6 +117,26 @@
   var graph = null;              // { ctx, stream, node, source }
   var warmTimer = null;
 
+  /* The ONE talk channel on this page that the microphone speaks for.
+
+     A page has one microphone and a carer has one voice, but a live wall has a
+     talk button per camera. Each button used to wire the shared microphone to
+     itself: the last one to connect took every frame, so pressing a camera you
+     had talked to earlier showed "On air" while its audio went to another
+     camera's handler and was dropped; and any button hanging up muted and
+     unwired the microphone even while another camera was mid-sentence.
+
+     So the microphone has exactly one owner. Pressing a camera takes it — and
+     hangs up the camera that had it, which also hands that room's speaker back
+     to other carers and the Tapo app instead of holding two rooms at once.
+     Only the owner may mute, unwire or let the microphone go cold. */
+  var owner = null;              // { frame(d), hangUp() } of the channel in use
+
+  function route(ev) {
+    var d = ev.data;
+    if (d && d.type === "audio" && owner) owner.frame(d);
+  }
+
   function releaseGraph() {
     if (!graph) return;
     try { graph.node.disconnect(); } catch (e) {}
@@ -163,6 +183,7 @@
         var sink = ctx.createGain();
         sink.gain.value = 0;
         node.connect(sink).connect(ctx.destination);
+        node.port.onmessage = route;     // wired ONCE; `owner` decides who hears it
         graph = { ctx: ctx, stream: stream, node: node, source: source };
         return ctx.resume().catch(function () {}).then(function () { return graph; });
       });
@@ -245,7 +266,18 @@
     }
 
     function mute(on) {
-      if (graph) graph.node.port.postMessage({ type: "mute", value: !!on });
+      // Only the owner touches the shared microphone (see `owner`).
+      if (graph && owner === me) graph.node.port.postMessage({ type: "mute", value: !!on });
+    }
+
+    /* This channel is about to speak: take the microphone, hanging up the
+       channel that had it. */
+    function claim() {
+      if (owner && owner !== me) owner.hangUp();
+      owner = me;
+      // The channel just hung up let the microphone start to go cold; it is
+      // ours now and in use.
+      if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; }
     }
 
     /* Close the channel and give the camera back. */
@@ -259,7 +291,6 @@
       outbox.length = 0;
       clearTimers();
       mute(true);
-      if (graph) graph.node.port.onmessage = null;
       if (ws) {
         var sock = ws;
         ws = null;
@@ -268,7 +299,9 @@
           sock.close();
         } catch (e) {}
       }
-      keepWarm();
+      // Let the microphone go cold only if it was ours: another channel may be
+      // using it right now.
+      if (owner === me) { owner = null; keepWarm(); }
       if (opts.onTalking) opts.onTalking(false);
       if (had || reason) setState(reason ? "error" : "idle", reason);
     }
@@ -495,20 +528,6 @@
 
         ws.onerror = function () { /* onclose carries the outcome */ };
 
-        node.port.onmessage = function (ev) {
-          var d = ev.data;
-          if (!d || d.type !== "audio") return;
-          if (opts.onLevel) opts.onLevel(pressed ? (d.peak || 0) : 0);
-          if (pressed && (open || rejoining)) {
-            // Straight into the outbox, never straight at the socket. A slow
-            // link, or a link that is briefly gone, must cost the OLDEST words
-            // rather than the newest ones — the previous version dropped the
-            // frame in hand and kept a second of stale speech queued ahead of
-            // it, which is the wrong way round for a live voice.
-            outbox.push(d.frame);
-            flush();
-          }
-        };
       }).catch(function (err) {
         pressed = false;
         connecting = false;
@@ -517,8 +536,22 @@
       });
     }
 
+    /* A frame from the microphone, delivered only while this channel owns it. */
+    function frame(d) {
+      if (opts.onLevel) opts.onLevel(pressed ? (d.peak || 0) : 0);
+      if (pressed && (open || rejoining)) {
+        // Straight into the outbox, never straight at the socket. A slow link,
+        // or a link that is briefly gone, must cost the OLDEST words rather
+        // than the newest ones — the newest are the words still being said.
+        outbox.push(d.frame);
+        flush();
+      }
+    }
+    var me = { frame: frame, hangUp: function () { hangUp(); } };
+
     function press() {
       if (pressed) return;
+      claim();
       pressed = true;
       if (open) speak();                           // held channel: instant
       else if (!ws && !connecting) connect();      // first press: ~200 ms
