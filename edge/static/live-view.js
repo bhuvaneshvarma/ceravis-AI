@@ -300,6 +300,21 @@
         return !videoEl.muted && tracks.length > 0 && tracks[0].enabled;
       },
       hasAudio: function () { return audioTracks().length > 0; },
+      /* How loud the room is right now (0..1), as RECEIVED — read from the
+         WebRTC stats, before the browser or the operating system turns
+         anything down. So "the room is coming in while I talk" is visible even
+         on a computer that lowers other audio while its microphone is open. */
+      audioLevel: function () {
+        if (!pc) return Promise.resolve(0);
+        return pc.getStats().then(function (report) {
+          var level = 0;
+          report.forEach(function (s) {
+            if (s.type === "inbound-rtp" && s.kind === "audio" && s.audioLevel != null)
+              level = s.audioLevel;
+          });
+          return level;
+        }).catch(function () { return 0; });
+      },
       stop: function () {
         stopped = true;
         wantAudio = false;

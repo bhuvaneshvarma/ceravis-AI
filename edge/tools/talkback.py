@@ -15,6 +15,7 @@ path, over SSH, with no browser, no HTTPS and no microphone.
     python -m tools.talkback diagnose --camera KITCHEN --try-password
                                                        # why auth failed
     python -m tools.talkback tone   --camera KITCHEN       # a beep in the room
+    python -m tools.talkback duplex --camera KITCHEN       # is the room audible WHILE talking
     python -m tools.talkback play   --camera KITCHEN --file hello.wav
     python -m tools.talkback forget --camera KITCHEN
 
@@ -121,7 +122,7 @@ def _file_audio(path: str, volume: float) -> bytes:
     return proc.stdout
 
 
-async def _speak(camera_id: str, audio: bytes) -> int:
+async def _speak(camera_id: str, audio: bytes, marks: dict | None = None) -> int:
     """Play `audio` through the service exactly as a carer does: connect to the
     camera's /stream (which claims its floor), stream 20 ms frames at real time
     (a camera fed faster than real time drops most of it), release."""
@@ -139,15 +140,101 @@ async def _speak(camera_id: str, audio: bytes) -> int:
             raise TalkbackError(reply.get("code", "refused"), reply.get("message", ""))
         loop = asyncio.get_running_loop()
         start = loop.time()
+        if marks is not None:
+            marks["start"] = start
         for i in range(0, len(audio), FRAME_BYTES):
             await ws.send(audio[i:i + FRAME_BYTES])
             ahead = start + (i + FRAME_BYTES) / SAMPLE_RATE - loop.time()
             if ahead > 0:
                 await asyncio.sleep(ahead)
+        if marks is not None:
+            marks["end"] = loop.time()
         await asyncio.sleep(0.6)          # let the camera drain its buffer
         await ws.send(json.dumps({"type": "release"}))
         await ws.send(json.dumps({"type": "stop"}))
     print(f"sent {len(audio) / SAMPLE_RATE:.2f}s of audio")
+    return 0
+
+
+def _dbfs(rms: float) -> float:
+    return round(20 * math.log10(rms / 32768), 1) if rms > 0 else -120.0
+
+
+async def _duplex(camera_id: str, seconds: float) -> int:
+    """Is the room still audible WHILE the camera's speaker plays?
+
+    Listens to the camera's own microphone exactly where every carer hears it —
+    the audio in its MediaMTX stream — before, during and after a tone played
+    through its speaker by the running service. If the level collapses while
+    the speaker plays, the CAMERA silences its microphone (half duplex in its
+    firmware); if it holds, the camera is full duplex, and a carer who still
+    hears silence while talking is being muted by their app, browser or OS."""
+    if not shutil.which("ffmpeg"):
+        raise SystemExit("`duplex` needs ffmpeg on this device")
+    from livestream.mediamtx_client import local_rtsp_url
+    loop = asyncio.get_running_loop()
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-loglevel", "error", "-rtsp_transport", "tcp",
+        "-i", local_rtsp_url(camera_id), "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE),
+        "-f", "s16le", "-", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    heard: list[tuple[float, float]] = []            # (arrival time, RMS of 100 ms)
+
+    async def listen():
+        try:
+            while True:
+                chunk = await proc.stdout.readexactly(SAMPLE_RATE // 5)   # 100 ms, s16le
+                vals = memoryview(chunk).cast("h")
+                heard.append((loop.time(), math.sqrt(sum(v * v for v in vals) / len(vals))))
+        except asyncio.IncompleteReadError:
+            return                                   # the stream ended
+
+    reader = asyncio.create_task(listen())
+    try:
+        for _ in range(100):
+            if heard:
+                break
+            await asyncio.sleep(0.1)
+        if not heard:
+            print(f"error: no audio in {camera_id}'s stream — is the camera's microphone "
+                  f"switched on in the Tapo app, and MediaMTX running?", file=sys.stderr)
+            return 1
+        print(f"listening to {camera_id}'s microphone; the speaker plays a tone in "
+              f"{seconds:.0f} s, for {seconds:.0f} s …")
+        await asyncio.sleep(seconds)
+        marks: dict = {}
+        await _speak(camera_id, _tone(seconds, 660.0, 0.3), marks)
+        await asyncio.sleep(seconds + 1.0)
+    finally:
+        reader.cancel()
+        proc.kill()
+        await proc.wait()
+
+    # The stream reaches us a little late: judge each phase away from its edges.
+    def level(a, b):
+        vals = [rms for t, rms in heard if a <= t <= b]
+        return _dbfs(math.sqrt(sum(v * v for v in vals) / len(vals))) if vals else None
+
+    before = level(marks["start"] - seconds + 0.5, marks["start"])
+    during = level(marks["start"] + 1.0, marks["end"])
+    after = level(marks["end"] + 1.5, marks["end"] + seconds + 1.0)
+    print(f"\n  room level before : {before} dBFS\n  while talking     : {during} dBFS"
+          f"\n  after            : {after} dBFS\n")
+    if None in (before, during, after):
+        print("Not enough audio arrived to judge. Run it again.")
+        return 1
+    if before < -65 and during < -65:
+        print("The room was too quiet to tell. Put a radio or a person talking near the "
+              "camera and run it again.")
+        return 1
+    if during <= -90 or during < before - 15:
+        print("HALF DUPLEX IN THE CAMERA: it silences its own microphone while its speaker "
+              "plays. No app can hear the room during that time; it is the camera's "
+              f"firmware (talk mode `{settings.talkback_mode}`).")
+        return 1
+    print("FULL DUPLEX: the camera keeps its microphone live while its speaker plays. "
+          "If a carer still hears silence while talking, it is their side: the app "
+          "muting Listen on press, or the phone/computer lowering other audio while the "
+          "microphone is open.")
     return 0
 
 
@@ -338,11 +425,12 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tools.talkback",
                                  description="Camera speaker (talk-back) commissioning.")
     ap.add_argument("command", choices=["list", "set", "forget", "test", "lines",
-                                       "log", "diagnose", "tone", "play"])
+                                       "log", "diagnose", "tone", "play", "duplex"])
     ap.add_argument("--camera", help="camera label or id (KITCHEN, cam_1, …)")
     ap.add_argument("--password", help="TP-Link ACCOUNT password (prompted if omitted)")
     ap.add_argument("--file", help="audio file for `play`")
-    ap.add_argument("--seconds", type=float, default=2.0, help="tone length")
+    ap.add_argument("--seconds", type=float, default=2.0,
+                    help="tone length (duplex: each phase, at least 3)")
     ap.add_argument("--freq", type=float, default=880.0)
     ap.add_argument("--volume", type=float, default=1.0)
     ap.add_argument("--try-password", action="store_true",
@@ -441,6 +529,8 @@ def main(argv=None) -> int:
                   f"{result.get('connect_ms')} ms, open {result.get('open_secs')} s, "
                   f"auth {result.get('auth')}). No audio sent.")
             return 0
+        if args.command == "duplex":
+            return asyncio.run(_duplex(camera_id, max(3.0, args.seconds)))
         if args.command == "play" and not args.file:
             print("error: play needs --file", file=sys.stderr)
             return 2

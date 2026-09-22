@@ -521,7 +521,19 @@ Listening is **full duplex**: the room stays audible while a carer talks, so a
 resident who answers mid-sentence is heard. Echo is cancelled at both ends — the
 camera runs its own echo cancellation (`TALKBACK_MODE=aec`), and the carer's
 microphone must be opened with `echoCancellation: true` (§7.2). Headphones remove
-whatever echo is left on a loud speakerphone.
+whatever echo is left on a loud speakerphone. **Do not mute Listen when the button
+is pressed.**
+
+**"The room goes silent while I talk" — find which side does it.** Nothing on the
+edge mutes listening while talking. The live wall's Listen ring shows the room's
+level as *received* (WebRTC stats, before any volume control), and keeps moving
+while On air. Three causes, three checks:
+
+| What you see | Cause | Fix |
+|---|---|---|
+| The Listen button says **"Muted while talking"** | That page runs the OLD code (before `0d0ed01`) — the device was not updated | Pull on the device; `GET /health` → `code.commit` must be the new one, `code.restart_needed` false |
+| `python3 -m tools.talkback duplex --camera X` says **HALF DUPLEX IN THE CAMERA** | The camera's firmware silences its own microphone while its speaker plays | Nothing an app can change: note the camera model and firmware, and check for a firmware update |
+| The probe says FULL DUPLEX and the ring moves, but it *sounds* silent | The carer's app mutes Listen on press, or the computer/phone lowers other audio while the microphone is open (Windows: Sound → Communications → "Do nothing") | Fix the app; change the OS setting, or use headphones |
 
 ---
 
@@ -666,6 +678,7 @@ python3 -m tools.talkback set  --camera LOUNGE     # an override for one camera
 python3 -m tools.talkback test --camera LOUNGE     # silent proof for one camera
 python3 -m tools.talkback lines                    # the line record (§3)
 python3 -m tools.talkback log                      # who spoke, where, how long (§3)
+python3 -m tools.talkback duplex --camera LOUNGE   # is the room audible WHILE talking (§6.5)
 python3 -m tools.talkback tone --camera LOUNGE     # a beep, through the service's own session
 python3 -m tools.talkback diagnose --camera LOUNGE # when "unauthorized" hides three faults
 ```

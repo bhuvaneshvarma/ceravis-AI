@@ -111,6 +111,7 @@
       listening() {
         return !muted && tracks.length > 0 && tracks[0].enabled;
       },
+      audioLevel() { return Promise.resolve(0.2); },   // the room, as received
       reconnect() {                       // a NEW track, which arrives enabled
         tracks = [{ enabled: true }];
         tracks.forEach(t => { t.enabled = want; });
@@ -309,8 +310,13 @@
   ok("listening stays ON while talking — a resident's reply is heard",
      sD.listening() && tileD.querySelector(".listen-btn").dataset.listen === "on"
      && talkD.dataset.talk === "live");
+  await sleep(300);
+  ok("and the Listen ring shows the room's level coming in, while On air",
+     tileD.querySelector(".listen-btn").style.getPropertyValue("--listen-level") === "0.80");
   talkD.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 2 }));
   await sleep(10);
+  ok("talking ending changes nothing about listening",
+     sD.listening() && tileD.querySelector(".listen-btn").dataset.listen === "on");
 
   // The inventory tells every screen who is talking.
   studyFloor.state = "speaking"; studyFloor.by = "Nurse Arun"; studyFloor.client_id = "other";

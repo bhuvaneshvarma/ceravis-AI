@@ -656,7 +656,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 }
 .listen-btn svg { width: 15px; height: 15px; flex: none; }
 .listen-btn:hover { background: rgba(15,23,42,.8); border-color: rgba(255,255,255,.4); }
-.listen-btn[data-listen="on"] { background: var(--teal); border-color: var(--teal); }
+/* Listening: the ring is the room's real received level (--listen-level), and
+   it keeps moving while the carer talks — both directions at once. */
+.listen-btn[data-listen="on"] { background: var(--teal); border-color: var(--teal);
+  box-shadow: 0 0 0 calc(2px + 8px * var(--listen-level, 0)) rgba(53,152,157,.35); }
 /* Asked for, but the stream has not produced an audio track yet — armed, not
    listening. It becomes "on" by itself the moment sound arrives. */
 .listen-btn[data-listen="waiting"] { border-style: dashed;

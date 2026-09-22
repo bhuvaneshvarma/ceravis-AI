@@ -31,6 +31,34 @@ router = APIRouter()
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _git_head() -> dict:
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", "-C", str(_EDGE_ROOT), *args], capture_output=True,
+                                  text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    return {"commit": git("rev-parse", "--short", "HEAD"),
+            "branch": git("rev-parse", "--abbrev-ref", "HEAD")}
+
+
+# The code this process was started from. The UI is served straight from disk, so
+# a `git pull` changes the pages at once while the Python keeps running what it
+# started with — "pulled but not restarted" is a half-updated device.
+_RUNNING = _git_head()
+_on_disk: tuple[float, dict] = (0.0, _RUNNING)
+
+
+def code_version() -> dict:
+    """Which code is running, which is on disk, and whether they differ."""
+    global _on_disk
+    if time.monotonic() - _on_disk[0] > 10:
+        _on_disk = (time.monotonic(), _git_head())
+    disk = _on_disk[1]
+    return {**_RUNNING, "on_disk": disk["commit"],
+            "restart_needed": bool(disk["commit"]) and disk["commit"] != _RUNNING["commit"]}
+
+
 @router.get("/")
 def root():
     return RedirectResponse("/ui/live.html")
@@ -40,6 +68,7 @@ def root():
 async def health():
     from livestream.mediamtx_client import is_up
     return {"status": "ok", "version": settings.app_version,
+            "code": code_version(),
             "device_id": settings.device_id,
             # False = live links/recording are dead even though the app is up
             # (mediamtx missing or crashed — see data/mediamtx.log).
@@ -314,6 +343,10 @@ def system_status(request: Request):
     # A rejection code that usually means a human must act (bad API key, wrong
     # patient, clip too big). The upload is NOT lost — it keeps retrying — but
     # the cause wants fixing, so it surfaces as a degraded reason on its own.
+    code = code_version()
+    if code["restart_needed"]:
+        problems.append(f"code on disk ({code['on_disk']}) is not the code running "
+                        f"({code['commit']}) — restart the ceravis service")
     attn = queue.get("attention")
     if attn:
         problems.append(
@@ -325,6 +358,7 @@ def system_status(request: Request):
         "status": "ok" if not problems else "degraded",
         "problems": problems,
         "version": settings.app_version,
+        "code": code,
         "device_id": settings.device_id,
         # The LIVE routing token, resolved the one canonical way: account.json
         # (written at verify, no restart) wins over jetson.env's EDGE_ID — which

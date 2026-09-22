@@ -268,6 +268,24 @@
     // a room off only re-asserted that it was on.
     var on = stream.listening ? stream.listening() : false;
     var label = btn.querySelector(".talk-label");
+    var meter = null;
+
+    /* While listening, the ring shows the room's real level — including while
+       the carer is talking (full duplex), which is how a carer can SEE the room
+       is still coming in. */
+    function meterOn(run) {
+      if (run && !meter && stream.audioLevel) {
+        meter = setInterval(function () {
+          stream.audioLevel().then(function (l) {
+            btn.style.setProperty("--listen-level", Math.min(1, l * 4).toFixed(2));
+          });
+        }, 250);
+      } else if (!run && meter) {
+        clearInterval(meter);
+        meter = null;
+        btn.style.removeProperty("--listen-level");
+      }
+    }
 
     // Re-assert rather than toggle. `stream.listen()` is idempotent, so calling
     // it with what we already want costs nothing and guarantees the button and
@@ -286,6 +304,7 @@
         // saying so rather than lying that it is listening.
         s === "waiting" ? "Waiting for audio…" : "Listen";
       btn.setAttribute("aria-pressed", on ? "true" : "false");
+      meterOn(s === "on");
       return has;
     }
 
@@ -319,6 +338,7 @@
          replacement adopts the live state on mount. Silencing a room here is
          how commissioning one camera would mute another one mid-listen. */
       detach: function () {
+        meterOn(false);
         var i = listeners.indexOf(handle);
         if (i >= 0) listeners.splice(i, 1);
       },

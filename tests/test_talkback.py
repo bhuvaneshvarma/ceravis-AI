@@ -842,6 +842,75 @@ asyncio.run(_floor())
 
 
 # ---------------------------------------------------------------------------
+# The duplex probe: is the room audible WHILE the camera's speaker plays?
+# ---------------------------------------------------------------------------
+print("\nDuplex probe")
+
+import contextlib                                                  # noqa: E402
+import io as _io                                                   # noqa: E402
+import types                                                       # noqa: E402
+
+from tools import talkback as cli                                  # noqa: E402
+
+_PLAYING = [False]
+
+
+class _FakeStream:
+    """ffmpeg reading the camera's audio: a steady room, silenced or not while
+    the speaker plays."""
+
+    def __init__(self, gated):
+        self.stdout = asyncio.StreamReader()
+        self._task = asyncio.ensure_future(self._feed(gated))
+
+    async def _feed(self, gated):
+        while True:
+            amp = 0 if gated and _PLAYING[0] else 3000
+            self.stdout.feed_data(struct.pack("<800h", *([amp, -amp] * 400)))
+            await asyncio.sleep(0.1)
+
+    def kill(self):
+        self._task.cancel()
+
+    async def wait(self):
+        return 0
+
+
+async def _fake_speak(camera_id, audio, marks=None):
+    loop = asyncio.get_running_loop()
+    marks["start"], _PLAYING[0] = loop.time(), True
+    await asyncio.sleep(len(audio) / 8000)
+    marks["end"], _PLAYING[0] = loop.time(), False
+    return 0
+
+
+async def _probe(gated):
+    async def spawn(*args, **kw):
+        return _FakeStream(gated)
+    real_spawn, real_which = asyncio.create_subprocess_exec, shutil.which
+    asyncio.create_subprocess_exec, shutil.which = spawn, lambda name: "/usr/bin/" + name
+    out = _io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            code = await cli._duplex("LOUNGE", 1.5)
+    finally:
+        asyncio.create_subprocess_exec, shutil.which = real_spawn, real_which
+    return code, out.getvalue()
+
+
+sys.modules.setdefault("livestream", types.ModuleType("livestream"))
+sys.modules["livestream.mediamtx_client"] = types.SimpleNamespace(
+    local_rtsp_url=lambda cid: "rtsp://127.0.0.1:8554/" + cid)
+cli._speak = _fake_speak
+code, text = asyncio.run(_probe(gated=False))
+check("a camera that keeps its microphone live while talking is reported FULL DUPLEX",
+      code == 0 and "FULL DUPLEX" in text)
+code, text = asyncio.run(_probe(gated=True))
+check("a camera that silences its microphone while its speaker plays is caught",
+      code == 1 and "HALF DUPLEX IN THE CAMERA" in text)
+
+
+# ---------------------------------------------------------------------------
 # One source for the "password refused" advice
 # ---------------------------------------------------------------------------
 print("\nRefusal advice")

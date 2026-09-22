@@ -192,6 +192,7 @@ python3 -m tools.talkback set                     # prompts, stores HASHES only
 python3 -m tools.talkback test                    # every camera, silently
 python3 -m tools.talkback lines                   # the line record
 python3 -m tools.talkback log                     # who spoke, into which room, how long
+python3 -m tools.talkback duplex --camera KITCHEN # is the room audible WHILE talking
 python3 -m tools.talkback tone --camera KITCHEN   # a beep, if you want a noise
 ```
 
