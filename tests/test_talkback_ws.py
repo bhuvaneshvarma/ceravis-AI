@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-The talk-back WebSocket, end to end: a REAL server, a REAL client, a fake camera.
+Talk-back end to end: a REAL server, a REAL WebSocket client, a fake camera.
 
-This exists because of a bug no unit test could see. Until 2026-09-22 every
-refusal on this socket was sent BEFORE accept(), which the ASGI spec turns into
-an HTTP 403 on the handshake — so the browser saw code 1006 with an EMPTY reason
-for a wrong password, a busy camera and a device with talk-back switched off
-alike. The client treated a refused password as a network blip and retried it,
-each retry another refused login on the camera. Only a real server speaking real
-WebSocket frames to a real client shows what a browser actually receives, so
-that is what this runs.
+Everything between a carer's page and the camera's talk port runs for real —
+the /session route, the floor (talkback.sessions) and the camera lines
+(talkback.lines). Only the camera itself is scripted. Two earlier bugs were only
+visible this way (refusals sent before accept() arrived as an anonymous 1006; a
+page leaving mid-handshake orphaned a room), so this is where the protocol is
+proven: what a browser actually receives, message by message.
 
-Checked: every refusal arrives as an error frame with the full sentence AND a
-close code + reason the client can act on (disabled 4503, edge_id 4401, busy
-4409, paused 4429, camera refusal 4500 'unauthorized:'); a close reason never
-exceeds the protocol's 123 bytes; a healthy session opens, streams, reports stats
-and hangs up cleanly; a camera that fails MID-session closes 4500 (reconnect),
-not 1000 (give up); and a camera addressed by another spelling is still released.
+Checked: a refused connection says why (4503 / 4401); the welcome describes
+every camera; a press is granted and speech reaches the camera; other pages are
+told who is speaking and refused while they are; the floor hold then frees the
+room; a camera refusing its password is refused with the camera's reason; a page
+that leaves mid-sentence and comes back keeps its floor; a camera that ends its
+line mid-sentence is re-opened and the speech carries on; and the line record
+shows it.
 
-Needs the edge's own web stack (fastapi, uvicorn, websockets — all in
-edge/requirements.txt). Where they are missing it says so and skips.
+Needs the edge's web stack (fastapi, uvicorn, websockets — edge/requirements.txt).
+Where they are missing it says so and skips.
 
 Run:  python tests/test_talkback_ws.py
 """
@@ -34,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 EDGE = Path(__file__).resolve().parents[1] / "edge"
@@ -51,8 +51,9 @@ except ImportError as exc:                           # pragma: no cover
 
 from api import talkback_routes as routes             # noqa: E402
 from config.settings import settings                  # noqa: E402
-from talkback import credentials, guard, sessions     # noqa: E402
-from talkback.credentials import TalkCredential       # noqa: E402
+from talkback import credentials, guard               # noqa: E402
+from talkback import lines as lines_mod               # noqa: E402
+from talkback import sessions as floor_mod            # noqa: E402
 from talkback.protocol import TalkbackError           # noqa: E402
 
 FAILURES: list[str] = []
@@ -64,10 +65,11 @@ def check(label: str, cond: bool) -> None:
         FAILURES.append(label)
 
 
-# --- isolate every file the talk-back code touches -------------------------- #
+# --- isolate every file talk-back touches ----------------------------------- #
 credentials._DATA = guard._DATA = _TMP
 credentials._FILE = _TMP / "talkback.json"
 guard._FILE = _TMP / "talkback_guard.json"
+credentials.set_home_password("the-right-one")
 
 EDGE_ID = "E1"
 
@@ -79,58 +81,93 @@ def _edge_check(value):
 
 routes.check_edge_id = _edge_check
 
-# --- a fake camera: the script says what the next session does -------------- #
-SCRIPT = {"open": "ok", "send": "ok"}
-CRED = TalkCredential(md5="E" * 32, sha256="E" * 64)
+
+# --- the cameras, and a scripted camera talk port --------------------------- #
+class _Cam:
+    def __init__(self, cid, name, host):
+        self.camera_id, self.camera_name, self.room_name = cid, name, name
+        self.is_enabled = True
+        self.rtsp_url = f"rtsp://{host}:554/stream1"
+        self.onvif_xaddr, self.onvif_password = "", None
 
 
-class FakeCameraSession:
-    def __init__(self, *a, **k):
-        self.session_id = "7"
-        self.host = "10.0.0.9"
-        self.challenge = 'encrypt_type="3"'
-        self.bytes_sent = 0
-        self.closed = False
+class _Cams:
+    rows = [_Cam("LOUNGE", "LOUNGE", "10.0.0.5"), _Cam("BEDROOM", "BEDROOM", "10.0.0.6")]
+
+    def get_all(self):
+        return list(_Cams.rows)
+
+    def get_by_id(self, cid):
+        return next((c for c in _Cams.rows if c.camera_id == cid), None)
+
+    def get_by_label(self, label):
+        key = label.replace(" ", "_").upper()
+        return next((c for c in _Cams.rows if c.camera_name.upper() == key), None)
+
+
+REFUSE = {"BEDROOM"}           # cameras whose talk port refuses the password
+SESSIONS: list = []
+
+
+class FakeCameraLine:
+    def __init__(self, host, cred, **kw):
+        self.host, self.session_id, self.challenge = host, "", 'encrypt_type="3"'
+        self.gone = asyncio.Event()
+        self.frames: list = []
+        self.camera = None
+        self._closed = False
 
     async def open(self):
-        if SCRIPT["open"] == "slow":
-            await asyncio.sleep(0.8)            # a camera handshake in flight
-            return
-        if SCRIPT["open"] != "ok":
-            raise TalkbackError(SCRIPT["open"], LONG_SENTENCE)
+        # Which camera this is, by its address — exactly how the edge dials it.
+        self.camera = next(c.camera_id for c in _Cams.rows if f"//{self.host}:" in c.rtsp_url)
+        if self.camera in REFUSE:
+            raise TalkbackError("unauthorized", "The camera refused the TP-Link password.")
+        self.session_id = "6"
+        SESSIONS.append(self)
 
     async def start_audio(self):
         pass
 
-    async def send(self, alaw):
-        if SCRIPT["send"] != "ok":
-            raise TalkbackError(SCRIPT["send"], "The camera stopped accepting audio.")
-        self.bytes_sent += len(alaw)
+    @property
+    def alive(self):
+        return bool(self.session_id) and not self._closed and not self.gone.is_set()
+
+    async def send(self, frame):
+        if not self.alive:
+            raise TalkbackError("closed", "closed")
+        self.frames.append(frame)
 
     def health(self):
-        return {"frames_sent": 1, "frames_dropped": 0, "bytes_sent": self.bytes_sent,
-                "queued_ms": 0, "peak_queued_ms": 0}
+        return {"frames_sent": len(self.frames), "frames_dropped": 0,
+                "bytes_sent": 160 * len(self.frames), "queued_ms": 0, "peak_queued_ms": 0}
 
     async def close(self):
-        self.closed = True
+        self._closed = True
+        self.gone.set()
 
 
-# Longer than 123 bytes AND full of multi-byte characters: the case that used to
-# be cut by character count and could fail the close itself.
-LONG_SENTENCE = ("The camera refused the TP-Link password — check Third-Party "
-                 "Compatibility — check the owner account — check the sign-in "
-                 "method — then re-enter it — and only then re-pair the camera.")
+lines_mod.TapoTalkSession = FakeCameraLine
+lines_mod.CameraConfig = floor_mod.CameraConfig = _Cams
+lines_mod._BOOT_DELAY = 0.0
+lines_mod._RECONCILE = 0.05
+floor_mod.STALL_SECS = 1.0
+settings.talkback_enabled = True
+settings.talkback_line_always = True
+settings.talkback_floor_hold_secs = 0.6
+lines, hub = lines_mod.lines, floor_mod.hub
 
-sessions.TapoTalkSession = FakeCameraSession
-sessions.TalkbackHub._resolve = lambda self, cid: (
-    type("C", (), {"camera_id": "LIVING_ROOM", "camera_name": "LIVING ROOM"})(),
-    "10.0.0.9", CRED)
-sessions.TalkbackHub.canonical = staticmethod(
-    lambda cid: "LIVING_ROOM" if cid.replace(" ", "_").upper() == "LIVING_ROOM" else cid)
-hub = sessions.hub
 
 # --- a real server ---------------------------------------------------------- #
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app):
+    lines.start()
+    hub.start()
+    yield
+    await hub.stop()
+    await lines.stop()
+
+
+app = FastAPI(lifespan=lifespan)
 app.include_router(routes.router)
 
 
@@ -144,8 +181,7 @@ def _free_port() -> int:
 
 PORT = _free_port()
 threading.Thread(target=lambda: uvicorn.run(app, host="127.0.0.1", port=PORT,
-                                            log_level="warning"),
-                 daemon=True).start()
+                                            log_level="warning"), daemon=True).start()
 for _ in range(100):
     try:
         socket.create_connection(("127.0.0.1", PORT), 0.2).close()
@@ -154,122 +190,158 @@ for _ in range(100):
         time.sleep(0.1)
 
 
-def url(cam="LIVING_ROOM", edge=EDGE_ID, extra=""):
-    return (f"ws://127.0.0.1:{PORT}/api/v1/talkback/{cam}/stream"
-            f"?client_id=c1&edge_id={edge}{extra}")
+def url(client="p1", name="Nurse Priya", edge=EDGE_ID):
+    return (f"ws://127.0.0.1:{PORT}/api/v1/talkback/session"
+            f"?edge_id={edge}&client_id={client}&name={name.replace(' ', '%20')}")
 
 
-async def session(u, frames=0, stop=True):
-    """Connect, optionally stream, and report (messages, close code, reason)."""
-    msgs = []
-    try:
-        async with websockets.connect(u) as ws:
-            try:
-                first = json.loads(await asyncio.wait_for(ws.recv(), 5))
-                msgs.append(first)
-                if first.get("type") == "open":
-                    # A send can fail because the SERVER already closed (that
-                    # is the mid-session case under test). What it said before
-                    # closing is still queued, so fall through and read it.
-                    try:
-                        for _ in range(frames):
-                            await ws.send(bytes(160))
-                        await asyncio.sleep(1.2)        # one stats interval
-                        await ws.send(bytes(160))
-                        if stop:
-                            await ws.send(json.dumps({"type": "stop"}))
-                    except websockets.ConnectionClosed:
-                        pass
-                while True:
-                    msgs.append(json.loads(await asyncio.wait_for(ws.recv(), 5)))
-            except websockets.ConnectionClosed as e:
-                rc = e.rcvd
-                return msgs, (rc.code if rc else None), (rc.reason if rc else "")
-    except websockets.InvalidStatus as e:
-        return msgs, f"HTTP {e.response.status_code}", ""
-    return msgs, None, ""
+class Page:
+    """A carer's page: one standby connection, and everything it was told."""
+
+    def __init__(self, ws):
+        self.ws, self.got, self._reader = ws, [], asyncio.create_task(self._read())
+
+    async def _read(self):
+        try:
+            async for raw in self.ws:
+                self.got.append(json.loads(raw))
+        except websockets.ConnectionClosed:
+            pass
+
+    async def say(self, **msg):
+        await self.ws.send(json.dumps(msg))
+
+    async def wait(self, pred, timeout=3.0):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            for m in self.got:
+                if pred(m):
+                    return m
+            await asyncio.sleep(0.02)
+        return None
+
+    def forget(self):
+        self.got.clear()
+
+    async def close(self):
+        await self.ws.close()
+        self._reader.cancel()
+
+
+async def open_page(**kw):
+    return Page(await websockets.connect(url(**kw)))
+
+
+async def refused_connection(u):
+    async with websockets.connect(u) as ws:
+        first = json.loads(await ws.recv())
+        try:
+            await ws.recv()
+        except websockets.ConnectionClosed as e:
+            return first, e.rcvd.code if e.rcvd else None
+    return first, None
 
 
 async def main():
-    print("\nRefusals reach the client")
-
+    print("\nConnecting")
     settings.talkback_enabled = False
-    msgs, code, reason = await session(url())
-    check("talk-back switched off -> error frame + close 4503 (not an anonymous 1006)",
-          code == 4503 and msgs and msgs[0].get("code") == "disabled")
+    first, code = await refused_connection(url())
+    check("talk-back switched off -> told why, closed 4503",
+          code == 4503 and first.get("code") == "disabled")
     settings.talkback_enabled = True
+    first, code = await refused_connection(url(edge="WRONG"))
+    check("wrong edge_id -> told why, closed 4401", code == 4401 and first.get("code") == "edge_id")
 
-    msgs, code, reason = await session(url(edge="WRONG"))
-    check("wrong edge_id -> close 4401, and the camera is never dialled",
-          code == 4401 and msgs and msgs[0].get("code") == "edge_id")
+    # The lines open by themselves from boot.
+    end = time.monotonic() + 3
+    while time.monotonic() < end and lines.readiness("LOUNGE")["line"] != "open":
+        await asyncio.sleep(0.05)
+    priya = await open_page()
+    welcome = await priya.wait(lambda m: m.get("type") == "welcome")
+    cams = (welcome or {}).get("cameras", {})
+    check("the welcome describes every camera: its line and its floor",
+          cams.get("LOUNGE", {}).get("readiness", {}).get("line") == "open"
+          and cams.get("LOUNGE", {}).get("floor", {}).get("state") == "free"
+          and cams.get("BEDROOM", {}).get("readiness", {}).get("state") == "rejected")
+    check("and the audio contract (8 kHz A-law, 160-byte frames)",
+          welcome and welcome.get("codec") == "alaw" and welcome.get("frame_bytes") == 160)
 
-    SCRIPT["open"] = "unauthorized"
-    msgs, code, reason = await session(url())
-    check("camera refuses the password -> close 4500 with an 'unauthorized:' reason",
-          code == 4500 and reason.startswith("unauthorized:"))
-    check("the error frame carries the FULL sentence",
-          msgs and msgs[0].get("message") == LONG_SENTENCE)
-    check("the close reason stays within the protocol's 123 bytes",
-          len(reason.encode("utf-8")) <= 123)
-    check("a refused session does not leave the camera busy", not hub.busy("LIVING_ROOM"))
+    print("\nSpeaking")
+    arun = await open_page(client="a1", name="Nurse Arun")
+    await arun.wait(lambda m: m.get("type") == "welcome")
+    t0 = time.monotonic()
+    await priya.say(type="claim", camera="LOUNGE")
+    g = await priya.wait(lambda m: m.get("type") == "granted")
+    check("a press is granted with no camera handshake to wait for",
+          g is not None and time.monotonic() - t0 < 0.5)
+    check("every other page is told who is speaking",
+          await arun.wait(lambda m: m.get("type") == "floor" and m.get("state") == "speaking"
+                          and m.get("by") == "Nurse Priya") is not None)
+    line = next(s for s in SESSIONS if s.camera == "LOUNGE" and s.alive)
+    for _ in range(60):                        # 1.2 s of speech
+        await priya.ws.send(bytes(160))
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.1)
+    check("the speech reaches the camera's line", len(line.frames) >= 55)
+    check("and the speaker gets live stats",
+          await priya.wait(lambda m: m.get("type") == "stats" and m.get("frames_sent", 0) > 0)
+          is not None)
 
-    # Two more refusals make three in a row -> the next attempt is paused locally.
-    await session(url())
-    await session(url())
-    msgs, code, reason = await session(url())
-    check("after repeated refusals the socket closes 4429 (paused), camera not dialled",
-          code == 4429 and msgs and msgs[0].get("code") == "cooldown")
-    guard.reset()
-    SCRIPT["open"] = "ok"
+    await arun.say(type="claim", camera="LOUNGE")
+    r = await arun.wait(lambda m: m.get("type") == "refused")
+    check("a second carer is refused while someone speaks, and told who",
+          r is not None and r.get("code") == "busy" and "Nurse Priya" in r.get("message", ""))
 
-    print("\nA healthy session")
-    holder_task = asyncio.create_task(session(url(extra="&name=Nurse%20Priya"),
-                                              frames=3, stop=False))
-    await asyncio.sleep(0.4)
-    msgs, code, reason = await session(url(extra="&client_id=someone-else"))
-    check("a second carer gets 4409, told WHO is speaking by name",
-          code == 4409 and msgs and "Nurse Priya" in msgs[0].get("message", ""))
-    holder_task.cancel()
-    try:
-        await holder_task
-    except (asyncio.CancelledError, Exception):
-        pass
-    await asyncio.sleep(0.3)
+    await priya.say(type="release")
+    check("letting go is announced as the floor hold",
+          await arun.wait(lambda m: m.get("type") == "floor" and m.get("state") == "holding")
+          is not None)
+    check("then the room is free, for everyone",
+          await arun.wait(lambda m: m.get("type") == "floor" and m.get("state") == "free",
+                          2.0) is not None)
+    arun.forget()
+    await arun.say(type="claim", camera="LOUNGE")
+    check("and the next carer gets it", await arun.wait(lambda m: m.get("type") == "granted")
+          is not None)
+    await arun.say(type="release")
 
-    msgs, code, reason = await session(url(cam="living%20room"), frames=5)
-    check("a session opens (open frame first)", msgs and msgs[0].get("type") == "open")
-    check("stats arrive while speech flows",
-          any(m.get("type") == "stats" and "queued_ms" in m for m in msgs))
-    check("'stop' hangs up cleanly with 1000", code == 1000)
-    await asyncio.sleep(0.2)
-    check("opened under another spelling, the camera is still released",
-          not hub.busy("LIVING_ROOM") and not hub._active)
+    print("\nWhen things go wrong")
+    priya.forget()
+    await priya.say(type="claim", camera="BEDROOM")
+    r = await priya.wait(lambda m: m.get("type") == "refused")
+    check("a camera refusing its password -> refused with the camera's reason",
+          r is not None and r.get("code") == "unauthorized" and "refused" in r.get("message", ""))
 
-    print("\nFailure mid-sentence")
-    SCRIPT["send"] = "stalled"
-    msgs, code, reason = await session(url(), frames=2)
-    check("a camera that stops reading closes 4500 'stalled:' — reconnect, not 1000",
-          code == 4500 and reason.startswith("stalled:")
-          and any(m.get("type") == "error" and m.get("code") == "stalled" for m in msgs))
-    SCRIPT["send"] = "ok"
-    await asyncio.sleep(0.2)
-    check("and the speaker is released", not hub._active)
+    await asyncio.sleep(0.8)                   # Arun's hold runs out
+    await priya.say(type="claim", camera="LOUNGE")
+    await priya.wait(lambda m: m.get("type") == "granted")
+    await priya.close()                        # the page drops mid-sentence
+    await asyncio.sleep(0.1)
+    check("a page that drops mid-sentence keeps its floor for the hold",
+          hub.floor("LOUNGE")["state"] == "holding")
+    priya = await open_page()                  # same client_id: the page is back
+    await priya.say(type="claim", camera="LOUNGE")
+    check("and, back in time, carries on",
+          await priya.wait(lambda m: m.get("type") == "granted") is not None)
 
-    print("\nThe carer leaves DURING the camera handshake")
-    # The 2026-09-22 bench fault: LOUNGE held for 592 s with 0 frames, so every
-    # carer after was told "someone is already speaking". A page reloaded while
-    # the ~200 ms camera handshake was in flight left the session orphaned.
-    SCRIPT["open"] = "slow"
-    ws = await websockets.connect(url())
-    await asyncio.sleep(0.2)                     # handshake has started
-    await ws.close()                             # the page goes away
-    await asyncio.sleep(1.5)                     # the handshake completes
-    check("a session whose carer left mid-handshake is given back, not orphaned",
-          not hub._active)
-    SCRIPT["open"] = "ok"
-    msgs, code, reason = await session(url(extra="&client_id=next-carer"), frames=1)
-    check("and the next carer can talk at once",
-          msgs and msgs[0].get("type") == "open")
+    before = next(s for s in SESSIONS if s.camera == "LOUNGE" and s.alive)
+    lines._lines["LOUNGE"].opened_at -= 60     # open a minute, then the camera ends it
+    before.gone.set()
+    check("a camera ending its line mid-sentence: the line is re-opened by itself",
+          await priya.wait(lambda m: m.get("type") == "camera" and m.get("camera") == "LOUNGE"
+                           and m.get("readiness", {}).get("line") == "open", 3.0) is not None)
+    after = next(s for s in SESSIONS if s.camera == "LOUNGE" and s.alive)
+    for _ in range(10):
+        await priya.ws.send(bytes(160))
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.1)
+    check("and the speech carries on into the new line", after is not before and after.frames)
+    rec = lines.health()["LOUNGE"]
+    check("the line record shows the drop and how long the line had lasted",
+          rec["drops"] >= 1 and any(e["event"] == "dropped" for e in rec["history"]))
+    await priya.say(type="release")
+    await priya.close()
+    await arun.close()
 
 
 asyncio.run(main())

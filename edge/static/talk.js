@@ -1,19 +1,26 @@
 /* Push-to-talk: the carer's microphone -> the camera's speaker.
 
-   ONE mechanism, and it is deliberately press-and-hold. A toggle leaves hot
-   microphones open in living rooms; a held button cannot. Releasing it, losing
-   the page, switching tabs or letting the pointer slip all end the turn.
+   Three things, kept apart (see edge/talkback/sessions.py):
+     * ONE standby connection per page — /api/v1/talkback/session — opened when
+       the page loads, kept open, reconnected by itself. It claims nothing and
+       blocks nobody; it is how a press reaches the edge with no connection to
+       set up, and how the edge tells every page who is speaking.
+     * the camera's talk line, which the EDGE keeps open. A press never waits for
+       the camera.
+     * the FLOOR: a press claims it, release gives it back (the edge keeps it a
+       few seconds so the carer can answer), and there is no limit on how long a
+       carer talks while holding the button.
 
-   Shape:
-     mic -> AudioWorklet (resample + A-law, talk-worklet.js)
-         -> WebSocket /api/v1/talkback/{camera}/stream
-         -> the edge -> the camera's own talk endpoint
+   Deliberately press-and-hold. A toggle leaves hot microphones open in living
+   rooms; a held button cannot. Releasing it, hiding the tab or letting the
+   pointer slip all end the turn.
 
-   The microphone and the audio graph are kept WARM for a few seconds after a
-   turn ends, because re-acquiring them costs ~300 ms and an intercom that
-   swallows the first word of every sentence is not usable. The worklet is muted
-   between turns, so warm never means live: nothing is encoded or sent while the
-   button is up. */
+     mic -> AudioWorklet (resample + A-law, talk-worklet.js) -> this page's
+     session -> the edge -> the camera's line
+
+   The microphone and its audio graph stay WARM for a few seconds after a turn,
+   because re-acquiring them costs ~300 ms; the worklet is muted between turns,
+   so warm never means live. */
 
 (function (global) {
   "use strict";
@@ -21,52 +28,18 @@
   var PREFIX = global.CERAVIS_PREFIX ||
     ((location.pathname.match(/^(\/[^/]+)\/ui(?:\/|$)/) || [])[1] || "");
   var WARM_MS = 8000;             // how long the mic stays open after a turn
-  var CONNECT_TIMEOUT_MS = 9000;
-
-  /* ---- what a dropped channel is allowed to do ---------------------------
-     A carer mid-sentence whose phone changes cell must not have to notice,
-     diagnose and re-press. The channel comes back by itself, and says so while
-     it is trying. It gives up after REJOIN_WINDOW_MS because a microphone that
-     silently reattaches minutes later is its own hazard. */
-  var REJOIN_WINDOW_MS = 15000;   // total time we keep trying to get back
-  var REJOIN_MIN_MS = 300;        // first retry, then 1.8x each time
-  var REJOIN_MAX_MS = 3000;
-
-  /* Close codes that mean "do not come back": the answer will not change by
-     asking again, and retrying would only make a household's speaker contended.
-       4401 the device did not accept us      4503 talk-back is switched off
-       4409 somebody ELSE is holding the room (our OWN stale session is handed
-            back by the device instead — see client_id below) */
-  var FINAL_CODES = { 4401: 1, 4409: 1, 4429: 1, 4503: 1, 1000: 1, 1001: 1 };
-
-  /* 4500 is "the camera handshake failed", and the device puts WHICH failure in
-     front of the reason ("unauthorized: …"). Some are a network blip worth
-     another try; these are not — the answer is the same however often we ask.
-     Retrying a refused password is also exactly what a camera locks an account
-     out for. This is the bug that showed a wrong password as "Reconnecting…". */
-  var FINAL_REASONS = { unauthorized: 1, no_credential: 1, no_camera: 1,
-                        cooldown: 1, edge_id: 1,
-                        no_host: 1, refused: 1, protocol: 1, busy: 1, disabled: 1 };
-  function reasonCode(reason) {
-    var m = /^([a-z_]+):/.exec(reason || "");
-    return m ? m[1] : "";
-  }
-
-  /* The outbound queue, in FRAMES of 20 ms. Speech that cannot be sent now is
-     speech that is already late; past this much backlog the oldest frames are
-     the ones to lose, because the newest are the words still being said. */
-  var OUTBOX_MAX_FRAMES = 5;      // 100 ms
+  var PING_MS = 20000;            // keeps proxies from idling the standby socket
+  var RETRY_MIN_MS = 500;         // reconnect the standby socket: 0.5 s ... 10 s
+  var RETRY_MAX_MS = 10000;
+  /* Speech that cannot be sent right now (the socket is briefly gone, or slow) is
+     already late. Keep only the newest 100 ms of it: the OLDEST frames are the
+     ones to lose, because the newest are the words still being said. */
+  var OUTBOX_MAX_FRAMES = 5;
   var SOCKET_MAX_BUFFERED = 960;  // ~120 ms of A-law waiting in the socket
-
-  /* This browser's id for one microphone. It is how a carer reclaims their OWN
-     session after a drop instead of being refused by a socket the device has
-     not yet noticed is dead. Minted per attach, never persisted. */
-  var clientSeq = 0;
-  function mintClientId() {
-    clientSeq += 1;
-    return "c" + Date.now().toString(36) + "-" + clientSeq +
-           "-" + Math.random().toString(36).slice(2, 8);
-  }
+  /* Connection-level close codes that mean "do not come back". */
+  var FINAL_CLOSE = { 4000: 1, 4401: 1, 4503: 1 };
+  /* Refusals whose fix is the camera's password, not pressing again. */
+  var PASSWORD_CODES = { unauthorized: 1, no_credential: 1, cooldown: 1 };
 
   var edgePromise = null;
   function edgeId() {
@@ -81,8 +54,7 @@
     return edgePromise;
   }
 
-  /* Why a turn could not start, in words a carer can act on. The mic is a
-     browser-security minefield and "NotAllowedError" helps nobody. */
+  /* Why a turn could not start, in words a carer can act on. */
   function micError(err) {
     var name = (err && err.name) || "";
     if (name === "NotAllowedError" || name === "SecurityError")
@@ -95,10 +67,8 @@
     return "Could not open the microphone" + (name ? " (" + name + ")" : "") + ".";
   }
 
-  /* The single most common failure, and it looks like a bug rather than a rule:
-     browsers refuse getUserMedia outside a secure context, so talk-back works on
-     the https:// fleet address and on localhost, and never on a plain
-     http://<device-ip> page. Say so before asking for the microphone. */
+  /* Browsers refuse getUserMedia outside a secure context: talk-back works on
+     the https:// fleet address and on localhost, never on http://<device-ip>. */
   function contextError() {
     if (!global.isSecureContext)
       return "Talk-back needs a secure (https) page. Open the CERAVIS address " +
@@ -112,25 +82,14 @@
     return "";
   }
 
-  /* ---- the shared audio graph (one per page, not one per camera) -------- */
+  /* ---- the microphone: one per page, owned by one button at a time ------- */
 
   var graph = null;              // { ctx, stream, node, source }
   var warmTimer = null;
-
-  /* The ONE talk channel on this page that the microphone speaks for.
-
-     A page has one microphone and a carer has one voice, but a live wall has a
-     talk button per camera. Each button used to wire the shared microphone to
-     itself: the last one to connect took every frame, so pressing a camera you
-     had talked to earlier showed "On air" while its audio went to another
-     camera's handler and was dropped; and any button hanging up muted and
-     unwired the microphone even while another camera was mid-sentence.
-
-     So the microphone has exactly one owner. Pressing a camera takes it — and
-     hangs up the camera that had it, which also hands that room's speaker back
-     to other carers and the Tapo app instead of holding two rooms at once.
-     Only the owner may mute, unwire or let the microphone go cold. */
-  var owner = null;              // { frame(d), hangUp() } of the channel in use
+  /* The button the microphone is speaking for right now. A page has one
+     microphone and a live wall has a talk button per camera; wiring it to each
+     button sent speech to the wrong room and let one button mute another. */
+  var owner = null;
 
   function route(ev) {
     var d = ev.data;
@@ -149,28 +108,22 @@
   function acquireGraph() {
     if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; }
     if (graph) {
-      // A warm graph is not necessarily a RUNNING one. Browsers suspend an
-      // AudioContext when a tab is backgrounded, and one created outside a user
-      // gesture starts suspended — either way the worklet stops being scheduled
-      // and the carer talks into a microphone that produces nothing. Resume on
-      // every acquire, not only on the one that built it.
-      if (graph.ctx.state !== "running") {
+      // A warm graph is not necessarily a RUNNING one: browsers suspend an
+      // AudioContext when a tab is backgrounded. Resume on every acquire.
+      if (graph.ctx.state !== "running")
         return graph.ctx.resume().catch(function () {}).then(function () { return graph; });
-      }
       return Promise.resolve(graph);
     }
     return navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
-        // The camera runs its own AEC, but the room's own echo comes back
-        // through the phone's speaker too — ask for all three.
+        // Echo cancellation matters doubly now that listening stays on while
+        // talking: the room's voice plays from this device's speaker while its
+        // microphone is live. The camera cancels its own echo on its side.
         echoCancellation: true, noiseSuppression: true, autoGainControl: true,
       },
       video: false,
     }).then(function (stream) {
-      // 8 kHz outright where the browser allows it (Chrome, Firefox): the
-      // resampler in the worklet then has nothing to do. Safari ignores the
-      // hint and the worklet handles the difference.
       var ctx;
       try { ctx = new (global.AudioContext || global.webkitAudioContext)({ sampleRate: 8000 }); }
       catch (e) { ctx = new (global.AudioContext || global.webkitAudioContext)(); }
@@ -184,10 +137,15 @@
         sink.gain.value = 0;
         node.connect(sink).connect(ctx.destination);
         node.port.onmessage = route;     // wired ONCE; `owner` decides who hears it
+        if (session.gain) node.port.postMessage({ type: "gain", value: session.gain });
         graph = { ctx: ctx, stream: stream, node: node, source: source };
         return ctx.resume().catch(function () {}).then(function () { return graph; });
       });
     });
+  }
+
+  function mute(on) {
+    if (graph) graph.node.port.postMessage({ type: "mute", value: !!on });
   }
 
   function keepWarm() {
@@ -195,366 +153,232 @@
     warmTimer = setTimeout(releaseGraph, WARM_MS);
   }
 
-  /* ---- one camera's talk channel ---------------------------------------- */
+  /* ---- the page's one standby connection -------------------------------- */
 
-  /* The session is HELD, not opened per sentence.
+  var session = {
+    ws: null,
+    ready: false,                // welcome received: claims can be sent
+    clientId: "pg-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+    buttons: [],                 // every attached talk button
+    retry: RETRY_MIN_MS,
+    timer: null,
+    ping: null,
+    gain: 0,
+    final: "",                   // set when the edge said "do not come back"
+    outbox: [],
+  };
 
-     Opening a speaker session costs a TCP connect, a Digest round-trip and the
-     camera's own session setup — ~100-300 ms. Paying that on every press is the
-     difference between an intercom and a walkie-talkie that eats your first
-     syllable. So the first press connects, and every press after it is
-     instant: the socket and the camera session stay up, with the microphone
-     MUTED in the worklet, until nobody has spoken for the hold window.
+  function send(obj) {
+    var ws = session.ws;
+    if (ws && ws.readyState === 1 && session.ready) { ws.send(JSON.stringify(obj)); return true; }
+    return false;
+  }
 
-     Held is not free — a camera has one speaker, and holding it locks out other
-     carers and the Tapo app — so the window is finite and anything that takes
-     the page away (tab hidden, window blurred, the tile going) hangs up at once
-     rather than sitting on a household's speaker from a backgrounded tab. */
+  function flush() {
+    var ws = session.ws;
+    while (session.outbox.length && ws && ws.readyState === 1 && session.ready &&
+           ws.bufferedAmount < SOCKET_MAX_BUFFERED) {
+      ws.send(session.outbox.shift());
+    }
+    while (session.outbox.length > OUTBOX_MAX_FRAMES) session.outbox.shift();
+  }
+
+  function each(camera, fn) {
+    session.buttons.forEach(function (b) { if (!camera || b.camera === camera) fn(b); });
+  }
+
+  /* Answers to THIS page's claims go to the one button that made them: the one
+     holding the microphone. A late answer for a camera the carer has already
+     left is dropped — their next claim already moved the floor on the edge — and
+     must never reach another button: a stray "release" would cut off the room
+     the carer is talking to now. */
+  function toOwner(camera, fn) {
+    if (owner && owner.camera === camera) fn(owner);
+  }
+
+  function connect() {
+    if (session.ws || session.final || !session.buttons.length) return;
+    edgeId().then(function (edge) {
+      if (session.ws || !session.buttons.length) return;
+      var scheme = location.protocol === "https:" ? "wss://" : "ws://";
+      var url = scheme + location.host + PREFIX + "/api/v1/talkback/session" +
+        "?client_id=" + encodeURIComponent(session.clientId) +
+        (edge ? "&edge_id=" + encodeURIComponent(edge) : "") +
+        (global.CV_TALK_NAME ? "&name=" + encodeURIComponent(global.CV_TALK_NAME) : "");
+      var ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      session.ws = ws;
+
+      ws.onmessage = function (ev) {
+        var m;
+        try { m = JSON.parse(ev.data); } catch (e) { return; }
+        dispatch(m);
+      };
+      ws.onclose = function (ev) {
+        if (session.ws !== ws) return;           // an older socket; already replaced
+        session.ws = null;
+        session.ready = false;
+        clearInterval(session.ping);
+        if (FINAL_CLOSE[ev.code]) {
+          session.final = (ev.reason || "").replace(/^[a-z_]+:\s*/, "") ||
+            "Talk-back is not available on this device.";
+          each(null, function (b) { b.lost(session.final, true); });
+          return;
+        }
+        each(null, function (b) { b.lost("", false); });
+        session.timer = setTimeout(connect, session.retry);
+        session.retry = Math.min(Math.round(session.retry * 1.8), RETRY_MAX_MS);
+      };
+      ws.onerror = function () { /* onclose carries the outcome */ };
+    });
+  }
+
+  function dispatch(m) {
+    if (m.type === "welcome") {
+      session.ready = true;
+      session.retry = RETRY_MIN_MS;
+      session.gain = m.mic_gain || 0;
+      if (graph && session.gain) graph.node.port.postMessage({ type: "gain", value: session.gain });
+      clearInterval(session.ping);
+      session.ping = setInterval(function () { send({ type: "ping" }); }, PING_MS);
+      var cams = m.cameras || {};
+      Object.keys(cams).forEach(function (cid) {
+        if (cvTalk.onCamera) cvTalk.onCamera(cid, cams[cid].readiness);
+        each(cid, function (b) { b.floor(cams[cid].floor || { state: "free" }); });
+      });
+      // A carer still holding the button through a reconnect carries on: the
+      // edge kept this page's floor for the floor hold.
+      each(null, function (b) { b.resume(); });
+    } else if (m.type === "granted") {
+      toOwner(m.camera, function (b) { b.granted(); });
+    } else if (m.type === "refused") {
+      toOwner(m.camera, function (b) { b.refused(m.code, m.message); });
+    } else if (m.type === "floor") {
+      each(m.camera, function (b) { b.floor(m); });
+    } else if (m.type === "taken") {
+      toOwner(m.camera, function (b) { b.stopped("Taken over by " + (m.by || "another carer") + "."); });
+    } else if (m.type === "released") {
+      toOwner(m.camera, function (b) { b.stopped("Stopped: no audio was reaching the device."); });
+    } else if (m.type === "camera") {
+      if (cvTalk.onCamera) cvTalk.onCamera(m.camera, m.readiness);
+    } else if (m.type === "stats") {
+      toOwner(m.camera, function (b) { b.health(m); });
+    } else if (m.type === "error") {
+      session.final = m.message || "Talk-back is not available on this device.";
+    }
+  }
+
+  /* ---- one camera's talk button ----------------------------------------- */
 
   function attach(button, cameraId, opts) {
     opts = opts || {};
     var onState = opts.onState || function () {};
-    var ws = null;
     var pressed = false;         // the button is physically down
-    var open = false;            // the socket is up and the camera session held
-    // Set SYNCHRONOUSLY, because opening is asynchronous: without it, two quick
-    // presses both see a null socket and race two sessions at one camera, and
-    // the second is refused as busy by our own first one.
-    var connecting = false;
-    var connectTimer = null;
-    var holdTimer = null;
-    var pingTimer = null;
-    var holdMs = 75000;          // refreshed from the server's own hold window
+    var granted = false;         // the edge gave this page the floor
+    var mine = false;            // the floor the edge reports is ours
 
-    // Reconnect state. `rejoinUntil` is a deadline, not a counter, so a fast
-    // link gets many attempts and a slow one gets fewer — both stop at the same
-    // wall-clock moment, which is the thing a carer actually experiences.
-    var clientId = mintClientId();
-    // The device's FULL sentence for the last failure, from its error frame.
-    // The close reason carries the same words but is cut at 123 bytes by the
-    // WebSocket protocol, so this is the one to show when both arrive.
-    var lastSentence = "";
-    var rejoinTimer = null;
-    var rejoinDelay = REJOIN_MIN_MS;
-    var rejoinUntil = 0;
-    var rejoining = false;
-    // Frames the socket has not taken yet. See OUTBOX_MAX_FRAMES.
-    var outbox = [];
-
-    function setState(s, detail, stats) {
+    function setState(s, detail) {
       button.dataset.talk = s;
-      onState(s, detail || "", stats);
-    }
-
-    function clearTimers() {
-      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
-      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-      if (rejoinTimer) { clearTimeout(rejoinTimer); rejoinTimer = null; }
-    }
-
-    /* Hand the socket as much of the backlog as it will take without building
-       one of its own. Anything still queued past OUTBOX_MAX_FRAMES is dropped
-       from the FRONT: the oldest frames are the stalest words, and keeping them
-       would push everything the carer says next further behind. */
-    function flush() {
-      while (outbox.length && ws && ws.readyState === 1 &&
-             ws.bufferedAmount < SOCKET_MAX_BUFFERED) {
-        ws.send(outbox.shift());
-      }
-      while (outbox.length > OUTBOX_MAX_FRAMES) outbox.shift();
-    }
-
-    function mute(on) {
-      // Only the owner touches the shared microphone (see `owner`).
-      if (graph && owner === me) graph.node.port.postMessage({ type: "mute", value: !!on });
-    }
-
-    /* This channel is about to speak: take the microphone, hanging up the
-       channel that had it. */
-    function claim() {
-      if (owner && owner !== me) owner.hangUp();
-      owner = me;
-      // The channel just hung up let the microphone start to go cold; it is
-      // ours now and in use.
-      if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; }
-    }
-
-    /* Close the channel and give the camera back. */
-    function hangUp(reason) {
-      var had = open || pressed || rejoining;
-      pressed = false;
-      open = false;
-      connecting = false;
-      rejoining = false;
-      rejoinUntil = 0;
-      outbox.length = 0;
-      clearTimers();
-      mute(true);
-      if (ws) {
-        var sock = ws;
-        ws = null;
-        try {
-          if (sock.readyState === 1) sock.send(JSON.stringify({ type: "stop" }));
-          sock.close();
-        } catch (e) {}
-      }
-      // Let the microphone go cold only if it was ours: another channel may be
-      // using it right now.
-      if (owner === me) { owner = null; keepWarm(); }
-      if (opts.onTalking) opts.onTalking(false);
-      if (had || reason) setState(reason ? "error" : "idle", reason);
-    }
-
-    /* Stop speaking but KEEP the camera, so the next press is instant. */
-    function release() {
-      if (!pressed) return;
-      pressed = false;
-      mute(true);
-      if (opts.onTalking) opts.onTalking(false);
-      // Let go mid-reconnect and there is no turn left worth restoring: stop
-      // chasing the camera rather than grabbing a household's speaker for
-      // somebody who has already finished speaking.
-      if (rejoining) { hangUp(); return; }
-      if (open) {
-        setState("ready");
-        if (holdTimer) clearTimeout(holdTimer);
-        // Hang up just before the server would, so the channel closes on our
-        // terms and the user sees "idle" rather than an unexplained drop.
-        holdTimer = setTimeout(function () { hangUp(); }, holdMs);
-      } else {
-        setState("idle");
-      }
-    }
-
-    /* Try to get the channel back. Returns false once the window has closed,
-       and the caller then fails the turn for real.
-
-       The microphone is deliberately NOT muted while this runs: the worklet
-       keeps filling the outbox, so the last 100 ms of what the carer is saying
-       survives the gap and lands the moment the socket returns. Everything
-       older than that is dropped, because it would arrive as a sentence the
-       room has already moved past. */
-    function scheduleRejoin() {
-      var now = Date.now();
-      if (!rejoinUntil) rejoinUntil = now + REJOIN_WINDOW_MS;
-      if (now >= rejoinUntil) return false;
-      rejoining = true;
-      open = false;
-      clearTimers();
-      setState("reconnecting");
-      rejoinTimer = setTimeout(function () {
-        rejoinTimer = null;
-        if (!rejoining || ws || connecting) return;
-        connect();
-      }, rejoinDelay);
-      rejoinDelay = Math.min(Math.round(rejoinDelay * 1.8), REJOIN_MAX_MS);
-      return true;
-    }
-
-    /* Ask the device the same question over plain HTTPS, and say which link
-       actually broke.
-
-       A WebSocket is uniquely bad at explaining itself: a proxy that refuses
-       the upgrade, a tunnel that is down and a device that is off all arrive as
-       close code 1006 with an EMPTY reason. Nobody holding a phone can tell
-       those apart, and the logs that could are on a device in someone's house.
-
-       So when the socket fails without a sentence, we run the SILENT test
-       endpoint — the same one a technician runs at handover, which proves
-       reachability, credential and firmware without making a sound — and the
-       three outcomes are three different faults:
-
-         test OK          the device and camera are fine; the WEBSOCKET path is
-                          blocked (a proxy or network that does not pass them)
-         test errors      the device is reachable and is telling us exactly what
-                          is wrong with the camera; show its own words
-         test unreachable the device is not answering at all */
-    function diagnose(fallback) {
-      return edgeId().then(function (edge) {
-        return fetch(PREFIX + "/api/v1/talkback/" +
-                     encodeURIComponent(cameraId) + "/test", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ edgeId: edge }),
-        });
-      }).then(function (r) {
-        return r.json().then(function (b) { return b; },
-                             function () { return null; })
-          .then(function (body) {
-            if (r.ok) {
-              return "The camera answered a silent test in " +
-                ((body && body.elapsed_ms) || "?") + " ms, so this device and " +
-                "this camera are both fine. The live audio connection itself " +
-                "was blocked — that is a proxy or network in between that does " +
-                "not allow WebSockets.";
-            }
-            var d = (body && body.detail) || {};
-            if (r.status === 401 || r.status === 409)
-              return "This device did not accept the request (its edge_id does " +
-                     "not match the address this page was opened on).";
-            if (r.status === 503)
-              return "Talk-back is switched off on this device (TALKBACK_ENABLED).";
-            return d.message || fallback;
-          });
-      }).catch(function () {
-        return fallback + " The device did not answer a test either, so it is " +
-               "unreachable from here rather than refusing.";
-      });
+      onState(s, detail || "");
     }
 
     function speak() {
-      if (!open || !pressed) return;
-      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
       mute(false);
-      if (opts.onTalking) opts.onTalking(true);
       setState("live");
+      flush();
     }
 
-    function connect() {
-      var problem = contextError();
-      if (problem) { setState("error", problem); return; }
-      connecting = true;
-      setState(rejoining ? "reconnecting" : "connecting");
+    function quiet() {
+      if (owner === me) mute(true);
+    }
 
-      Promise.all([acquireGraph(), edgeId()]).then(function (r) {
-        var node = r[0].node;
-        var edge = r[1];
-        if (!connecting || ws) return;             // hung up, or already open
-        connecting = false;
-        var scheme = location.protocol === "https:" ? "wss://" : "ws://";
-        var url = scheme + location.host + PREFIX + "/api/v1/talkback/" +
-          encodeURIComponent(cameraId) + "/stream" +
-          "?client_id=" + encodeURIComponent(clientId) +
-          (edge ? "&edge_id=" + encodeURIComponent(edge) : "");
-
-        ws = new WebSocket(url);
-        ws.binaryType = "arraybuffer";
-
-        connectTimer = setTimeout(function () {
-          connectTimer = null;
-          // Drop the socket FIRST, so its own onclose sees a handle we have
-          // already given up on and does not schedule a second rejoin.
-          if (ws) { try { ws.close(); } catch (e) {} ws = null; }
-          connecting = false;
-          if (rejoining && scheduleRejoin()) return;
-          hangUp("The device did not answer. Check the connection and try again.");
-        }, CONNECT_TIMEOUT_MS);
-
-        ws.onmessage = function (ev) {
-          var msg;
-          try { msg = JSON.parse(ev.data); } catch (e) { return; }
-          if (msg.type === "open") {
-            if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-            open = true;
-            lastSentence = "";
-            // Back on the air. Reset the ladder so the NEXT drop, whenever it
-            // comes, gets its own fast first retry rather than inheriting the
-            // backoff this one ended on.
-            rejoining = false;
-            rejoinUntil = 0;
-            rejoinDelay = REJOIN_MIN_MS;
-            if (msg.mic_gain)
-              node.port.postMessage({ type: "gain", value: msg.mic_gain });
-            if (msg.hold_secs > 2) holdMs = (msg.hold_secs - 2) * 1000;
-            // A held-but-silent socket must survive the proxies in front of it;
-            // pings are control frames, so they never touch the server's hold
-            // window (only speech does).
-            pingTimer = setInterval(function () {
-              if (ws && ws.readyState === 1 && !pressed)
-                ws.send(JSON.stringify({ type: "ping" }));
-            }, 20000);
-            if (pressed) speak(); else release();
-          } else if (msg.type === "stats") {
-            // queued_ms is the honest latency number: the carer's voice still
-            // sitting in the device's socket to the camera, unheard.
-            setState(pressed ? "live" : "ready", "", msg);
-            if (opts.onHealth) opts.onHealth(msg);
-          } else if (msg.type === "error") {
-            // The device says WHY before it closes. A refusal is final: say so
-            // and, for a password problem, let the page redraw the tile into its
-            // setup button. A failure the network could be behind (camera slow,
-            // camera stopped reading) is left to onclose, which reconnects.
-            lastSentence = msg.message || "";
-            var c = msg.code || "";
-            if (FINAL_REASONS[c]) {
-              if (c !== "busy" && c !== "cooldown" && c !== "edge_id" && opts.onRefused)
-                opts.onRefused(c);
-              hangUp(lastSentence || "Talk-back failed.");
-            }
-          }
-        };
-
-        ws.onclose = function (ev) {
-          if (!ws) return;                         // our own hangUp
-          ws = null;
-          connecting = false;
-          var wasOpen = open;
-          open = false;
-
-          // A drop worth chasing is one the answer could change for: a network
-          // blip, not a refusal. FINAL_CODES are the refusals, plus the device
-          // closing a channel on schedule — asking again would only take a
-          // household's speaker back off whoever the device just gave it to.
-          var code = reasonCode(ev.reason);
-          var final = !!FINAL_CODES[ev.code] || !!FINAL_REASONS[code];
-          if (!final && (pressed || wasOpen || rejoining) && scheduleRejoin()) return;
-          if (FINAL_REASONS[code] && code !== "busy" && code !== "cooldown" &&
-              code !== "edge_id" && opts.onRefused)
-            opts.onRefused(code);
-
-          // The device's sentence: the full one from its error frame when there
-          // was one, else the (byte-capped) close reason. Codes only carry a class.
-          var why = lastSentence || (ev.reason || "").replace(/^[a-z_]+:\s*/, "");
-          var vague = !why;
-          if (!why && ev.code !== 1000 && ev.code !== 1001) {
-            why = ev.code === 4409 ? "Someone else is already speaking to this camera."
-              : ev.code === 4401 ? "This device did not accept the request."
-              : ev.code === 4503 ? "Talk-back is switched off on this device."
-              : rejoining ? "Lost the connection to this camera and could not get it back."
-              : "The talk connection closed.";
-            vague = (ev.code !== 4409 && ev.code !== 4401 && ev.code !== 4503);
-          }
-          hangUp(why);
-          // The socket had nothing to say. Go and find out, then replace the
-          // message — toast() shows one at a time, so the vague sentence is
-          // superseded rather than stacked on.
-          if (vague && why) {
-            diagnose(why).then(function (better) {
-              if (better && better !== why) setState("error", better);
-            });
-          }
-        };
-
-        ws.onerror = function () { /* onclose carries the outcome */ };
-
-      }).catch(function (err) {
+    var me = {
+      camera: cameraId,
+      frame: function (d) {
+        if (opts.onLevel) opts.onLevel(pressed ? (d.peak || 0) : 0);
+        if (!pressed) return;
+        session.outbox.push(d.frame);
+        if (granted) flush();
+        else while (session.outbox.length > OUTBOX_MAX_FRAMES) session.outbox.shift();
+      },
+      granted: function () {
+        granted = true;
+        if (pressed) speak();
+        else send({ type: "release" });          // let go before the answer came
+      },
+      refused: function (code, message) {
+        pressed = false; granted = false;
+        session.outbox.length = 0;
+        quiet();
+        setState("error", message || "The camera's speaker is not available.");
+        if (PASSWORD_CODES[code] && opts.onRefused) opts.onRefused(code);
+      },
+      stopped: function (why) {
+        granted = false;
+        session.outbox.length = 0;
+        quiet();
+        setState("error", why);
         pressed = false;
-        connecting = false;
-        keepWarm();
-        setState("error", micError(err));
-      });
-    }
-
-    /* A frame from the microphone, delivered only while this channel owns it. */
-    function frame(d) {
-      if (opts.onLevel) opts.onLevel(pressed ? (d.peak || 0) : 0);
-      if (pressed && (open || rejoining)) {
-        // Straight into the outbox, never straight at the socket. A slow link,
-        // or a link that is briefly gone, must cost the OLDEST words rather
-        // than the newest ones — the newest are the words still being said.
-        outbox.push(d.frame);
-        flush();
-      }
-    }
-    var me = { frame: frame, hangUp: function () { hangUp(); } };
+      },
+      floor: function (f) {
+        mine = !!(f && f.client_id === session.clientId);
+        if (opts.onFloor) opts.onFloor(f.state || "free", f.by || "", mine);
+        // The room's live state wins over a past refusal: the refusal's sentence
+        // was already shown, and a button still red after the room is free
+        // would say the opposite of what is true.
+        if (!pressed && !granted)
+          setState(f.state && f.state !== "free" && !mine ? "busy" : "idle");
+      },
+      health: function (m) { if (opts.onHealth) opts.onHealth(m); },
+      lost: function (why, final) {
+        granted = false;
+        if (final) { pressed = false; quiet(); setState("error", why); return; }
+        if (pressed) setState("reconnecting");   // keeps capturing: see resume()
+        else if (button.dataset.talk !== "error") setState("offline");
+      },
+      resume: function () {
+        if (pressed) { setState("connecting"); send({ type: "claim", camera: cameraId }); }
+        else if (button.dataset.talk === "offline") setState("idle");
+      },
+      hangUp: function () {                      // another button took the mic
+        pressed = false; granted = false;
+        quiet();
+        setState("idle");
+      },
+    };
 
     function press() {
       if (pressed) return;
-      claim();
+      var problem = session.final || contextError();
+      if (problem) { setState("error", problem); return; }
+      if (owner && owner !== me) owner.hangUp();  // one microphone, one room
+      owner = me;
       pressed = true;
-      if (open) speak();                           // held channel: instant
-      else if (!ws && !connecting) connect();      // first press: ~200 ms
+      session.outbox.length = 0;
+      setState("connecting");
+      acquireGraph().then(function () {
+        if (!pressed) return;
+        if (granted) speak();
+      }).catch(function (err) {
+        pressed = false;
+        send({ type: "release" });
+        setState("error", micError(err));
+      });
+      if (!send({ type: "claim", camera: cameraId })) {
+        setState("reconnecting");               // the claim goes when the socket is back
+        connect();
+      }
+    }
+
+    function release() {
+      if (!pressed) return;
+      pressed = false;
+      quiet();
+      if (granted) send({ type: "release" });
+      granted = false;
+      session.outbox.length = 0;
+      setState("idle");
+      if (owner === me) keepWarm();
     }
 
     // Press and hold. `setPointerCapture` keeps the release ours even if the
@@ -570,36 +394,45 @@
     });
     button.addEventListener("click", function (e) { e.stopPropagation(); });
 
-    // There is deliberately NO warm-on-hover. It was tried and removed: opening
-    // the microphone without a user gesture leaves an AudioContext SUSPENDED
-    // (so a later press captures silence), can raise a permission prompt
-    // because a mouse crossed a tile, and leaves the microphone live with
-    // nothing scheduled to release it. Saving ~300 ms on the first press only
-    // is not worth any of those. The press warms it, and WARM_MS keeps it warm
-    // for the rest of the conversation.
-
-    // Anything that takes the page away hangs up — a hot mic must not survive a
-    // tab switch, and a backgrounded tab must not sit on a household's speaker.
-    // Named, because these outlive the button: a tile that goes away has to be
-    // able to take its listeners with it (destroy).
-    function onHidden() { if (document.hidden) hangUp(); }
+    // A hidden tab or a lost window ends the turn — a hot mic must not survive a
+    // tab switch. The standby connection itself stays: it claims nothing.
+    function onHidden() { if (document.hidden) release(); }
     global.addEventListener("blur", release);
     document.addEventListener("visibilitychange", onHidden);
 
+    session.buttons.push(me);
     setState("idle");
+    connect();
+
     return {
-      stop: hangUp,
       release: release,
-      isLive: function () { return pressed && open; },
-      isHeld: function () { return open; },
-      /* Hang up AND stop listening to the page. Called when the tile goes. */
+      stop: release,
+      isLive: function () { return pressed && granted; },
+      isHeld: function () { return pressed || granted; },
+      /* The tile is going: end any turn and stop listening to the page. */
       destroy: function () {
+        release();
         global.removeEventListener("blur", release);
         document.removeEventListener("visibilitychange", onHidden);
-        hangUp();
+        if (owner === me) owner = null;
+        var i = session.buttons.indexOf(me);
+        if (i >= 0) session.buttons.splice(i, 1);
+        if (!session.buttons.length && session.ws) {
+          var ws = session.ws;
+          session.ws = null;
+          session.ready = false;
+          clearInterval(session.ping);
+          clearTimeout(session.timer);
+          try { ws.send(JSON.stringify({ type: "stop" })); ws.close(); } catch (e) {}
+        }
       },
     };
   }
 
-  global.cvTalk = { attach: attach, release: releaseGraph, contextError: contextError };
+  var cvTalk = { attach: attach, release: releaseGraph, contextError: contextError,
+                 /* Set by the page: (cameraId, readiness) whenever the edge says a
+                    camera's line changed — so tiles update without polling. */
+                 onCamera: null,
+                 session: session };
+  global.cvTalk = cvTalk;
 })(window);

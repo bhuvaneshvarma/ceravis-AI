@@ -190,21 +190,23 @@ class Settings(BaseSettings):
     talkback_port: int = 8800              # TP-Link's local media port (not ONVIF's)
     talkback_timeout_secs: float = 8.0     # connect / handshake / write ceiling
     talkback_mode: str = "aec"             # camera-side echo cancellation ("half" also exists)
-    # How long a speaker session is HELD after the last word. The camera
-    # handshake costs ~100-300 ms, which is the difference between an intercom
-    # and a walkie-talkie that eats your first syllable — so the session stays
-    # open between presses and the second sentence starts instantly.
+    # Three separate things, deliberately NOT tied together (talkback.lines,
+    # talkback.sessions):
     #
-    # It is a window, not a lease, because the camera has exactly ONE speaker: a
-    # held session locks out every other carer AND the Tapo app. This is the
-    # trade, and 90s is where it sits — long enough to hold a conversation,
-    # short enough that a walk-away hands the room back. It also covers the
-    # dropped phone: a client that stops sending is released, not waited on.
-    talkback_hold_secs: float = 90.0
-    # Ceiling on CONTINUOUS speech (a gap resets it). This is the stuck-button
-    # guard, and it is deliberately separate from the hold window above — the
-    # thing worth bounding is an open microphone, not a quiet connection.
-    talkback_max_turn_secs: float = 300.0
+    # 1. The CAMERA LINE — the edge's own talk session to each camera. Kept open
+    #    by the edge, so a press never waits for the ~100-300 ms camera handshake.
+    #    `always` keeps it open from boot; off = open only while a carer's page
+    #    is connected (so the Tapo app can talk when nobody is watching).
+    talkback_line_always: bool = True
+    #    Optional keep-alive: one silent 20 ms frame after this many idle seconds,
+    #    for firmware that closes a silent session. 0 = off; turn on only if
+    #    /health shows the camera dropping idle lines.
+    talkback_line_keepalive_secs: float = 0.0
+    # 2. The FLOOR — who may speak into a camera right now. Taken on press, kept
+    #    for this long after release so a carer can answer the resident without
+    #    another carer cutting in, then free for anyone. There is NO limit on how
+    #    long a carer speaks while holding the button.
+    talkback_floor_hold_secs: float = 5.0
     # Outbound microphone gain, applied in the browser before G.711 encoding
     # with a soft limiter (see static/talk-worklet.js) so raising it cannot
     # clip into distortion. 1.0 = the microphone as captured. Raise it when a

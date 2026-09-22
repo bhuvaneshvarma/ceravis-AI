@@ -21,8 +21,13 @@ Checked:
     picks the right one
   * a stored credential contains no trace of the plaintext password, and an
     empty password can never replace a working one
-  * one camera cannot be given two speakers at once, INCLUDING when the second
-    request arrives during the first one's handshake
+  * a camera hanging up ends its session without freezing the process
+  * the edge keeps its own talk LINE to every camera open, re-opens it when the
+    camera ends it, records how long each connection lasted, never retries a
+    refused password in a loop, and opens lines on demand when told to
+  * the FLOOR: one voice per camera, no time limit while the button is held, a
+    short hold after release, released when audio stops, kept across a page's
+    reconnect, one camera per page, and priority only upward
 
 Run:  python tests/test_talkback.py
 """
@@ -46,7 +51,6 @@ _TMP = Path(tempfile.mkdtemp(prefix="ceravis-talkback-"))
 os.environ.setdefault("DATA_DIR", str(_TMP))
 
 from talkback import credentials as store                          # noqa: E402
-from talkback import sessions as hub_mod                           # noqa: E402
 from talkback.credentials import TalkCredential                    # noqa: E402
 from talkback.mpegts import (FRAME_BYTES, STREAM_TYPE_PCMA_TAPO,   # noqa: E402
                              TS_PACKET, TS_SYNC, AudioMuxer, _crc32_mpeg,
@@ -236,128 +240,6 @@ check("forgetting again is a no-op, not an error", store.forget("cam_1") is Fals
 
 
 # ---------------------------------------------------------------------------
-# One speaker per camera
-# ---------------------------------------------------------------------------
-print("\nOne speaker per camera")
-
-
-class _FakeSession:
-    """A session whose handshake takes long enough to race against."""
-
-    def __init__(self, *a, **k):
-        self.session_id = "s1"
-        self.host = "10.0.0.9"
-        self.challenge = ""
-        self.closed = False
-
-    async def open(self):
-        await asyncio.sleep(0.05)
-
-    async def start_audio(self):
-        pass
-
-    async def close(self):
-        self.closed = True
-
-
-hub_mod.TapoTalkSession = _FakeSession
-hub_mod.TalkbackHub._resolve = lambda self, cid: (
-    type("C", (), {"camera_id": cid, "camera_name": cid})(), "10.0.0.9", object())
-
-_hub = hub_mod.TalkbackHub()
-
-
-async def _second(hub, cid):
-    await asyncio.sleep(0.01)                    # arrive DURING the handshake
-    return await hub.open(cid, "second carer")
-
-
-async def _race():
-    first, second = await asyncio.gather(
-        _hub.open("cam_1", "203.0.113.7", label="first carer"), _second(_hub, "cam_1"),
-        return_exceptions=True)
-    check("the first speaker gets the camera", not isinstance(first, Exception))
-    check("a second speaker arriving mid-handshake is REFUSED, not queued",
-          isinstance(second, TalkbackError) and second.code == "busy")
-    check("the busy message names who is holding it — by name, not address",
-          isinstance(second, TalkbackError) and "first carer" in str(second)
-          and "203.0.113.7" not in str(second))
-    await _hub.release("cam_1", first)
-    check("releasing frees the camera", not _hub.busy("cam_1"))
-    third = await _hub.open("cam_1", "next carer")
-    check("and the next carer can then talk", _hub.busy("cam_1"))
-    await _hub.release("cam_1", third)
-
-
-asyncio.run(_race())
-
-
-async def _failure_releases():
-    """A camera that refuses mid-handshake must not stay locked — this is the
-    difference between one bad attempt and a household losing its intercom."""
-    class _Failing(_FakeSession):
-        async def open(self):
-            raise TalkbackError("unreachable", "no answer")
-
-    hub_mod.TapoTalkSession = _Failing
-    hub = hub_mod.TalkbackHub()
-    try:
-        await hub.open("cam_2", "carer")
-    except TalkbackError:
-        pass
-    check("a failed handshake leaves the camera free", not hub.busy("cam_2"))
-
-
-asyncio.run(_failure_releases())
-
-
-# ---------------------------------------------------------------------------
-# Getting back in after a drop
-# ---------------------------------------------------------------------------
-print("\nReclaiming a session after a drop")
-
-
-async def _takeover():
-    """A carer whose network dropped must be able to reclaim their OWN session.
-
-    The device cannot always tell that a WebSocket died. Without this, the
-    holder of a camera would be a socket that no longer exists, and the person
-    it belonged to would be refused from their own microphone until the hold
-    window expired — precisely when getting back matters most."""
-    hub_mod.TapoTalkSession = _FakeSession
-    hub = hub_mod.TalkbackHub()
-
-    first = await hub.open("cam_3", "carer A", client_id="phone-1")
-    check("the first carer holds the camera", hub.busy("cam_3"))
-
-    other = None
-    try:
-        await hub.open("cam_3", "carer B", client_id="phone-2")
-    except TalkbackError as exc:
-        other = exc
-    check("a DIFFERENT client is still refused",
-          other is not None and other.code == "busy")
-
-    back = await hub.open("cam_3", "carer A", client_id="phone-1")
-    check("the SAME client reclaims it instead of bouncing off itself",
-          back is not first and hub.busy("cam_3"))
-    check("the stale session is closed, so the camera is not held twice",
-          first.closed)
-
-    nameless = None
-    try:
-        await hub.open("cam_3", "carer C", client_id="")
-    except TalkbackError as exc:
-        nameless = exc
-    check("a client with NO id can never take a session over",
-          nameless is not None and nameless.code == "busy")
-    await hub.release("cam_3", back)
-
-
-asyncio.run(_takeover())
-
-
-# ---------------------------------------------------------------------------
 # Backpressure: late speech is dropped, a dead camera is reported
 # ---------------------------------------------------------------------------
 print("\nBackpressure")
@@ -506,174 +388,6 @@ store._FILE.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# A background self-check never costs a carer a sentence
-# ---------------------------------------------------------------------------
-print("\nThe self-check yields to people")
-
-
-async def _preempt():
-    hub_mod.TapoTalkSession = _FakeSession
-    hub = hub_mod.TalkbackHub()
-
-    check_session = await hub.open("cam_9", "self-check", preemptible=True)
-    carer = await hub.open("cam_9", "carer")
-    check("a carer who presses during a self-check TAKES the camera",
-          hub.busy("cam_9") and hub._active["cam_9"].holder == "carer")
-    check("and the self-check's session is closed, not left open",
-          check_session.closed)
-
-    refused = None
-    try:
-        await hub.open("cam_9", "self-check", preemptible=True)
-    except TalkbackError as exc:
-        refused = exc
-    check("a self-check never takes a camera off a carer",
-          refused is not None and refused.code == "busy"
-          and hub._active["cam_9"].holder == "carer")
-    await hub.release("cam_9", carer)
-
-
-asyncio.run(_preempt())
-
-
-# ---------------------------------------------------------------------------
-# Readiness: known before anyone presses
-# ---------------------------------------------------------------------------
-print("\nReadiness, known before the press")
-
-from talkback import readiness as rd_mod                           # noqa: E402
-
-
-class _Cam:
-    def __init__(self, cid, pw=""):
-        self.camera_id = cid
-        self.camera_name = cid
-        self.is_enabled = True
-        self.rtsp_url = f"rtsp://isw:{pw}@10.0.0.5:554/stream1" if pw else "rtsp://10.0.0.5/s"
-        self.onvif_username = None
-        self.onvif_password = None
-        self.onvif_xaddr = ""
-
-
-class _Cams:
-    rows: list = []
-
-    def get_all(self):
-        return list(_Cams.rows)
-
-
-class _FakeHub:
-    """Answers probes from a script: camera id -> result or error code."""
-
-    def __init__(self):
-        self.script = {}
-        self.calls = []
-        self.held = set()
-
-    def busy(self, cid):
-        return cid in self.held
-
-    async def probe(self, cid, preemptible=False):
-        self.calls.append((cid, preemptible))
-        outcome = self.script.get(cid, "ok")
-        if outcome != "ok":
-            raise TalkbackError(outcome, f"{cid}: {outcome}")
-        return {"elapsed_ms": 42}
-
-
-async def _readiness():
-    store._FILE.unlink(missing_ok=True)
-    fake = _FakeHub()
-    rd_mod.hub = fake
-    rd_mod.CameraConfig = _Cams
-    attempts = []
-
-    async def no_stream_login(host, port, username="", password="", timeout=8.0):
-        attempts.append(username)
-        if not username:
-            return "HTTP/1.1 401", 'Digest realm="x",encrypt_type="3"'
-        return "HTTP/1.1 401 Unauthorized", ""
-
-    rd_mod.attempt = no_stream_login
-    _Cams.rows = [_Cam("LOUNGE", pw="streampw"), _Cam("LIVING_ROOM")]
-    r = rd_mod.Readiness()
-
-    await r.check_now()
-    check("with no password, a camera is reported as needing one",
-          r.get("LOUNGE")["state"] == "needs_password")
-    check("and nothing was probed — there was nothing to probe with",
-          fake.calls == [])
-    check("the camera's OWN stream password was tried, once",
-          attempts.count("admin") == 1)
-    await r.check_now()
-    check("and not tried again on the next check",
-          attempts.count("admin") == 1)
-
-    store.set_home_password("the-right-one")
-    fake.script = {"LOUNGE": "ok", "LIVING_ROOM": "unauthorized"}
-    await r.check_now()
-    check("after the home password: a camera that accepts it is READY",
-          r.get("LOUNGE")["state"] == "ready")
-    check("one that refuses it is REJECTED, with advice to re-pair",
-          r.get("LIVING_ROOM")["state"] == "rejected"
-          and "Tapo app" in r.get("LIVING_ROOM")["message"])
-    check("every probe was the pre-emptible kind",
-          all(pre for _, pre in fake.calls))
-
-    import time as _t
-    check("a refused camera is NOT retried quickly (lock-out risk)",
-          r._due["LIVING_ROOM"] - _t.monotonic() > 3000)
-    check("a ready camera is re-confirmed within the quarter hour",
-          r._due["LOUNGE"] - _t.monotonic() <= 600)
-
-    fake.held.add("LOUNGE")
-    fake.calls.clear()
-    await r.check_now()
-    check("a camera a carer is talking through is left alone",
-          ("LOUNGE", True) not in fake.calls and r.get("LOUNGE")["state"] == "ready")
-    fake.held.clear()
-
-    r.observe("LOUNGE", "unauthorized", "refused on a real press")
-    check("a REAL refused session updates readiness at once",
-          r.get("LOUNGE")["state"] == "rejected")
-    r.observe("LOUNGE")
-    check("and a real success restores it",
-          r.get("LOUNGE")["state"] == "ready")
-
-    fake.script["LIVING_ROOM"] = "ok"            # re-paired in the Tapo app
-    await r.check_now()
-    check("a re-paired camera comes back to ready with no one touching the device",
-          r.get("LIVING_ROOM")["state"] == "ready")
-
-    _Cams.rows = [_Cam("LOUNGE")]
-    await r.check_now()
-    check("a camera removed from setup drops out of readiness",
-          "LIVING_ROOM" not in r.all())
-
-    # A firmware that DOES accept its stream password: zero-input commissioning.
-    store._FILE.unlink(missing_ok=True)
-
-    async def stream_login_ok(host, port, username="", password="", timeout=8.0):
-        if not username:
-            return "HTTP/1.1 401", 'Digest realm="x",encrypt_type="3"'
-        ok = password == hashlib.sha256(b"streampw").hexdigest().upper()
-        return ("HTTP/1.1 200 OK" if ok else "HTTP/1.1 401"), ""
-
-    rd_mod.attempt = stream_login_ok
-    _Cams.rows = [_Cam("PORCH", pw="streampw")]
-    fake.script = {}
-    r2 = rd_mod.Readiness()
-    await r2.check_now()
-    check("a camera that accepts its own stream password needs NO setup at all",
-          r2.get("PORCH")["state"] == "ready"
-          and store.resolve(["PORCH"])["PORCH"]["source"] == "stream")
-    store._FILE.unlink(missing_ok=True)
-
-
-asyncio.run(_readiness())
-
-
-# ---------------------------------------------------------------------------
 # The lock-out guard: our own retries must never lock a camera out
 # ---------------------------------------------------------------------------
 print("\nLock-out guard")
@@ -722,145 +436,396 @@ store._FILE.unlink(missing_ok=True)
 guard_mod._FILE.unlink(missing_ok=True)
 
 
-async def _guard_in_the_hub():
-    """The hub must consult the guard BEFORE dialling, count only refusals,
-    and give `force` to a technician."""
-    dialled = []
 
-    class _Refusing(_FakeSession):
-        async def open(self):
-            dialled.append(1)
-            raise TalkbackError("unauthorized", "refused")
 
-    class _Offline(_FakeSession):
-        async def open(self):
-            dialled.append(1)
-            raise TalkbackError("unreachable", "no answer")
+# ---------------------------------------------------------------------------
+# Camera lines: the edge keeps its own talk line to every camera open
+# ---------------------------------------------------------------------------
+print("\nCamera lines")
 
-    hub = hub_mod.TalkbackHub()
-    cred = TalkCredential(md5="C" * 32, sha256="C" * 64)
-    hub_mod.TalkbackHub._resolve = lambda self, cid: (
-        type("C", (), {"camera_id": cid, "camera_name": cid})(), "10.0.0.9", cred)
+from talkback import lines as lines_mod                            # noqa: E402
+from talkback import sessions as floor_mod                         # noqa: E402
 
-    hub_mod.TapoTalkSession = _Offline
-    for _ in range(5):
-        try:
-            await hub.open("G1", "carer")
-        except TalkbackError:
-            pass
-    check("an OFFLINE camera never earns a pause (it said nothing about the password)",
-          guard_mod.paused_until("G1", cred) == 0)
+_settings = lines_mod.settings
 
-    hub_mod.TapoTalkSession = _Refusing
-    for _ in range(3):
-        try:
-            await hub.open("G2", "carer")
-        except TalkbackError:
-            pass
-    before = len(dialled)
-    fourth = None
+
+async def _until(cond, timeout=2.0):
+    """Wait for a condition the supervisors reach on their own schedule."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while loop.time() < end:
+        if cond():
+            return True
+        await asyncio.sleep(0.01)
+    return bool(cond())
+
+
+class _Cam:
+    def __init__(self, cid, name=None, pw=""):
+        self.camera_id = cid
+        self.camera_name = name or cid
+        self.room_name = self.camera_name
+        self.is_enabled = True
+        self.rtsp_url = (f"rtsp://isw:{pw}@10.0.0.5:554/stream1" if pw
+                         else "rtsp://10.0.0.5:554/stream1")
+        self.onvif_xaddr = ""
+        self.onvif_password = None
+
+
+class _Cams:
+    rows: list = []
+
+    def get_all(self):
+        return list(_Cams.rows)
+
+    def get_by_id(self, cid):
+        return next((c for c in _Cams.rows if c.camera_id == cid), None)
+
+    def get_by_label(self, label):
+        key = label.replace(" ", "_").upper()
+        return next((c for c in _Cams.rows if c.camera_name.replace(" ", "_").upper() == key), None)
+
+
+class _LineSession:
+    """A camera's talk port, scripted. OUTCOME decides what the next open does."""
+    OUTCOME = "ok"
+    opened: list = []
+
+    def __init__(self, host, cred, **kw):
+        self.host = host
+        self.session_id = ""
+        self.challenge = 'encrypt_type="3"'
+        self.gone = asyncio.Event()
+        self.frames: list = []
+        self._closed = False
+
+    async def open(self):
+        _LineSession.opened.append(self)
+        if _LineSession.OUTCOME != "ok":
+            raise TalkbackError(_LineSession.OUTCOME, f"scripted {_LineSession.OUTCOME}")
+        self.session_id = "6"
+
+    async def start_audio(self):
+        pass
+
+    @property
+    def alive(self):
+        return bool(self.session_id) and not self._closed and not self.gone.is_set()
+
+    async def send(self, frame):
+        if not self.alive:
+            raise TalkbackError("closed", "closed")
+        self.frames.append(frame)
+
+    def health(self):
+        return {"frames_sent": len(self.frames), "queued_ms": 0}
+
+    async def close(self):
+        self._closed = True
+        self.gone.set()
+
+
+def _hangs_up(L, cid, after=60.0):
+    """The camera ends a line that has been open `after` seconds."""
+    line = L._lines[cid]
+    line.opened_at -= after
+    line.session.gone.set()
+
+
+async def _no_stream_login(host, port, username="", password="", timeout=8.0):
+    return "HTTP/1.1 401", 'Digest realm="x",encrypt_type="3"'
+
+
+lines_mod.TapoTalkSession = _LineSession
+lines_mod.CameraConfig = _Cams
+lines_mod.attempt = _no_stream_login
+lines_mod._BOOT_DELAY = 0.0
+lines_mod._RECONCILE = 0.05
+_settings.talkback_enabled = True
+_settings.talkback_line_always = True
+_settings.talkback_line_keepalive_secs = 0.0
+
+
+async def _lines():
+    store._FILE.unlink(missing_ok=True)
+    guard_mod._FILE.unlink(missing_ok=True)
+    store.set_home_password("the-right-one")
+    _Cams.rows = [_Cam("LOUNGE")]
+    _LineSession.OUTCOME, _LineSession.opened = "ok", []
+    L = lines_mod.Lines()
+    changes = []
+    L.on_change = lambda cid, r: changes.append((cid, r["state"], r["line"]))
+    L.start()
+
+    check("from boot, the edge opens a talk line to the camera by itself",
+          await _until(lambda: L.readiness("LOUNGE")["line"] == "open"))
+    row = L.health()["LOUNGE"]
+    check("it is recorded: opened once, with how long the camera took",
+          row["opens"] == 1 and row["history"][-1]["event"] == "open"
+          and row["elapsed_ms"] is not None)
+    check("and every page is told, without polling",
+          ("LOUNGE", "ready", "open") in changes)
+
+    first = L._lines["LOUNGE"].session
+    check("speech fed to an open line reaches the camera",
+          await L.send("LOUNGE", b"\x01" * 160) and first.frames == [b"\x01" * 160])
+
+    _hangs_up(L, "LOUNGE")                            # after a minute open
+    check("when the camera ends the line, the edge re-opens it by itself",
+          await _until(lambda: L._lines["LOUNGE"].opens == 2 and L.readiness("LOUNGE")["line"] == "open"))
+    rec = L.health()["LOUNGE"]
+    check("and the record says how long the camera kept it and that it came back",
+          rec["drops"] == 1 and any(e["event"] == "dropped" and "after_secs" in e
+                                    for e in rec["history"]))
+
+    # A camera ending a line straight after granting it is refusing something:
+    # that one is retried with a growing wait, not immediately.
+    before = L._lines["LOUNGE"].retry
+    _hangs_up(L, "LOUNGE", after=0.0)
+    await _until(lambda: L.readiness("LOUNGE")["state"] == "connecting")
+    check("a line ended straight after it opened is retried with a growing wait",
+          L._lines["LOUNGE"].retry > before)
+    L.kick("LOUNGE")
+    await _until(lambda: L.readiness("LOUNGE")["line"] == "open")
+    ok, state = await L.ensure_open("LOUNGE", 1.0)
+    opened = len(_LineSession.opened)
+    info = await L.test("LOUNGE")
+    check("a test of an open line answers at once, with no second session",
+          ok and info["line"] == "open" and len(_LineSession.opened) == opened)
+
+    # The camera starts refusing the password.
+    _LineSession.OUTCOME = "unauthorized"
+    _hangs_up(L, "LOUNGE")
+    check("a refused password is reported as such",
+          await _until(lambda: L.readiness("LOUNGE")["state"] == "rejected"))
+    tries = len(_LineSession.opened)
+    await asyncio.sleep(0.4)
+    check("and is NOT retried in a loop (the lock-out risk)",
+          len(_LineSession.opened) == tries)
+    refused = None
     try:
-        await hub.open("G2", "carer")
+        await L.test("LOUNGE")
     except TalkbackError as exc:
-        fourth = exc
-    check("after three refusals the fourth attempt is refused WITHOUT dialling",
-          fourth is not None and fourth.code == "cooldown" and len(dialled) == before)
-    check("and it does not leave the camera marked busy", not hub.busy("G2"))
+        refused = exc
+    check("a test of a refused camera says so, with the camera's reason",
+          refused is not None and refused.code == "unauthorized")
 
-    hub_mod.TapoTalkSession = _FakeSession
-    session = await hub.open("G2", "technician", force=True)
-    check("`force` lets a technician through the pause", hub.busy("G2"))
-    check("a success clears the pause", guard_mod.paused_until("G2", cred) == 0)
-    await hub.release("G2", session)
+    _LineSession.OUTCOME = "ok"
+    store.set_home_password("the-new-one")            # someone fixed it
+    L.kick()
+    check("a new password is tried straight away, and the line comes up",
+          await _until(lambda: L.readiness("LOUNGE")["line"] == "open"))
+
+    # No credential at all: one try with the camera's own stream password.
+    store._FILE.unlink(missing_ok=True)
+    _Cams.rows = [_Cam("LOUNGE"), _Cam("PORCH", pw="streampw")]
+    check("a camera with no password is reported as needing one",
+          await _until(lambda: L.readiness("PORCH")["state"] == "needs_password"))
+    check("after exactly one try with its own stream password",
+          L._lines["PORCH"].stream_tried)
+
+    # Unreachable: retried, with a growing wait.
+    store.set_home_password("the-new-one")
+    _LineSession.OUTCOME = "unreachable"
+    _hangs_up(L, "LOUNGE")
+    check("an unreachable camera is reported, not hidden",
+          await _until(lambda: L.readiness("LOUNGE")["state"] == "unreachable"))
+    check("and retried with a growing wait, not hammered",
+          L._lines["LOUNGE"].retry > lines_mod._RETRY_MIN)
+    _LineSession.OUTCOME = "ok"
+
+    # A silent keep-alive, only when switched on.
+    L.kick()
+    await _until(lambda: L.readiness("LOUNGE")["line"] == "open")
+    s = L._lines["LOUNGE"].session
+    _settings.talkback_line_keepalive_secs = 0.15
+    L.kick("LOUNGE")
+    check("with keep-alive on, an idle line gets a silent frame (A-law 0xD5)",
+          await _until(lambda: b"\xd5" * 160 in s.frames, 2.0))
+    _settings.talkback_line_keepalive_secs = 0.0
+
+    # Lines opened only while carers are connected.
+    _settings.talkback_line_always = False
+    L.kick()
+    check("with lines on demand and no carer connected, lines are closed",
+          await _until(lambda: L.readiness("LOUNGE")["line"] == "closed"))
+    L.set_clients(1)
+    check("a carer's page connecting opens them",
+          await _until(lambda: L.readiness("LOUNGE")["line"] == "open"))
+    L.set_clients(0)
+    check("and the last one leaving closes them again",
+          await _until(lambda: L.readiness("LOUNGE")["line"] == "closed"))
+    _settings.talkback_line_always = True
+
+    _Cams.rows = [_Cam("LOUNGE")]
+    check("a camera removed from setup loses its line",
+          await _until(lambda: "PORCH" not in L.all()))
+    await L.stop()
+    check("stopping closes every line", all(not ln.open for ln in L._lines.values()))
+    store._FILE.unlink(missing_ok=True)
     guard_mod._FILE.unlink(missing_ok=True)
 
 
-asyncio.run(_guard_in_the_hub())
+asyncio.run(_lines())
 
 
 # ---------------------------------------------------------------------------
-# One camera, many spellings: a session is always given back
+# The floor: who may speak into which camera, right now
 # ---------------------------------------------------------------------------
-print("\nCamera ids are canonical")
+print("\nThe floor")
 
 
-async def _spellings():
-    hub = hub_mod.TalkbackHub()
-    hub_mod.TapoTalkSession = _FakeSession
-    # The camera is KEPT as LIVING_ROOM; callers may spell it otherwise.
-    hub_mod.TalkbackHub._resolve = lambda self, cid: (
-        type("C", (), {"camera_id": "LIVING_ROOM", "camera_name": "LIVING ROOM"})(),
-        "10.0.0.9", TalkCredential(md5="D" * 32, sha256="D" * 64))
-    session = await hub.open("living room", "carer", label="Nurse Priya")
-    check("a session opened under another spelling is kept under the real id",
-          "LIVING_ROOM" in hub._active)
-    refused = None
-    try:
-        await hub.open("LIVING_ROOM", "someone else")
-    except TalkbackError as exc:
-        refused = exc
-    check("the busy message names the CARER, never an address",
-          refused is not None and "Nurse Priya" in str(refused)
-          and "carer" not in str(refused))
-    await hub.release("living room", session)
-    check("released under a different spelling, the camera is free again",
-          not hub._active)
+class _Lines:
+    """The line manager, scripted: which cameras are open, and what they got."""
+
+    def __init__(self):
+        self.open = {"LOUNGE": True, "LIVING_ROOM": True}
+        self.sent: list = []
+        self.clients = 0
+        self.on_change = None
+
+    async def ensure_open(self, cid, timeout):
+        return self.open.get(cid, False), ("ready" if self.open.get(cid) else "rejected")
+
+    async def send(self, cid, frame):
+        self.sent.append(cid)
+        return True
+
+    def readiness(self, cid):
+        return {"state": "ready" if self.open.get(cid) else "rejected",
+                "message": "m", "detail": "the camera refused the password"}
+
+    def set_clients(self, n):
+        self.clients = n
 
 
-asyncio.run(_spellings())
+def _page(cid, name, priority=0):
+    inbox, closed = [], []
+
+    async def push(m):
+        inbox.append(m)
+
+    async def close(code, reason):
+        closed.append(code)
+
+    c = floor_mod.Client(client_id=cid, name=name, holder="203.0.113.1",
+                         push=push, close=close, priority=priority)
+    c.inbox, c.closed = inbox, closed
+    return c
 
 
-# ---------------------------------------------------------------------------
-# The lease: an orphaned session can never lock a room
-# ---------------------------------------------------------------------------
-print("\nOrphaned sessions are reclaimed")
+async def _floor():
+    fl = _Lines()
+    floor_mod.lines = fl
+    floor_mod.CameraConfig = _Cams
+    floor_mod.STALL_SECS = 0.3
+    _settings.talkback_floor_hold_secs = 0.4
+    _Cams.rows = [_Cam("LOUNGE"), _Cam("LIVING_ROOM", "LIVING ROOM")]
+    hub = floor_mod.TalkbackHub()
+    hub.start()
+    priya, arun = _page("p1", "Nurse Priya"), _page("a1", "Nurse Arun")
+    await hub.connect(priya)
+    await hub.connect(arun)
+    check("each connected page is counted (lines on demand follow it)", fl.clients == 2)
+
+    g = await hub.claim(priya, "LOUNGE")
+    check("a press on a free camera is granted at once", g["type"] == "granted")
+    check("and EVERY page is told who is speaking",
+          any(m.get("type") == "floor" and m.get("state") == "speaking"
+              and m.get("by") == "Nurse Priya" for m in arun.inbox))
+
+    r = await hub.claim(arun, "LOUNGE")
+    check("a second carer is refused while someone speaks, and told who",
+          r["type"] == "refused" and r["code"] == "busy" and "Nurse Priya" in r["message"])
+
+    check("the speaker's audio goes to that camera's line",
+          await hub.audio(priya, b"x" * 160) == "LOUNGE" and fl.sent == ["LOUNGE"])
+    check("audio from a page without the floor goes nowhere",
+          await hub.audio(arun, b"x" * 160) is None and fl.sent == ["LOUNGE"])
+
+    # No time limit: speech keeps the floor for as long as it flows.
+    for _ in range(12):
+        await hub.audio(priya, b"x" * 160)
+        await asyncio.sleep(0.05)
+    check("there is no time limit while the button is held",
+          hub.floor("LOUNGE")["state"] == "speaking")
+
+    await hub.release(priya)
+    check("letting go keeps the floor briefly (the floor hold)",
+          hub.floor("LOUNGE")["state"] == "holding")
+    r = await hub.claim(arun, "LOUNGE")
+    check("inside the hold another carer waits, told for how long",
+          r["type"] == "refused" and "free in" in r["message"])
+    g = await hub.claim(priya, "LOUNGE")
+    check("but the same carer carries on straight away (a conversation)",
+          g["type"] == "granted")
+    await hub.release(priya)
+    check("after the hold the floor is free, and every page is told",
+          await _until(lambda: hub.floor("LOUNGE")["state"] == "free")
+          and any(m.get("type") == "floor" and m.get("state") == "free" for m in arun.inbox))
+    g = await hub.claim(arun, "LOUNGE")
+    check("so the next carer gets it", g["type"] == "granted")
+
+    # One microphone per page.
+    await hub.claim(arun, "LIVING_ROOM")
+    check("taking another camera lets go of the first (one voice per page)",
+          hub.floor("LOUNGE")["state"] == "free"
+          and hub.floor("LIVING_ROOM")["by"] == "Nurse Arun")
+
+    # A page that stops sending while "speaking" — frozen tab, dead network.
+    check("a speaker whose audio stops is released, not left holding the room",
+          await _until(lambda: hub.floor("LIVING_ROOM")["state"] != "speaking", 1.5)
+          and any(m.get("type") == "released" for m in arun.inbox))
+    await _until(lambda: hub.floor("LIVING_ROOM")["state"] == "free", 1.5)
+
+    # A page that drops and comes back (same client_id) keeps its floor.
+    await hub.claim(priya, "LOUNGE")
+    await hub.disconnect(priya)
+    check("a page that disconnects mid-sentence keeps its floor for the hold",
+          hub.floor("LOUNGE")["state"] == "holding")
+    back = _page("p1", "Nurse Priya")
+    await hub.connect(back)
+    g = await hub.claim(back, "LOUNGE")
+    check("and, coming back in time, carries on", g["type"] == "granted")
+    stale = _page("p1", "Nurse Priya")
+    await hub.connect(stale)
+    check("a second connection from the same page replaces the first (closed 4000)",
+          back.closed == [4000] and hub.floor("LOUNGE")["by"] == "Nurse Priya")
+    await hub.release(stale)
+    await _until(lambda: hub.floor("LOUNGE")["state"] == "free", 1.5)
+
+    # Priority (future doctor role): only ever raised from a verified source.
+    doctor = _page("d1", "Dr Rao", priority=10)
+    await hub.connect(doctor)
+    await hub.claim(arun, "LOUNGE")
+    g = await hub.claim(doctor, "LOUNGE")
+    check("a higher-priority page takes the floor (the future doctor role)",
+          g["type"] == "granted" and hub.floor("LOUNGE")["by"] == "Dr Rao")
+    check("and the carer is told who took it",
+          any(m.get("type") == "taken" and m.get("by") == "Dr Rao" for m in arun.inbox))
+    r = await hub.claim(arun, "LOUNGE")
+    check("a lower priority never takes it back", r["type"] == "refused")
+    check("everyone is priority 0 today, so nobody can take over anybody",
+          priya.priority == arun.priority == 0)
+    await hub.release(doctor)
+
+    # A camera whose line is not open.
+    fl.open["LIVING_ROOM"] = False
+    r = await hub.claim(priya, "LIVING_ROOM")
+    check("a camera that cannot be reached is refused with the camera's reason",
+          r["type"] == "refused" and r["code"] == "unauthorized"
+          and "refused" in r["message"])
+    check("and no floor is left reserved behind the refusal",
+          hub.floor("LIVING_ROOM")["state"] == "free")
+    r = await hub.claim(priya, "GARAGE")
+    check("an unknown camera is refused as such", r["code"] == "no_camera")
+
+    for c in (priya, arun, back, stale, doctor):
+        await hub.disconnect(c)
+    await hub.stop()
 
 
-async def _lease():
-    """2026-09-22: LOUNGE was held for 592 s with 0 frames by a session whose
-    carer had left, and every carer after was told the room was busy. Whatever
-    leaks a session, the lease hands the room back."""
-    hub = hub_mod.TalkbackHub()
-    hub_mod.TapoTalkSession = _FakeSession
-    cred = TalkCredential(md5="F" * 32, sha256="F" * 64)
-    hub_mod.TalkbackHub._resolve = lambda self, cid: (
-        type("C", (), {"camera_id": cid, "camera_name": cid})(), "10.0.0.9", cred)
-    ttl = hub_mod.settings.talkback_hold_secs + hub_mod.LEASE_GRACE_SECS
-
-    orphan = await hub.open("L1", "gone", client_id="old-tab")
-    hub._active["L1"].last_activity -= ttl + 1          # silent for too long
-    fresh = await hub.open("L1", "carer", client_id="new-tab")
-    check("a carer asking for a room held by an orphan GETS it (not 'busy')",
-          hub._active["L1"].session is fresh)
-    check("and the orphan's socket to the camera is closed", orphan.closed)
-    await hub.release("L1", fresh)
-
-    live = await hub.open("L2", "talking")
-    hub.note_frame("L2")
-    refused = None
-    try:
-        await hub.open("L2", "someone else", client_id="x")
-    except TalkbackError as exc:
-        refused = exc
-    check("a LIVE conversation is never reclaimed",
-          refused is not None and refused.code == "busy")
-
-    hub._active["L2"].last_activity -= ttl + 1
-    reaped = await hub.reap_stale()
-    check("the periodic tick reclaims an orphan nobody asked for",
-          reaped == ["L2"] and not hub._active and live.closed)
-    check("and reports idle time, the number that tells a leak from a call",
-          "idle_seconds" in (await _status_of(hub)))
-
-
-async def _status_of(hub):
-    s = await hub.open("L3", "carer")
-    row = hub.status()["L3"]
-    await hub.release("L3", s)
-    return row
-
-
-asyncio.run(_lease())
+asyncio.run(_floor())
 
 
 # ---------------------------------------------------------------------------
@@ -876,8 +841,8 @@ check("the protocol error carries the shared checklist",
 check("re-pairing is the LAST step, not the first",
       "remove the camera" in advice.REFUSED_STEPS[-1].lower()
       and all("remove the camera" not in s.lower() for s in advice.REFUSED_STEPS[:-1]))
-check("readiness tells the carer the short version",
-      rd_mod._SAY["rejected"] == advice.REFUSED_SHORT)
+check("a refused camera tells the carer the short version",
+      lines_mod._SAY["rejected"] == advice.REFUSED_SHORT)
 
 # ---------------------------------------------------------------------------
 shutil.rmtree(_TMP, ignore_errors=True)

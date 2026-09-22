@@ -390,7 +390,7 @@ class TapoTalkSession:
 
     async def start_audio(self) -> None:
         """Send the PAT/PMT. Separate from open() so a caller can verify the
-        session without making a sound (see hub.probe)."""
+        session without making a sound (see talkback.lines)."""
         await self._send_part("audio/mp2t", self._muxer.header())
 
     def _queued_ms(self, per_frame: int) -> float:

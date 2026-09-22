@@ -4,17 +4,24 @@ from __future__ import annotations
 ceravis-talkback — commission and prove a camera's speaker from the device shell.
 
 The browser path (live wall -> hold Talk) is the product. This is the engineer's
-path: it runs the SAME talkback package, so anything it proves is true of the
-real thing, and it works over SSH with no browser, no HTTPS and no microphone.
+path, over SSH, with no browser, no HTTPS and no microphone.
 
     python -m tools.talkback list                          # what is commissioned
-    python -m tools.talkback set    --camera KITCHEN       # store the password
-    python -m tools.talkback test   --camera KITCHEN       # silent proof
+    python -m tools.talkback set                           # THE home password
+    python -m tools.talkback set    --camera KITCHEN       # an override for one camera
+    python -m tools.talkback test   [--camera KITCHEN]     # silent proof
+    python -m tools.talkback lines                         # the line record
     python -m tools.talkback diagnose --camera KITCHEN --try-password
                                                        # why auth failed
     python -m tools.talkback tone   --camera KITCHEN       # a beep in the room
     python -m tools.talkback play   --camera KITCHEN --file hello.wav
     python -m tools.talkback forget --camera KITCHEN
+
+The running service holds every camera's talk line (talkback.lines), and a camera
+has ONE speaker — so `test`, `lines`, `tone` and `play` go THROUGH the service
+(its API and its /session socket, exactly like a carer's page) instead of opening
+a second talk session beside it. `set`, `forget`, `list` and `diagnose` work on
+the device directly.
 
 Run from edge/. `set` prompts for the password without echoing it; pass
 --password only in a script, where it lands in your shell history.
@@ -27,19 +34,56 @@ import argparse
 import asyncio
 import getpass
 import hashlib
+import json
 import math
 import shutil
 import subprocess
 import sys
-from urllib.parse import urlparse
+import urllib.error
+import urllib.request
+import uuid
+from urllib.parse import quote, urlparse
 
 from config.settings import settings
+from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
 from talkback import credentials, guard
 from talkback.advice import refused_lines
-from talkback.sessions import camera_host, hub
+from talkback.lines import camera_host
 from talkback.mpegts import FRAME_BYTES, SAMPLE_RATE, linear_to_alaw
 from talkback.protocol import TalkbackError, attempt
+from talkback.sessions import hub
+
+SERVICE = "http://127.0.0.1:8000"         # the ceravis service (systemd: port 8000)
+
+
+def _api(method: str, path: str, body: dict | None = None, timeout: float = 45.0) -> dict:
+    """One call to the running service's talk-back API, authenticated like any
+    other caller. Raises SystemExit with a readable sentence on failure."""
+    edge = effective_edge_id()
+    url = f"{SERVICE}/api/v1/talkback{path}"
+    data = None
+    if method == "GET":
+        url += ("&" if "?" in url else "?") + "edge_id=" + quote(edge)
+    else:
+        data = json.dumps({**(body or {}), "edgeId": edge}).encode()
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read()).get("detail") or {}
+        except ValueError:
+            detail = {}
+        if isinstance(detail, dict):
+            raise TalkbackError(detail.get("code") or str(exc.code),
+                                detail.get("message") or str(exc))
+        raise TalkbackError(str(exc.code), str(detail))
+    except (urllib.error.URLError, OSError) as exc:
+        raise SystemExit(f"the ceravis service is not answering at {SERVICE} ({exc}). "
+                         f"Is it running?  sudo systemctl status ceravis")
 
 
 def _resolve_id(label: str) -> str:
@@ -77,46 +121,86 @@ def _file_audio(path: str, volume: float) -> bytes:
 
 
 async def _speak(camera_id: str, audio: bytes) -> int:
-    """Open a session and play `audio` at real time — a camera fed faster than
-    real time drops most of it."""
-    session = await hub.open(camera_id, holder="cli")
+    """Play `audio` through the service exactly as a carer's page does: connect
+    to /session, claim the floor, stream 20 ms frames at real time (a camera fed
+    faster than real time drops most of it), release."""
     try:
+        import websockets
+    except ImportError:
+        raise SystemExit("the `websockets` package is missing (edge/requirements.txt)")
+    ws_url = (SERVICE.replace("http", "ws", 1) + "/api/v1/talkback/session?edge_id="
+              + quote(effective_edge_id()) + "&client_id=cli-" + uuid.uuid4().hex[:8]
+              + "&name=" + quote("Technician (CLI)"))
+    async with websockets.connect(ws_url) as ws:
+        welcome = json.loads(await ws.recv())
+        if welcome.get("type") != "welcome":
+            raise TalkbackError(welcome.get("code", "refused"), welcome.get("message", ""))
+        await ws.send(json.dumps({"type": "claim", "camera": camera_id}))
+        while True:
+            reply = json.loads(await asyncio.wait_for(ws.recv(), 20))
+            if reply.get("type") == "granted":
+                break
+            if reply.get("type") == "refused":
+                raise TalkbackError(reply.get("code", "busy"), reply.get("message", ""))
         loop = asyncio.get_running_loop()
         start = loop.time()
         for i in range(0, len(audio), FRAME_BYTES):
-            await session.send(audio[i:i + FRAME_BYTES])
+            await ws.send(audio[i:i + FRAME_BYTES])
             ahead = start + (i + FRAME_BYTES) / SAMPLE_RATE - loop.time()
             if ahead > 0:
                 await asyncio.sleep(ahead)
         await asyncio.sleep(0.6)          # let the camera drain its buffer
-        print(f"sent {len(audio) / SAMPLE_RATE:.2f}s of audio")
-        return 0
-    finally:
-        await hub.release(camera_id, session)
+        await ws.send(json.dumps({"type": "release"}))
+        await ws.send(json.dumps({"type": "stop"}))
+    print(f"sent {len(audio) / SAMPLE_RATE:.2f}s of audio")
+    return 0
 
 
-async def _check_all(force: bool = False) -> int:
-    """Silently check every camera and print one line each. Exit 0 only when
-    every camera is ready, so a commissioning script can gate on it."""
-    rows = hub.cameras()
-    bad = 0
-    refused = False
+def _check_all(force: bool = False) -> int:
+    """Ask the service to look at every camera now, and print one line each.
+    Exit 0 only when every camera is ready, so a commissioning script can gate
+    on it."""
+    if force:
+        guard.reset()
+    res = _api("POST", "/check")
+    cams = res.get("cameras") or {}
+    names = {r["camera_id"]: r["camera_name"] for r in hub.cameras()}
     print()
-    for r in rows:
-        try:
-            res = await hub.probe(r["camera_id"], force=force)
-            print(f"  ready     {r['camera_name']:<20} {res['elapsed_ms']} ms "
-                  f"({res['auth']})")
-        except TalkbackError as exc:
-            bad += 1
-            refused |= exc.code == "unauthorized"
-            note = f"  {exc}" if exc.code == "cooldown" else ""
-            print(f"  {exc.code:<12} {r['camera_name']:<20}{note}")
-    print(f"\n{len(rows) - bad} of {len(rows)} cameras ready.")
-    if refused:
+    for cid, v in cams.items():
+        state = v.get("state", "?")
+        extra = (f"{v.get('elapsed_ms')} ms to open" if state == "ready"
+                 else v.get("detail") or v.get("message") or "")
+        print(f"  {state:<15} {names.get(cid, cid):<20} {extra}")
+    print(f"\n{res.get('ready', 0)} of {res.get('total', 0)} cameras ready.")
+    if any(v.get("state") == "rejected" for v in cams.values()):
         print("\n  A camera refused the password. Check, in this order:")
         print(refused_lines())
-    return 0 if rows and not bad else 1
+    return 0 if res.get("all_ready") else 1
+
+
+def _print_lines() -> int:
+    """The line record: how long each camera kept its talk line, and why each
+    connection ended — the measured answer to "how long does a camera hold it"."""
+    h = _api("GET", "/health")
+    lines = h.get("lines") or {}
+    if not lines:
+        print("no lines yet (the service opens them ~10 s after it starts)")
+        return 1
+    st = h.get("settings") or {}
+    print(f"lines kept open: {st.get('line_always')}   keep-alive: "
+          f"{st.get('line_keepalive_secs') or 'off'}   floor hold: {st.get('floor_hold_secs')} s\n")
+    for cid, ln in lines.items():
+        now = (f"open {ln.get('open_secs')} s" if ln.get("line") == "open"
+               else "closed")
+        print(f"{cid:<16} {ln.get('state'):<14} {now:<18} opened {ln.get('opens')}x, "
+              f"dropped by camera {ln.get('drops')}x")
+        for ev in ln.get("history") or []:
+            rest = ", ".join(f"{k}={v}" for k, v in ev.items() if k not in ("at", "event"))
+            print(f"    {ev.get('at', '')[11:19]}  {ev.get('event'):<8} {rest}")
+    floors = h.get("floors") or {}
+    held = ", ".join(k + "=" + str(v.get("state")) for k, v in floors.items())
+    print(f"\npages connected: {h.get('clients', 0)}" + (f"   floors: {held}" if held else ""))
+    return 0
 
 
 def _candidates(cam, cred, cloud_password: str, email: str) -> list:
@@ -241,7 +325,7 @@ async def _diagnose(camera_id: str, cam, host: str, cloud_password: str,
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tools.talkback",
                                  description="Camera speaker (talk-back) commissioning.")
-    ap.add_argument("command", choices=["list", "set", "forget", "test",
+    ap.add_argument("command", choices=["list", "set", "forget", "test", "lines",
                                        "diagnose", "tone", "play"])
     ap.add_argument("--camera", help="camera label or id (KITCHEN, cam_1, …)")
     ap.add_argument("--password", help="TP-Link ACCOUNT password (prompted if omitted)")
@@ -257,7 +341,13 @@ def main(argv=None) -> int:
     ap.add_argument("--force", action="store_true",
                     help="test/diagnose: ignore the lock-out pause (a camera "
                          "that refused the same password again and again)")
+    ap.add_argument("--service", default=SERVICE,
+                    help=f"the ceravis service to go through (default {SERVICE})")
     args = ap.parse_args(argv)
+    globals()["SERVICE"] = args.service.rstrip("/")
+
+    if args.command == "lines":
+        return _print_lines()
 
     if args.command == "list":
         rows = hub.cameras()
@@ -291,7 +381,11 @@ def main(argv=None) -> int:
             print("stored (hashes only) for the whole home"
                   + (f"; replaced per-camera entries for {', '.join(cleared)}"
                      if cleared else ""))
-        return asyncio.run(_check_all(force=args.force))
+        try:
+            return _check_all(force=args.force)
+        except TalkbackError as exc:
+            print(f"error [{exc.code}]: {exc}", file=sys.stderr)
+            return 1
 
     if not args.camera:
         print("error: --camera is required", file=sys.stderr)
@@ -328,9 +422,10 @@ def main(argv=None) -> int:
             return asyncio.run(_diagnose(camera_id, cam, camera_host(cam),
                                          typed, args.email or "", force=args.force))
         if args.command == "test":
-            result = asyncio.run(hub.probe(camera_id, force=args.force))
-            print(f"OK — {result['host']} granted speaker session {result['session_id']} "
-                  f"in {result['elapsed_ms']} ms (auth: {result['auth']}). No audio sent.")
+            result = _api("POST", f"/{quote(camera_id)}/test", {"force": args.force})
+            print(f"OK — {camera_id}'s talk line is open ({result.get('host')}, opened in "
+                  f"{result.get('connect_ms')} ms, open {result.get('open_secs')} s, "
+                  f"auth {result.get('auth')}). No audio sent.")
             return 0
         if args.command == "play" and not args.file:
             print("error: play needs --file", file=sys.stderr)

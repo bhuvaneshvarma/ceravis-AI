@@ -147,20 +147,14 @@ function mountCameras(root, opts = {}) {
         : c.credential_scope === "camera" ? "Uses its own password"
         : "Uses the home password";
       text.append(b, t, src);
-      // This page is the INSTALLER's: under a refused camera, show the checklist
-      // the device wrote (talkback.advice), and when a paused camera resumes.
-      if (r.state === "rejected" && r.detail) {
+      // This page is the INSTALLER's: under a camera that is not working, show
+      // the device's own sentence — the refusal checklist (talkback.advice), or
+      // when a paused camera resumes and how to resume it now.
+      if (r.state !== "ready" && r.state !== "connecting" && r.detail) {
         const why = document.createElement("div");
         why.className = "faint talk-src";
         why.textContent = r.detail;
         text.appendChild(why);
-      }
-      if (r.paused_until) {
-        const held = document.createElement("div");
-        held.className = "faint talk-src";
-        held.textContent = "Paused until " + String(r.paused_until).slice(11, 16) +
-          " so repeated refused logins cannot lock the camera. Setting the password again resumes at once.";
-        text.appendChild(held);
       }
 
       const acts = document.createElement("div");
@@ -176,7 +170,7 @@ function mountCameras(root, opts = {}) {
         try {
           const ok = await api(`/api/v1/talkback/${encodeURIComponent(c.camera_id)}/test`,
             { method: "POST", body: JSON.stringify({ edgeId: await edgeId() }) });
-          cvNotify(`${name}: talk-back works (${ok.elapsed_ms} ms). No sound was played.`, true);
+          cvNotify(`${name}: the talk line is open (opened in ${ok.connect_ms} ms). No sound was played.`, true);
         } catch (e) {
           cvNotify(`${name}: ${((e && e.detail) || {}).message || "the test failed."}`, false, 6000);
         }

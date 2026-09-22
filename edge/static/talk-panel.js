@@ -32,15 +32,14 @@
 
   /* One read of the talk-back inventory, shared by every tile on the page.
 
-     `ensure` is what the live wall calls on every 5-second sync: this list only
-     changes when someone commissions a camera, so it is fetched ONCE and the
-     same promise handed back forever after. `refresh` forces a re-read, and is
-     called exactly where that can matter — after commissioning. */
+     `ensure` is what the live wall calls on every 5-second sync. The list is
+     fetched ONCE; after that the edge pushes every camera change down the page's
+     talk session (cvTalk.onCamera below), so nothing here polls. `refresh`
+     forces a re-read — after commissioning, where it matters. */
   var inflight = null;
 
   function ensure() {
-    if (!inflight) { lastRead = Date.now(); inflight = refresh(); }
-    else sync();
+    if (!inflight) inflight = refresh();
     return inflight;
   }
 
@@ -263,20 +262,18 @@
     // click out of phase with the room, so the press that should have switched
     // a room off only re-asserted that it was on.
     var on = stream.listening ? stream.listening() : false;
-    var ducked = false;
     var label = btn.querySelector(".talk-label");
 
     // Re-assert rather than toggle. `stream.listen()` is idempotent, so calling
     // it with what we already want costs nothing and guarantees the button and
     // the audio path cannot drift apart between clicks.
     function apply() {
-      var has = stream.listen(on && !ducked);
+      var has = stream.listen(on);
       var live = stream.listening ? stream.listening() : (on && has);
-      var s = on ? (ducked ? "ducked" : (live ? "on" : "waiting")) : "off";
+      var s = on ? (live ? "on" : "waiting") : "off";
       btn.dataset.listen = s;
       label.textContent =
         s === "on" ? "Listening" :
-        s === "ducked" ? "Muted while talking" :
         // Asked for, but no audio track has arrived yet. Usually the stream is
         // still negotiating rather than the camera being deaf, so stay armed:
         // the moment sound arrives, listening starts (audioArrived below). A
@@ -306,16 +303,12 @@
       /* The stream finally produced an audio track. If the carer already asked
          to listen, honour it now — the click does not have to be repeated. */
       audioArrived: function () { if (on) apply(); },
-      /* Half-duplex on purpose: a speaker and a microphone in the same room,
-         both live, is a feedback loop. The camera runs its own echo
-         cancellation, but ducking the carer's side too is what keeps a real
-         room from howling — and it is what every intercom does. */
-      duck: function (talking) {
-        if (ducked === !!talking) return;
-        ducked = !!talking;
-        if (on) apply();
-      },
-      stop: function () { on = false; ducked = false; apply(); },
+      /* FULL DUPLEX: the room stays audible while the carer talks, so a resident
+         who answers mid-sentence is heard. Echo is cancelled at both ends
+         instead of by muting — the camera runs its own echo cancellation
+         (talkback_mode "aec"), and the carer's microphone asks the browser for
+         it (talk.js). Headphones remove any echo that is left. */
+      stop: function () { on = false; apply(); },
       /* The BUTTON is being replaced but the room is still on screen. Leave the
          audio exactly as the carer left it and just leave the roster — the
          replacement adopts the live state on mount. Silencing a room here is
@@ -327,7 +320,7 @@
       /* The TILE is going. Stop the audio as well — there will be nothing left
          to turn it off with. */
       destroy: function () {
-        on = false; ducked = false;
+        on = false;
         try { apply(); } catch (e) {}
         handle.detach();
       },
@@ -386,10 +379,11 @@
     // looks, it already knows whether a press would work. A camera it knows
     // WON'T work gets a button that fixes the cause, not a microphone that
     // fails after the carer has started speaking.
-    if (!entry.configured || ready === "needs_password" || ready === "rejected") {
+    if (!entry.configured || ready === "needs_password" || ready === "rejected" ||
+        ready === "paused") {
       btn.dataset.talk = "setup";
-      label.textContent = ready === "rejected" ? "Talk: password refused"
-                                               : "Set up talk";
+      label.textContent = ready === "rejected" ? "Talk: password refused" :
+                          ready === "paused" ? "Talk paused" : "Set up talk";
       btn.title = (entry.readiness && entry.readiness.message) ||
         "Talk-back needs this home's TP-Link account password.";
       btn.onclick = function (e) {
@@ -406,30 +400,32 @@
       return null;
     }
 
+    var speaker = "";           // who holds this camera's floor, if not us
     var handle = cvTalk.attach(btn, camera.camera_id, {
       onState: function (s, detail) {
-        // "ready" is the held channel: the camera is ours and the next press
-        // makes no one wait. Worth its own word on the button.
         label.textContent =
           s === "live" ? "On air" :
-          s === "ready" ? "Talk" :
           s === "connecting" ? "Connecting…" :
-          // The channel dropped and is coming back by itself. Named, because a
-          // carer who is told what is happening waits; a carer shown nothing
-          // presses again, and a second press is a second session.
+          // The page's connection dropped and is coming back by itself. Named,
+          // because a carer who is told what is happening waits.
           s === "reconnecting" ? "Reconnecting…" :
+          s === "offline" ? "Talk offline" :
+          s === "busy" ? (speaker || "Someone") + " is talking" :
           s === "error" ? "Try again" :
-          ready === "unreachable" ? "Speaker offline" : "Hold to talk";
-        if (s === "idle" && ready === "unreachable")
+          ready === "unreachable" ? "Speaker offline" :
+          ready === "in_use" ? "Speaker in use" : "Hold to talk";
+        if (s === "idle" && (ready === "unreachable" || ready === "in_use"))
           btn.title = entry.readiness.message || btn.title;
         if (s === "error" && detail) toast(detail, "err", 5000);
+      },
+      // Who holds the floor, pushed by the edge to every page — so the button
+      // says "Nurse Priya is talking" BEFORE anyone presses into a refusal.
+      onFloor: function (state, by, mine) {
+        speaker = state !== "free" && !mine ? by : "";
       },
       onLevel: function (peak) {
         // A real level, not an animation: silence must look like silence.
         btn.style.setProperty("--talk-level", Math.min(1, peak * 3).toFixed(2));
-      },
-      onTalking: function (talking) {
-        if (listener) listener.duck(talking);
       },
       // Refused for a reason that will not change by pressing again (wrong
       // password, no credential). The device already recorded it; re-read the
@@ -487,26 +483,22 @@
     mounted.slice().forEach(function (m) { remountIfIdle(m.tile); });
   }
 
-  /* The device re-checks cameras on its own (a camera re-paired in the Tapo app
-     turns ready within the hour, or at once on "Check again"). Re-read the
-     inventory every READINESS_MS, and rebuild only the tiles whose state moved. */
-  var READINESS_MS = 30000;
-  var lastRead = 0;
-  function sync() {
-    if (Date.now() - lastRead < READINESS_MS) return;
-    lastRead = Date.now();
-    refresh().then(function () {
-      mounted.slice().forEach(function (m) {
-        var entry = state.byId[m.camera.camera_id];
-        if (entry && signature(entry) !== m.sig) remountIfIdle(m.tile);
-      });
+  /* The edge pushes every change to a camera's line down the page's talk
+     session (a camera re-paired in the Tapo app, a line that dropped and came
+     back). Rebuild only the tiles whose state actually moved. */
+  function cameraChanged(cameraId, readiness) {
+    var entry = state.byId[cameraId];
+    if (!entry || !readiness) return;
+    entry.readiness = readiness;
+    if (readiness.state && readiness.state !== "needs_password") entry.configured = true;
+    mounted.slice().forEach(function (m) {
+      if (m.camera.camera_id === cameraId && signature(entry) !== m.sig) remountIfIdle(m.tile);
     });
   }
+  if (global.cvTalk) global.cvTalk.onCamera = cameraChanged;
 
-  /* Rebuild BOTH controls after commissioning. The listen button goes too,
-     even though nothing about it changed: the talk handle needs a live
-     reference to it for ducking, and a stale one would leave a carer listening
-     to their own voice coming back out of the room. */
+  /* Rebuild BOTH controls after commissioning, so the tile reads as one fresh
+     unit. The listen button is only detached, never silenced (see below). */
   function remount(tile, camera, stream) {
     // Release the handles BEFORE the buttons go — dropping a button releases
     // neither the roster entry nor a held camera speaker. The TALK handle is

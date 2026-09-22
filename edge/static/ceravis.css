@@ -616,10 +616,11 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .talk-btn svg { width: 15px; height: 15px; flex: none; }
 .talk-btn:hover { background: rgba(15,23,42,.8); border-color: rgba(255,255,255,.4); }
 .talk-btn[data-talk="setup"] { border-style: dashed; color: #dbe4ee; }
-/* "ready" = the channel is HELD: the next press is instant. A quiet teal
-   edge, not a shout — nothing is being transmitted in this state. */
-.talk-btn[data-talk="ready"] { border-color: var(--teal); color: #eaf7f7;
-  box-shadow: 0 0 0 2px rgba(53,152,157,.25); }
+/* Another carer holds this camera's floor. Readable, not alarming: pressing
+   still works, and says who is talking. */
+.talk-btn[data-talk="busy"] { border-color: var(--warn, #b8791b); color: #fde7c2; }
+/* The page's connection to the device is down and coming back by itself. */
+.talk-btn[data-talk="offline"] { border-style: dashed; color: #dbe4ee; opacity: .8; }
 .talk-btn[data-talk="connecting"] { background: var(--teal); border-color: var(--teal); }
 .talk-btn[data-talk="live"] {
   background: var(--orange); border-color: var(--orange); transform: scale(1.03);
@@ -643,8 +644,8 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 
 /* ---- listen (the camera's own microphone) --------------------------------
    Sits beside the talk button and shares its shape, because they are two
-   halves of one thing. "ducked" is the half-duplex state: listening is on but
-   silenced for as long as the carer is speaking, so the room cannot howl. */
+   halves of one thing. It stays on while the carer talks (full duplex): echo is
+   cancelled at both ends rather than by muting the room. */
 .listen-btn {
   position: absolute; left: 12px; bottom: 40px; z-index: 3;
   display: flex; align-items: center; gap: 7px;
@@ -658,8 +659,6 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 .listen-btn svg { width: 15px; height: 15px; flex: none; }
 .listen-btn:hover { background: rgba(15,23,42,.8); border-color: rgba(255,255,255,.4); }
 .listen-btn[data-listen="on"] { background: var(--teal); border-color: var(--teal); }
-.listen-btn[data-listen="ducked"] { background: rgba(53,152,157,.35);
-  border-color: rgba(53,152,157,.5); color: #dbe4ee; }
 /* Asked for, but the stream has not produced an audio track yet — armed, not
    listening. It becomes "on" by itself the moment sound arrives. */
 .listen-btn[data-listen="waiting"] { border-style: dashed;
