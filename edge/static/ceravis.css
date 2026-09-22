@@ -619,8 +619,6 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
 /* Another carer holds this camera's floor. Readable, not alarming: pressing
    still works, and says who is talking. */
 .talk-btn[data-talk="busy"] { border-color: var(--warn, #b8791b); color: #fde7c2; }
-/* The page's connection to the device is down and coming back by itself. */
-.talk-btn[data-talk="offline"] { border-style: dashed; color: #dbe4ee; opacity: .8; }
 .talk-btn[data-talk="connecting"] { background: var(--teal); border-color: var(--teal); }
 .talk-btn[data-talk="live"] {
   background: var(--orange); border-color: var(--orange); transform: scale(1.03);

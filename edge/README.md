@@ -46,6 +46,7 @@ edge/
 │                 lines.py        the edge's own talk LINE to every camera, kept
 │                                 open and re-opened; its record is /talkback/health
 │                 sessions.py     the FLOOR: who may speak into which camera now
+│                 audit.py        the talk log: who spoke, where, when, how long
 │                 guard.py        stops our retries locking a camera out
 │                 A line asks for the TALK session only (never the preview one),
 │                 so the one-pull-per-camera rule holds and ingestion, recording
@@ -190,6 +191,7 @@ cd edge
 python3 -m tools.talkback set                     # prompts, stores HASHES only
 python3 -m tools.talkback test                    # every camera, silently
 python3 -m tools.talkback lines                   # the line record
+python3 -m tools.talkback log                     # who spoke, into which room, how long
 python3 -m tools.talkback tone --camera KITCHEN   # a beep, if you want a noise
 ```
 
@@ -205,12 +207,19 @@ Carers use the **live wall**. Each tile carries two controls:
   every other page keeps its video-only SDP), so listening costs no connection,
   no protocol and no credential.
 * **Hold to talk** speaks through the camera for as long as the button is held
-  — there is no time limit. Nothing is set up on the press: the page keeps ONE
-  standby connection to the edge (`/api/v1/talkback/session`), and the edge
-  keeps its own talk LINE to every camera open (`TALKBACK_LINE_ALWAYS`), so a
-  press only claims the FLOOR. After release the floor stays the carer's for
-  `TALKBACK_FLOOR_HOLD_SECS` (5 s) so they can answer the resident, then it is
-  free for anyone. Every page is told who is speaking as it happens.
+  — there is no time limit. Each camera has its own socket
+  (`/api/v1/talkback/{camera_id}/stream`); connecting claims that camera's
+  FLOOR, and the edge keeps its own talk LINE to every camera open
+  (`TALKBACK_LINE_ALWAYS`), so no press waits for a camera handshake. After
+  release the floor stays the carer's for `TALKBACK_FLOOR_HOLD_SECS` (5 s) so
+  they can answer the resident, then it is free for anyone — while the socket
+  itself stays open a minute, so the next press is instant. Two carers can talk
+  into two cameras at the same time; never two into one. Each tile shows who is
+  talking (from `GET /api/v1/talkback/cameras`).
+* Every talk is **logged**: who (the name and user id the carer's app sends),
+  which room, when, and how many seconds they spoke — and every refusal, with
+  why. `data/talkback_log.jsonl` (size-capped, gitignored),
+  `GET /api/v1/talkback/log`, `python3 -m tools.talkback log`.
 
 The rules that are structural, not cosmetic — the button is **press-and-hold**
 (a toggle leaves hot microphones in living rooms); **one voice per camera** at a
@@ -223,16 +232,16 @@ assumed: every line records each connection's length and why it ended, in
 `python3 -m tools.talkback lines` and `/api/v1/talkback/health`. If a firmware
 drops silent lines, `TALKBACK_LINE_KEEPALIVE_SECS` sends one silent frame after
 that many idle seconds. `TALKBACK_LINE_ALWAYS=false` opens lines only while a
-carer's page is connected, which leaves the camera's speaker to the Tapo app
-when nobody is watching.
+carer is connected, which leaves the camera's speaker to the Tapo app when
+nobody is talking.
 
 A browser will only hand out a microphone on a **secure page**, so talk-back
 works on the fleet address (`https://edgeai.ceravishealth.in/<edge_id>/ui/`) and
 on `localhost`, and never on a plain `http://<device-ip>:8000` page. The UI says
 so rather than failing silently.
 
-What it costs: one idle TCP connection per camera (the line), one idle
-WebSocket per open page, and while someone talks ~75 kbit/s out and well under 1%
+What it costs: one idle TCP connection per camera (the line), one WebSocket per
+carer per camera while they use it, and while someone talks ~75 kbit/s out and well under 1%
 of one CPU core, no GPU. It never opens the camera's preview session, so the
 media backbone still pulls each camera exactly once.
 

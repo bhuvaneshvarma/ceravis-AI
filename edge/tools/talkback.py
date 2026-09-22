@@ -11,6 +11,7 @@ path, over SSH, with no browser, no HTTPS and no microphone.
     python -m tools.talkback set    --camera KITCHEN       # an override for one camera
     python -m tools.talkback test   [--camera KITCHEN]     # silent proof
     python -m tools.talkback lines                         # the line record
+    python -m tools.talkback log    [--camera KITCHEN]     # who spoke, when, how long
     python -m tools.talkback diagnose --camera KITCHEN --try-password
                                                        # why auth failed
     python -m tools.talkback tone   --camera KITCHEN       # a beep in the room
@@ -19,9 +20,9 @@ path, over SSH, with no browser, no HTTPS and no microphone.
 
 The running service holds every camera's talk line (talkback.lines), and a camera
 has ONE speaker — so `test`, `lines`, `tone` and `play` go THROUGH the service
-(its API and its /session socket, exactly like a carer's page) instead of opening
-a second talk session beside it. `set`, `forget`, `list` and `diagnose` work on
-the device directly.
+(its API and the camera's /stream socket, exactly like a carer) instead of
+opening a second talk session beside it. `set`, `forget`, `list`, `log` and
+`diagnose` work on the device directly.
 
 Run from edge/. `set` prompts for the password without echoing it; pass
 --password only in a script, where it lands in your shell history.
@@ -47,7 +48,7 @@ from urllib.parse import quote, urlparse
 from config.settings import settings
 from configuration.account_config import effective_edge_id
 from configuration.camera_config import CameraConfig
-from talkback import credentials, guard
+from talkback import audit, credentials, guard
 from talkback.advice import refused_lines
 from talkback.lines import camera_host
 from talkback.mpegts import FRAME_BYTES, SAMPLE_RATE, linear_to_alaw
@@ -121,27 +122,21 @@ def _file_audio(path: str, volume: float) -> bytes:
 
 
 async def _speak(camera_id: str, audio: bytes) -> int:
-    """Play `audio` through the service exactly as a carer's page does: connect
-    to /session, claim the floor, stream 20 ms frames at real time (a camera fed
-    faster than real time drops most of it), release."""
+    """Play `audio` through the service exactly as a carer does: connect to the
+    camera's /stream (which claims its floor), stream 20 ms frames at real time
+    (a camera fed faster than real time drops most of it), release."""
     try:
         import websockets
     except ImportError:
         raise SystemExit("the `websockets` package is missing (edge/requirements.txt)")
-    ws_url = (SERVICE.replace("http", "ws", 1) + "/api/v1/talkback/session?edge_id="
-              + quote(effective_edge_id()) + "&client_id=cli-" + uuid.uuid4().hex[:8]
+    ws_url = (SERVICE.replace("http", "ws", 1) + "/api/v1/talkback/"
+              + quote(camera_id) + "/stream?edge_id=" + quote(effective_edge_id())
+              + "&client_id=cli-" + uuid.uuid4().hex[:8]
               + "&name=" + quote("Technician (CLI)"))
     async with websockets.connect(ws_url) as ws:
-        welcome = json.loads(await ws.recv())
-        if welcome.get("type") != "welcome":
-            raise TalkbackError(welcome.get("code", "refused"), welcome.get("message", ""))
-        await ws.send(json.dumps({"type": "claim", "camera": camera_id}))
-        while True:
-            reply = json.loads(await asyncio.wait_for(ws.recv(), 20))
-            if reply.get("type") == "granted":
-                break
-            if reply.get("type") == "refused":
-                raise TalkbackError(reply.get("code", "busy"), reply.get("message", ""))
+        reply = json.loads(await asyncio.wait_for(ws.recv(), 20))
+        if reply.get("type") != "open":
+            raise TalkbackError(reply.get("code", "refused"), reply.get("message", ""))
         loop = asyncio.get_running_loop()
         start = loop.time()
         for i in range(0, len(audio), FRAME_BYTES):
@@ -199,7 +194,24 @@ def _print_lines() -> int:
             print(f"    {ev.get('at', '')[11:19]}  {ev.get('event'):<8} {rest}")
     floors = h.get("floors") or {}
     held = ", ".join(k + "=" + str(v.get("state")) for k, v in floors.items())
-    print(f"\npages connected: {h.get('clients', 0)}" + (f"   floors: {held}" if held else ""))
+    print(f"\ncarers connected: {h.get('talkers', 0)}" + (f"   floors: {held}" if held else ""))
+    return 0
+
+
+def _print_log(camera_id: str | None) -> int:
+    """Who spoke into which room, when and for how long, newest first."""
+    rows = audit.recent(camera_id, 50)
+    if not rows:
+        print("nobody has talked yet")
+        return 0
+    for r in rows:
+        who = r.get("name") or r.get("holder") or "?"
+        if r.get("event") == "talk":
+            print(f"{r.get('started_at', '')[:19]}  {r.get('camera_id', ''):<14} "
+                  f"{who:<24} {r.get('talk_secs', 0):>6.1f} s spoken  ({r.get('ended')})")
+        else:
+            print(f"{r.get('at', '')[:19]}  {r.get('camera_id', ''):<14} "
+                  f"{who:<24} refused: {r.get('code')}")
     return 0
 
 
@@ -326,7 +338,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tools.talkback",
                                  description="Camera speaker (talk-back) commissioning.")
     ap.add_argument("command", choices=["list", "set", "forget", "test", "lines",
-                                       "diagnose", "tone", "play"])
+                                       "log", "diagnose", "tone", "play"])
     ap.add_argument("--camera", help="camera label or id (KITCHEN, cam_1, …)")
     ap.add_argument("--password", help="TP-Link ACCOUNT password (prompted if omitted)")
     ap.add_argument("--file", help="audio file for `play`")
@@ -348,6 +360,8 @@ def main(argv=None) -> int:
 
     if args.command == "lines":
         return _print_lines()
+    if args.command == "log":
+        return _print_log(hub.canonical(args.camera) if args.camera else None)
 
     if args.command == "list":
         rows = hub.cameras()

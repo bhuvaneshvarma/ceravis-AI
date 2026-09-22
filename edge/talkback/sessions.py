@@ -3,87 +3,102 @@ from __future__ import annotations
 """
 Who may speak into which camera, right now — the FLOOR.
 
-Three things used to be one: a carer's connection, the camera's talk session,
-and the right to speak. Holding one held all three, for 90 s after the last
-word, so a carer who had gone quiet still locked the room. They are separate now:
+A carer talks to a camera over that camera's own socket
+(`/api/v1/talkback/{camera_id}/stream`, one TALKER each). The camera side is the
+edge's LINE (talkback.lines), kept open. The FLOOR — this module — is which
+talker may feed a camera's line:
 
-  * a carer's page keeps ONE standby connection to the edge (talkback_routes'
-    /session). It claims nothing and blocks nobody;
-  * the camera's talk session is the edge's LINE (talkback.lines), kept open;
-  * the FLOOR — this module — is who may feed a camera's line. It is taken on a
-    press, and kept `talkback_floor_hold_secs` after release so the carer can
-    answer the resident without another carer cutting in. Then it is free.
+  * connecting to a camera claims its floor; so does speech arriving on an open
+    socket whose floor had lapsed;
+  * the floor is SPEAKING while speech arrives, and becomes HOLDING when it
+    stops (`release`, the socket closing, or GAP_SECS without speech). It stays
+    the carer's for `talkback_floor_hold_secs` so they can answer the resident,
+    then it is free — however long the carer's socket stays open;
+  * there is no limit on how long a carer speaks while holding the button.
 
-There is no limit on how long a carer speaks while holding the button. What ends
-a floor is the carer letting go, their page going away, or their audio stopping
-(`STALL_SECS`: a button held in a page that has frozen is not a person speaking).
+One voice per CAMERA, deliberately: two instructions at once are unintelligible
+to the person in the room, and "who said that" must always have one answer. Two
+carers on two different cameras talk at the same time; so can one carer on two.
+Listening has no such limit.
 
-One voice per camera at a time, deliberately: two instructions at once are
-unintelligible to the person in the room, and "who said that" must always have
-one answer. Listening has no such limit.
+Every floor ends in the talk log (talkback.audit): who, which room, when, and how
+many seconds of speech.
 
-PRIORITY is future-proofing for a doctor role: a claim from a higher-priority
-client takes the floor from a lower one. Every client is priority 0 today, so
-nothing is ever taken over — it must only be raised from something the edge can
-verify (a signed ticket from the app server), never from what a browser says.
+PRIORITY is future-proofing for a doctor role: a higher-priority talker takes the
+floor from a lower one. Every talker is priority 0 today, so nothing is ever
+taken over — it must only be raised from something the edge can verify (a signed
+ticket from the app server), never from what a browser says.
 """
 
 import asyncio
 import logging
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
+from common.clock import now_iso
 from config.settings import settings
 from configuration.camera_config import CameraConfig
 
-from . import credentials
+from . import audit, credentials
 from .lines import camera_host, code_for, lines
+from .mpegts import FRAME_BYTES, SAMPLE_RATE
 
 logger = logging.getLogger("talkback.sessions")
 
-# A floor whose speaker has sent no audio for this long is released. The page
-# sends a frame every 20 ms for as long as the button is held, so three seconds
-# of nothing is a frozen page or a dead network, not a person talking.
-STALL_SECS = 3.0
+# No speech for this long = the button is up. Speech arrives every 20 ms while it
+# is held; a muted microphone sends digital silence or nothing at all.
+GAP_SECS = 1.0
+# A socket with no speech for this long is closed (1000). It holds no floor by
+# then; this only stops forgotten tabs collecting sockets. Sent to clients as
+# `hold_secs`, so a client closes its own side first.
+IDLE_CLOSE_SECS = 60.0
 _TICK = 0.25
+_FRAME_SECS = FRAME_BYTES / SAMPLE_RATE
+# G.711 A-law encodings of zero. A frame of nothing else is a muted microphone.
+_SILENCE = b"\xd5\x55"
+
+
+def _is_speech(frame: bytes) -> bool:
+    return bool(frame.strip(_SILENCE))
 
 
 @dataclass(eq=False)
-class Client:
-    """One carer's page, connected by its standby WebSocket."""
+class Talker:
+    """One carer's microphone on one camera: one socket."""
 
-    client_id: str                 # the page's own id: survives its reconnects
-    name: str                      # shown to other carers ("Nurse Priya")
-    holder: str                    # the address, for /health and the logs only
-    push: Callable[[dict], Awaitable[None]]
+    camera_id: str
+    client_id: str                 # the carer's control: survives its reconnects
+    name: str                      # the carer, as their app names them
+    user_id: str                   # the app's own id for the carer, for the log
+    holder: str                    # the address, for /health and the log
+    end: Callable[[str, str], Awaitable[None]]    # refuse(code, message) + close
     close: Callable[[int, str], Awaitable[None]]
     priority: int = 0              # see PRIORITY in the module docstring
-    connected_at: float = field(default_factory=time.monotonic)
+    last_speech: float = field(default_factory=time.monotonic)
+    closing: bool = False
 
 
 @dataclass(eq=False)
 class Floor:
     camera_id: str
-    client: Client
-    speaking: bool = True          # False = released, inside the floor hold
-    pending: bool = True           # waiting for the camera line to open
+    talker: Talker
+    speaking: bool = True          # False = holding, until hold_until
+    started_at: str = field(default_factory=now_iso)
     since: float = field(default_factory=time.monotonic)
-    last_frame: float = field(default_factory=time.monotonic)
+    last_speech: float = field(default_factory=time.monotonic)
     hold_until: float = 0.0
-    frames: int = 0
+    speech_frames: int = 0
 
 
 class TalkbackHub:
     """Process-wide. One instance (`hub`); the API routes use it."""
 
     def __init__(self) -> None:
-        self._clients: list[Client] = []
+        self._talkers: list[Talker] = []
         self._floors: dict[str, Floor] = {}
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
-        lines.on_change = self._camera_changed
 
     # -- inventory --------------------------------------------------------- #
 
@@ -131,15 +146,17 @@ class TalkbackHub:
         if f is None:
             return {"state": "free"}
         return {"state": "speaking" if f.speaking else "holding",
-                "by": f.client.name or "another carer",
-                "client_id": f.client.client_id}
+                "by": f.talker.name or "another carer",
+                "client_id": f.talker.client_id}
 
     def status(self) -> dict:
         now = time.monotonic()
         return {
-            "clients": len(self._clients),
-            "floors": {cid: {**self.floor(cid), "holder": f.client.holder,
-                             "seconds": round(now - f.since, 1), "frames": f.frames}
+            "talkers": len(self._talkers),
+            "floors": {cid: {**self.floor(cid), "user_id": f.talker.user_id,
+                             "holder": f.talker.holder, "since": f.started_at,
+                             "seconds": round(now - f.since, 1),
+                             "talk_secs": round(f.speech_frames * _FRAME_SECS, 1)}
                        for cid, f in self._floors.items()},
         }
 
@@ -157,163 +174,163 @@ class TalkbackHub:
             except (asyncio.CancelledError, Exception):
                 pass
             self._task = None
+        for f in list(self._floors.values()):
+            self._end(f, "shutdown")
 
-    # -- clients ----------------------------------------------------------- #
+    # -- a carer's socket -------------------------------------------------- #
 
-    @staticmethod
-    def new_client_id() -> str:
-        return "srv-" + uuid.uuid4().hex[:12]
-
-    async def connect(self, client: Client) -> None:
-        """A page connected. If the SAME page (same client_id) was already
-        connected — its network dropped and it came back before the edge noticed
-        — the new connection replaces the old one and inherits its floor, so a
-        carer mid-sentence keeps the room."""
+    async def open(self, t: Talker) -> dict | None:
+        """A carer connected to a camera: claim its floor and make sure the
+        camera's line is up. None = granted; else a refusal {code, message}."""
+        if CameraConfig().get_by_id(t.camera_id) is None:
+            return self._refused(t, "no_camera", f"No camera called '{t.camera_id}'.")
         async with self._lock:
-            old = [c for c in self._clients if c.client_id == client.client_id]
-            for c in old:
-                self._clients.remove(c)
-                for f in self._floors.values():
-                    if f.client is c:
-                        f.client = client
-            self._clients.append(client)
-        for c in old:
-            await c.close(4000, "replaced by a newer connection from this page")
-        lines.set_clients(len(self._clients))
-
-    async def disconnect(self, client: Client) -> None:
-        """A page went away. Its floor is released, not dropped: it stays the
-        page's for the floor hold, so a page that reconnects in time carries on."""
+            refusal = self._take(t)
+            if refusal is None:
+                self._talkers.append(t)
+        if refusal is not None:
+            return refusal
+        lines.set_clients(len(self._talkers))
+        ok, state = await lines.ensure_open(t.camera_id, settings.talkback_timeout_secs)
+        if ok:
+            return None
         async with self._lock:
-            if client not in self._clients:
-                return                          # already replaced
-            self._clients.remove(client)
-            mine = [f for f in self._floors.values() if f.client is client]
-        for f in mine:
-            await self._release(f)
-        lines.set_clients(len(self._clients))
+            f = self._floors.get(t.camera_id)
+            if f is not None and f.talker is t:
+                self._floors.pop(t.camera_id)     # nothing was said: not a talk
+        await self.leave(t)
+        r = lines.readiness(t.camera_id)
+        return self._refused(t, code_for(state), r.get("detail") or r.get("message")
+                             or "The camera's speaker is not available.")
+
+    async def audio(self, t: Talker, frame: bytes) -> dict | None:
+        """One frame from a carer. Forwarded while their floor is speaking.
+        Speech on a socket whose floor had lapsed claims it again. Returns a
+        refusal when the floor is someone else's or the camera is gone."""
+        speech = _is_speech(frame)
+        f = self._floors.get(t.camera_id)
+        if f is None or f.talker is not t:
+            if not speech:
+                return None                        # silence never claims a room
+            async with self._lock:
+                refusal = self._take(t)
+            if refusal is not None:
+                return refusal
+            f = self._floors[t.camera_id]
+        now = time.monotonic()
+        if speech:
+            f.speaking = True
+            f.last_speech = t.last_speech = now
+            f.speech_frames += 1
+        if not f.speaking:
+            return None
+        if await lines.send(t.camera_id, frame):
+            return None
+        state = lines.readiness(t.camera_id)["state"]
+        if state in ("ready", "connecting"):
+            return None                            # the line is coming straight back
+        self._end(f, "line_lost")
+        return self._refused(t, code_for(state), lines.readiness(t.camera_id)["message"])
+
+    def release(self, t: Talker) -> None:
+        """The button came up: the floor is held, then free."""
+        f = self._floors.get(t.camera_id)
+        if f is not None and f.talker is t and f.speaking:
+            f.speaking = False
+            f.hold_until = time.monotonic() + settings.talkback_floor_hold_secs
+
+    async def leave(self, t: Talker) -> None:
+        """The socket closed. Its floor is held, not dropped: a carer whose
+        network dropped mid-sentence comes back to their own floor."""
+        async with self._lock:
+            if t in self._talkers:
+                self._talkers.remove(t)
+        self.release(t)
+        lines.set_clients(len(self._talkers))
 
     # -- the floor --------------------------------------------------------- #
 
-    async def claim(self, client: Client, camera_id: str) -> dict:
-        """A press. Returns {"type": "granted"} or {"type": "refused", ...}."""
-        cid = self.canonical(camera_id)
-        if CameraConfig().get_by_id(cid) is None:
-            return _refused(cid, "no_camera", f"No camera called '{camera_id}'.")
-        name = self._name_of(cid)
-        taken = None
-        async with self._lock:
-            # One microphone per page: taking a floor lets go of any other.
-            for f in list(self._floors.values()):
-                if f.client is client and f.camera_id != cid:
-                    self._floors.pop(f.camera_id, None)
-                    asyncio.ensure_future(self._announce(f.camera_id))
-            f = self._floors.get(cid)
-            now = time.monotonic()
-            if f is not None and not f.speaking and f.hold_until <= now:
-                self._floors.pop(cid, None)
-                f = None
-            if f is not None and f.client.client_id != client.client_id:
-                if client.priority <= f.client.priority:
-                    who = f.client.name or "Another carer"
-                    if f.speaking:
-                        return _refused(cid, "busy", f"{who} is speaking to {name}.")
-                    wait = max(1, round(f.hold_until - now))
-                    return _refused(cid, "busy", f"{who} was just speaking to {name}; "
-                                                 f"it is free in {wait} s.")
-                taken = f.client
-            # Reserved BEFORE waiting for the line, so a second press arriving
-            # meanwhile is refused rather than raced.
-            f = Floor(cid, client)
-            self._floors[cid] = f
-
-        ok, state = await lines.ensure_open(cid, settings.talkback_timeout_secs)
-        if not ok:
-            async with self._lock:
-                if self._floors.get(cid) is f:
-                    self._floors.pop(cid, None)
-            readiness = lines.readiness(cid)
-            return _refused(cid, code_for(state),
-                            readiness.get("detail") or readiness.get("message")
-                            or "The camera's speaker is not available.")
-        f.pending = False
-        f.last_frame = time.monotonic()
-        if taken is not None:
-            logger.info("talk floor %s taken from %s by %s (priority)",
-                        cid, taken.name or taken.holder, client.name or client.holder)
-            await _push(taken, {"type": "taken", "camera": cid,
-                                "by": client.name or "another carer"})
-        await self._announce(cid)
-        return {"type": "granted", "camera": cid}
-
-    async def release(self, client: Client) -> None:
-        """The button came up."""
-        for f in [f for f in self._floors.values() if f.client is client and f.speaking]:
-            await self._release(f)
-
-    async def audio(self, client: Client, frame: bytes) -> str | None:
-        """One frame of speech. Returns the camera it went to, or None when this
-        page does not hold a floor it is speaking on (dropped)."""
-        for f in self._floors.values():
-            if f.client is client and f.speaking and not f.pending:
-                f.last_frame = time.monotonic()
-                f.frames += 1
-                await lines.send(f.camera_id, frame)
-                return f.camera_id
+    def _take(self, t: Talker) -> dict | None:
+        """Give `t` its camera's floor if it may have it. Call under the lock."""
+        cid, now = t.camera_id, time.monotonic()
+        f = self._floors.get(cid)
+        if f is not None and not f.speaking and f.hold_until <= now:
+            self._end(f, "released")
+            f = None
+        if f is not None and f.talker is t:
+            return None
+        if f is not None and f.talker.client_id == t.client_id:
+            # The same carer's control reconnected: the room is still theirs.
+            old, f.talker = f.talker, t
+            if old in self._talkers and not old.closing:
+                old.closing = True
+                asyncio.ensure_future(old.close(1000, "replaced by a newer connection"))
+            return None
+        if f is not None:
+            if t.priority <= f.talker.priority:
+                who, room = f.talker.name or "Another carer", self._name_of(cid)
+                if f.speaking:
+                    return self._refused(t, "busy", f"{who} is speaking to {room}.")
+                wait = max(1, round(f.hold_until - now))
+                return self._refused(t, "busy", f"{who} was just speaking to {room}; "
+                                                f"it is free in {wait} s.")
+            taken = f.talker
+            self._end(f, "taken")
+            asyncio.ensure_future(taken.end(
+                "taken", f"{t.name or 'Another carer'} took over {self._name_of(cid)}."))
+        self._floors[cid] = Floor(cid, t)
         return None
 
-    async def _release(self, f: Floor) -> None:
-        f.speaking = False
-        f.hold_until = time.monotonic() + settings.talkback_floor_hold_secs
-        await self._announce(f.camera_id)
+    def _end(self, f: Floor, how: str) -> None:
+        """A floor is over: free it and write the talk into the log."""
+        if self._floors.get(f.camera_id) is f:
+            self._floors.pop(f.camera_id)
+        talk_secs = round(f.speech_frames * _FRAME_SECS, 1)
+        t = f.talker
+        logger.info("talk %s: %s spoke %.1fs (%s)", f.camera_id,
+                    t.name or t.holder, talk_secs, how)
+        audit.record({
+            "event": "talk", "camera_id": f.camera_id,
+            "camera_name": self._name_of(f.camera_id),
+            "name": t.name, "user_id": t.user_id, "client_id": t.client_id,
+            "holder": t.holder, "started_at": f.started_at, "ended_at": now_iso(),
+            "talk_secs": talk_secs,
+            "held_secs": round(f.last_speech - f.since, 1), "ended": how,
+        })
+
+    def _refused(self, t: Talker, code: str, message: str) -> dict:
+        audit.record({
+            "event": "refused", "camera_id": t.camera_id,
+            "camera_name": self._name_of(t.camera_id),
+            "name": t.name, "user_id": t.user_id, "client_id": t.client_id,
+            "holder": t.holder, "at": now_iso(), "code": code, "message": message,
+        })
+        return {"code": code, "message": message}
 
     async def _tick(self) -> None:
-        """Floor holds expire, and a speaker whose audio stopped is released."""
+        """Speech that stopped becomes a held floor; held floors expire; idle
+        sockets close."""
         try:
             while True:
                 await asyncio.sleep(_TICK)
                 now = time.monotonic()
                 for f in list(self._floors.values()):
-                    if f.speaking and not f.pending and now - f.last_frame > STALL_SECS:
-                        logger.info("talk floor %s: no audio for %.0fs, released",
-                                    f.camera_id, now - f.last_frame)
-                        await self._release(f)
-                        await _push(f.client, {"type": "released", "camera": f.camera_id,
-                                               "reason": "no audio"})
+                    if f.speaking and now - f.last_speech > GAP_SECS:
+                        f.speaking = False
+                        f.hold_until = f.last_speech + settings.talkback_floor_hold_secs
                     elif not f.speaking and f.hold_until <= now:
-                        if self._floors.get(f.camera_id) is f:
-                            self._floors.pop(f.camera_id, None)
-                            await self._announce(f.camera_id)
+                        self._end(f, "released")
+                held = {f.talker for f in self._floors.values()}
+                for t in list(self._talkers):
+                    if (not t.closing and t not in held
+                            and now - t.last_speech > IDLE_CLOSE_SECS):
+                        t.closing = True
+                        asyncio.ensure_future(t.close(1000, "idle"))
         except asyncio.CancelledError:
             return
-
-    # -- telling every page ------------------------------------------------ #
-
-    async def _announce(self, camera_id: str) -> None:
-        await self.broadcast({"type": "floor", "camera": camera_id,
-                              **self.floor(camera_id)})
-
-    async def broadcast(self, message: dict) -> None:
-        for c in list(self._clients):
-            await _push(c, message)
-
-    def _camera_changed(self, camera_id: str, readiness: dict) -> None:
-        if self._clients:
-            asyncio.ensure_future(self.broadcast(
-                {"type": "camera", "camera": camera_id, "readiness": readiness}))
-
-
-def _refused(camera_id: str, code: str, message: str) -> dict:
-    return {"type": "refused", "camera": camera_id, "code": code, "message": message}
-
-
-async def _push(client: Client, message: dict) -> None:
-    try:
-        await client.push(message)
-    except Exception:
-        pass                       # a page that went away is cleaned up by disconnect()
 
 
 hub = TalkbackHub()
 
-__all__ = ["hub", "TalkbackHub", "Client", "Floor", "STALL_SECS", "camera_host"]
+__all__ = ["hub", "TalkbackHub", "Talker", "Floor", "GAP_SECS", "IDLE_CLOSE_SECS",
+           "camera_host"]

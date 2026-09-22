@@ -25,9 +25,10 @@ Checked:
   * the edge keeps its own talk LINE to every camera open, re-opens it when the
     camera ends it, records how long each connection lasted, never retries a
     refused password in a loop, and opens lines on demand when told to
-  * the FLOOR: one voice per camera, no time limit while the button is held, a
-    short hold after release, released when audio stops, kept across a page's
-    reconnect, one camera per page, and priority only upward
+  * the FLOOR: one voice per camera (two cameras at once is fine), no time
+    limit while the button is held, a short hold after release, released when
+    speech stops, silence never claims a room, kept across a reconnect, idle
+    sockets closed, priority only upward — and every talk and refusal logged
 
 Run:  python tests/test_talkback.py
 """
@@ -445,6 +446,7 @@ print("\nCamera lines")
 
 from talkback import lines as lines_mod                            # noqa: E402
 from talkback import sessions as floor_mod                         # noqa: E402
+from talkback import audit as audit_mod                            # noqa: E402
 
 _settings = lines_mod.settings
 
@@ -553,8 +555,6 @@ async def _lines():
     _Cams.rows = [_Cam("LOUNGE")]
     _LineSession.OUTCOME, _LineSession.opened = "ok", []
     L = lines_mod.Lines()
-    changes = []
-    L.on_change = lambda cid, r: changes.append((cid, r["state"], r["line"]))
     L.start()
 
     check("from boot, the edge opens a talk line to the camera by itself",
@@ -563,8 +563,6 @@ async def _lines():
     check("it is recorded: opened once, with how long the camera took",
           row["opens"] == 1 and row["history"][-1]["event"] == "open"
           and row["elapsed_ms"] is not None)
-    check("and every page is told, without polling",
-          ("LOUNGE", "ready", "open") in changes)
 
     first = L._lines["LOUNGE"].session
     check("speech fed to an open line reaches the camera",
@@ -650,7 +648,7 @@ async def _lines():
     check("with lines on demand and no carer connected, lines are closed",
           await _until(lambda: L.readiness("LOUNGE")["line"] == "closed"))
     L.set_clients(1)
-    check("a carer's page connecting opens them",
+    check("a carer connecting to a camera opens them",
           await _until(lambda: L.readiness("LOUNGE")["line"] == "open"))
     L.set_clients(0)
     check("and the last one leaving closes them again",
@@ -682,7 +680,6 @@ class _Lines:
         self.open = {"LOUNGE": True, "LIVING_ROOM": True}
         self.sent: list = []
         self.clients = 0
-        self.on_change = None
 
     async def ensure_open(self, cid, timeout):
         return self.open.get(cid, False), ("ready" if self.open.get(cid) else "rejected")
@@ -699,130 +696,146 @@ class _Lines:
         self.clients = n
 
 
-def _page(cid, name, priority=0):
-    inbox, closed = [], []
+def _talker(cid, client_id, name, priority=0, user_id=""):
+    """One carer's socket on one camera, recording what the edge did to it."""
+    ended, closed = [], []
 
-    async def push(m):
-        inbox.append(m)
+    async def end(code, message):
+        ended.append((code, message))
 
     async def close(code, reason):
         closed.append(code)
 
-    c = floor_mod.Client(client_id=cid, name=name, holder="203.0.113.1",
-                         push=push, close=close, priority=priority)
-    c.inbox, c.closed = inbox, closed
-    return c
+    t = floor_mod.Talker(camera_id=cid, client_id=client_id, name=name, user_id=user_id,
+                         holder="203.0.113.1", end=end, close=close, priority=priority)
+    t.ended, t.closed = ended, closed
+    return t
+
+
+SPEECH = b"\x10" * 160
+SILENCE = b"\xd5" * 160              # what a muted microphone sends
 
 
 async def _floor():
     fl = _Lines()
     floor_mod.lines = fl
     floor_mod.CameraConfig = _Cams
-    floor_mod.STALL_SECS = 0.3
+    floor_mod.GAP_SECS = 0.2
+    floor_mod.IDLE_CLOSE_SECS = 1.0
+    audit_mod.PATH = _TMP / "talkback_log.jsonl"
     _settings.talkback_floor_hold_secs = 0.4
     _Cams.rows = [_Cam("LOUNGE"), _Cam("LIVING_ROOM", "LIVING ROOM")]
     hub = floor_mod.TalkbackHub()
     hub.start()
-    priya, arun = _page("p1", "Nurse Priya"), _page("a1", "Nurse Arun")
-    await hub.connect(priya)
-    await hub.connect(arun)
-    check("each connected page is counted (lines on demand follow it)", fl.clients == 2)
 
-    g = await hub.claim(priya, "LOUNGE")
-    check("a press on a free camera is granted at once", g["type"] == "granted")
-    check("and EVERY page is told who is speaking",
-          any(m.get("type") == "floor" and m.get("state") == "speaking"
-              and m.get("by") == "Nurse Priya" for m in arun.inbox))
-
-    r = await hub.claim(arun, "LOUNGE")
-    check("a second carer is refused while someone speaks, and told who",
-          r["type"] == "refused" and r["code"] == "busy" and "Nurse Priya" in r["message"])
+    priya = _talker("LOUNGE", "p1", "Nurse Priya", user_id="u-17")
+    check("connecting to a free camera grants its floor at once",
+          await hub.open(priya) is None and hub.floor("LOUNGE")["by"] == "Nurse Priya")
+    check("each connected carer is counted (lines on demand follow it)", fl.clients == 1)
+    r = await hub.open(_talker("LOUNGE", "a1", "Nurse Arun"))
+    check("a second carer on the same camera is refused, and told who",
+          r is not None and r["code"] == "busy" and "Nurse Priya" in r["message"])
+    check("and is not counted as connected", fl.clients == 1)
+    arun = _talker("LIVING_ROOM", "a1", "Nurse Arun")
+    check("while two carers talk into two cameras at the same time",
+          await hub.open(arun) is None and hub.floor("LIVING_ROOM")["by"] == "Nurse Arun"
+          and hub.floor("LOUNGE")["by"] == "Nurse Priya")
 
     check("the speaker's audio goes to that camera's line",
-          await hub.audio(priya, b"x" * 160) == "LOUNGE" and fl.sent == ["LOUNGE"])
-    check("audio from a page without the floor goes nowhere",
-          await hub.audio(arun, b"x" * 160) is None and fl.sent == ["LOUNGE"])
-
-    # No time limit: speech keeps the floor for as long as it flows.
+          await hub.audio(priya, SPEECH) is None and fl.sent[-1] == "LOUNGE")
     for _ in range(12):
-        await hub.audio(priya, b"x" * 160)
+        await hub.audio(priya, SPEECH)
         await asyncio.sleep(0.05)
     check("there is no time limit while the button is held",
           hub.floor("LOUNGE")["state"] == "speaking")
 
-    await hub.release(priya)
+    hub.release(priya)
     check("letting go keeps the floor briefly (the floor hold)",
           hub.floor("LOUNGE")["state"] == "holding")
-    r = await hub.claim(arun, "LOUNGE")
+    sent = len(fl.sent)
+    await hub.audio(priya, SILENCE)
+    check("digital silence on a held floor goes nowhere and claims nothing",
+          len(fl.sent) == sent and hub.floor("LOUNGE")["state"] == "holding")
+    r = await hub.open(_talker("LOUNGE", "a2", "Nurse Arun"))
     check("inside the hold another carer waits, told for how long",
-          r["type"] == "refused" and "free in" in r["message"])
-    g = await hub.claim(priya, "LOUNGE")
-    check("but the same carer carries on straight away (a conversation)",
-          g["type"] == "granted")
-    await hub.release(priya)
-    check("after the hold the floor is free, and every page is told",
-          await _until(lambda: hub.floor("LOUNGE")["state"] == "free")
-          and any(m.get("type") == "floor" and m.get("state") == "free" for m in arun.inbox))
-    g = await hub.claim(arun, "LOUNGE")
-    check("so the next carer gets it", g["type"] == "granted")
+          r is not None and "free in" in r["message"])
+    await hub.audio(priya, SPEECH)
+    check("but the same carer carries on at once (a conversation)",
+          hub.floor("LOUNGE")["state"] == "speaking")
+    check("when speech stops the floor is held, then free — the socket may stay open",
+          await _until(lambda: hub.floor("LOUNGE")["state"] == "free", 2.0)
+          and priya in hub._talkers)
 
-    # One microphone per page.
-    await hub.claim(arun, "LIVING_ROOM")
-    check("taking another camera lets go of the first (one voice per page)",
-          hub.floor("LOUNGE")["state"] == "free"
-          and hub.floor("LIVING_ROOM")["by"] == "Nurse Arun")
+    talk = audit_mod.recent("LOUNGE", 1)[0]
+    check("the talk is logged: who, which room, when, and how long they spoke",
+          talk["event"] == "talk" and talk["name"] == "Nurse Priya"
+          and talk["user_id"] == "u-17" and talk["camera_name"] == "LOUNGE"
+          and talk["talk_secs"] >= 0.2 and talk["started_at"] and talk["ended_at"])
+    check("and so are refusals, with why",
+          any(e["event"] == "refused" and e["code"] == "busy"
+              for e in audit_mod.recent("LOUNGE", 20)))
 
-    # A page that stops sending while "speaking" — frozen tab, dead network.
-    check("a speaker whose audio stops is released, not left holding the room",
-          await _until(lambda: hub.floor("LIVING_ROOM")["state"] != "speaking", 1.5)
-          and any(m.get("type") == "released" for m in arun.inbox))
-    await _until(lambda: hub.floor("LIVING_ROOM")["state"] == "free", 1.5)
+    arun2 = _talker("LOUNGE", "a3", "Nurse Arun")
+    check("so the next carer gets it", await hub.open(arun2) is None)
+    r = await hub.audio(priya, SPEECH)
+    check("speaking again on an old open socket while someone else has the room is refused",
+          r is not None and r["code"] == "busy")
+    hub.release(arun2)
+    await hub.leave(arun2)
+    await _until(lambda: hub.floor("LOUNGE")["state"] == "free", 2.0)
+    r = await hub.audio(priya, SPEECH)
+    check("speech on an open socket takes a free floor again, instantly",
+          r is None and hub.floor("LOUNGE")["by"] == "Nurse Priya")
 
-    # A page that drops and comes back (same client_id) keeps its floor.
-    await hub.claim(priya, "LOUNGE")
-    await hub.disconnect(priya)
-    check("a page that disconnects mid-sentence keeps its floor for the hold",
+    # A carer whose network drops mid-sentence.
+    await hub.leave(priya)
+    check("a socket that drops mid-sentence keeps its floor for the hold",
           hub.floor("LOUNGE")["state"] == "holding")
-    back = _page("p1", "Nurse Priya")
-    await hub.connect(back)
-    g = await hub.claim(back, "LOUNGE")
-    check("and, coming back in time, carries on", g["type"] == "granted")
-    stale = _page("p1", "Nurse Priya")
-    await hub.connect(stale)
-    check("a second connection from the same page replaces the first (closed 4000)",
-          back.closed == [4000] and hub.floor("LOUNGE")["by"] == "Nurse Priya")
-    await hub.release(stale)
-    await _until(lambda: hub.floor("LOUNGE")["state"] == "free", 1.5)
+    back = _talker("LOUNGE", "p1", "Nurse Priya")
+    check("and reconnecting with the same client_id carries on",
+          await hub.open(back) is None and hub.floor("LOUNGE")["client_id"] == "p1")
+    dup = _talker("LOUNGE", "p1", "Nurse Priya")
+    await hub.open(dup)
+    await asyncio.sleep(0.01)
+    check("a second socket from the same control replaces the first",
+          back.closed == [1000] and hub._floors["LOUNGE"].talker is dup)
+    hub.release(dup)
+    await _until(lambda: hub.floor("LOUNGE")["state"] == "free", 2.0)
+    check("an idle socket holding nothing is closed after hold_secs",
+          await _until(lambda: dup.closed == [1000], 2.0))
 
     # Priority (future doctor role): only ever raised from a verified source.
-    doctor = _page("d1", "Dr Rao", priority=10)
-    await hub.connect(doctor)
-    await hub.claim(arun, "LOUNGE")
-    g = await hub.claim(doctor, "LOUNGE")
-    check("a higher-priority page takes the floor (the future doctor role)",
-          g["type"] == "granted" and hub.floor("LOUNGE")["by"] == "Dr Rao")
-    check("and the carer is told who took it",
-          any(m.get("type") == "taken" and m.get("by") == "Dr Rao" for m in arun.inbox))
-    r = await hub.claim(arun, "LOUNGE")
-    check("a lower priority never takes it back", r["type"] == "refused")
+    carer = _talker("LOUNGE", "c1", "Nurse Arun")
+    await hub.open(carer)
+    doctor = _talker("LOUNGE", "d1", "Dr Rao", priority=10)
+    check("a higher-priority carer takes the floor (the future doctor role)",
+          await hub.open(doctor) is None and hub.floor("LOUNGE")["by"] == "Dr Rao")
+    await asyncio.sleep(0.01)
+    check("and the carer it was taken from is told who took it",
+          carer.ended and carer.ended[0][0] == "taken" and "Dr Rao" in carer.ended[0][1])
     check("everyone is priority 0 today, so nobody can take over anybody",
           priya.priority == arun.priority == 0)
-    await hub.release(doctor)
 
     # A camera whose line is not open.
     fl.open["LIVING_ROOM"] = False
-    r = await hub.claim(priya, "LIVING_ROOM")
+    hub.release(arun)
+    await hub.leave(arun)
+    await _until(lambda: hub.floor("LIVING_ROOM")["state"] == "free", 2.0)
+    r = await hub.open(_talker("LIVING_ROOM", "x1", "Nurse X"))
     check("a camera that cannot be reached is refused with the camera's reason",
-          r["type"] == "refused" and r["code"] == "unauthorized"
-          and "refused" in r["message"])
+          r is not None and r["code"] == "unauthorized" and "refused" in r["message"])
     check("and no floor is left reserved behind the refusal",
           hub.floor("LIVING_ROOM")["state"] == "free")
-    r = await hub.claim(priya, "GARAGE")
-    check("an unknown camera is refused as such", r["code"] == "no_camera")
+    r = await hub.open(_talker("GARAGE", "x2", "Nurse X"))
+    check("an unknown camera is refused as such", r is not None and r["code"] == "no_camera")
 
-    for c in (priya, arun, back, stale, doctor):
-        await hub.disconnect(c)
     await hub.stop()
+    check("stopping the service logs the talk still in progress",
+          audit_mod.recent("LOUNGE", 1)[0]["ended"] == "shutdown")
+    for i in range(3):
+        audit_mod.record({"event": "talk", "camera_id": "PORCH", "n": i})
+    check("the log reads newest first, filtered by camera",
+          [e["n"] for e in audit_mod.recent("PORCH", 2)] == [2, 1])
 
 
 asyncio.run(_floor())

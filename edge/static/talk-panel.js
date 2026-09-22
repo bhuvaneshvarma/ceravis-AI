@@ -32,14 +32,17 @@
 
   /* One read of the talk-back inventory, shared by every tile on the page.
 
-     `ensure` is what the live wall calls on every 5-second sync. The list is
-     fetched ONCE; after that the edge pushes every camera change down the page's
-     talk session (cvTalk.onCamera below), so nothing here polls. `refresh`
-     forces a re-read — after commissioning, where it matters. */
+     `ensure` is what the live wall calls on every 5-second sync; it re-reads at
+     most every REFRESH_MS. The read is cheap (the edge answers from memory and
+     touches no camera) and carries each camera's line state and who holds its
+     floor, so a tile says "Nurse Priya is talking" before anyone presses.
+     `refresh` forces a re-read — after commissioning, where it matters. */
+  var REFRESH_MS = 15000;
   var inflight = null;
+  var readAt = 0;
 
   function ensure() {
-    if (!inflight) inflight = refresh();
+    if (!inflight || Date.now() - readAt > REFRESH_MS) inflight = refresh();
     return inflight;
   }
 
@@ -50,10 +53,12 @@
       return api("/api/v1/talkback/cameras" +
                  (edge ? "?edge_id=" + encodeURIComponent(edge) : ""));
     }).then(function (r) {
+      readAt = Date.now();
       state.enabled = !!r.enabled;
       state.error = "";
       state.byId = {};
       (r.cameras || []).forEach(function (c) { state.byId[c.camera_id] = c; });
+      applyInventory();
       return state;
     }).catch(function (e) {
       inflight = null;             // a failed read must not be cached forever
@@ -406,10 +411,9 @@
         label.textContent =
           s === "live" ? "On air" :
           s === "connecting" ? "Connecting…" :
-          // The page's connection dropped and is coming back by itself. Named,
-          // because a carer who is told what is happening waits.
+          // The connection dropped mid-sentence and is coming back by itself.
+          // Named, because a carer who is told what is happening waits.
           s === "reconnecting" ? "Reconnecting…" :
-          s === "offline" ? "Talk offline" :
           s === "busy" ? (speaker || "Someone") + " is talking" :
           s === "error" ? "Try again" :
           ready === "unreachable" ? "Speaker offline" :
@@ -418,8 +422,8 @@
           btn.title = entry.readiness.message || btn.title;
         if (s === "error" && detail) toast(detail, "err", 5000);
       },
-      // Who holds the floor, pushed by the edge to every page — so the button
-      // says "Nurse Priya is talking" BEFORE anyone presses into a refusal.
+      // Who holds the floor, from the inventory — so the button says "Nurse
+      // Priya is talking" BEFORE anyone presses into a refusal.
       onFloor: function (state, by, mine) {
         speaker = state !== "free" && !mine ? by : "";
       },
@@ -435,6 +439,7 @@
       },
     });
     tile.cvTalk = handle;
+    handle.showFloor(entry.floor);
     return handle;
   }
 
@@ -483,19 +488,17 @@
     mounted.slice().forEach(function (m) { remountIfIdle(m.tile); });
   }
 
-  /* The edge pushes every change to a camera's line down the page's talk
-     session (a camera re-paired in the Tapo app, a line that dropped and came
-     back). Rebuild only the tiles whose state actually moved. */
-  function cameraChanged(cameraId, readiness) {
-    var entry = state.byId[cameraId];
-    if (!entry || !readiness) return;
-    entry.readiness = readiness;
-    if (readiness.state && readiness.state !== "needs_password") entry.configured = true;
+  /* A fresh inventory: rebuild only the tiles whose camera actually changed
+     (re-paired in the Tapo app, a line that dropped), and tell every other tile
+     who holds its floor now. */
+  function applyInventory() {
     mounted.slice().forEach(function (m) {
-      if (m.camera.camera_id === cameraId && signature(entry) !== m.sig) remountIfIdle(m.tile);
+      var entry = state.byId[m.camera.camera_id];
+      if (!entry) return;
+      if (signature(entry) !== m.sig) remountIfIdle(m.tile);
+      else if (m.tile.cvTalk) m.tile.cvTalk.showFloor(entry.floor);
     });
   }
-  if (global.cvTalk) global.cvTalk.onCamera = cameraChanged;
 
   /* Rebuild BOTH controls after commissioning, so the tile reads as one fresh
      unit. The listen button is only detached, never silenced (see below). */

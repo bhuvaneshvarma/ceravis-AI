@@ -5,21 +5,22 @@ Talk-back API — speaking into a room through its camera, and setting it up.
 
     GET    /api/v1/talkback/cameras                  cameras, readiness, who has the floor
     GET    /api/v1/talkback/health                   lines, floors, the line record
+    GET    /api/v1/talkback/log                      who spoke into which room, when, how long
     PUT    /api/v1/talkback/credential               THE home's TP-Link password
     DELETE /api/v1/talkback/credential               forget it
     POST   /api/v1/talkback/check                    look at every camera now
     PUT    /api/v1/talkback/{camera_id}/credential   override for one camera
     DELETE /api/v1/talkback/{camera_id}/credential   forget the override
     POST   /api/v1/talkback/{camera_id}/test         is this camera's line open
-    WS     /api/v1/talkback/session                  a page's standby connection
+    WS     /api/v1/talkback/{camera_id}/stream       a carer's microphone, into that camera
 
-THE SESSION. A page opens ONE WebSocket when it loads and keeps it. It claims
-nothing and blocks nobody. On a press it sends {"type":"claim","camera":…}; once
-granted, binary 20 ms A-law frames go to that camera; {"type":"release"} when the
-button comes up. The edge pushes floor and camera changes to every page, so no
-page polls. The camera side is the edge's own always-open LINE (talkback.lines)
-and the right to speak is the FLOOR (talkback.sessions) — a press waits for
-neither a connection nor a camera handshake.
+THE STREAM. One socket per carer per camera. Connecting claims that camera's
+floor; {"type":"open"} says it is granted. Binary 20 ms A-law frames are speech,
+for as long as the button is held; {"type":"release"} (or just silence) lets the
+floor go after the floor hold. The socket may stay open between presses — the
+next press is instant — without holding the room. The camera side is the edge's
+own always-open LINE (talkback.lines), so no press waits for a camera handshake.
+A refusal is always an {"type":"error"} frame followed by a coded close.
 
 AUTHENTICATION is the edge_id, exactly as every other control surface on this
 device (api.control_auth). The WebSocket carries it as a query parameter because
@@ -35,26 +36,28 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 
 from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from api.control_auth import check_edge_id, field
 from config.settings import settings
-from talkback import credentials, guard
+from talkback import audit, credentials, guard
 from talkback.lines import lines
 from talkback.mpegts import FRAME_BYTES, SAMPLE_RATE
 from talkback.protocol import TalkbackError
-from talkback.sessions import Client, hub
+from talkback.sessions import IDLE_CLOSE_SECS, Talker, hub
 
 logger = logging.getLogger("talkback.api")
 
 router = APIRouter(prefix="/api/v1/talkback", tags=["Talkback"])
 
-# Close codes for the SESSION connection itself. Floor refusals are messages, not
-# closes: the standby connection outlives any one press.
-WS_REPLACED = 4000        # the same page connected again; this socket is the stale one
-WS_UNAUTHORIZED = 4401
-WS_UNAVAILABLE = 4503
+# Close codes. A refusal is an {"type":"error"} frame, then one of these.
+WS_UNAUTHORIZED = 4401    # edge_id missing or for another device
+WS_BUSY = 4409            # another carer has this camera's floor (or took it)
+WS_COOLDOWN = 4429        # paused after repeated refused passwords (talkback.guard)
+WS_FAILED = 4500          # anything else: the reason's `code:` prefix says what
+WS_UNAVAILABLE = 4503     # talk-back is switched off on this device
 
 # The WebSocket protocol caps a close reason at 123 BYTES; our sentences carry
 # multi-byte characters, so they are cut by bytes, never by characters.
@@ -118,6 +121,15 @@ def list_cameras(edge_id: str | None = Query(None)) -> dict:
         "home_configured": credentials.home_configured(),
         "cameras": _camera_rows(),
     }
+
+
+@router.get("/log")
+def talk_log(edge_id: str | None = Query(None), camera: str | None = Query(None),
+             limit: int = Query(100, ge=1, le=1000)) -> dict:
+    """Who spoke into which room, when and for how long — and who was refused.
+    Newest first."""
+    check_edge_id(edge_id)
+    return {"entries": audit.recent(hub.canonical(camera) if camera else None, limit)}
 
 
 @router.get("/health")
@@ -240,38 +252,32 @@ async def test_camera(camera_id: str, body: dict = Body(default={})) -> dict:
         raise _http(exc)
 
 
-@router.websocket("/session")
-async def talk_session(websocket: WebSocket) -> None:
-    """A page's standby connection: floor claims, speech, and live updates."""
+def _identity(value: str | None, limit: int) -> str:
+    """A client-supplied label, only ever displayed and logged: printable and
+    bounded."""
+    return "".join(ch for ch in (value or "") if ch.isprintable())[:limit].strip()
+
+
+@router.websocket("/{camera_id}/stream")
+async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
+    """A carer's microphone into one camera."""
     q = websocket.query_params
     edge_id = q.get("edge_id") or q.get("edgeId")
-    # The page's own id. It survives the page's reconnects, so a carer whose
-    # network dropped mid-sentence comes back to their own floor.
-    client_id = (q.get("client_id") or q.get("clientId") or "")[:64] or hub.new_client_id()
-    # Shown to other carers ("Nurse Priya is speaking"). The client supplies it,
-    # so it is only ever DISPLAYED: bounded and stripped to printable characters.
-    name = "".join(ch for ch in (q.get("name") or "") if ch.isprintable())[:40].strip()
+    # The carer's control: sent again on a reconnect, it gets its floor back.
+    client_id = _identity(q.get("client_id") or q.get("clientId"), 64) \
+        or "srv-" + uuid.uuid4().hex[:12]
     forwarded = (websocket.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    holder = forwarded or (websocket.client.host if websocket.client else "unknown")
 
     await websocket.accept()
     if not settings.talkback_enabled:
-        return await _refuse(websocket, WS_UNAVAILABLE, "disabled",
+        return await _refuse(websocket, "disabled",
                              "Talk-back is switched off on this device.")
     try:
         check_edge_id(edge_id)
     except HTTPException:
-        return await _refuse(websocket, WS_UNAUTHORIZED, "edge_id",
+        return await _refuse(websocket, "edge_id",
                              "This device did not accept the request (edge_id "
                              "missing or for another device).")
-
-    # Pushes come from this loop AND from other carers' actions (floor changes)
-    # and the lines (camera changes); one lock keeps whole messages whole.
-    send_lock = asyncio.Lock()
-
-    async def push(message: dict) -> None:
-        async with send_lock:
-            await websocket.send_json(message)
 
     async def close(code: int, reason: str) -> None:
         try:
@@ -279,18 +285,28 @@ async def talk_session(websocket: WebSocket) -> None:
         except Exception:
             pass
 
-    client = Client(client_id=client_id, name=name, holder=holder, push=push, close=close)
-    await hub.connect(client)
-    logger.info("talk session open for %s (%s)", name or holder, client_id)
+    talker = Talker(
+        camera_id=hub.canonical(camera_id), client_id=client_id,
+        name=_identity(q.get("name") or q.get("userName"), 40),
+        user_id=_identity(q.get("user_id") or q.get("userId"), 64),
+        holder=forwarded or (websocket.client.host if websocket.client else "unknown"),
+        end=lambda code, message: _refuse(websocket, code, message), close=close)
+    refusal = await hub.open(talker)
+    if refusal is not None:
+        return await _refuse(websocket, refusal["code"], refusal["message"])
+    logger.info("talk %s open for %s (%s)", talker.camera_id,
+                talker.name or talker.holder, client_id)
     last_stats = 0.0
     try:
-        await push({
-            "type": "welcome", "client_id": client_id,
+        await websocket.send_json({
+            "type": "open", "camera_id": talker.camera_id, "client_id": client_id,
             "codec": "alaw", "sample_rate": SAMPLE_RATE, "frame_bytes": FRAME_BYTES,
             "mic_gain": settings.talkback_mic_gain,
+            # How long this socket may idle between presses before the edge
+            # closes it; the floor itself is only held floor_hold_secs.
+            "hold_secs": IDLE_CLOSE_SECS,
             "floor_hold_secs": settings.talkback_floor_hold_secs,
-            "cameras": {c["camera_id"]: {"readiness": c["readiness"], "floor": c["floor"]}
-                        for c in _camera_rows()},
+            "max_turn_secs": 0,                    # none: talk while it is held
         })
         while True:
             message = await websocket.receive()
@@ -298,13 +314,18 @@ async def talk_session(websocket: WebSocket) -> None:
                 break
             chunk = message.get("bytes")
             if chunk is not None:
-                if 0 < len(chunk) <= _MAX_CHUNK_BYTES:
-                    camera = await hub.audio(client, chunk)
-                    now = time.monotonic()
-                    if camera and now - last_stats >= 1.0:
-                        last_stats = now
-                        await push({"type": "stats", "camera": camera,
-                                    **lines.session_health(camera)})
+                if not 0 < len(chunk) <= _MAX_CHUNK_BYTES:
+                    continue
+                refusal = await hub.audio(talker, chunk)
+                if refusal is not None:
+                    await _refuse(websocket, refusal["code"], refusal["message"])
+                    break
+                now = time.monotonic()
+                if now - last_stats >= 1.0 and hub.floor(talker.camera_id).get(
+                        "client_id") == client_id:
+                    last_stats = now
+                    await websocket.send_json({"type": "stats",
+                                               **lines.session_health(talker.camera_id)})
                 continue
             text = message.get("text") or ""
             if len(text) > _MAX_TEXT_BYTES:
@@ -314,31 +335,35 @@ async def talk_session(websocket: WebSocket) -> None:
             except ValueError:
                 continue
             kind = command.get("type") if isinstance(command, dict) else None
-            if kind == "claim":
-                await push(await hub.claim(client, str(command.get("camera") or "")))
-            elif kind == "release":
-                await hub.release(client)
+            if kind == "release":
+                hub.release(talker)
             elif kind == "stop":
                 break
             # "ping" and anything unknown: nothing to do; the frame kept the
             # connection alive through the proxies, which was its only job.
-    except (WebSocketDisconnect, OSError):
-        pass
+    except (WebSocketDisconnect, OSError, RuntimeError):
+        pass                                       # the carer left, or we closed it
     except Exception:
-        logger.exception("talk session crashed for %s", client_id)
+        logger.exception("talk stream crashed for %s", client_id)
     finally:
-        # Every exit gives the floor back (held for the floor hold, so a page that
-        # reconnects in time carries on).
-        await hub.disconnect(client)
+        # Every exit lets the floor go (held for the floor hold, so a carer
+        # whose network dropped can come back to it).
+        await hub.leave(talker)
         await close(1000, "")
-        logger.info("talk session closed for %s (%s)", name or holder, client_id)
+        logger.info("talk %s closed for %s (%s)", talker.camera_id,
+                    talker.name or talker.holder, client_id)
 
 
-async def _refuse(websocket: WebSocket, close_code: int, code: str, message: str) -> None:
+_CLOSE_FOR = {"edge_id": WS_UNAUTHORIZED, "disabled": WS_UNAVAILABLE,
+              "busy": WS_BUSY, "taken": WS_BUSY, "cooldown": WS_COOLDOWN}
+
+
+async def _refuse(websocket: WebSocket, code: str, message: str) -> None:
     """Say why — the full sentence in a frame, then a close whose code and
     (byte-capped) reason say the same."""
     try:
         await websocket.send_json({"type": "error", "code": code, "message": message})
-        await websocket.close(code=close_code, reason=_reason(code, message))
+        await websocket.close(code=_CLOSE_FOR.get(code, WS_FAILED),
+                              reason=_reason(code, message))
     except Exception:
         pass

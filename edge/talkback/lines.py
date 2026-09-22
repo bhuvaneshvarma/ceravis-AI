@@ -15,9 +15,9 @@ An open line is also the only proof of readiness anyone needs: the old periodic
 silent self-check is gone, because a line that is up has just been proven, and a
 line that fails says why (wrong password, offline, not a talk port).
 
-`talkback_line_always` (default on) keeps every line open from boot. Off, a line
-opens only while at least one carer's page is connected to the edge, so the Tapo
-app can use the speaker when nobody is watching.
+`talkback_line_always` (default on) keeps every line open from boot. Off, lines
+open only while at least one carer is connected to a camera's talk socket, so the
+Tapo app can use the speaker when nobody is talking.
 
 HOW LONG DOES A CAMERA HOLD A LINE? Unknown per firmware, so every line keeps its
 own record — when it opened, how long each connection lasted, why it ended, how
@@ -137,9 +137,6 @@ class Lines:
         self._lines: dict[str, Line] = {}
         self._clients = 0
         self._task: asyncio.Task | None = None
-        # Set by talkback.sessions: called with (camera_id, readiness) whenever a
-        # line's state changes, so every carer's page updates without polling.
-        self.on_change = None
 
     # -- what callers read ------------------------------------------------- #
 
@@ -207,8 +204,8 @@ class Lines:
         self._task = None
 
     def set_clients(self, count: int) -> None:
-        """How many carer pages are connected. Without `talkback_line_always`,
-        this is what decides whether lines are open."""
+        """How many carers' talk sockets are connected. Without
+        `talkback_line_always`, this is what decides whether lines are open."""
         before, self._clients = self._clients, count
         if not settings.talkback_line_always and (before == 0) != (count == 0):
             self.kick()
@@ -483,11 +480,6 @@ class Lines:
             (logger.info if state in ("ready", "connecting") else logger.warning)(
                 "talk line %s: %s -> %s%s", line.camera_id, before[0], state,
                 f" ({detail})" if detail else "")
-        if self.on_change is not None:
-            try:
-                self.on_change(line.camera_id, self.readiness(line.camera_id))
-            except Exception:
-                logger.debug("line change listener failed", exc_info=True)
 
 
 def _paused_detail(line: Line, cred) -> str:

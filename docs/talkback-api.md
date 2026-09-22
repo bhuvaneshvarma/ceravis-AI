@@ -7,8 +7,8 @@ camera's own speaker**, and **listens back**, end to end.
   Carer's browser  ──►  your backend  ──►  frp tunnel  ──►  edge device  ──►  Tapo camera
    mic -> A-law       (adds nothing,       (per-home URL)   (keeps a line     (port 8800,
    20 ms frames over   or is skipped                         open to each      G.711 A-law)
-   ONE page session    entirely)                             camera; one
-                                                             voice at a time)
+   that camera's own   entirely)                             camera; one
+   WebSocket                                                 voice at a time)
 ```
 
 Source of truth: [edge/api/talkback_routes.py](../edge/api/talkback_routes.py)
@@ -47,7 +47,7 @@ The WebSocket carries it as a **query parameter** because a browser cannot set
 headers on a WebSocket handshake. It is checked before anything else, so a wrong
 caller never reaches a camera and never makes a noise.
 
-The socket is **accepted first** and then refused with a reason (§6.2). Closing a
+The socket is **accepted first** and then refused with a reason (§6.3). Closing a
 WebSocket before accepting it becomes an HTTP 403 on the handshake, which a
 browser reports as code `1006` with an empty reason, so no refusal could ever say
 why. Until 2026-09-22 that is exactly what happened.
@@ -62,7 +62,9 @@ why. Until 2026-09-22 that is exactly what happened.
 
 ## 2. `GET /cameras` — what can be talked to
 
-Read-only, touches no network, safe on every page load.
+Read-only, touches no network, safe on every page load. While a live view is
+open, read it again every **15 s**: it is how every carer's screen learns who is
+talking into which room (`floor`) and whether a camera's line went down.
 
 ```
 GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
@@ -129,7 +131,7 @@ GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
 | `readiness.message` | A sentence for the carer. Show it as-is. |
 | `readiness.detail` | The camera's own reason, for an installer (e.g. the refused-password checklist). |
 | `readiness.line` | `open` / `closed`: whether the edge's talk line to this camera is up. |
-| `floor` | Who may speak into this camera now: `{"state": "free"}`, or `{"state": "speaking" \| "holding", "by": "Nurse Priya", "client_id": "…"}`. |
+| `floor` | Who may speak into this camera now: `{"state": "free"}`, or `{"state": "speaking" \| "holding", "by": "Nurse Priya", "client_id": "…"}`. Show "Nurse Priya is talking" on that tile. |
 | `busy` | `true` when the floor is not free. |
 
 **Draw the talk control from `readiness.state`**, not from `configured` alone.
@@ -167,9 +169,9 @@ proof that the camera works: there is no separate periodic check.
 
 Any password change — through this API or the CLI — retries every line at once.
 
-`TALKBACK_LINE_ALWAYS=false` opens lines only while at least one carer's page is
+`TALKBACK_LINE_ALWAYS=false` opens lines only while at least one carer is
 connected, which leaves the camera's speaker free for the Tapo app when nobody is
-watching. **How long a camera keeps a line is firmware-specific and measured, not
+talking. **How long a camera keeps a line is firmware-specific and measured, not
 assumed** — see the line record in §3.
 
 **Zero-input cameras.** A camera with no credential gets one attempt, once per
@@ -207,10 +209,11 @@ GET /<edge_id>/api/v1/talkback/health?edge_id=<edge_id>
       ]
     }
   },
-  "clients": 3,
+  "talkers": 2,
   "floors": {
-    "LOUNGE": { "state": "speaking", "by": "Nurse Priya", "client_id": "pg-…",
-                "holder": "203.0.113.44", "seconds": 4.2, "frames": 210 }
+    "LOUNGE": { "state": "speaking", "by": "Nurse Priya", "client_id": "app-…",
+                "user_id": "1042", "holder": "203.0.113.44",
+                "since": "2026-09-22T15:40:02+05:30", "seconds": 4.2, "talk_secs": 3.9 }
   },
   "guard": {}
 }
@@ -233,6 +236,35 @@ voice still waiting on the device to reach the camera.
 | `60 – 400` | The link is struggling; the carer will hear themselves lag. |
 | `>= 400` | Frames are being **dropped** on purpose — newest kept, oldest lost. |
 | `>= 4000` | The camera stopped reading; the line is closed and re-opened clean. |
+
+### `GET /log` — who spoke into which room, when, and for how long
+
+```
+GET /<edge_id>/api/v1/talkback/log?edge_id=<edge_id>[&camera=LOUNGE][&limit=100]
+```
+
+Newest first, up to `limit` (1–1000, default 100). One entry per **talk** (a
+carer's floor, from grant to the end of the hold) and per **refusal**:
+
+```json
+{ "entries": [
+  { "event": "talk", "camera_id": "LOUNGE", "camera_name": "LOUNGE",
+    "name": "Nurse Priya", "user_id": "1042", "client_id": "app-…",
+    "holder": "203.0.113.44",
+    "started_at": "2026-09-22T15:40:02+05:30", "ended_at": "2026-09-22T15:40:31+05:30",
+    "talk_secs": 18.4, "held_secs": 23.9, "ended": "released" },
+  { "event": "refused", "camera_id": "LOUNGE", "camera_name": "LOUNGE",
+    "name": "Nurse Arun", "user_id": "1077", "client_id": "app-…",
+    "holder": "198.51.100.7", "at": "2026-09-22T15:40:10+05:30",
+    "code": "busy", "message": "Nurse Priya is speaking to LOUNGE." }
+] }
+```
+
+`talk_secs` counts actual speech (silence is not counted); `held_secs` is from the
+grant to the last word. `ended`: `released`, `taken` (a higher priority),
+`line_lost` (the camera went away), `shutdown`. `name` and `user_id` are what the
+carer's app sent (§6.1): the edge records them, it cannot verify them. The log
+lives on the device (`data/talkback_log.jsonl`, capped at ~2×5 MB).
 
 ---
 
@@ -400,78 +432,88 @@ Errors carry a structured detail:
 
 ---
 
-## 6. `WS /session` — one standby connection per page
+## 6. `WS /{camera_id}/stream` — a carer's microphone, into one camera
 
 ```
-wss://edgeai.ceravishealth.in/<edge_id>/api/v1/talkback/session
-    ?edge_id=<edge_id>&client_id=<page id>&name=<carer display name>
+wss://edgeai.ceravishealth.in/<edge_id>/api/v1/talkback/<camera_id>/stream
+    ?edge_id=<edge_id>&client_id=<id>&name=<carer display name>&user_id=<your user id>
 ```
 
-A page opens **one** of these when it loads and keeps it open. It claims nothing
-and blocks nobody — a hundred carers can have the live view open. A press only
-**claims the floor** over it; nothing is connected on the press, and the camera's
-line is already open (§2), so speech starts as soon as the floor is granted.
+One socket per carer **per camera**. Connecting claims that camera's floor, so a
+socket is opened on the first press. It may stay open between presses (the next
+press is then instant) without holding the room: the floor is let go on release,
+whatever the socket does.
+
+### 6.1 Connect
 
 | Query | Required | Meaning |
 |---|---|---|
 | `edge_id` | yes | The home's edge id. Checked before anything else. |
-| `client_id` | recommended | The page's own id (up to 64 chars). Send the same one on every reconnect: a page that drops mid-sentence and comes back within the floor hold keeps its floor. |
-| `name` | recommended | Shown to other carers: "Nurse Priya is speaking to LOUNGE". Up to 40 printable characters; display only. Addresses are never shown. |
+| `<camera_id>` (path) | yes | The camera, as `GET /cameras` names it — the same id as the camera's live-stream path. A label (`LIVING ROOM`) is accepted too. |
+| `client_id` | recommended | Your id for this carer's control, up to 64 chars. Send the same one on a reconnect: a carer whose network drops mid-sentence and comes back within the floor hold keeps the room. |
+| `name` | recommended | The carer's display name, up to 40 characters, from your signed-in user. Shown to other carers ("Nurse Priya is speaking to LOUNGE") and written to the talk log. |
+| `user_id` | recommended | Your backend's id for the carer, up to 64 characters. Written to the talk log only. |
 
-### 6.1 What you send
+`name` and `user_id` are what your app says they are: the edge records them and
+cannot verify them. Aliases `clientId`, `userName`, `userId` are accepted.
+
+### 6.2 What you send
 
 | Frame | Content | When |
 |---|---|---|
-| text `{"type":"claim","camera":"LOUNGE"}` | ask for the floor | on press |
-| **binary** | 160 bytes of **8 kHz mono G.711 A-law** = 20 ms | every 20 ms while held and granted |
-| text `{"type":"release"}` | give the floor back | on release |
+| **binary** | 160 bytes of **8 kHz mono G.711 A-law** = 20 ms | every 20 ms while the button is held, after `open` |
+| text `{"type":"release"}` | the button came up | on release |
 | text `{"type":"ping"}` | keeps proxies from idling the socket | every 20 s |
-| text `{"type":"stop"}` | closing the page | once, then close |
+| text `{"type":"stop"}` | closing the socket | once, then close |
 
-Speech goes to the camera whose floor this page holds; a page holds at most one.
+Speech on an open socket whose floor had been let go **takes it again** — if it
+is free. Frames of pure digital silence (a muted microphone: every byte `0xD5` or
+`0x55`) never take a room and are not forwarded. Frames over 8000 bytes are
+ignored.
 
-### 6.2 What you receive
+### 6.3 What you receive
 
 ```json
-{ "type": "welcome", "client_id": "pg-…", "codec": "alaw", "sample_rate": 8000,
-  "frame_bytes": 160, "mic_gain": 1.0, "floor_hold_secs": 5.0,
-  "cameras": { "LOUNGE": { "readiness": { "state": "ready", "line": "open", … },
-                           "floor": { "state": "free" } } } }
+{ "type": "open", "camera_id": "LOUNGE", "client_id": "app-…",
+  "codec": "alaw", "sample_rate": 8000, "frame_bytes": 160, "mic_gain": 1.0,
+  "hold_secs": 60.0, "floor_hold_secs": 5.0, "max_turn_secs": 0 }
 ```
 
 | Message | Meaning |
 |---|---|
-| `welcome` | The session is ready; every camera's line and floor, now. Send nothing before it. |
-| `{"type":"granted","camera":…}` | The floor is yours — start sending audio. |
-| `{"type":"refused","camera":…,"code":…,"message":…}` | Not granted. Show `message`. `code`: `busy` (someone else is speaking or just spoke), `unauthorized` / `no_credential` / `cooldown` (the camera's password — the button should become "Set up talk"), `unreachable` / `refused` / `timeout` (the camera, not you), `no_camera`. |
-| `{"type":"floor","camera":…,"state":"free"\|"speaking"\|"holding","by":…,"client_id":…}` | Sent to **every** page whenever a floor changes, so each button can say who is talking before anyone presses. |
-| `{"type":"camera","camera":…,"readiness":{…}}` | A camera's line changed (dropped, re-opened, refused). |
-| `{"type":"stats","camera":…,"frames_sent":…,"queued_ms":…}` | About once a second while you speak. |
-| `{"type":"released","camera":…,"reason":"no audio"}` | The edge released your floor: no audio arrived for 3 s (a frozen page). |
-| `{"type":"taken","camera":…,"by":…}` | A higher-priority user took the floor (reserved for a future doctor role; nobody has priority today). |
+| `open` | The floor is yours and the camera's line is up. Send nothing before it. `mic_gain`: apply it before encoding. `hold_secs`: how long this socket may idle between presses before the edge closes it (close yours a little before). `floor_hold_secs`: how long the room stays yours after release. `max_turn_secs: 0`: no limit while held. |
+| `{"type":"stats","frames_sent":…,"frames_dropped":…,"bytes_sent":…,"queued_ms":…,"peak_queued_ms":…}` | About once a second while you speak. |
+| `{"type":"error","code":…,"message":…}` | A refusal, sent **just before** the close below. Show `message` as-is. |
 
-**Close codes** (the connection itself, not a press): `4503` talk-back is switched
-off, `4401` wrong edge_id, `4000` the same page connected again (this socket is the
-stale one) — do **not** reconnect on these. On anything else (`1006` etc.),
-reconnect with the same `client_id`: 0.5 s, then ×1.8, up to 10 s.
+**Every refusal is an `error` frame and then a close.** The close reason repeats
+it as `"<code>: <sentence>"`, cut to 123 bytes.
 
-### 6.3 The floor — who may speak
+| Close | `code` | Meaning | Reconnect? |
+|---|---|---|---|
+| `4409` | `busy` | Another carer is speaking to this camera, or spoke in the last few seconds. The sentence names them, and says when it frees. | No — show it |
+| `4409` | `taken` | A higher-priority user took the floor (reserved for a future doctor role; nobody has priority today). | No — show it |
+| `4429` | `cooldown` | Paused after repeated refused passwords (§6.4). | No — show setup |
+| `4500` | `unauthorized` / `no_credential` | The camera's password. | No — show setup; **never retry** |
+| `4500` | `unreachable` / `refused` / `timeout` | The camera did not open its speaker (offline, in use from the Tapo app, slow). | On the next press |
+| `4500` | `protocol` / `no_camera` | Not a talk-back camera / unknown id. | No |
+| `4401` | `edge_id` | Missing or wrong edge_id. | No |
+| `4503` | `disabled` | Talk-back is switched off on this device. | No |
+| `1000` | — | Closed normally (you sent `stop`, or it idled past `hold_secs`). | On the next press |
+| `1006` / `1011` / other | — | The network or a proxy dropped it. | **Yes**, while the button is held: same `client_id`, 0.3 s → ×1.8 → 3 s, for up to 15 s |
+
+### 6.4 The rules
 
 | Rule | Value | Why |
 |---|---|---|
 | **One voice per camera** | hard | Two instructions at once are unintelligible to the person in the room. Refused, never queued. |
+| **Different cameras at the same time** | allowed | Two carers can talk into two rooms at once; one carer can too, on two sockets. |
 | **No time limit** | while held | A carer speaks for as long as they hold the button. |
-| **Floor hold** | `floor_hold_secs` (5 s) | After release the floor stays with that carer so they can answer the resident; others are told "free in N s". Then it is free for anyone. |
-| **Audio stops** | 3 s | A page holding the floor that sends no audio for 3 s is released — a frozen page must not hold a room. |
-| **One camera per page** | — | Claiming another camera lets go of the first at once. |
-| **Priority** | — | A higher priority takes the floor from a lower one. Everyone is equal today; only a verified source may ever raise it. |
-
-### 6.4 The line's own rules
-
-| Rule | Value | Why |
-|---|---|---|
+| **Release** | `{"type":"release"}`, the socket closing, or 1 s without speech | The floor becomes *holding*. |
+| **Floor hold** | `floor_hold_secs` (5 s) | After release the room stays that carer's, so they can answer the resident; speaking again carries on instantly. Then it is free for anyone. |
+| **Idle socket** | `hold_secs` (60 s) | A socket with no speech for this long is closed with `1000`. It held no room by then. |
+| **Priority** | — | A higher priority takes the floor. Everyone is equal today; only a verified source may ever raise it. |
 | **Backpressure** | 400 ms / 4000 ms | Late speech is dropped; a camera that stopped reading has its line closed and re-opened clean. |
-| **Lock-out guard** | 3 refusals in a row | The same password refused 3 times in a row pauses that camera for 15 min, then 30, 60 and at most 3 h. While paused nothing dials it (HTTP `429`, readiness `paused`). Setting the password again lifts it. |
+| **Lock-out guard** | 3 refusals in a row | The same password refused 3 times in a row pauses that camera for 15 min, then 30, 60 and at most 3 h. While paused nothing dials it (HTTP `429`, WS `4429`, readiness `paused`). Setting the password again lifts it. |
 
 ### 6.5 Listening at the same time
 
@@ -523,7 +565,7 @@ what keeps it out of the room. Ask for all three.
 
 ### 7.3 Your backend is optional
 
-The session goes **browser -> fleet tunnel -> edge**. Your backend does not
+The socket goes **browser -> fleet tunnel -> edge**. Your backend does not
 need to be in the media path and should not be: every hop you add is latency in
 a healthcare intercom. The backend's only job is to tell the app the `edge_id`
 of the house being viewed.
@@ -535,37 +577,37 @@ in the "someone else is speaking" message.
 ### 7.4 Minimum viable integration
 
 ```js
-// 1. When the live view opens: which cameras can talk, and ONE session for the page.
+// 1. When the live view opens (and every 15 s): which cameras can talk, who is talking.
 const inv = await fetch(`${BASE}/cameras?edge_id=${edgeId}`).then(r => r.json());
 if (!inv.enabled) return;                          // device-wide switch is off
-const pageId = "app-" + crypto.randomUUID();       // keep it for the page's life
-const ws = new WebSocket(`${WSS}/session?edge_id=${edgeId}` +
-                         `&client_id=${pageId}&name=${encodeURIComponent(me.name)}`);
-ws.binaryType = "arraybuffer";
+drawButtons(inv.cameras);                          // readiness.state + floor.by
 
-ws.onmessage = ev => {
-  const m = JSON.parse(ev.data);
-  if (m.type === "welcome") drawButtons(m.cameras);          // readiness + floor
-  if (m.type === "floor")   showFloor(m.camera, m.state, m.by, m.client_id === pageId);
-  if (m.type === "camera")  redrawButton(m.camera, m.readiness);
-  if (m.type === "granted") startSendingAudio(m.camera);
-  if (m.type === "refused") showRefusal(m.camera, m.message);    // show as-is
-  if (m.type === "released" || m.type === "taken") stopSendingAudio();
-};
+const clientId = "app-" + crypto.randomUUID();    // one per carer's control, kept
+let ws = null, open = false, outbox = [];
 
-// 2. Press = claim.  Release = release.  Nothing to connect.
-onPress(camera   => ws.send(JSON.stringify({ type: "claim", camera })));
-onRelease(()     => { stopSendingAudio(); ws.send(JSON.stringify({ type: "release" })); });
+// 2. Press: open this camera's socket (or reuse it). "open" = the room is yours.
+function press(cameraId) {
+  if (ws && open) return startSendingAudio();
+  ws = new WebSocket(`${WSS}/${encodeURIComponent(cameraId)}/stream?edge_id=${edgeId}` +
+    `&client_id=${clientId}&name=${encodeURIComponent(me.name)}&user_id=${me.id}`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "open")  { open = true; startSendingAudio(); }
+    if (m.type === "error") showRefusal(m.message);           // show as-is; a close follows
+  };
+  ws.onclose = ev => { open = false; ws = null; /* reconnect only on 1006/1011 while held */ };
+}
 
-// 3. While granted: 160-byte A-law frames every 20 ms, oldest dropped under backpressure.
+// 3. While held: 160-byte A-law frames every 20 ms, oldest dropped under backpressure.
 onFrame(frame => {
   outbox.push(frame);
-  while (outbox.length && ws.bufferedAmount < 960) ws.send(outbox.shift());
+  while (outbox.length && open && ws.bufferedAmount < 960) ws.send(outbox.shift());
   while (outbox.length > 5) outbox.shift();
 });
 
-// 4. Keep it open: ping every 20 s; reconnect (same pageId) unless 4000/4401/4503.
-setInterval(() => ws.send(JSON.stringify({ type: "ping" })), 20000);
+// 4. Release: stop sending, say so. Keep the socket (ping every 20 s) for the next press.
+function release() { stopSendingAudio(); if (open) ws.send(JSON.stringify({ type: "release" })); }
 ```
 
 The complete, tested client is [edge/static/talk.js](../edge/static/talk.js).
@@ -575,8 +617,8 @@ The complete, tested client is [edge/static/talk.js](../edge/static/talk.js).
 **Do not ship a toggle.** A toggle leaves hot microphones open in living rooms.
 Press-and-hold cannot: releasing, losing the page, switching tabs or letting the
 pointer slip all end the turn. Release on `visibilitychange` — a backgrounded tab
-must not keep a live microphone. (The standby session itself may stay open: it
-claims nothing.)
+must not keep a live microphone. (The socket itself may stay open: after release
+it holds no room.)
 
 ### 7.6 Listening back — at the same time as talking
 
@@ -600,9 +642,11 @@ out of step by one is a toggle that will not switch off.
 | Edge -> camera (`TCP_NODELAY` on, no per-frame drain) | ~1–5 ms on a LAN |
 | Camera decode -> speaker | ~40–80 ms, and not ours to change |
 
-**No press pays for a connection or a camera handshake**: the page's session and
-the camera's line are both already open. The only one-time cost is the browser
-starting the microphone (~100–300 ms) on the first press after a while.
+**No press pays for a camera handshake**: the camera's line is already open. The
+first press on a camera pays one WebSocket connection through the tunnel (~one
+round trip); every press after it, within `hold_secs`, reuses the open socket.
+The browser starting the microphone (~100–300 ms) is paid on the first press
+after a while.
 
 Bandwidth is ~75 kbit/s out and is never the bottleneck. If it sounds delayed,
 read `queued_ms` from §3 — that is where the answer is.
@@ -621,6 +665,7 @@ python3 -m tools.talkback test                     # silent check of every camer
 python3 -m tools.talkback set  --camera LOUNGE     # an override for one camera
 python3 -m tools.talkback test --camera LOUNGE     # silent proof for one camera
 python3 -m tools.talkback lines                    # the line record (§3)
+python3 -m tools.talkback log                      # who spoke, where, how long (§3)
 python3 -m tools.talkback tone --camera LOUNGE     # a beep, through the service's own session
 python3 -m tools.talkback diagnose --camera LOUNGE # when "unauthorized" hides three faults
 ```

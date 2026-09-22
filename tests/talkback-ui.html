@@ -37,8 +37,7 @@
   const ok = (name, cond) => results.push({ name, cond: !!cond });
 
   // --- stubs: the page's dependencies, and nothing else --------------------
-  // A talk button opens the page's standby session the moment it exists, so the
-  // browser APIs it uses are replaced BEFORE any tile is built.
+  // The browser APIs a talk button uses are replaced BEFORE any tile is built.
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const sockets = [];
   const workletPosts = [];
@@ -56,22 +55,22 @@
                     worklets.push(this); }
     connect(x) { return x; } disconnect() {}
   };
-  /* The page's talk session, played by the test: welcome, grant, refuse, push. */
+  /* Each camera's talk socket, played by the test: grant, refuse, drop. */
   window.WebSocket = class {
     constructor(u) { this.url = u; this.readyState = 0; this.sent = []; this.bufferedAmount = 0;
                      sockets.push(this); }
     send(d) { this.sent.push(d); }
     close() { this.readyState = 3; }
     push(m) { this.onmessage && this.onmessage({ data: JSON.stringify(m) }); }
-    welcome(cameras) { this.readyState = 1; this.push({ type: "welcome", mic_gain: 1,
-                                                       cameras: cameras || {} }); }
-    drop(code, reason) { this.readyState = 3; this.onclose && this.onclose({ code, reason }); }
-    claims() { return this.sent.filter(d => typeof d === "string" && JSON.parse(d).type === "claim")
-                               .map(d => JSON.parse(d).camera); }
+    grant() { this.readyState = 1; this.push({ type: "open", mic_gain: 1, hold_secs: 60,
+                                               floor_hold_secs: 5, max_turn_secs: 0 }); }
+    refuse(code, message, close) { this.push({ type: "error", code, message });
+                                   this.drop(close, code + ": " + message); }
+    drop(code, reason) { this.readyState = 3; this.onclose && this.onclose({ code, reason: reason || "" }); }
     texts(type) { return this.sent.filter(d => typeof d === "string" && JSON.parse(d).type === type); }
     audio() { return this.sent.filter(d => d instanceof ArrayBuffer).length; }
   };
-  const live = () => sockets[sockets.length - 1];
+  const socketFor = cam => sockets.filter(x => x.url.includes("/talkback/" + cam + "/stream")).slice(-1)[0];
   const frameIn = () => {
     const h = worklets.length && worklets[worklets.length - 1].port.onmessage;
     if (typeof h === "function")
@@ -79,6 +78,7 @@
   };
   window.cvEdgeId = () => Promise.resolve("TEST-EDGE");
   const realFetch = window.fetch;
+  let studyFloor = { state: "free" };
   window.fetch = (u, o) => {
     if (String(u).includes("/talkback/cameras"))
       return Promise.resolve(new Response(JSON.stringify({
@@ -91,7 +91,7 @@
                     readiness: { state: "unsupported" } },
                   { camera_id: "cam_5", camera_name: "PORCH", configured: false },
                   { camera_id: "cam_6", camera_name: "STUDY", configured: true,
-                    readiness: { state: "ready" } }],
+                    readiness: { state: "ready" }, floor: studyFloor }],
       }), { headers: { "Content-Type": "application/json" } }));
     return realFetch(u, o);
   };
@@ -188,15 +188,7 @@
   ok("the setup dialog is reachable from camera setup",
      typeof cvTalkPanel.commission === "function");
 
-  // --- the page's ONE standby session ---------------------------------------
-  await sleep(30);
-  const ws = live();
-  ok("a page opens ONE talk session for all its talk buttons, when it loads",
-     sockets.length === 1 && /\/talkback\/session\?/.test(ws.url));
-  ok("it identifies the page, so a reconnect gets its own floor back",
-     /client_id=pg-/.test(ws.url) && /edge_id=TEST-EDGE/.test(ws.url));
-  ws.welcome({ cam_6: { readiness: { state: "ready" }, floor: { state: "free" } } });
-
+  // --- one socket per camera ------------------------------------------------
   function channel(cid) {
     const b = document.createElement("button");
     document.body.appendChild(b);
@@ -211,14 +203,19 @@
     return { h, b, seen, press, up, last: () => seen.states[seen.states.length - 1] };
   }
 
-  const lounge = channel("LOUNGE"), living = channel("LIVING_ROOM");
-  ok("more talk buttons share the same session", sockets.length === 1);
+  const lounge = channel("LOUNGE"), living = channel("LIVING_ROOM"), porch = channel("PORCH");
+  await sleep(20);
+  ok("no socket is opened until someone presses", sockets.length === 0);
 
   lounge.press(); await sleep(20);
-  ok("a press sends a claim for its camera on the open session — nothing to connect",
-     ws.claims().slice(-1)[0] === "LOUNGE");
-  ws.push({ type: "granted", camera: "LOUNGE" }); await sleep(10);
-  ok("granted -> On air", lounge.last() === "live");
+  let ws = socketFor("LOUNGE");
+  ok("a press opens THAT camera's socket, named by its camera id",
+     sockets.length === 1 && /\/talkback\/LOUNGE\/stream\?/.test(ws.url));
+  ok("identifying the carer: page id, edge_id and the carer's name",
+     /client_id=pg-/.test(ws.url) && /edge_id=TEST-EDGE/.test(ws.url) && /name=/.test(ws.url));
+  ok("Connecting… until the edge grants the camera", lounge.last() === "connecting");
+  ws.grant(); await sleep(10);
+  ok("open -> On air", lounge.last() === "live");
   frameIn(); frameIn();
   ok("speech flows as binary frames while the button is held", ws.audio() === 2);
   for (let i = 0; i < 20; i++) frameIn();
@@ -229,74 +226,75 @@
   frameIn();
   ok("and no speech is sent after it", ws.audio() === 22);
 
-  ws.push({ type: "floor", camera: "LOUNGE", state: "speaking", by: "Nurse Arun",
-            client_id: "someone-else" }); await sleep(10);
+  lounge.press(); await sleep(10);
+  frameIn();
+  ok("the next press is instant: the same socket, no new connection",
+     sockets.length === 1 && lounge.last() === "live" && ws.audio() === 23);
+  lounge.up(); await sleep(10);
+
+  lounge.h.showFloor({ state: "speaking", by: "Nurse Arun", client_id: "someone-else" });
   ok("another carer speaking is shown on the button BEFORE anyone presses",
      lounge.last() === "busy" && lounge.seen.floors.slice(-1)[0][1] === "Nurse Arun");
   lounge.press(); await sleep(10);
-  ws.push({ type: "refused", camera: "LOUNGE", code: "busy",
-            message: "Nurse Arun is speaking to LOUNGE." }); await sleep(10);
-  ok("pressing anyway is refused with the device's sentence — and not retried",
-     lounge.last() === "error:Nurse Arun is speaking to LOUNGE." && sockets.length === 1);
-  ws.push({ type: "floor", camera: "LOUNGE", state: "free" }); await sleep(10);
-  ok("when the room is free again, every page shows it", lounge.last() === "idle");
+  frameIn();
+  ws.refuse("busy", "Nurse Arun is speaking to LOUNGE.", 4409); await sleep(10);
+  ok("pressing anyway is refused with the device's sentence",
+     lounge.last() === "error:Nurse Arun is speaking to LOUNGE.");
+  await sleep(700);
+  ok("and is not retried", sockets.length === 1);
+  lounge.h.showFloor({ state: "free" });
+  ok("when the room is free again, the button says so", lounge.last() === "idle");
 
-  // One microphone per page.
+  // One microphone per page; each camera its own socket.
   lounge.press(); await sleep(10);
-  ws.push({ type: "granted", camera: "LOUNGE" }); await sleep(10);
+  socketFor("LOUNGE").grant(); await sleep(10);
+  ok("a press after a refusal opens a fresh socket", sockets.length === 2 && lounge.last() === "live");
   living.press(); await sleep(10);
-  ok("pressing a second camera takes the microphone from the first",
-     lounge.last() === "idle" && ws.claims().slice(-1)[0] === "LIVING_ROOM");
-  ws.push({ type: "granted", camera: "LIVING_ROOM" }); await sleep(10);
-  const before = ws.audio(); frameIn();
-  ok("and speech now goes out for the second camera", living.last() === "live"
-     && ws.audio() === before + 1);
-  living.up(); await sleep(10);
+  ok("pressing a second camera takes the microphone from the first (released there)",
+     lounge.last() === "idle" && socketFor("LOUNGE").texts("release").length === 1);
+  const lr = socketFor("LIVING_ROOM");
+  lr.grant(); await sleep(10);
+  const toLounge = socketFor("LOUNGE").audio(); frameIn();
+  ok("and speech now goes to the second camera's socket only",
+     living.last() === "live" && lr.audio() === 1 && socketFor("LOUNGE").audio() === toLounge);
 
-  // A carer who moves to another camera before the first answer arrives.
-  lounge.press(); await sleep(10);
-  lounge.up(); await sleep(10);
-  living.press(); await sleep(10);
-  const releasesBefore = ws.texts("release").length;
-  ws.push({ type: "granted", camera: "LOUNGE" }); await sleep(10);
-  ok("a late grant for a camera the carer already left sends nothing (it would cut off the new room)",
-     ws.texts("release").length === releasesBefore && lounge.last() === "idle");
-  ws.push({ type: "granted", camera: "LIVING_ROOM" }); await sleep(10);
-  const beforeLate = ws.audio(); frameIn();
-  ok("…and the room they are holding now is live", living.last() === "live"
-     && ws.audio() === beforeLate + 1);
-  living.up(); await sleep(10);
-
-  // The session drops while a carer is still holding the button.
-  living.press(); await sleep(10);
-  ws.push({ type: "granted", camera: "LIVING_ROOM" }); await sleep(10);
-  ws.drop(1006, "");
+  // The connection drops while the carer is still holding the button.
+  lr.drop(1006, "");
   ok("a dropped connection mid-sentence says Reconnecting…", living.last() === "reconnecting");
   for (let i = 0; i < 9; i++) frameIn();
-  await sleep(700);
-  const ws2 = live();
-  ok("the page reconnects by itself, as the same page", ws2 !== ws &&
-     new URL(ws2.url.replace("ws:", "http:")).searchParams.get("client_id") ===
-     new URL(ws.url.replace("ws:", "http:")).searchParams.get("client_id"));
-  ws2.welcome({}); await sleep(10);
-  ok("…re-claims the floor for the carer still holding the button",
-     ws2.claims().slice(-1)[0] === "LIVING_ROOM");
-  ws2.push({ type: "granted", camera: "LIVING_ROOM" }); await sleep(10);
+  await sleep(500);
+  const lr2 = socketFor("LIVING_ROOM");
+  ok("it reconnects by itself, as the same carer (so the floor is still theirs)",
+     lr2 !== lr && new URL(lr2.url.replace("ws:", "http:")).searchParams.get("client_id") ===
+     new URL(lr.url.replace("ws:", "http:")).searchParams.get("client_id"));
+  lr2.grant(); await sleep(10);
   ok("…and sends only the newest 100 ms it held on to (oldest dropped)",
-     ws2.audio() === 5 && living.last() === "live");
+     lr2.audio() === 5 && living.last() === "live");
   living.up(); await sleep(10);
 
   // The edge ends a turn itself.
   lounge.press(); await sleep(10);
-  ws2.push({ type: "granted", camera: "LOUNGE" }); await sleep(10);
-  ws2.push({ type: "taken", camera: "LOUNGE", by: "Dr Rao" }); await sleep(10);
+  socketFor("LOUNGE").refuse("taken", "Dr Rao took over LOUNGE.", 4409); await sleep(10);
   ok("a floor taken by a higher priority (future doctor role) says who took it",
-     lounge.last() === "error:Taken over by Dr Rao.");
+     lounge.last() === "error:Dr Rao took over LOUNGE.");
   lounge.press(); await sleep(10);
-  ws2.push({ type: "refused", camera: "LOUNGE", code: "unauthorized",
-             message: "The camera refused the TP-Link password." }); await sleep(10);
+  socketFor("LOUNGE").refuse("unauthorized", "The camera refused the TP-Link password.", 4500);
+  await sleep(10);
   ok("a refused password asks the page to redraw the tile as a setup button",
-     lounge.seen.refused === 1);
+     lounge.seen.refused === 1 && /refused the TP-Link/.test(lounge.last()));
+
+  // Let go before the grant arrives.
+  porch.press(); await sleep(10);
+  porch.up(); await sleep(10);
+  const ps = socketFor("PORCH");
+  ps.grant(); await sleep(10);
+  ok("letting go before the grant releases the room at once", ps.texts("release").length === 1
+     && porch.last() === "idle");
+  ps.drop(1000, "idle");
+  ok("the edge closing an idle socket is quiet", porch.last() === "idle");
+  porch.press(); await sleep(10);
+  ok("and the next press simply connects again", socketFor("PORCH") !== ps);
+  porch.up(); await sleep(10);
 
   // FULL DUPLEX: the room stays audible while the carer talks.
   const tileD = document.createElement("div");
@@ -307,17 +305,29 @@
   const talkD = tileD.querySelector(".talk-btn");
   talkD.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 2 }));
   await sleep(10);
-  ws2.push({ type: "granted", camera: "cam_6" }); await sleep(10);
+  socketFor("cam_6").grant(); await sleep(10);
   ok("listening stays ON while talking — a resident's reply is heard",
      sD.listening() && tileD.querySelector(".listen-btn").dataset.listen === "on"
      && talkD.dataset.talk === "live");
   talkD.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 2 }));
+  await sleep(10);
+
+  // The inventory tells every screen who is talking.
+  studyFloor.state = "speaking"; studyFloor.by = "Nurse Arun"; studyFloor.client_id = "other";
+  await cvTalkPanel.refresh();
+  ok("the live wall shows who is talking on a tile, from GET /cameras",
+     talkD.dataset.talk === "busy" && /Nurse Arun is talking/.test(talkD.textContent));
+  studyFloor.state = "free"; delete studyFloor.by; delete studyFloor.client_id;
+  await cvTalkPanel.refresh();
+  ok("and clears it when the room is free", talkD.dataset.talk === "idle");
 
   // A device that says "do not come back".
-  ws2.drop(4503, "disabled: Talk-back is switched off on this device.");
+  living.press(); await sleep(10);
+  socketFor("LIVING_ROOM").refuse("disabled", "Talk-back is switched off on this device.", 4503);
+  const count = sockets.length;
   await sleep(700);
   ok("a device with talk-back switched off is final: said once, not retried",
-     living.last() === "error:Talk-back is switched off on this device." && live() === ws2);
+     living.last() === "error:Talk-back is switched off on this device." && sockets.length === count);
 
   // --- report -------------------------------------------------------------
   const out = document.getElementById("out");

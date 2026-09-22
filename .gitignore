@@ -50,6 +50,8 @@ edge/data/last_reboot.json
 edge/data/talkback.json
 # Talk-back lock-out pauses (talkback.guard): per-device runtime state.
 edge/data/talkback_guard.json
+# Talk-back log (talkback.audit): who spoke into which room. Per-device, personal.
+edge/data/talkback_log.jsonl*
 
 # Per-install runtime config — never ship a seeded/example copy
 edge/data/zones.json
