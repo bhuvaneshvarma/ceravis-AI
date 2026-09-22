@@ -209,6 +209,10 @@ class TapoTalkSession:
         self._muxer = AudioMuxer()
         self._drain_task: asyncio.Task | None = None
         self._closed = False
+        # Set the moment the session is over for ANY reason — we closed it, or
+        # the camera hung up (idle timeout, reboot, a second talker). Whoever
+        # keeps this session open waits on it to know when to reconnect.
+        self.gone = asyncio.Event()
 
     # -- wire helpers ------------------------------------------------------ #
 
@@ -360,14 +364,29 @@ class TapoTalkSession:
         """Swallow whatever the camera sends us (notifications, its own mic
         stream if the firmware volunteers it). We want none of it — but an unread
         socket fills its buffer and the camera then stops reading OURS, which
-        shows up as audio that plays for a few seconds and dies."""
+        shows up as audio that plays for a few seconds and dies.
+
+        An EMPTY read is the camera hanging up, and it must end this loop. At end
+        of stream `read()` returns b"" at once, forever, without ever yielding to
+        the event loop — so a loop that only checked `_closed` spun at ~1.7 M
+        reads a second and starved every other task in the process: the whole
+        edge API froze, and nothing could run to set `_closed` and stop it
+        (reproduced 2026-09-22 before this fix)."""
         try:
             while not self._closed:
-                await self._reader.read(65536)
+                if not await self._reader.read(65536):
+                    break
         except (asyncio.CancelledError, OSError, TalkbackError):
             pass
         except Exception:
             logger.debug("talk drain ended", exc_info=True)
+        finally:
+            self.gone.set()
+
+    @property
+    def alive(self) -> bool:
+        """Open, and the camera has not hung up."""
+        return bool(self.session_id) and not self._closed and not self.gone.is_set()
 
     async def start_audio(self) -> None:
         """Send the PAT/PMT. Separate from open() so a caller can verify the
@@ -395,7 +414,7 @@ class TapoTalkSession:
         camera could park a live microphone for eight seconds before admitting
         it. The write buffer is bounded here instead, in milliseconds of speech,
         so backpressure is measured rather than waited on."""
-        if self._closed:
+        if self._closed or self.gone.is_set():
             raise TalkbackError("closed", "The speaker session is closed.")
         payload = self._muxer.frame(alaw)
         part = (
@@ -440,6 +459,7 @@ class TapoTalkSession:
         if self._closed:
             return
         self._closed = True
+        self.gone.set()
         if self._drain_task:
             self._drain_task.cancel()
         if self._writer:

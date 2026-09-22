@@ -422,6 +422,50 @@ async def _backpressure():
 asyncio.run(_backpressure())
 
 
+async def _camera_hangs_up():
+    """At end of stream read() returns b"" at once without yielding. The drain
+    loop used to spin on it and starve the whole process — the edge API froze.
+    A camera hanging up must end the session and leave everything else running."""
+    async def serve(r, w):
+        w.close()                                  # the camera hangs up
+    srv = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    sess = proto.TapoTalkSession("127.0.0.1", object())
+    sess.session_id = "6"
+    sess._reader, sess._writer = await asyncio.open_connection("127.0.0.1", port)
+    ticks = 0
+
+    async def rest_of_the_edge():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    other = asyncio.create_task(rest_of_the_edge())
+    asyncio.create_task(sess._drain())
+    try:
+        await asyncio.wait_for(sess.gone.wait(), 2)
+        noticed = True
+    except asyncio.TimeoutError:
+        noticed = False
+    await asyncio.sleep(0.1)
+    other.cancel()
+    srv.close()
+    check("a camera hanging up ends the session (it is noticed, not spun on)", noticed)
+    check("and the rest of the edge keeps running meanwhile", ticks > 3)
+    check("a session the camera hung up is no longer alive", not sess.alive)
+    refused = None
+    try:
+        await sess.send(bytes(160))
+    except TalkbackError as exc:
+        refused = exc
+    check("sending on it says so instead of writing into a dead socket",
+          refused is not None and refused.code == "closed")
+
+
+asyncio.run(_camera_hangs_up())
+
+
 # ---------------------------------------------------------------------------
 # One password for the whole home
 # ---------------------------------------------------------------------------
