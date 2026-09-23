@@ -177,7 +177,7 @@ from rules.visitor_rule import VisitorRule                # noqa: E402
 from tracking.track_buffer import TrackBuffer             # noqa: E402
 from tracking.track_schema import Track, TrackResult      # noqa: E402
 
-settings.visitor_snapshot_cooldown_secs = 0.05
+settings.visitor_snapshot_interval_secs = 0.05
 settings.visitor_identity_grace_secs = 0.20
 
 

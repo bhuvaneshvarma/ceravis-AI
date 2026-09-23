@@ -23,11 +23,16 @@ Five gates, each answering a different way this can go wrong:
               M-of-N hysteresis so one noisy box is not "motion".
   WELL IMAGED a recent best-shot exists, so we only fire when the person is
               actually photographable rather than a blur in a doorway.
-  NOT A REPEAT per-track cooldown plus a global hourly cap, so a busy hallway
-              cannot flood the outbox and crowd out a fall alert.
+  NOT A REPEAT at most ONE visitor snapshot per `visitor_snapshot_interval_secs`
+              for the WHOLE home (default 60 s), however many people are
+              moving and however often the tracker re-numbers them. A per-track
+              limit cannot bound volume: a busy room or one ID switch mints a
+              fresh "never snapped" track and the burst starts over.
 
-Per TRACK, not per home: two visitors are two subjects, and each gets its own
-session, motion state and cooldown.
+Motion is judged per TRACK (two visitors are two subjects with their own motion
+state), but the snapshot budget is per HOME. When several visitors are eligible
+in the same tick, the one photographed least recently takes the slot, so two
+people walking around alternate instead of one of them being captured forever.
 
 NIGHT VISION: on an infrared camera the recipient may simply be unrecognised,
 so while the recipient is located NOWHERE an unidentified person there is held
@@ -48,7 +53,7 @@ from schemas.event import Event
 
 
 class VisitorRule:
-    """One motion-gated snapshot stream per non-recipient track."""
+    """Motion-gated snapshots of non-recipients, one per interval per home."""
 
     def __init__(self) -> None:
         # (camera_id, track_id) -> state. Pruned against the live track set every
@@ -56,16 +61,16 @@ class VisitorRule:
         # that already bit PostureBuffer and IdentityBuffer.
         self._boxes: dict[tuple, tuple] = {}        # last seen box
         self._moves: dict[tuple, deque] = {}        # recent moving/still verdicts
-        self._last_snap: dict[tuple, float] = {}    # monotonic, per track
+        self._last_snap: dict[tuple, float] = {}    # monotonic, per track (fairness)
         self._first_seen: dict[tuple, float] = {}   # monotonic, per track (identity grace)
-        self._hour: deque = deque()                 # global rate cap
+        self._last_any: float = float("-inf")       # monotonic, home-wide budget
 
     # ---- main ---------------------------------------------------------
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         if not settings.visitor_snapshots_enabled:
             return []
         now = clock.now()
-        events: list[Event] = []
+        candidates: list[tuple] = []
         seen: set[tuple] = set()
         located: list[bool] = []                  # lazily: recipient placed anywhere?
 
@@ -87,23 +92,26 @@ class VisitorRule:
                     continue                       # could be the recipient arriving
                 if self._night_hold(ctx, camera_id, now, located):
                     continue                       # could be the recipient, in the dark
-                if not self._due(key):
-                    continue
                 if not self._well_imaged(ctx, camera_id, track.track_id):
                     continue
-                self._mark(key)
-                events.append(Event(
-                    event_id=str(uuid.uuid4()),
-                    event_type="visitor_motion_snapshot",
-                    camera_id=camera_id,
-                    room_name="",                  # filled by EventEnricher
-                    recipient_id=None,             # a visitor has no identity
-                    timestamp=now.isoformat(),
-                    track_id=track.track_id,
-                ))
+                candidates.append(key)
 
         self._prune(seen)
-        return events
+        if not candidates or not self._due():
+            return []
+        # Fairness: the visitor photographed least recently (never = first).
+        camera_id, track_id = min(
+            candidates, key=lambda k: self._last_snap.get(k, float("-inf")))
+        self._mark((camera_id, track_id))
+        return [Event(
+            event_id=str(uuid.uuid4()),
+            event_type="visitor_motion_snapshot",
+            camera_id=camera_id,
+            room_name="",                          # filled by EventEnricher
+            recipient_id=None,                     # a visitor has no identity
+            timestamp=now.isoformat(),
+            track_id=track_id,
+        )]
 
     # ---- motion --------------------------------------------------------
     def _moving(self, key: tuple, bbox) -> bool:
@@ -167,22 +175,17 @@ class VisitorRule:
                 located.append(True)
         return not located[0]
 
-    # ---- rate limits ---------------------------------------------------
-    def _due(self, key: tuple) -> bool:
-        now = time.monotonic()
-        if (now - self._last_snap.get(key, -1e9)) < settings.visitor_snapshot_cooldown_secs:
-            return False
-        # Global cap: a busy hallway must not crowd a fall alert out of the
-        # outbox's sliding window.
-        cutoff = now - 3600.0
-        while self._hour and self._hour[0] < cutoff:
-            self._hour.popleft()
-        return len(self._hour) < settings.visitor_snapshots_per_hour
+    # ---- rate limit ----------------------------------------------------
+    def _due(self) -> bool:
+        """ONE home-wide budget: a snapshot at most every interval seconds.
+        Bounds volume absolutely, so a busy hallway can never crowd a fall
+        alert out of the outbox's sliding window."""
+        return (time.monotonic() - self._last_any) >= settings.visitor_snapshot_interval_secs
 
     def _mark(self, key: tuple) -> None:
         now = time.monotonic()
-        self._last_snap[key] = now
-        self._hour.append(now)
+        self._last_snap[key] = now                 # fairness between visitors
+        self._last_any = now                       # the home-wide budget
 
     # ---- quality -------------------------------------------------------
     @staticmethod

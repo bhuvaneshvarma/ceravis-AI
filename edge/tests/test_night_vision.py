@@ -35,7 +35,7 @@ import cv2
 
 from config.settings import settings
 
-settings.visitor_snapshot_cooldown_secs = 0.05      # test scale
+settings.visitor_snapshot_interval_secs = 0.05      # test scale
 settings.night_context_min_track_secs = 0.05
 
 from common import clock                                   # noqa: E402

@@ -21,7 +21,7 @@ import time
 from common import clock
 from config.settings import settings
 
-settings.visitor_snapshot_cooldown_secs = 0.05      # test scale
+settings.visitor_snapshot_interval_secs = 0.05      # test scale
 
 from detection.detection_schema import BoundingBox        # noqa: E402
 from reid.identity_buffer import IdentityBuffer           # noqa: E402
@@ -131,31 +131,41 @@ check("a track with NO identity record still counts", bool(got),
       "v1 skipped these — exactly the people it most needed to capture")
 
 
-print("\n5. two visitors are two subjects, not one session")
+print("\n5. two visitors share the budget fairly (they take turns)")
 rule5 = VisitorRule()
 bufs5 = _world()
-both = []
+both, per_tick = [], []
 for k in range(8):
     _tick(bufs5, {7: 100 + k * 30, 8: 400 + k * 30})
-    both += rule5.evaluate(bufs5[0])
-    time.sleep(0.02)
-check("both visitors produce their own events",
+    got = rule5.evaluate(bufs5[0])
+    both += got
+    per_tick.append(len(got))
+    time.sleep(0.03)
+check("both visitors get captured, not one of them forever",
       {e.track_id for e in both} == {7, 8}, str({e.track_id for e in both}))
+check("never more than one snapshot in a tick", max(per_tick) <= 1, str(per_tick))
 
 
-print("\n6. cooldown and the global cap bound the volume")
+print("\n6. ONE snapshot per interval for the whole home")
 rule6 = VisitorRule()
 bufs6 = _world()
-settings.visitor_snapshot_cooldown_secs = 999.0
+settings.visitor_snapshot_interval_secs = 999.0
 try:
     burst = []
     for k in range(10):
-        _tick(bufs6, {7: 100 + k * 30})
+        # two visitors walking AND the tracker re-numbering one of them every
+        # 3 ticks (an ID switch mints a fresh never-snapped track)
+        _tick(bufs6, {7: 100 + k * 30, 100 + k // 3: 400 + k * 30})
         burst += rule6.evaluate(bufs6[0])
         time.sleep(0.02)
-    check("one snapshot per track per cooldown", len(burst) <= 1, str(len(burst)))
+    check("exactly one snapshot, however many visitors / track ids",
+          len(burst) == 1, str(len(burst)))
 finally:
-    settings.visitor_snapshot_cooldown_secs = 0.05
+    settings.visitor_snapshot_interval_secs = 0.05
+
+from config.settings import Settings                       # noqa: E402
+check("the shipped default is one per minute",
+      Settings.model_fields["visitor_snapshot_interval_secs"].default == 60.0)
 
 
 print("\n7. the event survives the cloud recipient gate")
