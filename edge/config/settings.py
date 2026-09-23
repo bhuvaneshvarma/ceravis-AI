@@ -600,6 +600,14 @@ class Settings(BaseSettings):
     # frames so one bad frame cannot stamp a wrong posture that then has to be
     # corroborated away.
     posture_commit_frames: int = 2
+    # A posture CHANGE is only announced (standing_up, sitting_down, walking_
+    # started/stopped — each a cloud snapshot) once the new posture has held
+    # this long. The classifier's own confirmations above count FRAMES, i.e. a
+    # fraction of a second at pose rate, so someone pausing between steps
+    # flipped WALKING<->STANDING every second (2026-09-23: 77 walking events,
+    # 1-2 s apart). Seconds, not frames, so it means the same at any POSE_FPS.
+    # Narration only — falls, stillness and location read the live posture.
+    posture_event_dwell_secs: float = 3.0
     fall_torso_angle_deg: float = 60.0              # > = horizontal
     fall_confirmation_frames: int = 3
     fall_cooldown_secs: float = 30.0

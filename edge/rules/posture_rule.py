@@ -14,12 +14,18 @@ This rule only narrates the transitions. The other depths of the same
 signals live in their single owners: long-dwell welfare (frozen skeleton /
 unchanged posture) is StillnessRule's job, location moves are
 LocationRule's, and falls belong to the fall FSM via FallRule.
+
+A change is narrated only once the new posture has HELD for
+settings.posture_event_dwell_secs, so a brief flip (a pause between steps)
+followed by a return is never announced at all.
 """
 
+import time
 import uuid
 from datetime import datetime
 
 from common import clock
+from config.settings import settings
 from pose.posture_classifier import Posture
 from schemas.event import Event
 from rules.rule_context import RuleContext
@@ -27,8 +33,10 @@ from rules.rule_context import RuleContext
 
 class PostureRule:
     def __init__(self) -> None:
-        # (camera_id, track_id) -> current confirmed posture
+        # (camera_id, track_id) -> the last posture ANNOUNCED for the track
         self._state: dict[tuple[str, int], Posture] = {}
+        # (camera_id, track_id) -> (candidate posture, monotonic since)
+        self._pending: dict[tuple[str, int], tuple[Posture, float]] = {}
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         events: list[Event] = []
@@ -42,12 +50,27 @@ class PostureRule:
         camera_id, track_id = s.camera_id, s.track.track_id
         key = (camera_id, track_id)
         prev = self._state.get(key)
-        if prev == s.posture:
+        if prev is None:
+            # First sight of this track: remember its posture, announce nothing.
+            # Only the recipient's CURRENT track is kept — track ids only ever
+            # grow, so keeping every past one was an unbounded dict.
+            self._state = {key: s.posture}
+            self._pending.clear()
             return []
+        if s.posture == prev:
+            self._pending.pop(key, None)       # a flip that came back: nothing
+            return []
+        cand = self._pending.get(key)
+        mono = time.monotonic()
+        if cand is None or cand[0] != s.posture:
+            self._pending[key] = (s.posture, mono)
+            return []
+        if mono - cand[1] < settings.posture_event_dwell_secs:
+            return []
+        self._pending.pop(key, None)
         self._state[key] = s.posture
-        if prev is not None:
-            self._on_transition(events, camera_id, track_id, prev, s.posture,
-                                now, s.identity.recipient_id)
+        self._on_transition(events, camera_id, track_id, prev, s.posture,
+                            now, s.identity.recipient_id)
         return events
 
     # ----------------------------------------------------------------
