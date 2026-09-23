@@ -14,7 +14,9 @@ Covered:
   a 'ready' recipient whose embeddings were removed stays OFF (not rebuilt);
   a committed enrollment that never finished IS resumed;
   a 'ready' recipient with embeddings is left alone;
-  a draft (media added, never committed) is not auto-enrolled.
+  a draft (media added, never committed) is not auto-enrolled;
+  embeddings made by a DIFFERENT ReID model are re-embedded (model upgrade),
+  and the gallery load ignores them rather than throwing.
 
 Pure python; no TensorRT. Runs on the dev box:
 
@@ -65,6 +67,9 @@ recipient("switched_off", "ready", photos=4, embedded=False)   # 2026-09-23
 recipient("interrupted", "processing", photos=4, embedded=False)
 recipient("healthy", "ready", photos=4, embedded=True)
 recipient("draft", "review", photos=4, embedded=False)
+# Embedded by an OLDER ReID model: vectors exist, but of another width.
+recipient("old_model", "ready", photos=4, embedded=False)
+mgr.save_embeddings("old_model", np.ones((3, 128), dtype=np.float32))
 
 worker = EnrollmentWorker(mgr, gallery=None)
 queued: list[str] = []
@@ -80,6 +85,14 @@ check("its status still says what it was",
 check("an enrollment interrupted mid-way is resumed", "interrupted" in queued)
 check("a healthy enrollment is left alone", "healthy" not in queued)
 check("an uncommitted draft is not auto-enrolled", "draft" not in queued)
+check("embeddings from a different ReID model are re-embedded (a migration)",
+      "old_model" in queued)
+
+print("\nthe gallery load ignores another model's vectors instead of throwing")
+emb, ids, _labels, _mods = mgr.load_gallery()
+check("only this model's vectors are loaded", emb.shape[1] == 512
+      and set(ids) == {"healthy"})
+check("the stale file reads as empty", mgr.load_embeddings("old_model").shape == (0, 512))
 
 shutil.rmtree(_TMP, ignore_errors=True)
 print()

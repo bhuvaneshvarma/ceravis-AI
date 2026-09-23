@@ -34,6 +34,31 @@ _ADAPTIVE = {Modality.COLOR.value: ("adaptive.npy", "adaptive_labels.json"),
              Modality.IR.value: ("adaptive_ir.npy", "adaptive_ir_labels.json")}
 
 
+def _load_vectors(f: Path | None) -> np.ndarray:
+    """A stored (K, dim) vector file, or an empty (0, dim) array when there is
+    none, it cannot be read, or it was made by a different ReID model (another
+    width). The ONE loader for enrolled and adaptive vectors alike: a vector
+    from another model is not a vector of this one, and mixing widths made the
+    gallery rebuild throw — leaving the AI silently off after a model change."""
+    dim = settings.reid_embedding_dim
+    empty = np.zeros((0, dim), dtype=np.float32)
+    if f is None or not f.exists():
+        return empty
+    try:
+        arr = np.load(f).astype(np.float32)
+    except Exception:
+        logger.warning("enroll: cannot read %s — ignored", f)
+        return empty
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        return empty
+    if arr.shape[1] != dim:
+        logger.warning("enroll: %s holds %d-wide vectors from a different ReID "
+                       "model (this one is %d) — ignored until re-embedded",
+                       f, arr.shape[1], dim)
+        return empty
+    return arr
+
+
 class EnrollmentManager:
     """
     On-disk store for per-recipient enrollment media + embeddings.
@@ -178,9 +203,22 @@ class EnrollmentManager:
                         modality: str = Modality.COLOR.value) -> np.ndarray:
         root = self.get_recipient_folder(recipient_id)
         f = root / "body" / _ENROLLED[modality][0] if root else None
-        if f and f.exists():
-            return np.load(f).astype(np.float32)
-        return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32)
+        return _load_vectors(f)
+
+    def stale_model(self, recipient_id: str) -> bool:
+        """Enrolled vectors exist but were made by a DIFFERENT ReID model (their
+        width is not this model's). They can never be matched against, so the
+        recipient needs re-embedding from their stored media — unlike a gallery
+        that was removed on purpose, where there is no file at all."""
+        root = self.get_recipient_folder(recipient_id)
+        f = root / "body" / _ENROLLED[Modality.COLOR.value][0] if root else None
+        try:
+            if not (f and f.exists()):
+                return False
+            arr = np.load(f, mmap_mode="r")
+            return arr.ndim == 2 and arr.shape[1] != settings.reid_embedding_dim
+        except Exception:
+            return False
 
     def save_embedding_labels(self, recipient_id: str, labels: list[str]) -> None:
         """Per-embedding labels aligned to embeddings.npy rows — metadata for
@@ -197,12 +235,7 @@ class EnrollmentManager:
                       modality: str = Modality.COLOR.value) -> np.ndarray:
         root = self.get_recipient_folder(recipient_id)
         f = root / "body" / _ADAPTIVE[modality][0] if root else None
-        if f and f.exists():
-            try:
-                return np.load(f).astype(np.float32)
-            except Exception:
-                pass
-        return np.zeros((0, settings.reid_embedding_dim), dtype=np.float32)
+        return _load_vectors(f)
 
     def _load_adaptive_labels(self, recipient_id: str,
                               modality: str = Modality.COLOR.value) -> list[str]:
@@ -326,14 +359,8 @@ class EnrollmentManager:
             if not root.is_dir():
                 continue
             for mod, fname, lname in stores:
-                f = root / "body" / fname
-                if not f.exists():
-                    continue
-                try:
-                    arr = np.load(f).astype(np.float32)
-                except Exception:
-                    continue
-                if arr.ndim == 2 and arr.shape[0] > 0:
+                arr = _load_vectors(root / "body" / fname)
+                if arr.shape[0] > 0:
                     all_emb.append(arr)
                     ids.extend([root.name] * arr.shape[0])
                     labels.extend(self._labels_aligned(root, lname, arr.shape[0]))

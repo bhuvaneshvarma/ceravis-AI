@@ -360,12 +360,19 @@ class EnrollmentWorker:
             # switches the AI chain off (2026-09-23, several people in the room
             # and a wrong target raising false events). Rebuilding it from the
             # photos at start-up would silently switch the AI back on.
-            if state not in self._RESUMABLE_STATES:
+            # One exception, which is not a switch-off: embeddings that EXIST but
+            # were made by a different ReID model (a model upgrade). They can
+            # never match, so the recipient is re-embedded from their media.
+            migrate = state == "ready" and self._mgr.stale_model(rid)
+            if state not in self._RESUMABLE_STATES and not migrate:
                 continue
             if self._mgr.load_embeddings(rid).shape[0] > 0:
                 continue                       # already embedded (in gallery)
             if not (self._mgr.media_names(rid) or self._mgr.list_videos(rid)):
                 continue                       # nothing to embed
+            if migrate:
+                logger.warning("enroll: %s was embedded by a different ReID "
+                               "model — re-embedding from the stored media", rid)
             logger.info("enroll: resuming %s (was '%s')", rid, state)
             self.enqueue(rid)
             resumed += 1
