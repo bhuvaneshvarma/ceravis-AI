@@ -122,8 +122,10 @@ class Settings(BaseSettings):
     record_retention_hours: int = 12
     # Keep recording this long after the last person leaves frame: it bridges
     # detection dropouts and a quick reappearance, so one visit stays ONE
-    # clip. Any absence shorter than this never becomes a gap.
-    record_post_roll_secs: float = 10.0
+    # clip. Any absence shorter than this never becomes a gap. 30 s: at 10 s a
+    # normal visit split into several sessions (bench, 2026-09-23: 137 of 236
+    # restarted within 30 s of stopping), each a cloud start/stop event.
+    record_post_roll_secs: float = 30.0
     record_poll_secs: float = 0.5          # detection-buffer poll cadence
     # ---- Recording trigger precision (kills night false-positive clips) ------
     # A person box must occupy at least this fraction of the frame AREA to start
