@@ -15,6 +15,10 @@
   .cam-tile.maximized {
     position: fixed; inset: 0; z-index: 90; border-radius: 0; aspect-ratio: auto;
   }
+  /* The camera Space talks to (hold Space). A ring, not a colour change:
+     it must read at a glance on a dark video. */
+  .cam-tile.selected { border-color: var(--orange);
+    box-shadow: 0 0 0 2px var(--orange), var(--shadow); }
   .live-bar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--gap-stack); }
   .live-bar .pill { font-size: 12px; padding: 5px 13px; }
 </style>
@@ -25,8 +29,9 @@
     <h1>Live wall</h1>
     <div class="sub">All registered cameras, streaming live over WebRTC straight from
       the media backbone — the same feed the shared links serve.
-      Click any tile to maximize · <span class="kbd">Esc</span> to exit ·
-      hold <b>Talk</b> on a tile to speak through that camera.</div>
+      Click any tile to select and maximize · <span class="kbd">Esc</span> to exit ·
+      hold <b>Talk</b> on a tile, or hold <span class="kbd">Space</span> for the
+      selected camera, to speak through it.</div>
   </div>
 
   <div class="live-bar">
@@ -53,6 +58,20 @@ renderNav("live.html");
 
 const streams = {};
 const tiles = {};
+
+// The camera Space talks to: the tile last clicked, or the only camera there
+// is. Esc leaves the selection alone — it only un-maximizes.
+let selected = null;
+function select(tile) {
+  document.querySelectorAll(".cam-tile.selected").forEach(t => t.classList.remove("selected"));
+  selected = tile;
+  if (tile) tile.classList.add("selected");
+}
+function selectedTile() {
+  if (selected && selected.isConnected) return selected;
+  const all = Object.values(tiles);
+  return all.length === 1 ? all[0] : null;
+}
 
 async function sync() {
   const [cams, status] = await Promise.all([
@@ -81,6 +100,7 @@ async function sync() {
       // camera's speaker, and it must be handed back before the tile goes.
       try { window.cvTalkPanel && cvTalkPanel.unmount(tiles[id]); } catch (e) {}
       streams[id]?.stop(); delete streams[id];
+      if (selected === tiles[id]) select(null);
       tiles[id].remove(); delete tiles[id]; }
   });
 
@@ -100,6 +120,7 @@ async function sync() {
         <span class="room">· ${prettyLabel(c.room_name)}</span><span class="rec-dot"></span></div>
       <div class="foot"><span></span></div>`;
     tile.onclick = () => {
+      select(tile);
       const wasMax = tile.classList.contains("maximized");
       document.querySelectorAll(".cam-tile").forEach(t => t.classList.remove("maximized"));
       if (!wasMax) tile.classList.add("maximized");
@@ -132,6 +153,8 @@ window.addEventListener("keydown", e => {
   if (e.key === "Escape")
     document.querySelectorAll(".cam-tile").forEach(t => t.classList.remove("maximized"));
 });
+
+if (window.cvTalkPanel) cvTalkPanel.holdSpaceToTalk(selectedTile);
 
 sync();
 setInterval(sync, 5000);

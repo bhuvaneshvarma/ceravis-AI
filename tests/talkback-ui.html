@@ -332,6 +332,68 @@
   ok("talking ending changes nothing about listening",
      sD.listening() && tileD.querySelector(".listen-btn").dataset.listen === "on");
 
+  // HOLD SPACE TO TALK, into the selected tile.
+  let chosen = null;
+  cvTalkPanel.holdSpaceToTalk(() => chosen);
+  const key = (type, extra = {}, target = document.body) => {
+    const e = new KeyboardEvent(type, { key: " ", code: "Space", bubbles: true,
+                                        cancelable: true, ...extra });
+    target.dispatchEvent(e);
+    return e;
+  };
+  const toastText = () => (document.querySelector(".toast") || {}).textContent || "";
+  const study = socketFor("cam_6");
+  key("keydown"); key("keyup"); await sleep(10);
+  ok("Space with no camera selected says what to do, and talks to nobody",
+     /Click a camera first/.test(toastText()) && talkD.dataset.talk === "idle");
+
+  chosen = tileD;
+  const sent = study.audio(), releases = study.texts("release").length;
+  const down = key("keydown"); await sleep(10);
+  frameIn();
+  ok("holding Space talks into the selected camera, exactly like its button",
+     talkD.dataset.talk === "live" && study.audio() === sent + 1 && down.defaultPrevented);
+  key("keydown", { repeat: true }); await sleep(10);
+  ok("the key's auto-repeat changes nothing", talkD.dataset.talk === "live"
+     && socketFor("cam_6") === study);
+  ok("and listening stays on while Space is held", sD.listening());
+  key("keyup"); await sleep(10);
+  frameIn();
+  ok("letting go of Space releases the room, and no speech follows",
+     talkD.dataset.talk === "idle" && study.texts("release").length === releases + 1
+     && study.audio() === sent + 1);
+
+  key("keydown"); await sleep(10);
+  window.dispatchEvent(new Event("blur")); await sleep(10);
+  ok("the window losing focus mid-Space ends the turn (no stuck key, no hot mic)",
+     talkD.dataset.talk === "idle");
+  key("keyup"); await sleep(10);
+
+  const field = document.createElement("input");
+  document.body.appendChild(field);
+  const typed = key("keydown", {}, field); await sleep(10);
+  ok("Space while typing in a field types a space — it never talks",
+     talkD.dataset.talk === "idle" && !typed.defaultPrevented);
+  key("keyup", {}, field);
+  field.remove();
+  const combo = key("keydown", { ctrlKey: true }); await sleep(10);
+  ok("a modified Space (a browser shortcut) is left alone",
+     talkD.dataset.talk === "idle" && !combo.defaultPrevented);
+  key("keyup", { ctrlKey: true });
+  const listenBtn = tileD.querySelector(".listen-btn");
+  const onUp = key("keyup", {}, listenBtn);
+  ok("Space never 'clicks' a focused Listen button (its default is prevented)",
+     onUp.defaultPrevented && sD.listening());
+
+  const hall = document.createElement("div");      // a camera with no talk-back
+  document.body.appendChild(hall);
+  cvTalkPanel.mount(hall, { camera_id: "cam_4", camera_name: "HALL" }, makeStream());
+  chosen = hall;
+  key("keydown"); key("keyup"); await sleep(10);
+  ok("a selected camera without talk-back says so instead of failing silently",
+     /not ready on this camera/.test(toastText()));
+  chosen = null;
+
   // The inventory tells every screen who is talking.
   studyFloor.state = "speaking"; studyFloor.by = "Nurse Arun"; studyFloor.client_id = "other";
   await cvTalkPanel.refresh();

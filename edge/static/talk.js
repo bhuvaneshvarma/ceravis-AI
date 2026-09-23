@@ -366,6 +366,10 @@
     setState("idle");
 
     return {
+      /* The same press the button makes — for a keyboard shortcut (talk-panel's
+         holdSpaceToTalk). Every rule is in press(): secure page, one microphone
+         per page, the socket, the grant. */
+      press: press,
       release: release,
       stop: release,
       showFloor: showFloor,

@@ -515,6 +515,55 @@
     });
   }
 
+  /* HOLD SPACE TO TALK: the keyboard's press-and-hold, into whichever tile the
+     page calls selected. It drives the SAME talk handle the button does — key
+     down is the press, key up is the release — so every rule (one microphone,
+     the floor, refusals) is the button's, not a second copy of them.
+
+     Stays out of the way: ignored while typing in a field, with a modifier held
+     (a browser shortcut), while a dialog is open, and for the key's
+     auto-repeat. The default is prevented so Space neither scrolls the page nor
+     "clicks" a focused button (a focused Listen would otherwise toggle). The
+     turn ends on key up, on the window losing focus, and on the tab hiding —
+     a stuck key must never leave a live microphone in a room. */
+  function holdSpaceToTalk(selectedTile) {
+    var held = null;                        // the talk handle Space is holding
+    function ours(e) {
+      var t = e.target;
+      return (e.code === "Space" || e.key === " ") && !e.ctrlKey && !e.altKey &&
+        !e.metaKey && !(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) &&
+        !document.querySelector(".cv-dialog-scrim");
+    }
+    function letGo() {
+      if (held) { held.release(); held = null; }
+    }
+    document.addEventListener("keydown", function (e) {
+      if (!ours(e)) return;
+      e.preventDefault();
+      if (e.repeat || held) return;
+      var tile = selectedTile();
+      if (!tile) {
+        toast("Click a camera first, then hold Space to talk to it.", "", 3200);
+        return;
+      }
+      if (!tile.cvTalk) {
+        toast("Talk-back is not ready on this camera — see its Talk button.", "", 3200);
+        return;
+      }
+      held = tile.cvTalk;
+      held.press();
+    });
+    document.addEventListener("keyup", function (e) {
+      if (!ours(e)) return;
+      e.preventDefault();
+      letGo();
+    });
+    global.addEventListener("blur", letGo);
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) letGo();
+    });
+  }
+
   /* Rebuild BOTH controls after commissioning, so the tile reads as one fresh
      unit. The listen button is only detached, never silenced (see below). */
   function remount(tile, camera, stream) {
@@ -538,6 +587,7 @@
   // reachable from a test, not only from a commissioning dialog.
   global.cvTalkPanel = { refresh: refresh, ensure: ensure, mount: mount,
                          unmount: unmount, remount: remount,
+                         holdSpaceToTalk: holdSpaceToTalk,
                          // Camera setup opens the same one-password dialog.
                          commission: commission,
                          noteAudio: noteAudio, state: state };
