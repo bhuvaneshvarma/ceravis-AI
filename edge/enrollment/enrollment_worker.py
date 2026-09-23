@@ -9,7 +9,11 @@ import numpy as np
 
 from enrollment.enrollment_manager import EnrollmentManager
 from common import clock
+from common.crops import crop_person
+from config.settings import settings
+from detection.detection_schema import DetectionClass
 from ingestion.illumination import Modality
+from reid import crop_quality
 
 
 logger = logging.getLogger("enrollment")
@@ -51,6 +55,7 @@ class EnrollmentWorker:
         self._detector = None
         self._extractor = None
         self._reid_error: str | None = None
+        self._skipped: dict[str, int] = {}   # last job: unusable photos, by reason
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -164,9 +169,11 @@ class EnrollmentWorker:
                 good_crops.append(crop)
                 good_labels.append(label)
 
+        skipped = self._skipped_note()
         if not embeddings:
             self._mgr.set_status(recipient_id, state="error", photos=len(crops),
-                                 embeddings=0, message="no person found in media")
+                                 embeddings=0,
+                                 message="no usable photo of one person" + skipped)
             return
 
         arr = np.stack(embeddings, axis=0).astype(np.float32)
@@ -180,8 +187,15 @@ class EnrollmentWorker:
         self._mgr.set_status(recipient_id, state="ready", photos=len(crops),
                              embeddings=len(embeddings), references=refs,
                              message=f"enrolled — {len(embeddings)} embeddings, "
-                                     f"{refs} reference image(s)")
+                                     f"{refs} reference image(s)" + skipped)
         logger.info("enroll: %s ready (%d embeddings)", recipient_id, len(embeddings))
+
+    def _skipped_note(self) -> str:
+        """'; skipped 2 (no person), 1 (two people)' for the last collection."""
+        if not self._skipped:
+            return ""
+        return "; skipped " + ", ".join(f"{n} ({why})"
+                                        for why, n in self._skipped.items())
 
     # ---- infrared gallery -------------------------------------------
     def _save_ir(self, recipient_id: str, crops: list[np.ndarray]) -> int:
@@ -252,11 +266,24 @@ class EnrollmentWorker:
             # No detector: use whole images as crops (the extractor resizes).
             return images, labels
 
+        # Only a clear, usable view of ONE person may enter the gallery. The
+        # gallery is the definition of who the recipient is; a photo that is
+        # not unambiguously them teaches it someone — or something — else.
         crops: list[np.ndarray] = []
-        for img in images:
-            crop = self._largest_person(img)
-            crops.append(crop if crop is not None else img)
-        return crops, labels
+        kept: list[str] = []
+        skipped: dict[str, int] = {}
+        for img, label in zip(images, labels):
+            crop, why = self._largest_person(img)
+            if crop is None:
+                skipped[why] = skipped.get(why, 0) + 1
+                continue
+            crops.append(crop)
+            kept.append(label)
+        self._skipped = skipped
+        if skipped:
+            logger.info("enroll: %s — %d usable, skipped %s", recipient_id,
+                        len(crops), skipped)
+        return crops, kept
 
     def _sample_video(self, path: str) -> list[np.ndarray]:
         frames: list[np.ndarray] = []
@@ -273,17 +300,39 @@ class EnrollmentWorker:
         return frames
 
     def _largest_person(self, img: np.ndarray):
+        """(crop, "") of the one person in `img`, or (None, why not).
+
+        Cropped and gated EXACTLY like a live crop (same padding, same quality
+        gate), so both sides of a match are prepared the same way. Two
+        exceptions, both about deliberate enrollment framing: a box touching the
+        frame edge is allowed (a posed full-body shot often does), and a second
+        box that is merely a duplicate of the first (IoU >= 0.5) is ignored."""
         res = self._detector.detect(
             frame=img, camera_id="enroll", frame_id=0,
             timestamp=clock.now(),
         )
-        if not res.detections:
-            return None
-        best = max(res.detections, key=lambda d: d.bbox.area)
-        x1, y1 = max(0, int(best.bbox.x1)), max(0, int(best.bbox.y1))
-        x2, y2 = int(best.bbox.x2), int(best.bbox.y2)
-        crop = img[y1:y2, x1:x2]
-        return crop if crop.size else None
+        people = [d for d in res.detections
+                  if d.class_name == DetectionClass.PERSON]
+        if not people:
+            return None, "no person"
+        people.sort(key=lambda d: d.bbox.area, reverse=True)
+        best = people[0]
+        b = best.bbox
+        for other in people[1:]:
+            o = other.bbox
+            iw = max(0.0, min(b.x2, o.x2) - max(b.x1, o.x1))
+            ih = max(0.0, min(b.y2, o.y2) - max(b.y1, o.y1))
+            inter = iw * ih
+            iou = inter / max(1e-6, b.area + o.area - inter)
+            if iou < 0.5 and o.area >= 0.5 * b.area:
+                return None, "two people"
+        crop, _, _ = crop_person(img, b.x1, b.y1, b.x2, b.y2,
+                                 settings.crop_padding_frac)
+        h, w = img.shape[:2]
+        q = crop_quality.assess(crop, b, w, h, best.confidence)
+        if not q.ok and not q.truncated and "truncated" not in q.reason:
+            return None, q.reason.split(" (")[0]
+        return (crop, "") if crop.size else (None, "empty crop")
 
     # ---- resume ------------------------------------------------------
     # States that mean "committed for embedding but not finished" — these are
