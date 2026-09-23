@@ -355,10 +355,10 @@ class Settings(BaseSettings):
     # mid-stride) while box jitter is independent tick to tick and cancels.
     visitor_motion_window: int = 5
     visitor_motion_hits: int = 2
-    # At most ONE visitor snapshot per this many seconds for the WHOLE home,
-    # however many people are moving (the least-recently-captured visitor takes
-    # the slot). Home-wide, not per track: a busy room or one tracker ID switch
-    # would otherwise restart a per-track clock. Also caps the outbox load.
+    # At most ONE visitor snapshot per this many seconds PER CAMERA, however
+    # many people are moving in that room (the least-recently-captured visitor
+    # takes the slot). Per camera, not per track: a busy room or one tracker ID
+    # switch would otherwise restart a per-track clock. Also caps outbox load.
     # Override on a device with VISITOR_SNAPSHOT_INTERVAL_SECS in jetson.env.
     visitor_snapshot_interval_secs: float = 60.0
     # While the recipient is being re-found across cameras (a transition), a

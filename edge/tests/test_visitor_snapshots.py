@@ -146,7 +146,7 @@ check("both visitors get captured, not one of them forever",
 check("never more than one snapshot in a tick", max(per_tick) <= 1, str(per_tick))
 
 
-print("\n6. ONE snapshot per interval for the whole home")
+print("\n6. ONE snapshot per interval PER CAMERA")
 rule6 = VisitorRule()
 bufs6 = _world()
 settings.visitor_snapshot_interval_secs = 999.0
@@ -156,15 +156,27 @@ try:
         # two visitors walking AND the tracker re-numbering one of them every
         # 3 ticks (an ID switch mints a fresh never-snapped track)
         _tick(bufs6, {7: 100 + k * 30, 100 + k // 3: 400 + k * 30})
+        # a third visitor walking in ANOTHER room, same minute
+        now = clock.now()
+        bufs6[1].update(TrackResult(
+            camera_id="camB", frame_id=_FID[0], timestamp=now,
+            tracks=[Track(track_id=5, camera_id="camB", frame_id=_FID[0],
+                          timestamp=now,
+                          bbox=BoundingBox(x1=float(100 + k * 30), y1=100.0,
+                                           x2=float(190 + k * 30), y2=400.0),
+                          confidence=0.9)]))
         burst += rule6.evaluate(bufs6[0])
         time.sleep(0.02)
-    check("exactly one snapshot, however many visitors / track ids",
-          len(burst) == 1, str(len(burst)))
+    per_cam = {c: sum(e.camera_id == c for e in burst) for c in ("camA", "camB")}
+    check("exactly one on camA, however many visitors / track ids",
+          per_cam["camA"] == 1, str(per_cam))
+    check("the other camera gets its own one, not blocked by camA",
+          per_cam["camB"] == 1, str(per_cam))
 finally:
     settings.visitor_snapshot_interval_secs = 0.05
 
 from config.settings import Settings                       # noqa: E402
-check("the shipped default is one per minute",
+check("the shipped default is one per minute per camera",
       Settings.model_fields["visitor_snapshot_interval_secs"].default == 60.0)
 
 
