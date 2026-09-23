@@ -59,6 +59,11 @@ from storage.outbox_store import (PRIORITY_ALERT, PRIORITY_AMBIENT,  # noqa: E40
                                   PRIORITY_FALL, OutboxStore)
 from storage.sqlite_store import SqliteStore                     # noqa: E402
 
+# The scenarios below drive the sender's tick in a tight loop and fast-forward
+# only the queue's own clock, so ambient pacing (a real-time spacing) is off
+# here; section 20 tests pacing and the overload pause on their own.
+settings.outbox_bulk_min_interval_secs = 0.0
+
 FAILURES: list[str] = []
 
 
@@ -77,11 +82,17 @@ class FakeServer:
         self.reject_texts: set[str] = set()      # texts answered with a hard 400
         self.reject_status: dict[str, int] = {}  # text -> a specific HTTP status
         self.received: list[tuple] = []          # ("saveAlert"|"saveSnapshot", …)
+        self.keys: list = []                     # Idempotency-Key per attempt
+        self.overload: dict[str, tuple] = {}     # text -> (status, retry_after)
         self._next_alert_id = 100
 
     def _maybe_reject(self, text: str) -> None:
         if not self.online:
             raise CeravisApiError("cannot reach app server: connection refused")
+        if text in self.overload:
+            code, after = self.overload[text]
+            raise CeravisApiError(f"app server returned HTTP {code}",
+                                  status=code, retry_after=after)
         if text in self.reject_status:
             code = self.reject_status[text]
             raise CeravisApiError(f"app server returned HTTP {code}", status=code)
@@ -89,14 +100,16 @@ class FakeServer:
             raise CeravisApiError("app server returned HTTP 400: bad request",
                                   status=400)
 
-    def save_alert(self, pid, alert_type, message):
+    def save_alert(self, pid, alert_type, message, idempotency_key=None):
+        self.keys.append(idempotency_key)
         self._maybe_reject(message)
         self._next_alert_id += 1
         self.received.append(("saveAlert", message, None))
         return {"alertId": self._next_alert_id}
 
     def save_snapshot(self, pid, text, camera_number, *, image=None, video=None,
-                      alert_id=None, category=None):
+                      alert_id=None, category=None, idempotency_key=None):
+        self.keys.append(idempotency_key)
         self._maybe_reject(text)
         self.received.append(("saveSnapshot", text, alert_id))
         return True
@@ -411,7 +424,7 @@ released = threading.Event()
 
 
 def slow_snapshot(pid, text, camera_number, *, image=None, video=None,
-                  alert_id=None, category=None):
+                  alert_id=None, category=None, idempotency_key=None):
     """An ambient upload that hangs the way a stalled server does."""
     if text.startswith("wallpaper"):
         released.wait(timeout=10.0)       # occupies the bulk lane
@@ -565,6 +578,44 @@ pump(snd2, ob2)
 check("both are delivered after the restart",
       {"raised as we stop", "late clip"} <= {r[1] for r in server.received})
 store2.close()
+
+# --------------------------------------------------------------------------
+print("\n20. keeping an overloaded server healthy")
+store3, ob3, snd3 = build(server, _TMP / "load.db")
+server.online = True
+server.received.clear(); server.keys.clear()
+server.overload = {"busy photo": (503, None)}
+j = snd3.queue_snapshot(7, "busy photo", "LOUNGE", image=b"jpg", priority=PRIORITY_AMBIENT)
+snd3.queue_snapshot(7, "next photo", "LOUNGE", image=b"jpg", priority=PRIORITY_AMBIENT)
+lane_b = [l for l in outbox_sender._LANES if l[0] == outbox_sender._LANE_BULK][0]
+lane_u = [l for l in outbox_sender._LANES if l[0] == outbox_sender._LANE_URGENT][0]
+snd3._tick(*lane_b)                                   # the 503
+wait = snd3._tick(*lane_b)
+check("a 503 pauses the WHOLE ambient lane (the next photo is not fired into it)",
+      wait > 0 and not any(r[1] == "next photo" for r in server.received))
+check("the job that met the 503 is kept, not dropped", ob3.job(j)["state"] == "pending")
+server.overload = {"busy alert": (503, 120.0)}
+snd3.queue_alert(7, "FALL", "busy alert", priority=PRIORITY_FALL)
+snd3._tick(*lane_u)
+paused = snd3._paused_until[outbox_sender._LANE_URGENT] - time.monotonic()
+check(f"the urgent lane honours Retry-After but caps it short ({paused:.1f}s)",
+      0 < paused <= settings.outbox_overload_pause_max_urgent_secs + 0.01)
+server.overload = {}
+snd3._paused_until.clear()
+ob3.wake_all()                                        # its retry comes due
+snd3._tick(*lane_u)
+check("the overload streak resets once a delivery succeeds",
+      snd3._overloads.get(outbox_sender._LANE_URGENT) == 0)
+check("every attempt carried its job id as the Idempotency-Key",
+      server.keys and all(k for k in server.keys))
+retries = [k for k in server.keys if server.keys.count(k) > 1]
+check("and a retry reuses the SAME key", bool(retries))
+settings.outbox_bulk_min_interval_secs = 0.5
+snd3._last_sent[outbox_sender._LANE_BULK] = time.monotonic()
+check("ambient uploads are paced (the lane waits out the interval)",
+      snd3._tick(*lane_b) > 0)
+settings.outbox_bulk_min_interval_secs = 0.0
+store3.close()
 
 # --------------------------------------------------------------------------
 store.close()

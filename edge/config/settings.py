@@ -711,6 +711,12 @@ class Settings(BaseSettings):
     # name contains one of these is treated as intentional lying (not an alarm).
     events_dir: str = "data/events"
     event_snapshot_quality: int = 80
+    # Longest side of an event snapshot, in pixels. These stills go to the cloud
+    # for a carer's phone; the native-resolution footage stays on the device in
+    # the recordings. Measured on the bench (2026-09-23): a 4K still is ~898 KB
+    # and 84 ms to encode, 1920 px ~318 KB and 26 ms — and the 502/503 storm
+    # that delayed a fall alert came from a burst of full-4K uploads.
+    event_snapshot_max_px: int = 1920
     # Rolling retention for the device's own record of what happened: the rows
     # in the `events` table AND the snapshot JPEGs they point at, both expired
     # once they are older than this many days (0 = keep forever).
@@ -744,7 +750,11 @@ class Settings(BaseSettings):
     # via CERAVIS_API_KEY (it's a secret — rotate there, see jetson.env).
     ceravis_api_key: str = ("sk-0r1g6k7j8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7"
                             "e8f9g0h1i2j3k4l5m6n7o8p9q0r1s2t3u4v5w6x7y8z9")
-    ceravis_api_timeout_secs: float = 8.0
+    # READ timeout (connect stays ~3 s, so an unreachable server still fails
+    # fast). 20 s, not 8: the app server took 7-8 s to create an alert on
+    # 2026-09-23, so an 8 s read abandoned a FALL alert the server was still
+    # committing — a retry, an 18 s delay and a possible duplicate.
+    ceravis_api_timeout_secs: float = 20.0
     # Externally-reachable base for the live links sent to the app server. In the
     # fleet model this is the shared domain fronted by the cloud Caddy, e.g.
     # https://edge.ceravishealth.in — TLS and the /<edge_id> path routing are
@@ -867,6 +877,14 @@ class Settings(BaseSettings):
     outbox_ram_first: bool = True
     outbox_ram_hold_secs: float = 5.0
     outbox_ram_max_mb: float = 64.0          # stills + clips held in RAM at once
+    # Load control toward the app server. After an overload answer (429/502/
+    # 503/504) the lane pauses — doubling per consecutive one, or as long as a
+    # Retry-After says — capped SHORT for the urgent lane (alerts keep trying)
+    # and longer for ambient. Ambient uploads are also paced to at most one per
+    # interval, so a burst of events can never become a burst of requests.
+    outbox_overload_pause_max_secs: float = 60.0
+    outbox_overload_pause_max_urgent_secs: float = 5.0
+    outbox_bulk_min_interval_secs: float = 1.0
 
     # ---- Long-dwell welfare checks (StillnessRule) ------------------
     # A 75-min slot: WINDOW minutes quiet, then one snapshot per minute for

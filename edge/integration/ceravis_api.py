@@ -157,13 +157,38 @@ class CeravisApiError(Exception):
     distinction is what lets the outbox tell "try again when the link is back"
     from "the server rejected this and always will"."""
 
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    def __init__(self, message: str, *, status: int | None = None,
+                 retry_after: float | None = None) -> None:
         super().__init__(message)
         self.status = status
+        # Seconds the server asked us to wait (Retry-After), if it said.
+        self.retry_after = retry_after
+
+
+def _brief(text: str | None, n: int) -> str:
+    """A response body for a log line / error: whitespace collapsed, clipped.
+    A proxy's 503 is a multi-line HTML page, which used to spill one journal
+    line per HTML line (the full body stays in the wire log)."""
+    return " ".join((text or "").split())[:n]
+
+
+def _retry_after(resp) -> float | None:
+    """The Retry-After header in seconds (delta form), capped at 5 minutes."""
+    try:
+        v = float(resp.headers.get("Retry-After", ""))
+        return max(0.0, min(v, 300.0))
+    except (TypeError, ValueError):
+        return None
 
 
 def is_configured() -> bool:
     return bool(settings.ceravis_api_base_url.strip())
+
+
+def _with_key(headers: dict[str, str], idempotency_key: str | None) -> dict[str, str]:
+    if idempotency_key:
+        headers = dict(headers, **{"Idempotency-Key": idempotency_key})
+    return headers
 
 
 def _headers() -> dict[str, str]:
@@ -217,7 +242,7 @@ def get_user_details(email: str) -> dict | None:
     if resp.status_code == 404:
         return None
     if resp.status_code >= 400:
-        logger.warning("userDetails error body: %s", resp.text[:300])
+        logger.warning("userDetails error body: %s", _brief(resp.text, 300))
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}",
             status=resp.status_code)
@@ -267,7 +292,7 @@ def send_otp(email: str) -> bool:
         return False
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     return True
 
@@ -309,7 +334,7 @@ def verify_otp(email: str, otp: str) -> bool:
         return False                              # wrong / expired code
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     try:                                          # honour an explicit {data:false}
         if _unwrap(resp.json()) is False:
@@ -355,14 +380,14 @@ def save_cameras(patient_user_id, cameras: list[dict]):
               latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
-    logger.info("saveCamera <- HTTP %s  body=%s", resp.status_code, resp.text[:300])
+    logger.info("saveCamera <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 300))
     call_log.record("saveCamera", resp.status_code < 400, label=label,
                     status=resp.status_code, latency_ms=lat)
     _wire("saveCamera", "PUT", url, payload, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     try:
         return _unwrap(resp.json())
@@ -399,14 +424,14 @@ def delete_camera(patient_user_id, room: str):
               latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
-    logger.info("cameras/delete <- HTTP %s  body=%s", resp.status_code, resp.text[:200])
+    logger.info("cameras/delete <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 200))
     call_log.record("cameraDelete", resp.status_code < 400, label=label,
                     status=resp.status_code, latency_ms=lat)
     _wire("cameraDelete", "PUT", url, payload, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     try:
         return _unwrap(resp.json())
@@ -447,7 +472,7 @@ def delete_patient_zoning_file(user_id):
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("deletePatientZoningFile <- HTTP %s  body=%s",
-                resp.status_code, resp.text[:200])
+                resp.status_code, _brief(resp.text, 200))
     call_log.record("deleteZoningFile", resp.status_code < 400 or resp.status_code == 404,
                     label=label, status=resp.status_code, latency_ms=lat)
     _wire("deletePatientZoningFile", "PUT", url, payload,
@@ -456,7 +481,7 @@ def delete_patient_zoning_file(user_id):
         return True                       # nothing stored yet — fine to write
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     try:
         return _unwrap(resp.json())
@@ -487,12 +512,16 @@ def alert_id_of(response) -> int | None:
     return _as_long(response)
 
 
-def save_alert(patient_user_id, alert_type: str, message_text: str):
+def save_alert(patient_user_id, alert_type: str, message_text: str, *,
+               idempotency_key: str | None = None):
     """
     PUT /v1/ai/saveAlert — push one alert to the app server.
     Body: { patientUserId, alertType (e.g. "FALL"), messageText }.
     Returns the server's response payload (carries the new alert's id — see
     alert_id_of); raises CeravisApiError on failure.
+    `idempotency_key` (the outbox job id) goes out as the Idempotency-Key
+    header, identical on every retry of the same alert, so a server that
+    honours it can drop the duplicate a timed-out-but-committed try leaves.
     """
     if not is_configured():
         raise CeravisApiError(
@@ -505,8 +534,9 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
                 patient_user_id, alert_type)
     t0 = time.perf_counter()
     try:
-        resp = _session().put(url, json=payload, headers=_headers(),
-                            timeout=_timeout())
+        resp = _session().put(url, json=payload,
+                              headers=_with_key(_headers(), idempotency_key),
+                              timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("saveAlert: cannot reach %s — %s", url, exc)
         call_log.record("saveAlert", False, label=label, error=str(exc),
@@ -515,16 +545,16 @@ def save_alert(patient_user_id, alert_type: str, message_text: str):
               latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
-    logger.info("saveAlert <- HTTP %s  body=%s", resp.status_code, resp.text[:300])
+    logger.info("saveAlert <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 300))
     _wire("saveAlert", "PUT", url, payload, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         call_log.record("saveAlert", False, label=label,
                         status=resp.status_code, latency_ms=lat,
-                        error=resp.text[:200])
+                        error=_brief(resp.text, 200))
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
-            status=resp.status_code)
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
+            status=resp.status_code, retry_after=_retry_after(resp))
     try:
         result = _unwrap(resp.json())
     except ValueError:
@@ -575,15 +605,15 @@ def send_recording_event(payload: dict) -> None:
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("recordingEvent <- HTTP %s  body=%s",
-                resp.status_code, resp.text[:200])
+                resp.status_code, _brief(resp.text, 200))
     _wire("recordingEvent", "POST", url, payload, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         call_log.record("recordingEvent", False, label=label,
                         status=resp.status_code, latency_ms=lat,
-                        error=resp.text[:200])
+                        error=_brief(resp.text, 200))
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     call_log.record("recordingEvent", True, label=label,
                     status=resp.status_code, latency_ms=lat)
@@ -603,7 +633,8 @@ def _multipart_headers() -> dict[str, str]:
 
 def save_snapshot(patient_id, text: str, camera_number: str, *,
                   image: bytes | None = None, video: bytes | None = None,
-                  alert_id: int | None = None, category: str | None = None):
+                  alert_id: int | None = None, category: str | None = None,
+                  idempotency_key: str | None = None):
     """
     POST /v1/ai/saveSnapshot — the snapshot/clip for an alert or action.
     multipart/form-data (SnapshotRequest): patientId, text, cameraNumber, category
@@ -646,8 +677,8 @@ def save_snapshot(patient_id, text: str, camera_number: str, *,
     t0 = time.perf_counter()
     try:
         resp = _session().post(url, data=data, files=files,
-                             headers=_multipart_headers(),
-                             timeout=_timeout())
+                               headers=_with_key(_multipart_headers(), idempotency_key),
+                               timeout=_timeout())
     except requests.RequestException as exc:
         logger.warning("saveSnapshot: cannot reach %s — %s", url, exc)
         call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
@@ -657,16 +688,16 @@ def save_snapshot(patient_id, text: str, camera_number: str, *,
               latency_ms=(time.perf_counter() - t0) * 1000)
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
-    logger.info("saveSnapshot <- HTTP %s  body=%s", resp.status_code, resp.text[:200])
+    logger.info("saveSnapshot <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 200))
     _wire("saveSnapshot", "POST", url, log_body, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
                         status=resp.status_code, latency_ms=lat,
-                        error=resp.text[:200])
+                        error=_brief(resp.text, 200))
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
-            status=resp.status_code)
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
+            status=resp.status_code, retry_after=_retry_after(resp))
     try:
         result = _unwrap(resp.json())
     except ValueError:
@@ -717,7 +748,7 @@ def get_patient_postures(user_id) -> list[dict]:
         return []
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     try:
         data = _unwrap(resp.json())
@@ -762,14 +793,14 @@ def upload_embedding_file(file_category: str, user_id, file_name: str,
         raise CeravisApiError(f"cannot reach app server: {exc}") from exc
     lat = (time.perf_counter() - t0) * 1000
     logger.info("uploadEmbeddingFile <- HTTP %s  body=%s",
-                resp.status_code, resp.text[:200])
+                resp.status_code, _brief(resp.text, 200))
     call_log.record("uploadEmbeddingFile", resp.status_code < 400, label=label,
                     status=resp.status_code, latency_ms=lat)
     _wire("uploadEmbeddingFile", "PUT", url, payload, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     if resp.status_code >= 400:
         raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {resp.text[:200]}",
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     try:
         return _unwrap(resp.json())
@@ -801,4 +832,4 @@ def send_status(payload: dict) -> tuple[bool, int | None, str | None]:
           response=resp.text, latency_ms=lat)
     if resp.status_code < 400:
         return True, resp.status_code, None
-    return False, resp.status_code, f"HTTP {resp.status_code}: {resp.text[:120]}"
+    return False, resp.status_code, f"HTTP {resp.status_code}: {_brief(resp.text, 120)}"

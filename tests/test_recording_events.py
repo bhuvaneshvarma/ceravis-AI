@@ -136,7 +136,7 @@ check("recordingEvent is listed as a retired kind",
 # ===========================================================================
 print("\n3. rows left by the OLD build clear themselves on upgrade")
 
-outbox_sender.save_alert = lambda pid, t, m: {"alertId": 1}
+outbox_sender.save_alert = lambda pid, t, m, **kw: {"alertId": 1}
 outbox_sender.save_snapshot = lambda *a, **k: True
 outbox_sender.is_configured = lambda: True
 

@@ -167,7 +167,14 @@ class EventEnricher:
             rel = Path(settings.device_id) / day / f"{event.event_id}.jpg"
             out = self._events_root / rel
             out.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(out), fd.frame,
+            frame = fd.frame
+            h, w = frame.shape[:2]
+            cap = int(settings.event_snapshot_max_px)
+            if cap > 0 and max(h, w) > cap:
+                s = cap / float(max(h, w))
+                frame = cv2.resize(frame, (int(w * s), int(h * s)),
+                                   interpolation=cv2.INTER_AREA)
+            cv2.imwrite(str(out), frame,
                         [cv2.IMWRITE_JPEG_QUALITY, int(settings.event_snapshot_quality)])
             # Store the path RELATIVE to the events root — maps 1:1 to the
             # future S3 key (<device_id>/<date>/<event_id>.jpg).

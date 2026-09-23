@@ -59,8 +59,18 @@ ALERT LINKAGE ACROSS AN OUTAGE
     unlinked — a fall photo with no alert row beats no fall photo.
 
 Delivery is AT LEAST ONCE: a reply lost after the server committed will be
-retried and can duplicate. Making it exactly-once needs an idempotency key the
-backend honours; until then the duplicate is the safe failure direction.
+retried and can duplicate. Every alert and snapshot therefore carries its job
+id as an Idempotency-Key header, identical on every retry — a backend that
+honours it turns this into exactly-once; until then the duplicate is the safe
+failure direction.
+
+KEEP THE SERVER HEALTHY
+    An overload answer (429/502/503/504) pauses the whole LANE, not just the
+    job — doubling per consecutive one, or as long as Retry-After says — so a
+    struggling server is not fed the next upload at once. The urgent lane's
+    pause is capped short so an alarm keeps trying; ambient uploads are also
+    paced to one per interval, so a burst of events never becomes a burst of
+    requests.
 """
 
 import logging
@@ -83,6 +93,12 @@ logger = logging.getLogger("outbox")
 # nothing is dropped — but they also raise the needs-attention note so the cause
 # gets fixed instead of silently retried forever.
 _ATTENTION_STATUSES = {401, 403, 404, 413}
+
+# The server (or the proxy in front of it) is OVERLOADED, not rejecting this
+# job: stop the whole lane for a moment instead of firing the next upload into
+# it. On 2026-09-23 a burst of full-4K snapshots drew 200 of these in twenty
+# minutes, and the fall alert in that window took 18 s to land.
+_OVERLOAD_STATUSES = {429, 502, 503, 504}
 
 # Job kinds this build no longer knows how to send. A device upgrading from an
 # older build can still have rows for them, so _deliver clears them instead of
@@ -129,6 +145,11 @@ class OutboxSender:
         self._degraded: dict[str, bool] = {}
         self._problem: dict[str, str] = {}   # lane -> "offline" | "rejecting"
         self._trimmed_at = 0.0
+        # Per lane: sending pauses until this monotonic time after an overload
+        # answer, and the streak of those answers sets how long the pause is.
+        self._paused_until: dict[str, float] = {}
+        self._overloads: dict[str, int] = {}
+        self._last_sent: dict[str, float] = {}
 
     # ---- lifecycle ---------------------------------------------------
     def start(self) -> None:
@@ -231,6 +252,13 @@ class OutboxSender:
             self._trim_periodically()    # one lane owns it; twice would be waste
         if not is_configured():
             return 5.0
+        mono = time.monotonic()
+        wait = self._paused_until.get(lane, 0.0) - mono     # server overloaded
+        if lane == _LANE_BULK:                              # ambient is paced
+            wait = max(wait, self._last_sent.get(lane, 0.0)
+                       + settings.outbox_bulk_min_interval_secs - mono)
+        if wait > 0:
+            return min(wait, settings.outbox_poll_secs)
         now = time.time()
         job = self._outbox.next_ready(now, min_priority=lo, max_priority=hi)
         if job is not None:
@@ -265,6 +293,9 @@ class OutboxSender:
                 "best-effort reporter (integration/recording_events.py)")
             return
 
+        # Pacing counts REQUESTS to the server — a row cleared locally above
+        # (a retired kind) never touched it, so it never holds the lane.
+        self._last_sent[lane] = time.monotonic()
         # While deliveries are failing, the API client's own per-call console
         # record is silenced: the first failure was reported and the queue's
         # depth carries the rest, so a long outage cannot flush the log.
@@ -283,6 +314,7 @@ class OutboxSender:
                          unreachable=False)
             return
         self._outbox.mark_sent(job["job_id"], result_id)
+        self._overloads[lane] = 0
         self._recovered(lane)
 
     def _recovered(self, lane: str) -> None:
@@ -302,7 +334,7 @@ class OutboxSender:
         payload = job["payload"]
         if job["kind"] == "saveAlert":
             resp = save_alert(payload["patient_id"], payload["alert_type"],
-                              payload["message"])
+                              payload["message"], idempotency_key=job["job_id"])
             return alert_id_of(resp)
         if job["kind"] == "saveSnapshot":
             media = self._outbox.blob(job)
@@ -319,7 +351,8 @@ class OutboxSender:
                 image=media if part == "image" else None,
                 video=media if part == "video" else None,
                 alert_id=self._alert_id_for(job),
-                category=payload.get("category"))
+                category=payload.get("category"),
+                idempotency_key=job["job_id"])
             return None
         raise CeravisApiError(f"unknown outbox job kind {job['kind']!r}")
 
@@ -361,6 +394,18 @@ class OutboxSender:
 
         if status in _ATTENTION_STATUSES:
             self._outbox.flag_attention(status, str(exc), job.get("label", ""))
+
+        if status in _OVERLOAD_STATUSES:
+            # Back the whole lane off, doubling per consecutive overload answer,
+            # or for exactly as long as the server asked (Retry-After). The
+            # urgent lane's pause is capped short: an alarm keeps trying.
+            n = self._overloads[lane] = self._overloads.get(lane, 0) + 1
+            cap = (settings.outbox_overload_pause_max_urgent_secs if lane == _LANE_URGENT
+                   else settings.outbox_overload_pause_max_secs)
+            pause = getattr(exc, "retry_after", None)
+            if pause is None:
+                pause = settings.outbox_backoff_base_secs * (2 ** (n - 1))
+            self._paused_until[lane] = time.monotonic() + min(pause, cap)
 
         # One transition line, not one per retry: "offline" (no response at all)
         # and "rejecting" (the server answered with an error) are different news.
