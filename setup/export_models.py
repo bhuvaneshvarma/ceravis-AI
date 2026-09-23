@@ -19,6 +19,7 @@ Engines are GPU-arch-specific — always built on the device.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -128,6 +129,63 @@ def export_reid(engine_path: Path) -> None:
     ])
 
 
+# ---------------------------------------------------------- face models
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _fetch_verified(path: Path, url: str, sha256: str) -> None:
+    """Download `url` to `path` once, keeping it only if its SHA-256 matches.
+    Written to a .part file first, so an interrupted or wrong download never
+    sits at the real path; a network timeout so it can never stall a start."""
+    if _have(path):
+        print(f"[skip] {path.name} already present")
+        return
+    from urllib.request import urlopen
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".part")
+    print(f"[download] {url}")
+    try:
+        with urlopen(url, timeout=60) as resp, open(part, "wb") as out:
+            shutil.copyfileobj(resp, out, 1 << 20)
+    except Exception as exc:
+        part.unlink(missing_ok=True)
+        print(f"[error] {path.name} download failed ({exc}) — face identity stays off")
+        return
+    if sha256 and _sha256(part) != sha256.lower():
+        part.unlink(missing_ok=True)
+        print(f"[error] {path.name} does not match its SHA-256 — discarded")
+        return
+    os.replace(part, path)
+    print(f"[ok] {path}")
+
+
+def fetch_face_models() -> None:
+    """YuNet + SFace for face identity (edge/reid/face_identity.py). Plain ONNX
+    files OpenCV loads directly — nothing to build, only fetch, pinned to an
+    exact upstream commit and checked by SHA-256. The URLs and hashes live in
+    edge/config/settings.py, the one place they are defined."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "edge"))
+    try:
+        from config.settings import settings
+    except Exception as exc:
+        print(f"[skip] face models: settings unavailable ({exc})")
+        return
+    if not settings.face_enabled:
+        print("[skip] face identity disabled")
+        return
+    for path, url, sha in (
+            (settings.face_detector_path, settings.face_detector_url,
+             settings.face_detector_sha256),
+            (settings.face_recognizer_path, settings.face_recognizer_url,
+             settings.face_recognizer_sha256)):
+        _fetch_verified(Path(path), url, sha)
+
+
 # ---------------------------------------------------------------- main
 def main() -> int:
     # --onnx-only: run just stage 1 (needs torch/ultralytics). The engine
@@ -156,6 +214,7 @@ def main() -> int:
         build_engine(pose_engine.with_suffix(".onnx"), pose_engine)
 
     export_reid(reid_engine)
+    fetch_face_models()
     return 0
 
 

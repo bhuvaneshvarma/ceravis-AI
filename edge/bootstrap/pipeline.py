@@ -164,6 +164,12 @@ class Pipeline:
             gallery = FaissGallery()
         except Exception:
             logger.exception("FAISS gallery unavailable (ReID + enrollment off)")
+        # The recipients' enrolled faces: the second identity cue, weighed by the
+        # SAME lock decision as the body gallery (reid/face_identity.py).
+        face_gallery = None
+        if gallery is not None and settings.face_enabled:
+            from reid.face_identity import FaceGallery
+            face_gallery = FaceGallery()
 
         # ---- enrollment worker -------------------------------------
         # Started BEFORE tracking: its start() loads the stored gallery (and
@@ -174,7 +180,8 @@ class Pipeline:
         try:
             from enrollment.enrollment_manager import EnrollmentManager
             from enrollment.enrollment_worker import EnrollmentWorker
-            enroll_worker = EnrollmentWorker(EnrollmentManager(), gallery=gallery)
+            enroll_worker = EnrollmentWorker(EnrollmentManager(), gallery=gallery,
+                                             face_gallery=face_gallery)
             enroll_worker.start()
         except Exception:
             logger.exception("EnrollmentWorker disabled")
@@ -187,7 +194,7 @@ class Pipeline:
                 detection_buffer, track_buffer, frame_buffer=frames,
                 feature_buffer=feature_buffer, metrics_registry=metrics_registry,
                 gallery=gallery, target_registry=target_registry,
-                best_shots=best_shots)
+                best_shots=best_shots, face_gallery=face_gallery)
             tracking_runner.start()
         except Exception:
             logger.exception("TrackingRunner disabled")
@@ -214,7 +221,8 @@ class Pipeline:
                 reid_runner = ReIDRunner(
                     track_buffer=track_buffer, feature_buffer=feature_buffer,
                     identity_buffer=identity_buffer, gallery=gallery,
-                    target_registry=target_registry, posture_buffer=posture_buffer)
+                    target_registry=target_registry, posture_buffer=posture_buffer,
+                    face_gallery=face_gallery)
                 reid_runner.start()
             except Exception:
                 logger.exception("ReIDRunner disabled")

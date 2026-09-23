@@ -558,6 +558,46 @@ class Settings(BaseSettings):
     # covers a recipient the model cannot vouch for in the dark.
     reid_ir_match_threshold: float = 0.65
     reid_ir_acquire_min_score: float = 0.75
+
+    # ---- Face identity (a second, clothing-independent cue) -----------
+    # Body ReID matches mostly on clothes: at the 0.80 bar it recognised the
+    # recipient in a DIFFERENT outfit only 31% of the time, and some strangers in
+    # similar clothes still reach 0.8+. The face is independent evidence. YuNet
+    # finds the face in the upper body of a track (MIT licence) and SFace embeds
+    # it (Apache-2.0); both run on the device's own OpenCV. Measured jointly on
+    # the SAME crops (bench, 2026-09-23: 751 strangers, the recipient in both
+    # outfits):
+    #   body >= 0.80 only                          strangers 0.8%  recipient
+    #                                              same outfit 97.6%, other 31.0%
+    #   body >= 0.80, or body >= match AND face >= face_confirm_score, and never
+    #   when a visible face < face_veto_score      strangers 0.27% recipient
+    #                                              same outfit 97.6%, other 83.3%
+    # A visible face that is clearly someone else also RELEASES a lock, and a
+    # face-confirmed lock may learn the recipient's new outfit. Colour only —
+    # faces are not trusted in infrared (no night data). Faces are computed only
+    # for tracks that already match the body gallery, or are the target.
+    face_enabled: bool = True
+    face_detector_path: str = "models/face/face_detection_yunet_2022mar.onnx"
+    face_recognizer_path: str = "models/face/face_recognition_sface_2021dec.onnx"
+    # Pinned to the exact opencv_zoo commits and checked by SHA-256 when setup
+    # fetches them (setup/export_models.py). YuNet 2022mar: the last release that
+    # the device's OpenCV 4.5.4 FaceDetectorYN accepts (2023mar+ needs 4.8).
+    face_detector_url: str = (
+        "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
+        "c97242ce7f2a554e288b50eabd9f5df957e78801/models/face_detection_yunet/"
+        "face_detection_yunet_2022mar.onnx")
+    face_detector_sha256: str = (
+        "50ef07f702a31741ca46a4c0d947773b64143b9362780237bf0d427d6c79bab7")
+    face_recognizer_url: str = (
+        "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
+        "ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/"
+        "face_recognition_sface_2021dec.onnx")
+    face_recognizer_sha256: str = (
+        "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79")
+    face_min_px: float = 40.0          # narrower faces are not used as evidence
+    face_confirm_score: float = 0.55   # SFace cosine: strangers 1.0%, recipient 95%
+    face_veto_score: float = 0.30      # below every recipient face measured (min .332)
+    face_max_age_secs: float = 10.0    # a track's face look older than this is ignored
     # Night lock rules. By day a lock that stops matching is released after
     # target_mismatch_release_checks. At night "stops matching" is mostly the
     # model being blind, not a different person, so a lock is HELD on the

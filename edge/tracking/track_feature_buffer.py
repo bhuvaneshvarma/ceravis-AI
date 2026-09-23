@@ -16,8 +16,12 @@ Each record also says which picture it came from — colour or infrared (see
 ingestion/illumination.py) — because the two are matched against different
 galleries. The tracker drops appearance history on a modality switch, so a
 record is never a blend of the two.
+
+A record may also carry the track's latest FACE look (reid/face_identity.py),
+set separately at the ReID rate and kept across the per-tick body updates.
 """
 
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from threading import RLock
@@ -32,6 +36,9 @@ class TrackFeature:
     frame_id: int
     timestamp: datetime
     modality: str = "color"
+    face: np.ndarray | None = None    # latest unit 128-d face vector, if seen
+    face_px: float = 0.0              # its width in frame pixels
+    face_at: float = 0.0              # monotonic time it was seen
 
 
 class TrackFeatureBuffer:
@@ -47,9 +54,21 @@ class TrackFeatureBuffer:
                curr: np.ndarray, frame_id: int, timestamp: datetime,
                modality: str = "color") -> None:
         with self._lock:
-            self._feats.setdefault(camera_id, {})[track_id] = TrackFeature(
+            per = self._feats.setdefault(camera_id, {})
+            old = per.get(track_id)
+            per[track_id] = TrackFeature(
                 smooth=smooth, curr=curr, frame_id=frame_id, timestamp=timestamp,
-                modality=modality)
+                modality=modality,
+                face=old.face if old else None, face_px=old.face_px if old else 0.0,
+                face_at=old.face_at if old else 0.0)
+
+    def set_face(self, camera_id: str, track_id: int, face: np.ndarray,
+                 face_px: float) -> None:
+        """Attach a fresh face look to an existing track record."""
+        with self._lock:
+            rec = self._feats.get(camera_id, {}).get(track_id)
+            if rec is not None:
+                rec.face, rec.face_px, rec.face_at = face, float(face_px), time.monotonic()
 
     def get(self, camera_id: str, track_id: int) -> TrackFeature | None:
         with self._lock:

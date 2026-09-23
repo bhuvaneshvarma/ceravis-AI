@@ -46,11 +46,14 @@ class EnrollmentWorker:
     VIDEO_SAMPLE_EVERY = 15          # ~ every 0.5 s at 30 fps
     MAX_FRAMES_PER_VIDEO = 40
 
-    def __init__(self, manager: EnrollmentManager, gallery=None) -> None:
+    def __init__(self, manager: EnrollmentManager, gallery=None,
+                 face_gallery=None) -> None:
         self._mgr = manager
         self._gallery = gallery       # shared FaissGallery (same one ReID queries)
-        # (job, recipient_id): "enroll" = the full pipeline, "ir" = only build
-        # the infrared gallery from already-stored media (back-fill).
+        self._face_gallery = face_gallery   # shared FaceGallery (the second cue)
+        self._face = None                   # FaceIdentity, loaded on first use
+        # (job, recipient_id): "enroll" = the full pipeline, "ir" / "face" =
+        # only build that gallery from already-stored media (back-fill).
         self._q: "queue.Queue[tuple[str, str]]" = queue.Queue()
         self._detector = None
         self._extractor = None
@@ -75,6 +78,7 @@ class EnrollmentWorker:
         self._rebuild_gallery()
         self._resume_pending()
         self._backfill_ir()
+        self._backfill_faces()
 
     def stop(self) -> None:
         self._running = False
@@ -130,6 +134,14 @@ class EnrollmentWorker:
                 job, recipient_id = self._q.get(timeout=1.0)
             except queue.Empty:
                 continue
+            if job == "face":
+                try:
+                    self._process_faces(recipient_id)
+                except Exception:
+                    # Faces are a second cue: a failure leaves body ReID intact.
+                    logger.exception("enroll: face back-fill failed for %s",
+                                     recipient_id)
+                continue
             if job == "ir":
                 try:
                     self._process_ir(recipient_id)
@@ -180,14 +192,17 @@ class EnrollmentWorker:
         self._mgr.save_embeddings(recipient_id, arr)
         self._mgr.save_embedding_labels(recipient_id, good_labels)
         self._save_ir(recipient_id, good_crops)
+        faces = self._save_faces(recipient_id)
         # Keep a few small JPEG crops of the person for future reference.
         refs = self._mgr.save_reference_crops(recipient_id, good_crops)
         self._rebuild_gallery()
         self._upload_embeddings(recipient_id)
         self._mgr.set_status(recipient_id, state="ready", photos=len(crops),
                              embeddings=len(embeddings), references=refs,
+                             faces=faces,
                              message=f"enrolled — {len(embeddings)} embeddings, "
-                                     f"{refs} reference image(s)" + skipped)
+                                     f"{faces} face(s), {refs} reference image(s)"
+                                     + skipped)
         logger.info("enroll: %s ready (%d embeddings)", recipient_id, len(embeddings))
 
     def _skipped_note(self) -> str:
@@ -243,6 +258,52 @@ class EnrollmentWorker:
                 continue                    # nothing to build it from
             logger.info("enroll: queueing infrared gallery back-fill for %s", rid)
             self._q.put(("ir", rid))
+
+    # ---- face gallery (the second identity cue) ----------------------
+    def _save_faces(self, recipient_id: str) -> int:
+        """Embed the one clear face in each stored photo (reid/face_identity).
+        Faces are taken from the PHOTOS, not the body crops: a head-and-
+        shoulders close-up is useless to body ReID but the best face there is.
+        Returns how many faces were saved (0 when face identity is off)."""
+        if self._face_gallery is None or not settings.face_enabled:
+            return 0
+        if self._face is None:
+            from reid.face_identity import FaceIdentity
+            self._face = FaceIdentity()
+        if not self._face.ready:
+            return 0
+        vecs = []
+        for p in self._mgr.list_photos(recipient_id):
+            img = cv2.imread(str(p))
+            if img is not None:
+                v, _why = self._face.embed_photo(img)
+                if v is not None:
+                    vecs.append(v)
+        from reid.face_identity import FACE_DIM
+        arr = (np.stack(vecs).astype(np.float32) if vecs
+               else np.zeros((0, FACE_DIM), dtype=np.float32))
+        self._mgr.save_face_embeddings(recipient_id, arr)
+        return len(vecs)
+
+    def _process_faces(self, recipient_id: str) -> None:
+        n = self._save_faces(recipient_id)
+        if n:
+            self._rebuild_gallery()
+        logger.info("enroll: %s face gallery built (%d face(s))", recipient_id, n)
+
+    def _backfill_faces(self) -> None:
+        """Queue faces for every recipient enrolled before face identity
+        existed. A recipient with no body embeddings (never enrolled, or
+        switched off on purpose) is left alone."""
+        if self._face_gallery is None or not settings.face_enabled:
+            return
+        for root in sorted(self._mgr.base_path.glob("*")):
+            rid = root.name
+            if (root.is_dir() and not self._mgr.has_face_embeddings(rid)
+                    and self._mgr.load_embeddings(rid).shape[0] > 0
+                    and self._mgr.media_names(rid)):
+                logger.info("enroll: queueing face gallery back-fill for %s", rid)
+                self._q.put(("face", rid))
 
     # ---- crop extraction --------------------------------------------
     def _collect_crops(self, recipient_id: str):
@@ -409,3 +470,5 @@ class EnrollmentWorker:
             self._gallery.rebuild(emb, ids, labels, mods)
         except Exception:
             logger.exception("enroll: gallery rebuild failed")
+        if self._face_gallery is not None:
+            self._face_gallery.rebuild(self._mgr.load_face_gallery())

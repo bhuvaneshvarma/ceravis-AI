@@ -52,6 +52,7 @@ class ReIDRunner:
         target_registry: TargetRegistry | None = None,
         posture_buffer=None,
         enroll_manager: EnrollmentManager | None = None,
+        face_gallery=None,
     ) -> None:
         self._tracks = track_buffer
         self._features = feature_buffer
@@ -70,6 +71,9 @@ class ReIDRunner:
         self.memory = TrackMemory()
         self._manager = TargetLockManager(gallery, recency=self._recency,
                                           memory=self.memory)
+        # The recipients' enrolled faces — the second cue the lock weighs
+        # (reid/face_identity.py). None / empty = body evidence only.
+        self._face_gallery = face_gallery
 
         self._running = False
         self._thread: threading.Thread | None = None
@@ -226,11 +230,26 @@ class ReIDRunner:
                 rec = self._features.get(camera_id, tid)
                 return rec.smooth if rec is not None else None
 
+            face_now = time.monotonic()
+
+            def face_for(tid: int, rid: str):
+                """(face score vs rid's enrolled faces, face px) for this
+                track's latest face look, if it is recent enough."""
+                if self._face_gallery is None:
+                    return None
+                rec = self._features.get(camera_id, tid)
+                if (rec is None or rec.face is None
+                        or face_now - rec.face_at > settings.face_max_age_secs):
+                    return None
+                score = self._face_gallery.score(rec.face, rid)
+                return None if score is None else (score, rec.face_px)
+
             night = (NightContext(ir=True,
                                   sole_recipient=self._sole_recipient(camera_id,
                                                                       boxes))
                      if ir else None)
-            outcome = self._manager.update(camera_id, boxes, feat_for, night)
+            outcome = self._manager.update(camera_id, boxes, feat_for, night,
+                                           face_for=face_for)
 
             # Apply the lock decision to the shared registry (pose + UI read it).
             # released = confirmed mismatch; lost = the locked track is gone from
@@ -315,9 +334,13 @@ class ReIDRunner:
                 # the wrong gallery.
                 if rec is not None and rec.modality == modality:
                     if not ir:
-                        if score >= settings.reid_recency_min_push_score:
+                        # A face-confirmed sighting is learnable below the body
+                        # bar: that is the recipient in today's clothes.
+                        confirmed = outcome.face_confirmed
+                        if confirmed or score >= settings.reid_recency_min_push_score:
                             self._recency.push(rid, rec.curr)
-                        self._queue_adapt(camera_id, tid, rid, score, rec.curr)
+                        self._queue_adapt(camera_id, tid, rid, score, rec.curr,
+                                          gate=not confirmed)
                     elif outcome.learn_ir and settings.reid_ir_adaptive_enabled:
                         # Night: the evidence is a strong verification carried
                         # on this very track (learnable), not tonight's score.

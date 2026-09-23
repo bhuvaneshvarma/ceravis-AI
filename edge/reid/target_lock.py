@@ -38,6 +38,13 @@ found nothing:
               infrared lifts into a "person" never moves), take them to be the
               recipient.
 
+Face evidence (reid/face_identity.py) is folded into the same decisions, by
+day only: a visible face that clearly is NOT the recipient vetoes a candidate
+and releases a lock outright; one that clearly IS them lets a body match at the
+verify bar take a new lock, keeps a lock through body drift (new clothes) and
+lets that look be learned. No face in view = the body rules, unchanged. Bars
+from a joint body+face test on the bench — see settings.face_*.
+
 Every lock carries its BASIS — "verified" (a gallery match; every daytime lock),
 "continuity" or "context" — so consumers and the monitor can say how sure it is.
 Only a lock established by a strong gallery match and carried on the same
@@ -121,6 +128,9 @@ class LockOutcome:
     # Infrared: `adaptive` is approved for the IR gallery (a learnable lock in
     # solitude). By day this is always False and `adaptive` keeps its meaning.
     learn_ir: bool = False
+    # The target's own face confirmed them this tick: `adaptive` may be learned
+    # even below reid_adaptive_min_score (their body looks different today).
+    face_confirmed: bool = False
 
 
 class TargetLockManager:
@@ -146,12 +156,17 @@ class TargetLockManager:
         self._state.pop(camera_id, None)
 
     def update(self, camera_id: str, boxes: dict[int, tuple],
-               feat_for, night: NightContext | None = None) -> LockOutcome:
+               feat_for, night: NightContext | None = None,
+               face_for=None) -> LockOutcome:
         """
         boxes:    track_id -> (x1, y1, x2, y2)
         feat_for: track_id -> smooth feature (np.ndarray) or None
         night:    None / ir=False = a colour camera: the daytime path, unchanged.
+        face_for: (track_id, recipient_id) -> (face score, face width px) or
+                  None — the track's latest face look against that recipient's
+                  enrolled faces. None disables face evidence entirely.
         """
+        self._face_for = face_for
         st = self._state.setdefault(camera_id, _CamState())
         out = LockOutcome()
         self._age(camera_id, boxes)
@@ -207,7 +222,17 @@ class TargetLockManager:
                 return out
 
             m = self._match(feat, ir)
-            if m.is_match and m.recipient_id == st.recipient_id:
+            face = self._face_verdict(tid, st.recipient_id, ir)
+            if face == "veto":
+                # A clear face that is NOT the recipient: the strongest possible
+                # contradiction. Release now instead of riding out the mismatch
+                # count on the wrong person.
+                st.recipient_id = None
+                st.track_id = None
+                st.mismatch_streak = 0
+                out.released = True
+                return out
+            if m.recipient_id == st.recipient_id and (m.is_match or face == "confirm"):
                 st.mismatch_streak = 0
                 st.last_score = m.score
                 self._verified(st, m.score)
@@ -216,6 +241,7 @@ class TargetLockManager:
                 if self._alone(boxes, tid):
                     out.adaptive = (tid, st.recipient_id, m.score)
                     out.learn_ir = ir and st.learnable
+                    out.face_confirmed = face == "confirm"
                 return out
 
             if (ir and settings.night_hold_lock
@@ -358,6 +384,25 @@ class TargetLockManager:
             return self._gallery.match(feat, modality="ir")
         return self._gallery.match(feat)
 
+    _face_for = None
+
+    def _face_verdict(self, tid: int, recipient_id: str | None, ir: bool) -> str | None:
+        """'veto' / 'confirm' / None from the track's latest face look — by
+        day only, and only for a face wide enough to be evidence."""
+        if ir or self._face_for is None or not recipient_id or not settings.face_enabled:
+            return None
+        f = self._face_for(tid, recipient_id)
+        if f is None:
+            return None
+        score, px = f
+        if px < settings.face_min_px:
+            return None
+        if score < settings.face_veto_score:
+            return "veto"
+        if score >= settings.face_confirm_score:
+            return "confirm"
+        return None
+
     def _contradicted(self, feat, m, recipient_id: str) -> bool:
         """Positive evidence this is NOT the recipient: another enrolled person
         matches, or the look is closer to a known non-target than to the
@@ -450,7 +495,7 @@ class TargetLockManager:
         the infrared recency window."""
         self._last_match_rid = None
         self._last_recency = None
-        scored = []          # (fused_score, tid, view, box, recipient_id, recency)
+        scored = []  # (fused_score, tid, view, box, recipient_id, recency, face)
         for tid, box in boxes.items():
             feat = feat_for(tid)
             if feat is None:
@@ -460,6 +505,9 @@ class TargetLockManager:
                 continue
             if want is not None and m.recipient_id != want:
                 continue
+            face = self._face_verdict(tid, m.recipient_id, ir)
+            if face == "veto":
+                continue                      # their face says someone else
             if spatial_from is not None and not self._within(spatial_from, box):
                 continue
             score, rec = self._fuse(m.recipient_id, m.score, feat, ir)
@@ -480,7 +528,7 @@ class TargetLockManager:
                             and cont > score):
                         w = settings.reid_continuation_weight
                         score = (1.0 - w) * score + w * cont
-            scored.append((score, tid, m.view_label, box, m.recipient_id, rec))
+            scored.append((score, tid, m.view_label, box, m.recipient_id, rec, face))
         if not scored:
             return None
         scored.sort(key=lambda t: t[0], reverse=True)
@@ -490,7 +538,7 @@ class TargetLockManager:
             return None                       # a look-alike ties the winner — pick nobody
         bar = (settings.reid_ir_acquire_min_score if ir
                else settings.reid_acquire_min_score)
-        if acquire and best[0] < bar:
+        if acquire and best[0] < bar and best[6] != "confirm":
             return None                       # not confident enough for a NEW lock
         self._last_match_rid = best[4]
         self._last_recency = best[5]

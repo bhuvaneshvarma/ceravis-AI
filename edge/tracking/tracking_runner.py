@@ -43,6 +43,7 @@ class TrackingRunner:
         gallery=None,
         target_registry=None,
         best_shots=None,
+        face_gallery=None,
     ) -> None:
         self._detections = detection_buffer
         self._tracks = track_buffer
@@ -54,8 +55,13 @@ class TrackingRunner:
         # saved downstream (pose target-only; ReID verifies only the locked track
         # and never re-matches known bystanders), not by idling whole cameras —
         # idling them is exactly what used to blind the cross-camera handoff.
-        # Retained only so pipeline wiring is unchanged; not read here.
+        # Read only to know which track is the locked target (face evidence).
         self._targets = target_registry
+        # Face identity — the second cue (reid/face_identity.py). Loaded on the
+        # tracking thread (OpenCV nets are per-thread) the first time it is due.
+        self._face_gallery = face_gallery
+        self._face = None
+        self._last_face: dict[str, float] = {}
         # Enrollment gate: tracking/ReID/pose/rules run ONLY when the gallery holds
         # at least one enrolled target embedding. Until then the pipeline stops at
         # YOLO detection (which still drives recording) — no wasted appearance /
@@ -230,6 +236,7 @@ class TrackingRunner:
                                   else illumination.Modality.COLOR).value)
 
             self._capture_shots(camera_id, out, det_result.frame_id, ir)
+            self._maybe_face(camera_id, out, ir)
 
             self._tracks.update(TrackResult(
                 camera_id=camera_id, frame_id=det_result.frame_id,
@@ -238,6 +245,43 @@ class TrackingRunner:
                 self._features.prune(camera_id, alive)
             if self._shots is not None:
                 self._shots.prune(camera_id, alive)
+
+    def _maybe_face(self, camera_id: str, tracks, ir: bool) -> None:
+        """Attach a face look to the tracks whose identity is in question.
+
+        Only where it can change a decision, so the CPU cost stays small: a
+        colour camera (faces are not trusted in infrared), a recipient with
+        enrolled faces, at the ReID rate, and only tracks whose body already
+        matches the gallery at the verify bar — or the locked target itself,
+        whose face can confirm it or give it away."""
+        if (ir or self._face_gallery is None or self._face_gallery.size == 0
+                or self._features is None or self._frames is None
+                or self._gallery is None or not settings.face_enabled):
+            return
+        now = time.monotonic()
+        if now - self._last_face.get(camera_id, 0.0) < 1.0 / settings.reid_fps:
+            return
+        self._last_face[camera_id] = now
+        if self._face is None:
+            from reid.face_identity import FaceIdentity
+            self._face = FaceIdentity()
+        if not self._face.ready:
+            return
+        fd = self._frames.get(camera_id)
+        if fd is None:
+            return
+        target = self._targets.get(camera_id) if self._targets is not None else None
+        for t in tracks:
+            rec = self._features.get(camera_id, t.track_id)
+            if rec is None:
+                continue
+            if (t.track_id != target and self._gallery.match(rec.smooth).score
+                    < settings.reid_match_threshold):
+                continue                       # not a candidate — no face needed
+            face, px = self._face.embed_person(
+                fd.frame, (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2))
+            if face is not None:
+                self._features.set_face(camera_id, t.track_id, face, px)
 
     def _follow_light(self, camera_id: str) -> bool:
         """Is this camera on infrared right now — and if it has just SWITCHED,

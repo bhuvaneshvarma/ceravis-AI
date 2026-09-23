@@ -34,13 +34,14 @@ _ADAPTIVE = {Modality.COLOR.value: ("adaptive.npy", "adaptive_labels.json"),
              Modality.IR.value: ("adaptive_ir.npy", "adaptive_ir_labels.json")}
 
 
-def _load_vectors(f: Path | None) -> np.ndarray:
+def _load_vectors(f: Path | None, dim: int | None = None) -> np.ndarray:
     """A stored (K, dim) vector file, or an empty (0, dim) array when there is
-    none, it cannot be read, or it was made by a different ReID model (another
-    width). The ONE loader for enrolled and adaptive vectors alike: a vector
-    from another model is not a vector of this one, and mixing widths made the
-    gallery rebuild throw — leaving the AI silently off after a model change."""
-    dim = settings.reid_embedding_dim
+    none, it cannot be read, or it was made by a different model (another
+    width). The ONE loader for enrolled, adaptive and face vectors alike: a
+    vector from another model is not a vector of this one, and mixing widths
+    made the gallery rebuild throw — leaving the AI silently off after a model
+    change. `dim` defaults to the body ReID width."""
+    dim = dim or settings.reid_embedding_dim
     empty = np.zeros((0, dim), dtype=np.float32)
     if f is None or not f.exists():
         return empty
@@ -70,6 +71,7 @@ class EnrollmentManager:
             body/          embeddings.npy  (K, dim) ReID embeddings (colour)
                            embeddings_ir.npy  the same crops, infrared view
                            adaptive[_ir].npy  live-learned looks per modality
+            face/          embeddings.npy  (K, 128) enrolled faces (SFace)
             status.json    enrollment job state
     """
 
@@ -219,6 +221,27 @@ class EnrollmentManager:
             return arr.ndim == 2 and arr.shape[1] != settings.reid_embedding_dim
         except Exception:
             return False
+
+    # ---- face vectors (the second identity cue, reid/face_identity.py) ----
+    def save_face_embeddings(self, recipient_id: str, faces: np.ndarray) -> None:
+        """The recipient's enrolled faces, (K, 128) unit vectors, in face/."""
+        root = self.create_recipient_folder(recipient_id)
+        np.save(root / "face" / "embeddings.npy", faces.astype(np.float32))
+
+    def has_face_embeddings(self, recipient_id: str) -> bool:
+        root = self.get_recipient_folder(recipient_id)
+        return bool(root and (root / "face" / "embeddings.npy").exists())
+
+    def load_face_gallery(self) -> dict[str, np.ndarray]:
+        """recipient_id -> (K, 128) enrolled faces, for every recipient."""
+        from reid.face_identity import FACE_DIM
+        out: dict[str, np.ndarray] = {}
+        for root in sorted(self.base_path.glob("*")):
+            if root.is_dir():
+                arr = _load_vectors(root / "face" / "embeddings.npy", FACE_DIM)
+                if arr.shape[0]:
+                    out[root.name] = arr
+        return out
 
     def save_embedding_labels(self, recipient_id: str, labels: list[str]) -> None:
         """Per-embedding labels aligned to embeddings.npy rows — metadata for
