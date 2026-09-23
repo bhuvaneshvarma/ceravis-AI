@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from pathlib import Path
 
 import cv2
 
+from alerts.alert_format import describe
 from common import clock, event_snapshots
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
-from configuration.account_config import account_recipient
 from configuration.camera_config import CameraConfig
 from rules.rule_context import RuleContext
 from schemas.event import Event
@@ -60,8 +59,6 @@ class EventEnricher:
         self._events_root = event_snapshots.events_root()
         self._rest_kw = [k.strip().lower()
                          for k in settings.rest_zone_keywords.split(",") if k.strip()]
-        self._name_cache: dict[str, str] = {}      # recipient_id -> full_name
-        self._name_cache_at = 0.0
 
     # ---- public ------------------------------------------------------
     def enrich(self, event: Event, ctx: RuleContext) -> Event:
@@ -85,18 +82,9 @@ class EventEnricher:
             event.event_type, ("info", event.event_type.replace("_", " ")))
         event.severity = severity
         event.title = title
-        loc = event.room_name + (f" / {area}" if area else "")
-        # A visitor event has no recipient_id BY DESIGN, so resolving a name
-        # would print "person" — or worse, the recipient's name, implying the
-        # snapshot is of them.
-        who = ("a visitor" if event.event_type in NON_RECIPIENT_TYPES
-               else (self._recipient_name(event.recipient_id) or "person"))
         event.co_present = self._co_present(event, ctx)
-        event.message = f"{title} — {who}" + (f" in {loc}" if loc.strip() else "")
-        if event.co_present:
-            event.message += f" · {event.co_present}"
-        if event.detail:
-            event.message += f" · {event.detail}"
+        # The ONE wording (alerts.alert_format) — the same text the cloud gets.
+        event.message = describe(event)
 
         self._write_snapshot(event, ctx, bbox, area)
         return event
@@ -107,7 +95,10 @@ class EventEnricher:
         A visitor walking past while the recipient stands up produces two
         events about ONE frame, and describing them separately reads as two
         unrelated things happening. Naming the co-presence on each turns them
-        into one legible fact: "Ravi stood up, and a visitor was there too."
+        into one legible fact: "Stood up in Lounge · with a visitor".
+
+        Never a name: the recipient is "the care recipient" — this phrase is
+        sent to the cloud, and the recipient's name is never sent.
 
         Counts fresh tracks only. An idle camera keeps its last TrackResult
         forever, so an unchecked read would report a visitor who left an hour
@@ -124,19 +115,19 @@ class EventEnricher:
         if result is None:
             return None
 
-        visitors, target_name = 0, None
+        visitors, recipient = 0, False
         for t in result.tracks:
             if t.track_id == event.track_id:
                 continue                      # the subject is not their own company
             ident = idents.get(event.camera_id, t.track_id)
             if ident is not None and ident.is_target:
-                target_name = self._recipient_name(ident.recipient_id) or "the recipient"
+                recipient = True
             else:
                 visitors += 1
 
         parts = []
-        if target_name:
-            parts.append(target_name)
+        if recipient:
+            parts.append("the care recipient")
         if visitors == 1:
             parts.append("a visitor")
         elif visitors > 1:
@@ -164,27 +155,9 @@ class EventEnricher:
         words = set(re.findall(r"[a-z]+", area.lower()))
         return any(kw in words for kw in self._rest_kw)
 
-    def _recipient_name(self, rid: str | None) -> str | None:
-        """Resolve a recipient_id to the saved full name (for snapshot label +
-        alert text). The care recipient IS the verified account holder
-        (configuration.account_config.account_recipient) — no recipients.json.
-        Cached briefly; falls back to the id if unresolved, None if no rid."""
-        if not rid:
-            return None
-        now = time.monotonic()
-        if now - self._name_cache_at > 10.0:
-            try:
-                r = account_recipient()
-                self._name_cache = ({r["recipient_id"]: r["full_name"]} if r
-                                    else {})
-            except Exception:
-                logger.exception("recipient name lookup failed")
-            self._name_cache_at = now
-        return self._name_cache.get(rid) or rid
-
     def _write_snapshot(self, event: Event, ctx: RuleContext, bbox, area) -> None:
-        # Save a CLEAN frame (no overlay) — the alert message carries the
-        # severity/title/room/area/recipient/time. The app server renders its own
+        # Save a CLEAN frame (no overlay) — the alert message carries what,
+        # where and when (alerts.alert_format). The app server renders its own
         # UI; a raw frame is the most useful evidence and the smallest file.
         try:
             fd = ctx.frames.get(event.camera_id)

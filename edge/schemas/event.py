@@ -28,9 +28,15 @@ class Event(BaseModel):
     # right box and resolve the area). Set by the rules.
     track_id: int | None = None
 
-    # Optional rule-specific context (e.g. "kitchen → living room"), folded
-    # into the message by the enricher. Transient (not persisted).
+    # Optional rule-specific context (e.g. "kitchen → living room", or the
+    # posture a no-transition held), folded into the message by the enricher.
+    # Transient (not persisted).
     detail: str | None = None
+
+    # How long the condition had held when the event fired — set by the rule
+    # that measured it (stillness), so the text states the real elapsed time
+    # ("No motion for 1 h 2 min") instead of a snapshot counter. Transient.
+    duration_secs: float | None = None
 
     # Who ELSE was in frame at this instant, as an operator-facing phrase
     # ("with Ravi", "with 2 visitors"). Filled by EventEnricher from the live

@@ -117,18 +117,22 @@ class StillnessRule:
         # never falling through to no_transition.
         if motion_still >= window:
             return self._burst(self._nm, now, cam, tid, rid,
-                               self._reset_motion_and_posture, motion=True)
+                               self._reset_motion_and_posture, held=motion_still)
         # else NO TRANSITION (active/moving but posture unchanged)
         if posture_hold >= window and posture in _HELD:
-            return self._burst(self._nt, now, cam, tid, rid, self._reset_posture, motion=False)
+            return self._burst(self._nt, now, cam, tid, rid, self._reset_posture,
+                               held=posture_hold, posture=posture)
         return []
 
     # ---- burst emission ---------------------------------------------
-    def _burst(self, burst: _Burst, now, cam, tid, rid, on_done, *, motion) -> list[Event]:
+    def _burst(self, burst: _Burst, now, cam, tid, rid, on_done, *, held: float,
+               posture: Posture | None = None) -> list[Event]:
+        """One event per due minute. `held` = how long the condition has lasted
+        (it rides on the event, so the text reads 'for 1 h 2 min'); `posture` is
+        given for NO TRANSITION only — no posture means NO MOTION."""
         events: list[Event] = []
         if burst.due(now):
-            detail = f"{burst.n}/{settings.stillness_burst_count}"
-            if motion:
+            if posture is None:
                 # first snapshot of the slot is the CRITICAL alert; rest are snaps
                 etype = "no_motion" if burst.n == 1 else "no_motion_snapshot"
             else:
@@ -136,7 +140,8 @@ class StillnessRule:
             events.append(Event(
                 event_id=str(uuid.uuid4()), event_type=etype, camera_id=cam,
                 room_name="", recipient_id=rid, timestamp=now.isoformat(),
-                track_id=tid, detail=detail))
+                track_id=tid, duration_secs=held,
+                detail=posture.value if posture is not None else None))
         if burst.done():
             on_done(now)          # restart the 60-min quiet period (repeat the slot)
             burst.reset()
