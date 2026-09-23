@@ -110,7 +110,16 @@ check("only no_motion is alert-tier, no_transition is snapshot-only",
 
 
 print("\n5. the operator line renders 'No motion'")
-check("burst line says 'No motion'", 'f"No motion {det} min"' in pub)
+sys.path.insert(0, str(EDGE))
+from types import SimpleNamespace                     # noqa: E402
+from alerts.alert_format import headline              # noqa: E402
+
+for et in ("no_motion", "no_motion_snapshot"):
+    line = headline(SimpleNamespace(
+        event_type=et, title=alert_map[et][1], room_name="LOUNGE",
+        zone_name=None, detail=None, co_present=None, duration_secs=3720))
+    check(f"'{et}' line says 'No motion' + the real duration",
+          line == "No motion for 1 h 2 min in Lounge", line)
 
 
 if failures:

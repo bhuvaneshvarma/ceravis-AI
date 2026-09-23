@@ -218,13 +218,13 @@ from events.event_enricher import EventEnricher, NON_RECIPIENT_TYPES  # noqa: E4
 ctx9, tracks9, idents9 = _world()
 _tick((ctx9, tracks9, idents9), {1: 100, 7: 400}, targets=(1,))
 enr = EventEnricher.__new__(EventEnricher)
-enr._name_cache, enr._name_cache_at = {"ravi": "Ravi"}, 1e18   # freeze the cache
 
 phrase = enr._co_present(_evt("standing_up", "camA", 1), ctx9)
 check("a recipient event names the visitor", phrase == "with a visitor", str(phrase))
 
 phrase = enr._co_present(_evt("visitor_motion_snapshot", "camA", 7), ctx9)
-check("a visitor event names the recipient", phrase == "with Ravi", str(phrase))
+check("a visitor event mentions the recipient — by role, never by name",
+      phrase == "with the care recipient", str(phrase))
 
 ctx10, tracks10, idents10 = _world()
 _tick((ctx10, tracks10, idents10), {1: 100}, targets=(1,))
@@ -237,12 +237,21 @@ check("two visitors are counted, not listed",
       enr._co_present(_evt("standing_up", "camA", 1), ctx11) == "with 2 visitors")
 
 
-print("\n10. the cloud line no longer calls a visitor by the recipient's name")
+print("\n10. the cloud line never names anyone")
+from types import SimpleNamespace                                    # noqa: E402
+from alerts.alert_format import describe                             # noqa: E402
+
+line = describe(SimpleNamespace(
+    event_type="visitor_motion_snapshot", title="Visitor moving",
+    room_name="LOUNGE", zone_name=None, detail=None,
+    co_present="with the care recipient",
+    timestamp="2026-09-09T08:33:00+05:30"))
+check("a visitor line is about the visitor, in the room",
+      line.startswith("Visitor moving in Lounge"), line)
+check("co-presence rides into the line", "with the care recipient" in line, line)
 pub2 = io.open(ROOT / "edge/alerts/cloud_alert_publisher.py", encoding="utf-8").read()
-check("the subject depends on the event type",
-      'if event.event_type in _NON_RECIPIENT_TYPES:' in pub2)
-check("a visitor line says 'visitor'", 'who = "visitor"' in pub2)
-check("co-presence rides into the line", "event.co_present" in pub2)
+check("the cloud sends the ONE wording", "describe(event)" in pub2)
+check("no first name is read for the text", "firstName" not in pub2)
 check("the type set is IMPORTED, not re-listed",
       "from events.event_enricher import NON_RECIPIENT_TYPES" in pub2)
 

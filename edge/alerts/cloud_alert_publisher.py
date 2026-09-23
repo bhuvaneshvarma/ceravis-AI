@@ -8,7 +8,7 @@ event whose severity is in CLOUD_ALERT_SEVERITIES (default critical + warning),
 it queues saveAlert with:
     patientUserId = the verified account's ceravisUserId (account.json)
     alertType     = the event type, upper-cased (e.g. "FALL")
-    messageText   = the operator-facing message the enricher built
+    messageText   = the event's one wording (alerts.alert_format.describe)
 
 It does not talk to the network itself. Every upload is handed to the cloud
 outbox (storage/outbox_store.py) and delivered by the one sender thread, in
@@ -27,7 +27,7 @@ import threading
 import time
 from datetime import datetime
 
-from alerts.alert_format import format_line
+from alerts.alert_format import describe
 from common.event_snapshots import snapshot_file
 from config.settings import settings
 from configuration.account_config import AccountConfig
@@ -144,7 +144,7 @@ class CloudAlertPublisher:
                 # Visible on the sync console: the detection happened but the
                 # track wasn't identified as the recipient, so nothing is sent.
                 call_log.record(
-                    "event", False, label=self._format(event),
+                    "event", False, label=describe(event),
                     error="not sent — track not identified as the recipient "
                           "(no ReID lock at event time)")
                 continue
@@ -155,10 +155,10 @@ class CloudAlertPublisher:
                                    "(run setup account verification)")
                     self._warned_no_account = True
                 call_log.record(
-                    "event", False, label=self._format(event),
+                    "event", False, label=describe(event),
                     error="not sent — no verified account (run setup step 1)")
                 continue
-            message = self._format(event)
+            message = describe(event)
             # The alert is queued FIRST and its media is queued against it, so
             # the server always sees the alert before the media that belongs to
             # it: same priority tier, lower sequence number — offline or on.
@@ -177,7 +177,7 @@ class CloudAlertPublisher:
             # populate snapshot_paths with the first/middle/last 3-frame nest).
             # The media inherits the event's urgency, so a fall's still leaves
             # with the fall rather than behind the ambient backlog.
-            self._queue_snapshots(pid, event, message, alert_job, priority)
+            self._queue_snapshots(pid, event, alert_job, priority)
             # A FALL also gets the moving footage: merge the recorded segments
             # around the instant and send that clip through the SAME saveSnapshot,
             # linked by the same alertId + annotation. Deferred (the post-roll
@@ -185,7 +185,7 @@ class CloudAlertPublisher:
             if is_alert and etype == "fall":
                 self._schedule_fall_clip(pid, event, message, alert_job)
 
-    def _queue_snapshots(self, pid, event, text: str, alert_job=None,
+    def _queue_snapshots(self, pid, event, alert_job=None,
                          priority: int = PRIORITY_AMBIENT) -> None:
         """Queue each still tied to this alert as the multipart `image` file,
         linked to the alert's outbox job so the server-issued alertId is stamped
@@ -203,7 +203,7 @@ class CloudAlertPublisher:
             img = self._image_bytes(rel)
             if not img:
                 continue
-            label = text if n == 1 else f"{text} · frame {i + 1}/{n}"
+            label = describe(event, f"frame {i + 1} of {n}" if n > 1 else None)
             self._sender.queue_snapshot(pid, label, camera_number, image=img,
                                         depends_on=alert_job, category=category,
                                         priority=priority)
@@ -257,7 +257,7 @@ class CloudAlertPublisher:
             clip = None
         if not clip:
             call_log.record(
-                "saveSnapshot", False, label=f"{text} · clip",
+                "saveSnapshot", False, label=text,
                 error="fall clip not sent — no footage (recording off or nobody "
                       "in frame at the incident)")
             return
@@ -279,62 +279,3 @@ class CloudAlertPublisher:
         except Exception:
             logger.exception("snapshot read failed: %s", f)
             return None
-
-    # event_type -> "from → to" arrow head (same line shape as the fall alert)
-    _ARROWS = {
-        "standing_up": "Sitting → Standing",
-        "sitting_down": "Standing → Sitting",
-        "walking_started": "Standing → Walking",
-        "walking_stopped": "Walking → Standing",
-    }
-
-    def _head(self, event) -> str:
-        """The leading segment: 'CRITICAL · Fall detected' for an alert, the
-        posture arrow for a transition, 'No motion N/15 min' for inactivity."""
-        et = (event.event_type or "").lower()
-        if et in self._ARROWS:
-            return self._ARROWS[et]
-        det = (event.detail or "").strip()
-        if et in ("area_transition", "room_transition"):
-            # detail is the move itself, e.g. "kitchen → living room"
-            if "→" in det:
-                a, _, b = det.partition("→")
-                return f"{a.strip().title()} → {b.strip().title()}"
-            return det or ("Changed room" if et == "room_transition"
-                           else "Moved area")
-        if et == "visitor_motion_snapshot":
-            return "Visitor moving"
-        if et == "no_motion_snapshot":
-            return f"No motion {det} min" if det else "No motion"
-        if et == "no_transition_snapshot":
-            return f"No transition {det} min" if det else "No transition"
-        # fall, the critical no_motion alert, and anything else -> SEV · Title
-        sev = (event.severity or "info").upper()
-        title = event.title or et.replace("_", " ").title()
-        return f"{sev} · {title}"
-
-    def _format(self, event) -> str:
-        """Fixed-format line via the shared Format-A builder, e.g.
-        'CRITICAL · Fall detected · Camera 1* Kitchen / fridge · Ravi · 11:45 AM, 23 Jun 2026'
-        or 'Sitting → Standing · Camera 1 Kitchen · Ravi · 11:45 AM, 23 Jun 2026'."""
-        # The account holder is the subject of a RECIPIENT event, not of every
-        # event. Printing their name on a visitor snapshot reads as "Ravi was
-        # here" for a frame Ravi may not be in.
-        if event.event_type in _NON_RECIPIENT_TYPES:
-            who = "visitor"
-            if event.co_present:
-                who = f"visitor ({event.co_present})"
-        else:
-            who = self._account.get().get("firstName") or "recipient"
-            if event.co_present:
-                who = f"{who} ({event.co_present})"
-        try:
-            cam = self._cameras.get_by_id(event.camera_id)
-        except Exception:
-            cam = None
-        try:
-            when: datetime | str = datetime.fromisoformat(event.timestamp)
-        except Exception:
-            when = event.timestamp or ""
-        return format_line(self._head(event), cam, event.room_name, who,
-                           when, zone_name=event.zone_name)

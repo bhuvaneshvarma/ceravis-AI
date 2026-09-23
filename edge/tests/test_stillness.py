@@ -169,6 +169,11 @@ def test_frozen_fires_no_motion():
     tail = kinds[kinds.index("no_motion"):]
     assert "no_transition_snapshot" not in tail, \
         "once no_motion is active it must suppress the routine no_transition"
+    # The text says how long it has REALLY lasted ("for 1 h 2 min"), so every
+    # event carries the held time: at least the window, and growing per minute.
+    held = [e.duration_secs for e in events if e.event_type.startswith("no_motion")]
+    assert all(h is not None and h >= settings.stillness_window_secs for h in held), held
+    assert held == sorted(held), f"the held time must only grow: {held}"
     print("[frozen] PASS")
 
 
@@ -185,6 +190,9 @@ def test_stitching_fires_no_transition_only():
         "a moving hand must keep no_motion from ever firing"
     assert "no_transition_snapshot" in kinds, \
         "an hour of unchanged posture while active must raise no_transition"
+    nt = [e for e in events if e.event_type == "no_transition_snapshot"]
+    assert all(e.detail == "sitting" for e in nt), "no_transition names the posture held"
+    assert all(e.duration_secs >= settings.stillness_window_secs for e in nt)
     print("[stitching] PASS")
 
 

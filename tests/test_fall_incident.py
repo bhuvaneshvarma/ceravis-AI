@@ -42,7 +42,7 @@ from pathlib import Path
 EDGE = Path(__file__).resolve().parents[1] / "edge"
 sys.path.insert(0, str(EDGE))
 
-from alerts.alert_format import format_line
+from alerts.alert_format import describe
 from common import clock
 from common.rtsp import grab_one_frame
 from config.settings import settings
@@ -54,6 +54,7 @@ from integration.ceravis_api import (
 )
 from livestream.mediamtx_client import record_path_name
 from recording.incident_clip import build_incident_clip
+from schemas.event import Event
 
 
 def _die(msg: str):
@@ -98,8 +99,10 @@ def main() -> None:
 
     cam = _pick_camera(args.label)
     at = clock.now()
-    who = acct.get("firstName") or "recipient"
-    text = format_line("CRITICAL · Fall detected", cam, cam.room_name, who, at)
+    # The production wording from the production builder — never a copy of it.
+    text = describe(Event(event_id="test-fall", event_type="fall",
+                          title="Fall detected", camera_id=cam.camera_id,
+                          room_name=cam.room_name, timestamp=at.isoformat()))
     camera_number = room_to_enum(cam.room_name)
     print(f"[test-fall] camera={cam.camera_id} room={cam.room_name!r} "
           f"cameraNumber={camera_number} patient={pid} at={at.isoformat()}")
