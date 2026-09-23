@@ -133,6 +133,9 @@ async def _no_cache_ui_assets(request, call_next):
     return resp
 
 
+from api.control_auth import FLEET_EDGE_KEY  # noqa: E402
+
+
 class _FleetEdgePrefix:
     """Fleet per-edge path handling — a PURE-ASGI middleware on purpose.
 
@@ -174,7 +177,12 @@ class _FleetEdgePrefix:
             prefix = "/" + eid
             if path == prefix or path.startswith(prefix + "/"):
                 new = path[len(prefix):] or "/"
-                scope = {**scope, "path": new, "raw_path": new.encode("utf-8")}
+                # FLEET_EDGE_KEY: the request was routed here BY this device's
+                # edge_id, which is the same proof the edgeId parameter gives
+                # (control_auth.check_edge_id accepts it where a caller passes
+                # the scope).
+                scope = {**scope, "path": new, "raw_path": new.encode("utf-8"),
+                         FLEET_EDGE_KEY: eid}
         await self.app(scope, receive, send)
 
 

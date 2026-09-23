@@ -23,8 +23,11 @@ own always-open LINE (talkback.lines), so no press waits for a camera handshake.
 A refusal is always an {"type":"error"} frame followed by a coded close.
 
 AUTHENTICATION is the edge_id, exactly as every other control surface on this
-device (api.control_auth). The WebSocket carries it as a query parameter because
-a browser cannot set headers on a WebSocket handshake.
+device (api.control_auth). Through the fleet it is already in the URL —
+/<edge_id>/api/v1/talkback/… reaches this device only because of it — so there
+the `edge_id` parameter is optional; one that IS sent must still match. A direct
+LAN call has no prefix and must send it. (A WebSocket can only carry it in the
+URL: a browser cannot set headers on the handshake.)
 
 The socket is ACCEPTED before a refusal. Closing a WebSocket before accept() is,
 by the ASGI spec, an HTTP 403 on the handshake: the browser sees 1006 and an empty
@@ -38,7 +41,8 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (APIRouter, Body, HTTPException, Query, Request, WebSocket,
+                     WebSocketDisconnect)
 
 from api.control_auth import check_edge_id, field
 from config.settings import settings
@@ -110,12 +114,19 @@ def _camera_rows() -> list[dict]:
             for c in hub.cameras()]
 
 
+@router.get("")
+@router.get("/")
 @router.get("/cameras")
-def list_cameras(edge_id: str | None = Query(None)) -> dict:
+def list_cameras(request: Request, edge_id: str | None = Query(None)) -> dict:
     """Every camera, whether it can be talked to, and who holds its floor.
     Read-only and cheap — safe on every page load. Authenticated even though it
-    only reads: it names the rooms in someone's home."""
-    check_edge_id(edge_id)
+    only reads: it names the rooms in someone's home.
+
+    Also answers on the bare /talkback — the address a client naturally asks
+    for "the talk-back state" — so both spellings are the SAME call. Both "" and
+    "/" are declared: a trailing-slash redirect would be built from the path the
+    fleet prefix was already stripped from, and send a fleet client nowhere."""
+    check_edge_id(edge_id, request.scope)
     return {
         "enabled": settings.talkback_enabled,
         "home_configured": credentials.home_configured(),
@@ -124,21 +135,21 @@ def list_cameras(edge_id: str | None = Query(None)) -> dict:
 
 
 @router.get("/log")
-def talk_log(edge_id: str | None = Query(None), camera: str | None = Query(None),
+def talk_log(request: Request, edge_id: str | None = Query(None), camera: str | None = Query(None),
              limit: int = Query(100, ge=1, le=1000)) -> dict:
     """Who spoke into which room, when and for how long — and who was refused.
     Newest first."""
-    check_edge_id(edge_id)
+    check_edge_id(edge_id, request.scope)
     return {"entries": audit.recent(hub.canonical(camera) if camera else None, limit)}
 
 
 @router.get("/health")
-def health(edge_id: str | None = Query(None)) -> dict:
+def health(request: Request, edge_id: str | None = Query(None)) -> dict:
     """What talk-back is doing right now, in numbers — and the LINE RECORD: for
     every camera, how long each connection to its speaker lasted and why it
     ended. That record is the answer to "how long does a camera hold the line".
     `queued_ms` is the answer to "why does it sound delayed"."""
-    check_edge_id(edge_id)
+    check_edge_id(edge_id, request.scope)
     return {
         "enabled": settings.talkback_enabled,
         "home_configured": credentials.home_configured(),
@@ -173,11 +184,11 @@ def _summary(verdicts: dict) -> dict:
 
 
 @router.put("/credential")
-async def set_home_credential(body: dict = Body(...)) -> dict:
+async def set_home_credential(request: Request, body: dict = Body(...)) -> dict:
     """Set THE TP-Link account password for this home, once, for every camera —
     then open every camera's line and answer with what each one said."""
     _require_enabled()
-    check_edge_id(field(body, "edgeId", "edge_id"))
+    check_edge_id(field(body, "edgeId", "edge_id"), request.scope)
     password = field(body, "password", "cloudPassword", "cloud_password",
                      "tplinkPassword", default="")
     try:
@@ -192,31 +203,31 @@ async def set_home_credential(body: dict = Body(...)) -> dict:
 
 
 @router.delete("/credential")
-def forget_home_credential(edge_id: str | None = Query(None)) -> dict:
+def forget_home_credential(request: Request, edge_id: str | None = Query(None)) -> dict:
     _require_enabled()
-    check_edge_id(edge_id)
+    check_edge_id(edge_id, request.scope)
     removed = credentials.forget_home()
     lines.kick()
     return {"configured": False, "scope": "home", "removed": removed}
 
 
 @router.post("/check")
-async def check_all(body: dict = Body(default={})) -> dict:
+async def check_all(request: Request, body: dict = Body(default={})) -> dict:
     """Look at every camera NOW — the "check again" button, for right after
     re-pairing a camera in the Tapo app. Lines are kept open anyway; this only
     retries the ones that are not."""
     _require_enabled()
-    check_edge_id(field(body, "edgeId", "edge_id"))
+    check_edge_id(field(body, "edgeId", "edge_id"), request.scope)
     verdicts = await _verdicts()
     return {"cameras": verdicts, **_summary(verdicts)}
 
 
 @router.put("/{camera_id}/credential")
-def set_credential(camera_id: str, body: dict = Body(...)) -> dict:
+def set_credential(camera_id: str, request: Request, body: dict = Body(...)) -> dict:
     """An override for one camera paired to a different TP-Link account. The
     plaintext is hashed here and discarded (talkback.credentials)."""
     _require_enabled()
-    check_edge_id(field(body, "edgeId", "edge_id"))
+    check_edge_id(field(body, "edgeId", "edge_id"), request.scope)
     password = field(body, "password", "cloudPassword", "cloud_password", default="")
     camera_id = hub.canonical(camera_id)
     try:
@@ -229,9 +240,10 @@ def set_credential(camera_id: str, body: dict = Body(...)) -> dict:
 
 
 @router.delete("/{camera_id}/credential")
-def forget_credential(camera_id: str, edge_id: str | None = Query(None)) -> dict:
+def forget_credential(camera_id: str, request: Request,
+                      edge_id: str | None = Query(None)) -> dict:
     _require_enabled()
-    check_edge_id(edge_id)
+    check_edge_id(edge_id, request.scope)
     camera_id = hub.canonical(camera_id)
     removed = credentials.forget(camera_id)
     lines.kick(camera_id)
@@ -239,12 +251,13 @@ def forget_credential(camera_id: str, edge_id: str | None = Query(None)) -> dict
 
 
 @router.post("/{camera_id}/test")
-async def test_camera(camera_id: str, body: dict = Body(default={})) -> dict:
+async def test_camera(camera_id: str, request: Request,
+                      body: dict = Body(default={})) -> dict:
     """Is this camera's line open — and if not, can it be opened now? Silent: a
     line carries no sound until somebody speaks. `force` skips the lock-out
     pause, for a technician who has just fixed the account."""
     _require_enabled()
-    check_edge_id(field(body, "edgeId", "edge_id"))
+    check_edge_id(field(body, "edgeId", "edge_id"), request.scope)
     force = str(field(body, "force", default="")).lower() in ("1", "true", "yes")
     try:
         return await lines.test(hub.canonical(camera_id), force=force)
@@ -273,7 +286,7 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
         return await _refuse(websocket, "disabled",
                              "Talk-back is switched off on this device.")
     try:
-        check_edge_id(edge_id)
+        check_edge_id(edge_id, websocket.scope)
     except HTTPException:
         return await _refuse(websocket, "edge_id",
                              "This device did not accept the request (edge_id "

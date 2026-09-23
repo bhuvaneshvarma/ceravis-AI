@@ -27,6 +27,7 @@ Run:  python tests/test_talkback_ws.py
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
@@ -35,6 +36,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,12 +49,14 @@ os.environ.setdefault("DATA_DIR", str(_TMP))
 try:
     import uvicorn
     import websockets
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI
 except ImportError as exc:                           # pragma: no cover
     print(f"SKIPPED: the edge web stack is not installed here ({exc}).")
     sys.exit(0)
 
+from api import control_auth                         # noqa: E402
 from api import talkback_routes as routes             # noqa: E402
+from configuration import account_config              # noqa: E402
 from config.settings import settings                  # noqa: E402
 from talkback import audit, credentials, guard        # noqa: E402
 from talkback import lines as lines_mod               # noqa: E402
@@ -77,13 +81,20 @@ audit.PATH = _TMP / "talkback_log.jsonl"
 
 EDGE_ID = "E1"
 
+# The REAL edge_id check (api.control_auth) against this device's id — not a
+# stand-in, so what is proven here is what the device does.
+control_auth.effective_edge_id = account_config.effective_edge_id = lambda: EDGE_ID
 
-def _edge_check(value):
-    if value != EDGE_ID:
-        raise HTTPException(401, "edgeId required")
 
-
-routes.check_edge_id = _edge_check
+def _fleet_prefix_class():
+    """main._FleetEdgePrefix, taken from main.py's own source: importing main
+    would pull the whole AI stack in, and this test must run without it."""
+    src = (EDGE / "main.py").read_text(encoding="utf-8")
+    node = next(n for n in ast.parse(src).body
+                if isinstance(n, ast.ClassDef) and n.name == "_FleetEdgePrefix")
+    scope = {"FLEET_EDGE_KEY": control_auth.FLEET_EDGE_KEY}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "main.py", "exec"), scope)
+    return scope["_FleetEdgePrefix"]
 
 
 # --- the cameras, and a scripted camera talk port --------------------------- #
@@ -185,8 +196,11 @@ def _free_port() -> int:
 
 
 PORT = _free_port()
-threading.Thread(target=lambda: uvicorn.run(app, host="127.0.0.1", port=PORT,
-                                            log_level="warning"), daemon=True).start()
+# Served exactly as on the device: behind the fleet prefix middleware, so both
+# the LAN address (/api/…) and the fleet address (/<edge_id>/api/…) are real.
+threading.Thread(target=lambda: uvicorn.run(_fleet_prefix_class()(app), host="127.0.0.1",
+                                            port=PORT, log_level="warning"),
+                 daemon=True).start()
 for _ in range(100):
     try:
         socket.create_connection(("127.0.0.1", PORT), 0.2).close()
@@ -204,6 +218,19 @@ def url(camera="LOUNGE", client="p1", name="Nurse Priya", edge=EDGE_ID, user="u-
 def get(path):
     with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/v1/talkback{path}") as r:
         return json.loads(r.read())
+
+
+def status(path):
+    """HTTP status and JSON body of a GET on the full path (no redirects)."""
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **kw):
+            return None
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(
+                f"http://127.0.0.1:{PORT}{path}") as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, None
 
 
 class Talk:
@@ -370,6 +397,35 @@ async def main():
     end = time.monotonic() + 3
     while time.monotonic() < end and hub.floor("LOUNGE")["state"] != "free":
         await asyncio.sleep(0.05)
+
+    print("\nThe fleet address")
+    fleet = f"/{EDGE_ID}/api/v1/talkback"
+    code, body = status(fleet)
+    check("GET /<edge_id>/api/v1/talkback — no /cameras, no edge_id parameter — "
+          "answers with the cameras",
+          code == 200 and body and body.get("enabled") is True
+          and {c["camera_id"] for c in body.get("cameras", [])} == {"LOUNGE", "BEDROOM", "PORCH"})
+    code2, body2 = status(fleet + "/")
+    code3, body3 = status(fleet + "/cameras")
+    check("…the same answer with a trailing slash (no redirect) and on /cameras",
+          code2 == 200 and code3 == 200
+          and body2["cameras"] == body3["cameras"] == body["cameras"])
+    check("an edge_id that IS sent must still be the right one (409)",
+          status(fleet + "?edge_id=SOMEONE_ELSE")[0] == 409)
+    check("health and the talk log need no parameter on the fleet address either",
+          status(fleet + "/health")[0] == 200 and status(fleet + "/log")[0] == 200)
+    check("a direct LAN call (no /<edge_id> prefix) still needs the parameter (401)",
+          status("/api/v1/talkback")[0] == 401
+          and status(f"/api/v1/talkback?edge_id={EDGE_ID}")[0] == 200)
+    check("another device's prefix never reaches this one's API (404)",
+          status("/SOMEONE_ELSE/api/v1/talkback")[0] == 404)
+    t = Talk(await websockets.connect(
+        f"ws://127.0.0.1:{PORT}/{EDGE_ID}/api/v1/talkback/PORCH/stream"
+        f"?client_id=fleet1&name=Nurse%20Meena"))
+    check("the talk socket on the fleet address opens without an edge_id parameter",
+          await t.wait(lambda m: m.get("type") == "open") is not None)
+    await t.say(type="release")
+    await t.close()
 
     print("\nThe talk log")
     log = get(f"/log?edge_id={EDGE_ID}&camera=LOUNGE")["entries"]

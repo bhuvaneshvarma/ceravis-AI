@@ -36,15 +36,26 @@ def canon(text: str) -> str:
     return (text or "").strip().upper().replace(" ", "_")
 
 
-def check_edge_id(req_edge_id: str | None) -> None:
+# Set on the request scope by main._FleetEdgePrefix when the request arrived on
+# this device's own /<edge_id>/… fleet path.
+FLEET_EDGE_KEY = "ceravis.fleet_edge_id"
+
+
+def check_edge_id(req_edge_id: str | None, scope: dict | None = None) -> None:
     """The request must target THIS device. When the device has an edge_id (a
     verified account / jetson.env EDGE_ID), the request MUST carry a matching
     one — missing => 401, wrong => 409. No edge_id on the device = LAN dev, so
-    accept anything (nothing provisioned to check against yet)."""
+    accept anything (nothing provisioned to check against yet).
+
+    Passing the request `scope` lets the fleet URL itself carry it: a request on
+    /<edge_id>/… was routed here by that exact value (the prefix is stripped
+    only when it matches), so the parameter becomes optional there. A parameter
+    that IS given must still match. LAN-direct calls have no prefix and still
+    need the parameter."""
     mine = effective_edge_id()
     if not mine:
         return
-    req = (req_edge_id or "").strip()
+    req = (req_edge_id or "").strip() or ((scope or {}).get(FLEET_EDGE_KEY) or "")
     if not req:
         raise HTTPException(401, "edgeId required")
     if req != mine:

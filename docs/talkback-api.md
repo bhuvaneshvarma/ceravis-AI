@@ -43,6 +43,8 @@ is no API key and no bearer token.
 | `GET`, `DELETE`, `WebSocket` | query parameter `?edge_id=...` (alias: `edgeId`) |
 | `PUT`, `POST` | JSON body field `edgeId` (alias: `edge_id`) |
 
+**Through the fleet address the `edge_id` is already in the URL** — `https://edgeai.ceravishealth.in/<edge_id>/…` reaches this device only because of it — so there the parameter is **optional** for every talk-back call, including the WebSocket. If it is sent it must still match. Only a direct LAN call (`http://<device-ip>:8000/api/…`, no prefix) must send it.
+
 The WebSocket carries it as a **query parameter** because a browser cannot set
 headers on a WebSocket handshake. It is checked before anything else, so a wrong
 caller never reaches a camera and never makes a noise.
@@ -60,15 +62,18 @@ why. Until 2026-09-22 that is exactly what happened.
 
 ---
 
-## 2. `GET /cameras` — what can be talked to
+## 2. `GET /talkback` — what can be talked to
 
 Read-only, touches no network, safe on every page load. While a live view is
 open, read it again every **15 s**: it is how every carer's screen learns who is
 talking into which room (`floor`) and whether a camera's line went down.
 
 ```
-GET /<edge_id>/api/v1/talkback/cameras?edge_id=<edge_id>
+GET https://edgeai.ceravishealth.in/<edge_id>/api/v1/talkback
 ```
+
+The same answer is also served at `…/talkback/` and `…/talkback/cameras`, and
+with `?edge_id=<edge_id>` added — they are one call.
 
 **200**
 
