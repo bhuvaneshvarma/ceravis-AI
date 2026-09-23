@@ -49,6 +49,13 @@ _OPEN_TIMEOUT_SECS = 20.0
 # How often a reader re-asks MediaMTX whether its path is receiving yet — a
 # local HTTP call, so it is cheap and the AI starts within seconds of the camera.
 _READY_POLL_SECS = 2.0
+# Longest any caller waits on a capture release. Releasing is also the only way
+# to unblock a read() stuck on a silent stream, so it has to happen from another
+# thread — and a GStreamer capture torn down while its reader is inside read()
+# can block in release() itself. On the bench (2026-09-23 19:20) that pinned the
+# shutdown thread until systemd SIGKILLed the service, MediaMTX and the
+# recorders 90 s later. Past this bound the release is abandoned, not awaited.
+_RELEASE_TIMEOUT_SECS = 3.0
 
 
 class RTSPReader:
@@ -76,6 +83,10 @@ class RTSPReader:
         self._was_ready: bool | None = None     # last logged path readiness
 
         self._capture: cv2.VideoCapture | None = None
+        # The capture already handed to _release — held so stop(), the watchdog
+        # and the read loop never release the same one twice, concurrently.
+        self._released_cap: cv2.VideoCapture | None = None
+        self._release_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
         self._running = False
@@ -141,11 +152,36 @@ class RTSPReader:
     def stop(self) -> None:
         self._running = False
         self._health_state = CameraHealthState.OFFLINE
-        if self._capture is not None:
+        self._release(self._capture, "stop")
+
+    def _release(self, cap: cv2.VideoCapture | None, why: str) -> None:
+        """Release `cap` once — whichever of stop / watchdog / the read loop gets
+        there first — on a helper thread, waiting at most _RELEASE_TIMEOUT_SECS.
+        A release that does not come back is abandoned (logged), so no caller —
+        least of all the shutdown path — can be held by a wedged pipeline."""
+        if cap is None:
+            return
+        with self._release_lock:
+            if cap is self._released_cap:
+                return
+            self._released_cap = cap
+        done = threading.Event()
+
+        def work() -> None:
             try:
-                self._capture.release()
+                cap.release()
             except Exception:
-                logger.exception("Capture release failed camera=%s", self.camera_id)
+                logger.exception("capture release (%s) failed camera=%s",
+                                 why, self.camera_id)
+            finally:
+                done.set()
+
+        threading.Thread(target=work, daemon=True,
+                         name=f"rtsp-release-{self.camera_id}").start()
+        if not done.wait(_RELEASE_TIMEOUT_SECS):
+            logger.error("camera=%s capture release (%s) HUNG for %.0fs — "
+                         "abandoned; carrying on", self.camera_id, why,
+                         _RELEASE_TIMEOUT_SECS)
 
     def _watchdog(self) -> None:
         """Self-heal the SILENT stall: a loopback session that stops delivering
@@ -173,13 +209,7 @@ class RTSPReader:
                 "serves the path; forcing a reader reconnect", self.camera_id, idle)
             # Re-arm the window first so we don't fire again during the reconnect.
             self._last_frame_monotonic = time.monotonic()
-            cap = self._capture
-            if cap is not None:
-                try:
-                    cap.release()          # unblocks the hung read() -> reconnect
-                except Exception:
-                    logger.exception("watchdog release failed camera=%s",
-                                     self.camera_id)
+            self._release(self._capture, "stall")   # unblocks the hung read()
 
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
@@ -379,8 +409,7 @@ class RTSPReader:
                 self._log_stats()
 
             self._frame_buffer.clear(self.camera_id)
-            if self._capture is not None:
-                self._capture.release()
+            self._release(self._capture, "reconnect")
             self._capture = None
             if self._running:
                 self._reconnect_count += 1
