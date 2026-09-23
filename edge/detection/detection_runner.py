@@ -21,8 +21,10 @@ class DetectionRunner:
     Single-thread detection loop.
 
     Optimisations:
+      - Activity-paced: each camera runs at detection_fps while a person is in
+        view (or was within detection_active_hold_secs), at detection_idle_fps
+        while its room is empty
       - Skip cameras whose frame_id hasn't changed (no duplicate inference)
-      - Soft frame-stale guard
       - Record latency for the metrics dashboard
     """
 
@@ -54,6 +56,8 @@ class DetectionRunner:
         self._detections_generated = 0
         self._last_inference_time: datetime | None = None
         self._last_seen_frame: dict[str, int] = {}
+        self._next_due: dict[str, float] = {}      # camera -> monotonic due time
+        self._last_person: dict[str, float] = {}   # camera -> monotonic last person
 
     # ---- properties --------------------------------------------------
     @property
@@ -94,29 +98,38 @@ class DetectionRunner:
 
     # ---- loop --------------------------------------------------------
     def _run(self) -> None:
-        interval = 1.0 / settings.detection_fps
         while self._running:
-            t0 = time.perf_counter()
             try:
-                self._process_all_frames()
+                wait = self._process_all_frames()
             except Exception:
                 logger.exception("Detection loop failure")
-            sleep = interval - (time.perf_counter() - t0)
-            if sleep > 0:
-                time.sleep(sleep)
+                wait = 0.1
+            time.sleep(wait)
 
-    def _process_all_frames(self) -> None:
+    def _interval(self, camera_id: str, now: float) -> float:
+        """Seconds between detections on this camera: full rate while a person
+        is (or just was) in view, idle rate while the room is empty."""
+        active = (now - self._last_person.get(camera_id, -1e9)
+                  <= settings.detection_active_hold_secs)
+        fps = settings.detection_fps if active else settings.detection_idle_fps
+        return 1.0 / max(0.1, fps)
+
+    def _process_all_frames(self) -> float:
+        """Detect on every camera that is DUE; return how long to sleep."""
         assert self._detector is not None
         frames = self._frame_buffer.get_all_latest()
         if not frames:
-            return
+            return 0.1
         # Detection runs on EVERY camera: it is the cheap "person present?" signal
         # that (a) drives per-camera recording (RecordingController) and (b) lets
         # the system (re)find the recipient on whichever camera they are on. So
         # does tracking downstream; the GPU is saved instead by pose being
-        # target-only and ReID verifying only the locked track (not re-matching
-        # the bystanders it already knows are not the recipient).
+        # target-only, ReID verifying only the locked track, and an EMPTY camera
+        # being checked at the idle rate.
+        now = time.monotonic()
         for camera_id, fd in frames.items():
+            if now < self._next_due.get(camera_id, 0.0):
+                continue
             if self._last_seen_frame.get(camera_id) == fd.frame_id:
                 continue
             self._last_seen_frame[camera_id] = fd.frame_id
@@ -136,8 +149,16 @@ class DetectionRunner:
                 self._frames_processed += 1
                 self._detections_generated += len(result.detections)
                 self._last_inference_time = clock.now()
+                done = time.monotonic()
+                if result.detections:
+                    self._last_person[camera_id] = done
+                self._next_due[camera_id] = done + self._interval(camera_id, done)
             except Exception:
                 logger.exception("Detection failed camera=%s", camera_id)
+        now = time.monotonic()
+        due = min((self._next_due.get(c, now) for c in frames), default=now)
+        # Never busy-spin on a camera whose next frame has not arrived yet.
+        return min(0.1, max(0.01, due - now))
 
     def _drop_excluded(self, result):
         """Remove person boxes whose FOOT point falls in a drawn ignore zone —

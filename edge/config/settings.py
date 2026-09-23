@@ -258,7 +258,16 @@ class Settings(BaseSettings):
     # phantoms across the WHOLE chain (recording, tracking, pose, rules).
     detection_confidence_threshold: float = 0.45
     detection_input_size: int = 640
+    # Per camera. A camera runs at detection_fps while a person is in view (or
+    # was within detection_active_hold_secs) and at detection_idle_fps while its
+    # room is empty — the way a smart camera spends its compute on activity, not
+    # on an empty room. Anyone walking in is seen within 1/idle_fps and the
+    # camera is back at full rate from that frame on, so falls, tracking and
+    # recording see no difference. Measured 2026-09-23 (15W, AI off): detection
+    # alone asked for 0.73 s of GPU per second at full rate on both cameras.
     detection_fps: float = 10.0
+    detection_idle_fps: float = 2.0
+    detection_active_hold_secs: float = 10.0
 
     # ---- Pose (YOLO26m-Pose) ---------------------------------------
     # Pose only runs when a person is present (idle-gated), and once a target
