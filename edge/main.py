@@ -48,6 +48,27 @@ logging.basicConfig(
 logger = logging.getLogger("ceravis")
 
 
+class _QuietPolling(logging.Filter):
+    """Keep uvicorn's access log for what an operator acts on — every write
+    (POST/PUT/DELETE) and every failed request — and drop successful GETs.
+    Those are the UI pages polling status several times a second: on the bench
+    (2026-09-23) they were ~65k of the 79k journal lines since boot, each one a
+    synchronous journald write on the event loop's thread."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            method, status = args[1], args[4]
+            try:
+                return not (method == "GET" and int(status) < 400)
+            except (TypeError, ValueError):
+                return True
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietPolling())
+
+
 def _apply_edge_id_on_boot() -> None:
     """(Re)apply this device's edge_id to the frp tunnel on startup, so a
     `systemctl restart ceravis` reliably points frpc at the LATEST verified
