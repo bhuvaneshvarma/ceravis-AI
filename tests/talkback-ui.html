@@ -179,6 +179,21 @@
   document.body.appendChild(tile2);
   cvTalkPanel.mount(tile2, { camera_id: "cam_2", camera_name: "BEDROOM" }, s2);
 
+  // A room whose sound has not arrived yet (or that has no microphone).
+  const deafTile = document.createElement("div");
+  document.body.appendChild(deafTile);
+  cvTalkPanel.mount(deafTile, { camera_id: "cam_7", camera_name: "GARAGE" },
+    { listen: () => false, listening: () => false, audioLevel: () => Promise.resolve(0) });
+  const deafBtn = deafTile.querySelector(".listen-btn");
+  deafBtn.click();
+  ok("Listen on a room with no sound yet arms it (Waiting for audio…)",
+     deafBtn.dataset.listen === "waiting");
+  deafBtn.click();
+  ok("…and a second click cancels it (it used to re-arm forever)",
+     deafBtn.dataset.listen === "off");
+  cvTalkPanel.unmount(deafTile);
+  deafTile.remove();
+
   // The talk button shows what the device already KNOWS, before any press.
   function talkFor(cid, name) {
     const t = document.createElement("div");

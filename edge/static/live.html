@@ -19,6 +19,9 @@
      it must read at a glance on a dark video. */
   .cam-tile.selected { border-color: var(--orange);
     box-shadow: 0 0 0 2px var(--orange), var(--shadow); }
+  /* Tiles are clicked and double-clicked, never read: without this a
+     double-click to maximize also highlights the room name. */
+  .wall .cam-tile { -webkit-user-select: none; user-select: none; }
   .live-bar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--gap-stack); }
   .live-bar .pill { font-size: 12px; padding: 5px 13px; }
 </style>
@@ -29,7 +32,8 @@
     <h1>Live wall</h1>
     <div class="sub">All registered cameras, streaming live over WebRTC straight from
       the media backbone — the same feed the shared links serve.
-      Click any tile to select and maximize · <span class="kbd">Esc</span> to exit ·
+      Click a tile to select it · double-click to open it full screen
+      (double-click again or <span class="kbd">Esc</span> to go back) ·
       hold <b>Talk</b> on a tile, or hold <span class="kbd">Space</span> for the
       selected camera, to speak through it.</div>
   </div>
@@ -119,7 +123,12 @@ async function sync() {
       <div class="overlay"><span class="name">${prettyLabel(c.camera_name)}</span>
         <span class="room">· ${prettyLabel(c.room_name)}</span><span class="rec-dot"></span></div>
       <div class="foot"><span></span></div>`;
-    tile.onclick = () => {
+    // One click SELECTS (the camera Space talks to). A double-click opens it
+    // full screen; another double-click — or Esc — brings the wall back.
+    tile.onclick = () => select(tile);
+    tile.ondblclick = e => {
+      // Two quick presses on Talk or Listen are two presses, not a zoom.
+      if (e.target.closest("button")) return;
       select(tile);
       const wasMax = tile.classList.contains("maximized");
       document.querySelectorAll(".cam-tile").forEach(t => t.classList.remove("maximized"));

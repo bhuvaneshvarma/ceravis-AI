@@ -221,8 +221,9 @@ Carers use the **live wall**. Each tile carries two controls:
   itself stays open a minute, so the next press is instant. Two carers can talk
   into two cameras at the same time; never two into one. Each tile shows who is
   talking (from `GET /api/v1/talkback/cameras`).
-* **Hold Space** on the live wall talks into the SELECTED camera (the tile last
-  clicked, ringed in orange; or the only camera there is) — the same press and
+* **Hold Space** on the live wall talks into the SELECTED camera (a single click
+  selects a tile, ringed in orange; a double-click opens it full screen, and
+  another double-click or Esc goes back; with one camera it is selected) — the same press and
   release as its button. Ignored while typing, with Ctrl/Alt/Cmd, in a dialog,
   and for key repeat; the turn ends on key up, window blur or a hidden tab.
 * Every talk is **logged**: who (the name and user id the carer's app sends),

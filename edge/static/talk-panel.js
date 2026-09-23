@@ -307,8 +307,11 @@
     btn.onclick = function (e) {
       e.stopPropagation();
       // The question is never "what did I set last time", it is "is this room
-      // audible right now" — the one answer a rebuild cannot invalidate.
-      on = !(stream.listening ? stream.listening() : on);
+      // audible right now" — the one answer a rebuild cannot invalidate. Armed
+      // and still waiting for the audio track counts as on: otherwise a click
+      // could never cancel a room that has no sound yet (or no microphone).
+      var armed = stream.listening ? stream.listening() : on;
+      on = !(armed || btn.dataset.listen === "waiting");
       // ALWAYS applied. Turning listening OFF is an action in its own right —
       // guarding this behind `on` is how the button became one-way.
       apply();
