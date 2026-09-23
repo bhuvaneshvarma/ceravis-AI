@@ -290,7 +290,19 @@ class Settings(BaseSettings):
     reid_input_width: int = 128
     reid_embedding_dim: int = 512            # osnet_x1_0 = 512; BoT_R50 = 2048
     reid_fps: float = 3.0
-    reid_match_threshold: float = 0.55       # cosine; tune per gallery
+    # ---- Lock bars, set from MEASURED scores (bench, 2026-09-23) --------
+    # 836-853 stranger crops from a day of recordings vs the recipient's
+    # gallery (production detector / crop / gate / extractor / match). With the
+    # old bars half of all strangers could take a lock (acquire 0.60: 49.5%;
+    # match 0.55: 78%) and the device followed the wrong people. Per-crop
+    # stranger pass rate -> recipient pass rate at the new bars:
+    #   match   0.70:  9.4% ->  97.6% (either outfit)     keep a lock
+    #   acquire 0.80:  0.6% ->  97.6% (same outfit)       take a NEW lock
+    #   adaptive 0.85: 0.0% ->  95.2%                     learn a new look
+    # A NEW lock is where precision matters most; keeping one is backed by the
+    # tracker's own continuity and released only after repeated mismatches.
+    # Re-measure on each site/model change (the acceptance test in the audit).
+    reid_match_threshold: float = 0.70       # cosine; keep / verify a lock
 
     # ---- Hybrid set-to-set matching ---------------------------------
     # The query is scored against EVERY stored vector of each recipient and
@@ -312,7 +324,7 @@ class Settings(BaseSettings):
     reid_adaptive_max: int = 100             # per recipient; over cap, the most
                                              # redundant vector is dropped (keeps
                                              # diverse outfits, not just newest)
-    reid_adaptive_min_score: float = 0.70    # only capture above this match score
+    reid_adaptive_min_score: float = 0.85    # learn only looks no stranger reached
     reid_adaptive_dedup_cos: float = 0.92    # skip near-duplicates of existing vectors
     reid_adaptive_min_interval_secs: float = 4.0  # min seconds between capture attempts
     reid_adaptive_rebuild_secs: float = 5.0  # min seconds between gallery rebuilds
@@ -432,7 +444,7 @@ class Settings(BaseSettings):
     reid_recency_ttl_secs: float = 120.0     # older looks stop counting as "recent"
     reid_recency_weight: float = 0.45        # blend: (1-w)*gallery + w*recency
     reid_recency_min_score: float = 0.45     # VETO floor — only when memory exists
-    reid_recency_min_push_score: float = 0.65  # only remember confident sightings
+    reid_recency_min_push_score: float = 0.80  # only remember confident sightings
 
     # ---- Pipeline focus / efficiency --------------------------------
     crop_padding_frac: float = 0.08          # margin around a person box for crops
@@ -493,7 +505,7 @@ class Settings(BaseSettings):
     #     searching rather than pick one of two;
     #   * a candidate that looks more like a KNOWN bystander (auto-negative pool)
     #     than like the recipient is vetoed outright.
-    reid_acquire_min_score: float = 0.60     # bar to take a NEW lock (>= verify bar)
+    reid_acquire_min_score: float = 0.80     # bar to take a NEW lock (>= verify bar)
     reid_target_pick_margin: float = 0.05    # winner must beat 2nd track by this
     reid_negative_veto_margin: float = 0.05  # veto if neg-score exceeds fused by this
     # After the target's track is lost on a camera, keep trying the fast
@@ -538,10 +550,14 @@ class Settings(BaseSettings):
     # the recipient learned live at night (below). An IR query is matched
     # against the IR gallery only; a colour query against the colour gallery
     # only, exactly as before. Separate bars so night can be tuned from night
-    # data without moving the daytime numbers — they start AT the daytime
-    # values, precision first.
-    reid_ir_match_threshold: float = 0.55
-    reid_ir_acquire_min_score: float = 0.60
+    # data without moving the daytime numbers. Measured on the bench at night
+    # (133 infrared stranger crops vs the infrared gallery): acquire 0.60 let
+    # 23.3% through, 0.75 none (recipient 97.6%); match 0.65 = 9.0%. The
+    # recipient figure is from enrollment photos made monochrome, so it is
+    # optimistic — the night CONTEXT lock (sole person in the home) still
+    # covers a recipient the model cannot vouch for in the dark.
+    reid_ir_match_threshold: float = 0.65
+    reid_ir_acquire_min_score: float = 0.75
     # Night lock rules. By day a lock that stops matching is released after
     # target_mismatch_release_checks. At night "stops matching" is mostly the
     # model being blind, not a different person, so a lock is HELD on the

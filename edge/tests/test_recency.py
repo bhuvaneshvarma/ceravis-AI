@@ -29,8 +29,16 @@ def _vec(**parts) -> np.ndarray:
 
 
 ENROLLED = _vec(**{"0": 1.0})                                  # the stored view
-TARGET_NOW = _vec(**{"0": 0.62, "1": math.sqrt(1 - 0.62 ** 2)})  # drifted, cos .62
-LOOKALIKE = _vec(**{"0": 0.70, "2": math.sqrt(1 - 0.70 ** 2)})   # cos .70 — closer!
+# Scores placed relative to the CURRENT bars, so the scenario keeps its meaning
+# whenever they are re-tuned from data: the drifted recipient clears the verify
+# bar; the look-alike clears the NEW-lock bar too and outscores them by more than
+# the pick margin (so the gallery alone picks the WRONG one); its residual points
+# away from the recipient's, so it looks nothing like their last sighting.
+G_TARGET = settings.reid_match_threshold + 0.08
+G_LOOKALIKE = min(0.99, max(settings.reid_acquire_min_score + 0.06,
+                            G_TARGET + settings.reid_target_pick_margin + 0.03))
+TARGET_NOW = _vec(**{"0": G_TARGET, "1": math.sqrt(1 - G_TARGET ** 2)})
+LOOKALIKE = _vec(**{"0": G_LOOKALIKE, "1": -math.sqrt(1 - G_LOOKALIKE ** 2)})
 
 VISITOR_TID, TARGET_TID = 7, 9
 BOXES = {VISITOR_TID: (100, 100, 180, 400),
