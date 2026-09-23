@@ -165,6 +165,20 @@ class Pipeline:
         except Exception:
             logger.exception("FAISS gallery unavailable (ReID + enrollment off)")
 
+        # ---- enrollment worker -------------------------------------
+        # Started BEFORE tracking: its start() loads the stored gallery (and
+        # rebuilds a lost one from the stored photos), so the tracking gate sees
+        # the enrolled recipient on its very first tick instead of reporting
+        # "IDLE" for a moment at every boot.
+        enroll_worker = None
+        try:
+            from enrollment.enrollment_manager import EnrollmentManager
+            from enrollment.enrollment_worker import EnrollmentWorker
+            enroll_worker = EnrollmentWorker(EnrollmentManager(), gallery=gallery)
+            enroll_worker.start()
+        except Exception:
+            logger.exception("EnrollmentWorker disabled")
+
         # ---- tracking (clean-room BoT-SORT + OSNet appearance) -----
         tracking_runner = None
         try:
@@ -204,16 +218,6 @@ class Pipeline:
                 reid_runner.start()
             except Exception:
                 logger.exception("ReIDRunner disabled")
-
-        # ---- enrollment worker -------------------------------------
-        enroll_worker = None
-        try:
-            from enrollment.enrollment_manager import EnrollmentManager
-            from enrollment.enrollment_worker import EnrollmentWorker
-            enroll_worker = EnrollmentWorker(EnrollmentManager(), gallery=gallery)
-            enroll_worker.start()
-        except Exception:
-            logger.exception("EnrollmentWorker disabled")
 
         # ---- events + storage --------------------------------------
         event_bus = EventBus()

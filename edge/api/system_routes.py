@@ -19,7 +19,7 @@ from fastapi.responses import RedirectResponse
 
 from common import clock, event_snapshots
 from config.settings import settings
-from configuration.account_config import effective_edge_id
+from configuration.account_config import account_recipient, effective_edge_id
 from configuration.camera_config import CameraConfig
 from ingestion import illumination
 from ingestion.camera_status import codec_warning, substream_warning
@@ -333,6 +333,15 @@ def system_status(request: Request):
         problems.append(f"recordings disk {storage.get('disk_used_pct')}% full")
     if time_info.get("ntp_synchronized") is False:
         problems.append("system clock is not NTP-synced")
+    # The whole chain below detection (tracking, ReID, pose, falls, no-motion)
+    # is gated on an enrolled gallery. An empty one used to be a quiet INFO line
+    # every minute — on the bench (2026-09-23) the device ran 20 min with falls
+    # off and nothing said so. With a verified care recipient it is a degraded
+    # reason, loudly.
+    gallery = getattr(st, "gallery", None)
+    if gallery is not None and gallery.size == 0 and account_recipient():
+        problems.append("no enrolled embeddings — tracking, fall and no-motion "
+                        "detection are OFF until the recipient is enrolled")
     cloud = _cloud_status(getattr(st, "outbox", None))
     queue = cloud.get("outbox") or {}
     stuck = queue.get("oldest_pending_age_secs") or 0

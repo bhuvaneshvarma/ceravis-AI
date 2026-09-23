@@ -169,9 +169,13 @@ class TrackingRunner:
             self._enrolled = True
         elif not ready and (self._enrolled or self._gate_logged == 0.0
                             or time.monotonic() - self._gate_logged > 60):
-            logger.info("Tracking IDLE — no enrolled embeddings; running "
-                        "detection-only (recording stays active). Enroll the "
-                        "recipient to start tracking / ReID / pose / alerts.")
+            # WARNING, not INFO: this is falls and no-motion switched off. The
+            # first line at boot is expected (the gallery loads a moment after
+            # this thread starts); one that repeats every minute is not.
+            logger.warning("Tracking IDLE — no enrolled embeddings; running "
+                           "detection-only (recording stays active). Falls, "
+                           "no-motion and ReID are OFF until the recipient is "
+                           "enrolled.")
             self._gate_logged = time.monotonic()
             self._enrolled = False
         return ready
