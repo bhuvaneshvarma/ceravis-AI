@@ -782,6 +782,16 @@ class Settings(BaseSettings):
     # How long a finished (sent or dropped) job stays as a receipt for the sync
     # console before the row is pruned.
     outbox_history_secs: float = 21600.0     # 6h
+    # SEND FIRST, SPOOL ON FAILURE. A new upload is held in RAM and sent at once;
+    # on a healthy link it is delivered without touching the disk or SQLite at
+    # all. It is written to the durable queue above only when it has to wait:
+    # its first attempt fails, the link is already known to be down, it has sat
+    # in RAM past the hold time (its lane busy with a big clip, or its alert still
+    # pending), RAM is over its cap, or the service is stopping. So the only
+    # thing a hard crash can lose is an upload in its first HOLD seconds.
+    outbox_ram_first: bool = True
+    outbox_ram_hold_secs: float = 5.0
+    outbox_ram_max_mb: float = 64.0          # stills + clips held in RAM at once
 
     # ---- Long-dwell welfare checks (StillnessRule) ------------------
     # A 75-min slot: WINDOW minutes quiet, then one snapshot per minute for

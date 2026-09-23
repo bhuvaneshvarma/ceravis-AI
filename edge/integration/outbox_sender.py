@@ -149,6 +149,9 @@ class OutboxSender:
 
     def stop(self) -> None:
         self._running = False
+        # Whatever is still only in RAM is written down now, so a graceful stop
+        # or reboot loses nothing; it goes out on the next start.
+        self._outbox.close_ram()
         for event in self._wake.values():
             event.set()
 
@@ -162,13 +165,15 @@ class OutboxSender:
         pending job's backoff and wake the loop, and the queue empties at once
         instead of each job waiting out its own retry timer. Safe to call when
         the queue is empty (a no-op) and safe to call often."""
+        self._outbox.set_link_down(False)
         self._outbox.wake_all()
         for event in self._wake.values():
             event.set()
 
     # ---- what producers call -----------------------------------------
     # Queue, then wake the loop, so an upload on a healthy link goes out in the
-    # same breath it was raised — the queue adds durability, not latency.
+    # same breath it was raised — straight from RAM, the disk only if it has to
+    # wait (see the store's TWO TIERS).
     def queue_alert(self, patient_id, alert_type: str, message: str, *,
                     priority: int = PRIORITY_ALERT) -> str | None:
         """Queue one saveAlert; the returned job_id is what its snapshots link
@@ -274,7 +279,8 @@ class OutboxSender:
             # is retried like any other failure (bounded by the 48h window),
             # loudly, so nothing generated is ever thrown away.
             logger.exception("outbox: %s job raised — will retry", job["kind"])
-            self._failed(lane, job, CeravisApiError(f"internal error: {exc}"))
+            self._failed(lane, job, CeravisApiError(f"internal error: {exc}"),
+                         unreachable=False)
             return
         self._outbox.mark_sent(job["job_id"], result_id)
         self._recovered(lane)
@@ -289,6 +295,8 @@ class OutboxSender:
                         "upload(s)", lane, self._outbox.stats()["pending"])
             self._degraded[lane] = False
             self._problem.pop(lane, None)
+            if "offline" not in self._problem.values():
+                self._outbox.set_link_down(False)   # send-first again
 
     def _send(self, job: dict) -> int | None:
         payload = job["payload"]
@@ -329,7 +337,8 @@ class OutboxSender:
         parent = self._outbox.job(parent_id)
         return parent["result_id"] if parent else None
 
-    def _failed(self, lane: str, job: dict, exc: CeravisApiError) -> None:
+    def _failed(self, lane: str, job: dict, exc: CeravisApiError, *,
+                unreachable: bool | None = None) -> None:
         """A delivery attempt failed. The job is NEVER dropped here — it is
         rescheduled on a capped exponential backoff, and only the 48h age window
         (enforced by the store's trim) ever gives up on it. A code that usually
@@ -339,7 +348,16 @@ class OutboxSender:
         delay = min(settings.outbox_backoff_base_secs * (2 ** (attempts - 1)),
                     settings.outbox_backoff_max_secs)
         delay *= random.uniform(0.8, 1.2)   # jitter: a fleet must not sync up
-        self._outbox.mark_retry(job["job_id"], str(exc), time.time() + delay)
+        retry_at = time.time() + delay
+        self._outbox.mark_retry(job["job_id"], str(exc), retry_at)
+        if unreachable is None:
+            unreachable = status is None
+        if unreachable:
+            # No response at all: the link is down, not this one job. Everything
+            # still in RAM goes to disk on the same backoff, and new uploads go
+            # straight there until a delivery succeeds again.
+            self._outbox.set_link_down(True)
+            self._outbox.spill_all(retry_at)
 
         if status in _ATTENTION_STATUSES:
             self._outbox.flag_attention(status, str(exc), job.get("label", ""))

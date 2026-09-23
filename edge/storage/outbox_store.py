@@ -5,11 +5,31 @@ The cloud outbox — a durable, ordered, bounded queue of app-server uploads.
 
 Everything the device wants to push to app.ceravishealth.in as a RESULT OF AN
 EVENT (saveAlert, and the saveSnapshot stills + fall clips that belong to it)
-is written here FIRST and sent from here SECOND. There is no second path: the
-publisher never calls the API directly, so "the alert fired" and "the alert was
+is handed here and sent from here. There is no second path: the publisher
+never calls the API directly, so "the alert fired" and "the alert was
 delivered" are one mechanism with two states instead of two mechanisms that can
 disagree. On a healthy network the queue is drained within milliseconds and is
 invisible; during an outage it is the thing that keeps the incident.
+
+TWO TIERS, ONE QUEUE — SEND FIRST, SPOOL ON FAILURE
+  A new upload is held in RAM and sent at once. On a healthy link it is
+  delivered straight from memory: no spool file, no SQLite row, no fsync — the
+  disk is never touched for an upload that just works (2026-09-23: writing every
+  still to disk, committing a row and running the window before the first send
+  was steady load on a device already short of CPU). It is written down to the
+  durable tier below only when it has to WAIT:
+    * its first attempt failed                      (then it retries from disk)
+    * the link is already known to be down          (write-behind cannot help)
+    * it sat in RAM past `outbox_ram_hold_secs`     (lane busy, alert pending)
+    * RAM is over `outbox_ram_max_mb`
+    * the service is stopping                       (a graceful stop loses nothing)
+  So a hard crash can only lose an upload in its first few seconds of life.
+  Both tiers answer to the same order (priority, then age), the same lanes and
+  the same alert linkage. Two invariants keep the linkage exact across them:
+  a job on disk never depends on a job still in RAM (spilling a photo spills
+  its alert first), and an alert that spills takes its waiting photos with it.
+  A photo whose alert was already delivered from RAM carries that alertId in
+  its own payload when it spills, so the link survives a restart.
 
 Why a queue and not a retry loop:
   * The whole system keeps working offline (streams, AI, recording, LAN live
@@ -60,8 +80,10 @@ when to send. The sending policy lives in integration/outbox_sender.py.
 
 import json
 import logging
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable
 
@@ -158,6 +180,15 @@ class OutboxStore:
         # None = nothing to look at. Surfaced through stats() so it reaches the
         # console and /system/status without a second channel.
         self._attention: dict | None = None
+        # ---- the RAM tier (see TWO TIERS above) ----
+        # Re-entrant: spilling a photo spills its alert first, from inside the
+        # same locked section. Lock order is always RAM -> SQLite.
+        self._ram_lock = threading.RLock()
+        self._ram: dict[str, dict] = {}                 # job_id -> pending job
+        self._ram_done: OrderedDict[str, dict] = OrderedDict()   # receipts
+        self._ram_order = 0
+        self._link_down = False      # the sender saw the server unreachable
+        self._closing = False        # stopping: everything new goes to disk
         self._recover()
 
     def set_drop_listener(self,
@@ -251,14 +282,37 @@ class OutboxStore:
         persisted (in which case nothing was queued and the caller has already
         lost nothing it had).
 
-        `blob` is the media body; it is spooled to its own file rather than
-        stored in the row so the database stays small and a 10 MB fall clip
-        never has to be read to answer "how deep is the queue".
+        Held in RAM and sent first when it can be (see TWO TIERS); otherwise —
+        link down, its alert already waiting on disk, RAM full, stopping —
+        written straight to the durable tier.
         """
         job_id = uuid.uuid4().hex
+        priority = self._capped_priority(priority, depends_on)
+        # A JSON round-trip either way, so a job reads back identically from
+        # either tier (and a payload that cannot be stored fails here, not later).
+        payload = json.loads(json.dumps(payload, default=str))
+        if self._ram_eligible(blob, depends_on):
+            return self._hold(job_id, kind, payload, label, priority, blob,
+                              blob_part, blob_ext, depends_on)
+        return self._insert(job_id, kind, payload, label=label,
+                            priority=priority, blob=blob, blob_part=blob_part,
+                            blob_ext=blob_ext, depends_on=depends_on)
+
+    def _insert(self, job_id: str, kind: str, payload: dict, *, label: str,
+                priority: int, blob: bytes | None, blob_part: str | None,
+                blob_ext: str, depends_on: str | None,
+                created_at: str | None = None,
+                created_epoch: float | None = None, attempts: int = 0,
+                next_attempt: float = 0.0,
+                last_error: str | None = None) -> str | None:
+        """The durable tier: one row, plus the media spooled to its own file.
+
+        `blob` is spooled rather than stored in the row so the database stays
+        small and a 10 MB fall clip never has to be read to answer "how deep is
+        the queue". A job spilled from RAM keeps its original identity, age and
+        attempt count, so order and the window treat it as the same job."""
         blob_rel = None
         blob_len = 0
-        priority = self._capped_priority(priority, depends_on)
         try:
             if blob:
                 f = self._spool / f"{job_id}.{blob_ext}"
@@ -269,12 +323,15 @@ class OutboxStore:
                 """INSERT INTO outbox
                    (job_id, kind, label, priority, state, created_at,
                     created_epoch, payload, blob_path, blob_part, blob_bytes,
-                    depends_on, attempts, next_attempt)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,0)""",
+                    depends_on, attempts, next_attempt, last_error)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (job_id, kind, (label or "")[:300], int(priority), STATE_PENDING,
-                 clock.now_iso(), time.time(),
-                 json.dumps(payload, default=str), blob_rel, blob_part,
-                 blob_len, depends_on),
+                 created_at or clock.now_iso(),
+                 time.time() if created_epoch is None else created_epoch,
+                 json.dumps(payload, default=str), blob_rel,
+                 blob_part if blob else None, blob_len, depends_on,
+                 int(attempts), float(next_attempt),
+                 (last_error or "")[:300] or None),
             )
         except Exception:
             logger.exception("outbox: enqueue failed (%s)", kind)
@@ -283,6 +340,157 @@ class OutboxStore:
             return None
         self.trim()
         return job_id
+
+    # ---- the RAM tier ------------------------------------------------
+    def _ram_eligible(self, blob: bytes | None, depends_on: str | None) -> bool:
+        if not settings.outbox_ram_first or self._link_down or self._closing:
+            return False
+        if depends_on and self._sql_pending(depends_on):
+            return False             # its alert is already waiting on disk
+        cap = settings.outbox_ram_max_mb * 1024 * 1024
+        with self._ram_lock:
+            held = sum(j["blob_bytes"] for j in self._ram.values())
+        return held + len(blob or b"") <= cap
+
+    def _sql_pending(self, job_id: str) -> bool:
+        return bool(self._store.fetchall(
+            "SELECT 1 FROM outbox WHERE job_id=? AND state=?",
+            (job_id, STATE_PENDING)))
+
+    def _hold(self, job_id, kind, payload, label, priority, blob, blob_part,
+              blob_ext, depends_on) -> str:
+        """Put a new job in RAM — the same fields a row reads back with, plus
+        the media itself and its place in RAM order."""
+        with self._ram_lock:
+            self._ram_order += 1
+            self._ram[job_id] = {
+                "seq": None, "job_id": job_id, "kind": kind,
+                "label": (label or "")[:300], "priority": int(priority),
+                "state": STATE_PENDING, "created_at": clock.now_iso(),
+                "created_epoch": time.time(), "payload": payload,
+                "blob_path": None, "blob_part": blob_part if blob else None,
+                "blob_bytes": len(blob) if blob else 0, "depends_on": depends_on,
+                "attempts": 0, "next_attempt": 0.0, "last_error": None,
+                "sent_at": None, "result_id": None, "tier": "ram",
+                "_blob": blob or None, "_ext": blob_ext,
+                "_order": self._ram_order, "_inflight": False,
+            }
+        return job_id
+
+    @staticmethod
+    def _rank(job: dict) -> tuple:
+        """Delivery order across both tiers: priority first, then age."""
+        return (-int(job["priority"]), float(job["created_epoch"]),
+                job.get("_order") or 0)
+
+    @staticmethod
+    def _in_window(job: dict, min_priority, max_priority) -> bool:
+        p = int(job["priority"])
+        return ((min_priority is None or p >= int(min_priority))
+                and (max_priority is None or p <= int(max_priority)))
+
+    def _ram_dep_ready(self, job: dict) -> bool:
+        """A RAM job may go once its alert is no longer waiting anywhere."""
+        parent = job["depends_on"]
+        if not parent:
+            return True
+        if parent in self._ram:
+            return False
+        if parent in self._ram_done:
+            return True
+        return not self._sql_pending(parent)
+
+    def _spill(self, job: dict, *, attempts: int = 0, next_attempt: float = 0.0,
+               error: str | None = None) -> None:
+        """Move one RAM job to the durable tier (caller holds the RAM lock).
+
+        Its alert goes first if that is still in RAM (a photo on disk never
+        waits on something that a crash could lose), and its own waiting photos
+        follow it (they cannot leave before it, and it is now on a backoff)."""
+        if self._ram.get(job["job_id"]) is not job:
+            return                                   # already sent or spilled
+        parent = job["depends_on"]
+        if parent and parent in self._ram:
+            self._spill(self._ram[parent], next_attempt=next_attempt)
+        payload = job["payload"]
+        done = self._ram_done.get(parent) if parent else None
+        if done is not None and done.get("result_id") is not None \
+                and payload.get("alert_id") is None:
+            payload = dict(payload, alert_id=done["result_id"])
+        del self._ram[job["job_id"]]
+        written = self._insert(
+            job["job_id"], job["kind"], payload, label=job["label"],
+            priority=job["priority"], blob=job["_blob"],
+            blob_part=job["blob_part"], blob_ext=job["_ext"],
+            depends_on=parent, created_at=job["created_at"],
+            created_epoch=job["created_epoch"], attempts=attempts,
+            next_attempt=next_attempt, last_error=error)
+        if written is None:
+            # The disk refused it. Keep it in RAM on the same backoff rather than
+            # lose it; the next failure or stop tries the disk again.
+            job.update(attempts=attempts, next_attempt=next_attempt,
+                       last_error=error, _inflight=False)
+            self._ram[job["job_id"]] = job
+            return
+        for child in [c for c in self._ram.values()
+                      if c["depends_on"] == job["job_id"]]:
+            self._spill(child, next_attempt=next_attempt)
+
+    def _spill_stale(self, now: float) -> None:
+        """Write down whatever has waited in RAM past the hold time. A photo
+        whose alert is being sent right now is left alone — it goes next."""
+        hold = max(0.0, settings.outbox_ram_hold_secs)
+        with self._ram_lock:
+            stale = [j for j in self._ram.values()
+                     if not j["_inflight"] and now - j["created_epoch"] >= hold
+                     and not (j["depends_on"] in self._ram
+                              and self._ram[j["depends_on"]]["_inflight"])]
+            for job in sorted(stale, key=lambda j: j["_order"]):
+                self._spill(job)
+
+    def spill_all(self, next_attempt: float = 0.0, *,
+                  include_inflight: bool = False) -> int:
+        """Write every RAM job down — the link is down (they share the failed
+        job's retry time), or the service is stopping (in-flight ones too: if
+        their send completes, that simply marks the written row sent)."""
+        with self._ram_lock:
+            jobs = sorted((j for j in self._ram.values()
+                           if include_inflight or not j["_inflight"]),
+                          key=lambda j: j["_order"])
+            for job in jobs:
+                self._spill(job, next_attempt=next_attempt)
+            return len(jobs)
+
+    def set_link_down(self, down: bool) -> None:
+        """The sender's view of the link. While it is down, new uploads go
+        straight to disk: sending first cannot succeed, and holding them in RAM
+        would only put them at risk."""
+        self._link_down = bool(down)
+
+    def close_ram(self) -> None:
+        """Stopping: write RAM down, and send anything queued after this point
+        (a late fall clip) straight to disk."""
+        self._closing = True
+        n = self.spill_all(include_inflight=True)
+        if n:
+            logger.info("outbox: %d in-memory upload(s) written down for the "
+                        "next start", n)
+
+    def _receipt(self, job: dict, state: str, *, result_id=None,
+                 error: str | None = None) -> None:
+        """Keep a small receipt for a job finished straight from RAM, for the
+        console and for the photos that still need its alertId. Bounded by the
+        same age and count as the receipt rows."""
+        rec = {k: v for k, v in job.items() if not k.startswith("_")}
+        rec.update(state=state, result_id=result_id, blob_path=None,
+                   last_error=(error or "")[:300] or None,
+                   sent_at=clock.now_iso() if state == STATE_DONE else None)
+        self._ram_done[job["job_id"]] = rec
+        cutoff = time.time() - max(60.0, settings.outbox_history_secs)
+        while self._ram_done and (
+                len(self._ram_done) > _HISTORY_MAX_ROWS
+                or next(iter(self._ram_done.values()))["created_epoch"] < cutoff):
+            self._ram_done.popitem(last=False)
 
     def _capped_priority(self, priority: int, depends_on: str | None) -> int:
         """A job never outranks the job it depends on.
@@ -293,6 +501,10 @@ class OutboxStore:
         on every caller passing matching priorities."""
         if not depends_on:
             return int(priority)
+        with self._ram_lock:
+            parent = self._ram.get(depends_on) or self._ram_done.get(depends_on)
+        if parent is not None:
+            return min(int(priority), int(parent["priority"]))
         rows = self._store.fetchall(
             "SELECT priority FROM outbox WHERE job_id=?", (depends_on,))
         return min(int(priority), int(rows[0][0])) if rows else int(priority)
@@ -358,7 +570,16 @@ class OutboxStore:
             "SELECT " + ", ".join(_COLS) +
             " FROM outbox WHERE state=? ORDER BY priority DESC, seq ASC LIMIT 1",
             (STATE_PENDING,))
-        return self._row(rows[0] if rows else None)
+        disk = self._row(rows[0] if rows else None)
+        with self._ram_lock:
+            ram = min(self._ram.values(), key=self._rank, default=None)
+            ram = dict(ram) if ram is not None else None
+        return self._first(ram, disk)
+
+    def _first(self, a: dict | None, b: dict | None) -> dict | None:
+        if a is None or b is None:
+            return a or b
+        return a if self._rank(a) <= self._rank(b) else b
 
     # A snapshot must not be delivered before the alert it belongs to: its
     # server-issued alertId only exists once that alert has landed. So a job is
@@ -394,28 +615,52 @@ class OutboxStore:
         so the sender skips past it to whatever IS ready — a broken snapshot can
         never block the fall alert queued behind it. Priority still decides among
         the due jobs, and seq breaks ties, so an incident stays in order and a
-        fall still goes first."""
+        fall still goes first.
+
+        Both tiers compete on the same terms; a RAM job it returns is marked in
+        flight, so it is not written down underneath its own send."""
         now = time.time() if now is None else now
+        self._spill_stale(now)
         clause, extra = self._priority_clause(min_priority, max_priority)
-        rows = self._store.fetchall(
-            "SELECT " + ", ".join(_COLS) + " FROM outbox "
-            f"WHERE state=? AND next_attempt<=? AND {self._DEP_READY}{clause} "
-            "ORDER BY priority DESC, seq ASC LIMIT 1",
-            (STATE_PENDING, now, STATE_PENDING, *extra))
-        return self._row(rows[0] if rows else None)
+        with self._ram_lock:
+            ram = min((j for j in self._ram.values()
+                       if not j["_inflight"] and j["next_attempt"] <= now
+                       and self._in_window(j, min_priority, max_priority)
+                       and self._ram_dep_ready(j)),
+                      key=self._rank, default=None)
+            rows = self._store.fetchall(
+                "SELECT " + ", ".join(_COLS) + " FROM outbox "
+                f"WHERE state=? AND next_attempt<=? AND {self._DEP_READY}{clause} "
+                "ORDER BY priority DESC, seq ASC LIMIT 1",
+                (STATE_PENDING, now, STATE_PENDING, *extra))
+            pick = self._first(ram, self._row(rows[0] if rows else None))
+            if pick is ram and ram is not None:
+                ram["_inflight"] = True
+                return dict(ram)
+            return pick
 
     def next_due_at(self, *, min_priority: int | None = None,
                     max_priority: int | None = None) -> float | None:
         """The earliest time any eligible pending job becomes due, so the sender
         can sleep exactly until then instead of polling. None when the queue has
         no eligible pending job (empty, or everything is dependency-blocked
-        behind a job that is itself counted here)."""
+        behind a job that is itself counted here). A RAM job waiting on its
+        alert is due when its hold time runs out — the moment it is written
+        down, if it has not gone by then."""
         clause, extra = self._priority_clause(min_priority, max_priority)
         rows = self._store.fetchall(
             "SELECT MIN(next_attempt) FROM outbox "
             f"WHERE state=? AND {self._DEP_READY}{clause}",
             (STATE_PENDING, STATE_PENDING, *extra))
-        return rows[0][0] if rows and rows[0][0] is not None else None
+        disk = rows[0][0] if rows and rows[0][0] is not None else None
+        hold = max(0.0, settings.outbox_ram_hold_secs)
+        with self._ram_lock:
+            waits = [max(j["next_attempt"], j["created_epoch"] + hold)
+                     for j in self._ram.values()
+                     if not j["_inflight"]
+                     and self._in_window(j, min_priority, max_priority)]
+        ram = min(waits) if waits else None
+        return min((t for t in (disk, ram) if t is not None), default=None)
 
     def wake_all(self) -> None:
         """Clear every pending job's backoff so they are all due NOW. Called when
@@ -427,6 +672,10 @@ class OutboxStore:
             (STATE_PENDING,))
 
     def job(self, job_id: str) -> dict | None:
+        with self._ram_lock:
+            held = self._ram.get(job_id) or self._ram_done.get(job_id)
+            if held is not None:
+                return dict(held)
         rows = self._store.fetchall(
             "SELECT " + ", ".join(_COLS) + " FROM outbox WHERE job_id=?",
             (job_id,))
@@ -435,6 +684,8 @@ class OutboxStore:
     def blob(self, job: dict) -> bytes | None:
         """The spooled media body for a job, or None when it has none (or the
         file vanished — the job is then sent without it rather than stalling)."""
+        if job.get("_blob") is not None:
+            return job["_blob"]                      # a RAM job carries its own
         if not job.get("blob_path"):
             return None
         f = self._spool / job["blob_path"]
@@ -477,10 +728,23 @@ class OutboxStore:
             rows = self._store.fetchall(
                 "SELECT created_at, created_epoch FROM outbox WHERE state=? "
                 "ORDER BY created_epoch ASC LIMIT 1", (STATE_PENDING,))
-            if rows:
-                out["oldest_pending_at"] = rows[0][0]
+            oldest = (rows[0][0], rows[0][1]) if rows else None
+            # The RAM tier counts as pending too — it is simply the part that has
+            # not needed the disk (yet).
+            with self._ram_lock:
+                ram = [(j["created_at"], j["created_epoch"], j["priority"],
+                        j["blob_bytes"]) for j in self._ram.values()]
+            out["in_memory"] = len(ram)
+            out["pending"] += len(ram)
+            out["pending_bytes"] += sum(r[3] for r in ram)
+            out["pending_alerts"] += sum(1 for r in ram if r[2] >= PRIORITY_ALERT)
+            for created_at, epoch, _p, _b in ram:
+                if oldest is None or epoch < oldest[1]:
+                    oldest = (created_at, epoch)
+            if oldest:
+                out["oldest_pending_at"] = oldest[0]
                 out["oldest_pending_age_secs"] = round(
-                    max(0.0, time.time() - rows[0][1]), 1)
+                    max(0.0, time.time() - oldest[1]), 1)
             head = self.head()
             if head:
                 out["next_priority"] = head["priority"]
@@ -496,15 +760,27 @@ class OutboxStore:
         cols = ("seq", "job_id", "kind", "label", "priority", "state",
                 "created_at", "blob_part", "blob_bytes", "depends_on",
                 "attempts", "last_error", "sent_at", "result_id")
+        limit = max(int(limit), 1)
         rows = self._store.fetchall(
             "SELECT " + ", ".join(cols) + " FROM outbox ORDER BY seq DESC "
-            "LIMIT ?", (max(int(limit), 1),))
-        return [dict(zip(cols, r)) for r in rows]
+            "LIMIT ?", (limit,))
+        jobs = [dict(zip(cols, r)) for r in rows]
+        with self._ram_lock:
+            jobs += [{c: j.get(c) for c in cols}
+                     for j in list(self._ram.values()) + list(self._ram_done.values())]
+        jobs.sort(key=lambda j: j.get("created_at") or "", reverse=True)
+        return jobs[:limit]
 
     # ---- state transitions -------------------------------------------
     def mark_sent(self, job_id: str, result_id: int | None = None) -> None:
         """Delivered. The media body is released immediately — the row stays a
-        while as the receipt, the bytes do not."""
+        while as the receipt, the bytes do not. A job sent straight from RAM
+        leaves only an in-memory receipt: it never touched the disk."""
+        with self._ram_lock:
+            job = self._ram.pop(job_id, None)
+            if job is not None:
+                self._receipt(job, STATE_DONE, result_id=result_id)
+                return
         self._release_blob(job_id)
         self._store.execute(
             "UPDATE outbox SET state=?, sent_at=?, last_error=NULL, result_id=? "
@@ -512,7 +788,14 @@ class OutboxStore:
             (STATE_DONE, clock.now_iso(), result_id, job_id))
 
     def mark_retry(self, job_id: str, error: str, next_attempt: float) -> None:
-        """Still pending, try again at `next_attempt` (epoch seconds)."""
+        """Still pending, try again at `next_attempt` (epoch seconds). A RAM job
+        that failed is written down here — from now on it waits on disk."""
+        with self._ram_lock:
+            job = self._ram.get(job_id)
+            if job is not None:
+                self._spill(job, attempts=job["attempts"] + 1,
+                            next_attempt=next_attempt, error=error)
+                return
         self._store.execute(
             "UPDATE outbox SET attempts=attempts+1, next_attempt=?, last_error=? "
             "WHERE job_id=?",
@@ -522,6 +805,17 @@ class OutboxStore:
         """Given up on — the server rejected it outright, or it exhausted its
         attempts. Dropping it is what stops one poisoned upload from blocking
         every good one behind it."""
+        with self._ram_lock:
+            held = self._ram.pop(job_id, None)
+            if held is not None:
+                self._receipt(held, STATE_DEAD, error=error)
+        if held is not None:
+            if self._on_drop:
+                try:
+                    self._on_drop(held, error)
+                except Exception:
+                    logger.exception("outbox: drop callback failed")
+            return
         job = self.job(job_id)
         self._release_blob(job_id)
         self._store.execute(
