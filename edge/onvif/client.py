@@ -176,6 +176,15 @@ class OnvifCamera:
             "hardware": body.findtext(".//HardwareId") or "",
         }
 
+    def system_reboot(self) -> str:
+        """SystemReboot — restart the camera itself (the nightly refresh,
+        maintenance/refresh.py). Returns the camera's own message, e.g. its
+        reboot countdown; raises OnvifError if it refuses."""
+        body = self._call(
+            self.xaddr,
+            '<SystemReboot xmlns="http://www.onvif.org/ver10/device/wsdl"/>')
+        return body.findtext(".//Message") or ""
+
     def system_datetime(self) -> datetime:
         """The camera's OWN clock, via GetSystemDateAndTime (ONVIF's one
         unauthenticated call — the same one discovery uses for liveness).

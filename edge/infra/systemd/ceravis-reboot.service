@@ -41,4 +41,6 @@ ExecStart=/usr/bin/python3 /home/ceravis/ceravis2/edge/tools/scheduled_reboot.py
 # The script asks the running service whether it is safe, and skips the night if
 # an alert is still queued. A non-zero exit is a real failure worth seeing in
 # `systemctl status`, so no "-" prefix here.
-TimeoutStartSec=120
+# A refresh night restarts the cameras one at a time (each waits for its
+# stream to return) before restarting the service — minutes, not seconds.
+TimeoutStartSec=900

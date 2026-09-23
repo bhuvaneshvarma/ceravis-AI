@@ -336,10 +336,20 @@ def scheduled_decision(now_local: datetime | None = None,
         "safety_clear": safety_block(outbox) or "an alert is still queued",
     }
     first_fail = next((k for k in gates if not gates[k]), None)
+    # The strength of tonight's maintenance: a full reboot once the device has
+    # been up reboot_interval_days, a light refresh (maintenance/refresh.py) on
+    # the nights in between. Unknown uptime (a dev box) keeps the old reboot.
+    weekly = (uptime is None
+              or uptime >= settings.reboot_interval_days * 86400.0 - 3600.0)
+    action = "reboot" if weekly else "refresh"
+    clear = first_fail is None
     return {
-        "reboot": first_fail is None,
-        "reason": ("all gates clear — rebooting" if first_fail is None
-                   else reasons[first_fail]),
+        "action": action,
+        "reboot": clear and action == "reboot",
+        "refresh": clear and action == "refresh",
+        "reason": (("all gates clear — rebooting" if action == "reboot"
+                    else "all gates clear — refreshing")
+                   if clear else reasons[first_fail]),
         "failed_gate": first_fail,
         "gates": gates,
         "now_local": now_local.isoformat(timespec="seconds"),

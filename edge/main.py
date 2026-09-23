@@ -16,6 +16,7 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")   # never spin an idle pool
 
 import logging
+import signal
 import time
 from contextlib import asynccontextmanager
 
@@ -106,8 +107,34 @@ def _ensure_camera_labels_on_boot() -> None:
         logger.warning("camera device-label migration skipped", exc_info=True)
 
 
+# Exit status that means "restart me": the nightly refresh ends the service with
+# it after a normal shutdown, and systemd starts it again (Restart=on-failure /
+# RestartForceExitStatus in infra/systemd/ceravis.service).
+REFRESH_EXIT_CODE = 75
+
+
+def _listen_for_refresh() -> dict:
+    """SIGUSR1 = the nightly REFRESH (maintenance/refresh.py): shut down exactly
+    as `systemctl stop` would, then exit with REFRESH_EXIT_CODE so systemd starts
+    the service again. No sudo and no HTTP surface — only this service's user
+    (or root) can signal it."""
+    state = {"requested": False}
+
+    def _on_refresh(_signum, _frame) -> None:
+        logger.warning("refresh requested — restarting the service cleanly")
+        state["requested"] = True
+        os.kill(os.getpid(), signal.SIGTERM)        # uvicorn's own graceful stop
+
+    try:
+        signal.signal(signal.SIGUSR1, _on_refresh)
+    except (AttributeError, ValueError):            # Windows dev box / not main thread
+        pass
+    return state
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    refresh = _listen_for_refresh()
     _ensure_camera_labels_on_boot()   # cameras.json normalized before any read
     pipeline = Pipeline()
     pipeline.start()
@@ -137,6 +164,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     pipeline.stop()
+    if refresh["requested"]:
+        logger.info("CERAVIS edge refreshed — systemd starts it again now")
+        logging.shutdown()
+        os._exit(REFRESH_EXIT_CODE)
 
 
 app = FastAPI(title="CERAVIS Edge API", version=settings.app_version, lifespan=lifespan)

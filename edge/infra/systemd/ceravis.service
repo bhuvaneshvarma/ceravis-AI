@@ -43,6 +43,10 @@ Environment=UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=10
 TimeoutStopSec=90
 Restart=on-failure
 RestartSec=5
+# The nightly REFRESH (maintenance/refresh.py) ends the service with 75 after
+# a clean shutdown: restart it, and do not record that as a failure.
+RestartForceExitStatus=75
+SuccessExitStatus=75
 
 [Install]
 WantedBy=multi-user.target

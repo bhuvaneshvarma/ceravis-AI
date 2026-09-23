@@ -204,8 +204,18 @@ print("\n7. the one scheduled decision (shared by the run + --explain)")
 settings.reboot_window_start_hour = 3
 in_win = datetime(2026, 9, 14, 3, 30, tzinfo=IST)      # trustworthy + in window
 out_win = datetime(2026, 9, 14, 13, 23, tzinfo=IST)    # the real daytime fires
+week = settings.reboot_interval_days * 86400.0
+d = reboot.scheduled_decision(now_local=in_win, uptime=week, outbox=_Outbox(0))
+check("clean night, up a week => full reboot",
+      d["reboot"] is True and d["action"] == "reboot" and d["failed_gate"] is None,
+      d["reason"])
 d = reboot.scheduled_decision(now_local=in_win, uptime=100000, outbox=_Outbox(0))
-check("clean night in-window => reboot", d["reboot"] is True and d["failed_gate"] is None,
+check("clean night, up only a day => light REFRESH, not a reboot",
+      d["refresh"] is True and d["reboot"] is False and d["action"] == "refresh",
+      d["reason"])
+d = reboot.scheduled_decision(now_local=out_win, uptime=100000, outbox=_Outbox(0))
+check("a refresh night is still behind the same gates (daytime fire => neither)",
+      d["refresh"] is False and d["reboot"] is False and d["failed_gate"] == "in_window",
       d["reason"])
 d = reboot.scheduled_decision(now_local=out_win, uptime=100000, outbox=_Outbox(0))
 check("a 13:23 daytime fire => skip on the window",

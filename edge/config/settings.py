@@ -818,6 +818,15 @@ class Settings(BaseSettings):
     # hardware a clock step can make the wall-clock timer fire right after boot;
     # this is the final backstop that stops that ever becoming a boot→reboot loop.
     reboot_min_uptime_secs: float = 600.0    # 10 min
+    # How strong tonight's maintenance is. A FULL reboot only once the device
+    # has been up this long (weekly); every other night a light REFRESH instead
+    # (maintenance/refresh.py): the cameras restarted one at a time, then the
+    # edge service restarted cleanly — fresh connections, buffers, GPU contexts
+    # and heap, without taking the whole device down every night. Same window,
+    # same safety gates.
+    reboot_interval_days: float = 7.0
+    refresh_cameras: bool = True
+    refresh_camera_ready_timeout_secs: float = 150.0
     # A reboot must not strand an undelivered fall. The outbox is durable so
     # nothing is LOST, but delivery is delayed by the boot time — which is
     # exactly the delay an alert cannot afford. The scheduled run defers to

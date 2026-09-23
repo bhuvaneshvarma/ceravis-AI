@@ -53,7 +53,8 @@ def _explain(decision: dict) -> int:
     """Print the decision and every gate, and reboot NOTHING. The tool that ends
     the guessing: run it on the device and read exactly what tonight's run will
     do, with the real clock, window, uptime and outbox."""
-    verdict = "WOULD REBOOT" if decision["reboot"] else "WOULD SKIP"
+    verdict = ("WOULD REBOOT" if decision["reboot"]
+               else "WOULD REFRESH" if decision.get("refresh") else "WOULD SKIP")
     print(f"\n  scheduled reboot decision: {verdict}")
     print(f"  now (device-local): {decision['now_local']}")
     up = decision["uptime_secs"]
@@ -100,6 +101,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         log.warning("--force: rebooting NOW (time-of-day gates bypassed)")
         reboot.perform("forced test", "operator (--force)", delay_secs=0.0)
+        return 0
+
+    if decision.get("refresh"):
+        log.info("all gates clear — refreshing (the weekly reboot is %.1f "
+                 "day(s) away)", max(0.0, settings.reboot_interval_days
+                                      - (decision["uptime_secs"] or 0.0) / 86400.0))
+        from maintenance import refresh
+        refresh.perform("scheduled nightly", "systemd timer")
         return 0
 
     if not decision["reboot"]:
