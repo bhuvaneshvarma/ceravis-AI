@@ -219,9 +219,17 @@ class RTSPReader:
     def _gst_pipeline(self, codec: str, hw: bool) -> str:
         depay = ("rtph265depay ! h265parse" if codec == "h265"
                  else "rtph264depay ! h264parse")
-        decode = ("nvv4l2decoder ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert"
+        # Frames above the capture ceiling are dropped right after the decoder,
+        # BEFORE the CPU colour conversion. Pacing read() alone never did that:
+        # the appsink keeps only the newest frame, so every surplus frame was
+        # still converted and then thrown away. Measured on the bench 4K stream
+        # (camera at 25 fps, ceiling 15): 72% -> 51% of a core per camera.
+        cap = (f" ! videorate drop-only=true max-rate={int(self._target_fps)}"
+               if self._target_fps and self._target_fps > 0 else "")
+        decode = (f"nvv4l2decoder{cap} ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert"
                   if hw else
-                  ("avdec_h265" if codec == "h265" else "avdec_h264") + " ! videoconvert")
+                  ("avdec_h265" if codec == "h265" else "avdec_h264")
+                  + f"{cap} ! videoconvert")
         # ZERO added buffering between the camera and YOLO, on purpose:
         #   latency=0        the loopback pull is interleaved TCP — every packet
         #                    arrives, in order, so the jitterbuffer has nothing
