@@ -334,14 +334,13 @@ def system_status(request: Request):
     if time_info.get("ntp_synchronized") is False:
         problems.append("system clock is not NTP-synced")
     # The whole chain below detection (tracking, ReID, pose, falls, no-motion)
-    # is gated on an enrolled gallery. An empty one used to be a quiet INFO line
-    # every minute — on the bench (2026-09-23) the device ran 20 min with falls
-    # off and nothing said so. With a verified care recipient it is a degraded
-    # reason, loudly.
+    # is gated on an enrolled gallery. It can be empty on purpose — removing the
+    # recipient's embeddings is how the AI is switched off today — but either way
+    # the device is not watching for falls, and status must say so plainly.
     gallery = getattr(st, "gallery", None)
     if gallery is not None and gallery.size == 0 and account_recipient():
-        problems.append("no enrolled embeddings — tracking, fall and no-motion "
-                        "detection are OFF until the recipient is enrolled")
+        problems.append("AI chain off — no enrolled embeddings, so tracking, "
+                        "fall and no-motion detection are not running")
     cloud = _cloud_status(getattr(st, "outbox", None))
     queue = cloud.get("outbox") or {}
     stuck = queue.get("oldest_pending_age_secs") or 0

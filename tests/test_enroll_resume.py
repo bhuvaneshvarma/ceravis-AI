@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
-Prove a LOST enrollment gallery rebuilds itself at start-up.
+Prove start-up resumes an INTERRUPTED enrollment but never re-enables one that
+was switched off.
 
-2026-09-23: the recipient's body/ folder (the ReID embeddings) vanished between
-two restarts while the photos it was built from were still on disk. The device
-came up with an empty gallery, so tracking, ReID, pose, falls and no-motion were
-all off for 20 minutes until someone noticed and re-enrolled by hand.
+Removing a finished recipient's embeddings (body/) is how the AI chain is
+switched off today — 2026-09-23 on the bench, with several people in the room
+and a wrong target raising false events. An earlier version rebuilt that
+gallery from the stored photos at start-up, which would have switched the AI
+straight back on. Resuming is only for enrollments that were committed and
+never finished (queued / processing / pending_reid / error).
 
 Covered:
-  a 'ready' recipient with photos but no embeddings is re-queued (rebuilt);
-  a 'ready' recipient WITH embeddings is left alone;
-  a recipient still in review (media added, never committed) is left alone;
-  a 'ready' recipient with nothing to rebuild from is left alone.
+  a 'ready' recipient whose embeddings were removed stays OFF (not rebuilt);
+  a committed enrollment that never finished IS resumed;
+  a 'ready' recipient with embeddings is left alone;
+  a draft (media added, never committed) is not auto-enrolled.
 
 Pure python; no TensorRT. Runs on the dev box:
 
-    python tests/test_enroll_selfheal.py
+    python tests/test_enroll_resume.py
 """
 from __future__ import annotations
 
@@ -58,24 +61,25 @@ def recipient(rid: str, state: str, photos: int, embedded: bool) -> None:
     mgr.set_status(rid, state=state)
 
 
-recipient("lost", "ready", photos=4, embedded=False)      # the 2026-09-23 case
+recipient("switched_off", "ready", photos=4, embedded=False)   # 2026-09-23
+recipient("interrupted", "processing", photos=4, embedded=False)
 recipient("healthy", "ready", photos=4, embedded=True)
 recipient("draft", "review", photos=4, embedded=False)
-recipient("empty", "ready", photos=0, embedded=False)
 
 worker = EnrollmentWorker(mgr, gallery=None)
 queued: list[str] = []
 worker.enqueue = queued.append          # capture instead of embedding
 worker._resume_pending()
 
-print("\na lost gallery is rebuilt from the stored photos")
-check("the recipient whose embeddings vanished is re-queued", "lost" in queued)
+print("\nstart-up resumes unfinished work, never a deliberate switch-off")
+check("a recipient whose embeddings were removed stays off",
+      "switched_off" not in queued)
+check("its status still says what it was",
+      json.loads((mgr.base_path / "switched_off" / "status.json").read_text())
+      ["state"] == "ready")
+check("an enrollment interrupted mid-way is resumed", "interrupted" in queued)
 check("a healthy enrollment is left alone", "healthy" not in queued)
 check("an uncommitted draft is not auto-enrolled", "draft" not in queued)
-check("nothing to rebuild from -> nothing queued", "empty" not in queued)
-check("status of the healthy one untouched",
-      json.loads((mgr.base_path / "healthy" / "status.json").read_text())["state"]
-      == "ready")
 
 shutil.rmtree(_TMP, ignore_errors=True)
 print()
@@ -84,4 +88,4 @@ if FAILURES:
     for f in FAILURES:
         print(f"  - {f}")
     sys.exit(1)
-print("All enrollment self-heal checks passed.")
+print("All enrollment resume checks passed.")

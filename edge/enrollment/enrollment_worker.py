@@ -306,21 +306,17 @@ class EnrollmentWorker:
                 continue
             rid = root.name
             state = self._mgr.get_status(rid).get("state")
-            # 'ready' with no embeddings on disk = the gallery was LOST after a
-            # finished enrollment (2026-09-23: body/ vanished between two restarts
-            # and the device ran 20 min with falls off). The photos it was built
-            # from are still here, so rebuild it now instead of waiting for
-            # someone to notice and re-enroll by hand.
-            if state not in self._RESUMABLE_STATES and state != "ready":
+            # 'ready' is deliberately NOT here, even with no embeddings on disk:
+            # removing a finished recipient's body/ folder is how an operator
+            # switches the AI chain off (2026-09-23, several people in the room
+            # and a wrong target raising false events). Rebuilding it from the
+            # photos at start-up would silently switch the AI back on.
+            if state not in self._RESUMABLE_STATES:
                 continue
             if self._mgr.load_embeddings(rid).shape[0] > 0:
                 continue                       # already embedded (in gallery)
             if not (self._mgr.media_names(rid) or self._mgr.list_videos(rid)):
                 continue                       # nothing to embed
-            if state == "ready":
-                logger.warning("enroll: %s was enrolled but its embeddings are "
-                               "missing — rebuilding them from the stored media",
-                               rid)
             logger.info("enroll: resuming %s (was '%s')", rid, state)
             self.enqueue(rid)
             resumed += 1

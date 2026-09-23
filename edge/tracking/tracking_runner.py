@@ -169,9 +169,10 @@ class TrackingRunner:
             self._enrolled = True
         elif not ready and (self._enrolled or self._gate_logged == 0.0
                             or time.monotonic() - self._gate_logged > 60):
-            # WARNING, not INFO: this is falls and no-motion switched off. The
-            # first line at boot is expected (the gallery loads a moment after
-            # this thread starts); one that repeats every minute is not.
+            # WARNING, not INFO: falls and no-motion are off. It may be on purpose
+            # (the embeddings removed to stop the AI), but it is never routine —
+            # the gallery is loaded before this thread starts, so a normal boot
+            # does not print it at all.
             logger.warning("Tracking IDLE — no enrolled embeddings; running "
                            "detection-only (recording stays active). Falls, "
                            "no-motion and ReID are OFF until the recipient is "
