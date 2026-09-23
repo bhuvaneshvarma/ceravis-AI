@@ -395,14 +395,32 @@ def set_record(path: str, on: bool) -> None:
         raise MediaMTXError(f"record {path}: {exc}") from exc
 
 
-def path_info(camera_id: str) -> dict | None:
-    """Runtime state of the LIVE path (ready, tracks/codecs, readers) or None."""
+def _get_path(name: str) -> dict | None:
+    """Runtime state of ANY path by name (ready, tracks/codecs, readers) or None."""
     try:
-        r = requests.get(_api(f"/paths/get/{_enc(stream_path(camera_id))}"),
-                         timeout=_TIMEOUT)
+        r = requests.get(_api(f"/paths/get/{_enc(name)}"), timeout=_TIMEOUT)
         return r.json() if r.ok else None
     except (requests.RequestException, ValueError):
         return None
+
+
+def path_info(camera_id: str) -> dict | None:
+    """Runtime state of the LIVE path (ready, tracks/codecs, readers) or None."""
+    return _get_path(stream_path(camera_id))
+
+
+def source_state(name: str) -> tuple[bool, str | None]:
+    """(ready, video codec) of the path a reader is about to open.
+
+    `ready` = MediaMTX is actually RECEIVING this path from its camera. Opening
+    a path before that fails — and a failed GStreamer open inside OpenCV does not
+    always come back (the 2026-09-23 boot hang), so readers wait for this first.
+    The codec is the one negotiated in the SDP, which is exactly what picks the
+    right depayloader — a label that describes THIS path, not the live one."""
+    info = _get_path(name)
+    if not info or not info.get("ready"):
+        return False, None
+    return True, _video_codec(info)
 
 
 # What each camera is REALLY sending, keyed by camera_id:
@@ -422,9 +440,13 @@ _VIDEO_CODECS = {"h264": "h264", "avc": "h264", "h265": "h265", "hevc": "h265",
 
 
 def _codec_from_api(camera_id: str) -> str | None:
-    """The codec MediaMTX LABELS the path's video track with. Tolerates the
-    track list being strings or objects, and matches the label exactly."""
-    info = path_info(camera_id)
+    """The codec MediaMTX LABELS the live path's video track with."""
+    return _video_codec(path_info(camera_id))
+
+
+def _video_codec(info: dict | None) -> str | None:
+    """The video codec in a path's track list. Tolerates the list being strings
+    or objects, and matches the label exactly."""
     for track in (info or {}).get("tracks", []):
         if isinstance(track, dict):
             label = str(track.get("codec") or track.get("type") or "")

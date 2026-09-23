@@ -17,8 +17,12 @@ Fallback (dev box / MediaMTX missing): reads the camera's RTSP URL directly
 over TCP. Same decode ladder either way:
     hw GStreamer (nvv4l2decoder) -> sw GStreamer (avdec) -> plain FFmpeg.
 
-The stream codec (h264/h265) is auto-detected from MediaMTX's path info when
-available; otherwise both depayloaders are tried — no manual codec setting.
+Via MediaMTX the reader opens its path only once MediaMTX is RECEIVING it,
+with the depayloader for the codec negotiated on that path; direct reads try
+both. Every open is time-bounded: a GStreamer open inside OpenCV can block
+forever (2026-09-23: at boot, with the cameras still joining the hotspot, a
+cascade of failed opens left both readers stuck in open() for 7 hours — the AI
+got no frame, so nothing was detected or recorded, silently).
 """
 
 import logging
@@ -26,6 +30,7 @@ import os
 import threading
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 import cv2
 
@@ -37,6 +42,13 @@ from schemas.cameras import Camera
 
 
 logger = logging.getLogger("ingestion")
+
+# Longest a single capture open may take. A healthy loopback open prerolls on
+# the first keyframe (~1-2 s at these cameras' GOP); past this it is hung.
+_OPEN_TIMEOUT_SECS = 20.0
+# How often a reader re-asks MediaMTX whether its path is receiving yet — a
+# local HTTP call, so it is cheap and the AI starts within seconds of the camera.
+_READY_POLL_SECS = 2.0
 
 
 class RTSPReader:
@@ -55,6 +67,13 @@ class RTSPReader:
         self._source_url = source_url or camera.rtsp_url
         self._target_fps = target_fps or settings.target_camera_fps
         self._via_mediamtx = source_url is not None
+        self._mtx_path = (urlparse(self._source_url).path.lstrip("/")
+                          if self._via_mediamtx else None)
+        # An open abandoned after _OPEN_TIMEOUT_SECS that has STILL not returned.
+        # While it lives, GStreamer is not tried again for this camera (at most
+        # one stuck thread per camera, never a pile-up).
+        self._hung_open: threading.Thread | None = None
+        self._was_ready: bool | None = None     # last logged path readiness
 
         self._capture: cv2.VideoCapture | None = None
         self._thread: threading.Thread | None = None
@@ -191,33 +210,16 @@ class RTSPReader:
             f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
         )
 
-    def _detect_codec(self) -> str | None:
-        """Ask MediaMTX what the path is actually carrying (h264/h265)."""
-        if not self._via_mediamtx:
-            return None
-        try:
-            from livestream.mediamtx_client import path_codec
-            return path_codec(self.camera_id)
-        except Exception:
-            return None
+    def _open(self, name: str, pipeline: str | None) -> cv2.VideoCapture | None:
+        """Open a capture, but never unboundedly: the open runs on a helper
+        thread and is ABANDONED after _OPEN_TIMEOUT_SECS (logged loudly). If the
+        abandoned open ever returns, it releases its own capture."""
+        box: dict = {}
+        lock = threading.Lock()
+        done = threading.Event()
 
-    def _connect(self) -> bool:
-        self._health_state = CameraHealthState.CONNECTING
-        # The plain-FFmpeg fallback honors this env var; interleaved TCP avoids
-        # UDP loss artifacts on every link we use (loopback or direct).
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-
-        codec = self._detect_codec()
-        codecs = [codec] if codec else ["h264", "h265"]
-        # hw GStreamer first (per codec), then sw GStreamer, then plain FFmpeg —
-        # so ingestion still works where the NVIDIA plugins aren't available.
-        attempts: list[tuple[str, str | None]] = []
-        if settings.is_production:
-            attempts += [(f"hw-gst-{c}", self._gst_pipeline(c, hw=True)) for c in codecs]
-            attempts += [(f"sw-gst-{c}", self._gst_pipeline(c, hw=False)) for c in codecs]
-        attempts.append(("ffmpeg", None))
-
-        for name, pipeline in attempts:
+        def work() -> None:
+            cap = None
             try:
                 if pipeline is None:
                     cap = cv2.VideoCapture(self._source_url)
@@ -229,7 +231,46 @@ class RTSPReader:
                     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
             except (RuntimeError, ValueError, OSError, cv2.error):
                 logger.warning("Open via %s raised camera=%s", name, self.camera_id)
-                continue
+            with lock:
+                box["cap"] = cap
+                done.set()
+                abandoned = box.get("abandoned")
+            if abandoned and cap is not None:
+                cap.release()
+
+        t = threading.Thread(target=work, daemon=True,
+                             name=f"rtsp-open-{self.camera_id}")
+        t.start()
+        done.wait(_OPEN_TIMEOUT_SECS)
+        with lock:
+            if done.is_set():
+                return box["cap"]
+            box["abandoned"] = True
+        self._hung_open = t
+        logger.error("camera=%s open via %s HUNG for %.0fs — abandoned; the reader "
+                     "carries on", self.camera_id, name, _OPEN_TIMEOUT_SECS)
+        return None
+
+    def _connect(self, codec: str | None = None) -> bool:
+        self._health_state = CameraHealthState.CONNECTING
+        # The plain-FFmpeg fallback honors this env var; interleaved TCP avoids
+        # UDP loss artifacts on every link we use (loopback or direct).
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
+        codecs = [codec] if codec else ["h264", "h265"]
+        # hw GStreamer first (per codec), then sw GStreamer, then plain FFmpeg —
+        # so ingestion still works where the NVIDIA plugins aren't available.
+        # A GStreamer open still stuck from an earlier attempt means GStreamer is
+        # not trusted for this camera until it returns: FFmpeg only.
+        gst_ok = self._hung_open is None or not self._hung_open.is_alive()
+        attempts: list[tuple[str, str | None]] = []
+        if settings.is_production and gst_ok:
+            attempts += [(f"hw-gst-{c}", self._gst_pipeline(c, hw=True)) for c in codecs]
+            attempts += [(f"sw-gst-{c}", self._gst_pipeline(c, hw=False)) for c in codecs]
+        attempts.append(("ffmpeg", None))
+
+        for name, pipeline in attempts:
+            cap = self._open(name, pipeline)
             if cap is not None and cap.isOpened():
                 self._capture = cap
                 self._health_state = CameraHealthState.RUNNING
@@ -238,8 +279,26 @@ class RTSPReader:
                 return True
             if cap is not None:
                 cap.release()
-            logger.warning("Open via %s failed camera=%s", name, self.camera_id)
+                logger.warning("Open via %s failed camera=%s", name, self.camera_id)
         return False
+
+    def _wait_for_source(self) -> tuple[bool, str | None]:
+        """Via MediaMTX: (ready, codec) of this reader's path. Direct: always
+        ready, codec unknown. Logs each ready/not-ready TRANSITION once."""
+        if not self._via_mediamtx:
+            return True, None
+        from livestream.mediamtx_client import source_state
+        ready, codec = source_state(self._mtx_path)
+        if ready != self._was_ready:
+            self._was_ready = ready
+            if ready:
+                logger.info("camera=%s MediaMTX is receiving %s (%s) — opening",
+                            self.camera_id, self._mtx_path, codec or "codec unknown")
+            else:
+                logger.warning("camera=%s waiting — MediaMTX is not receiving %s "
+                               "yet (camera offline/joining, or MediaMTX down)",
+                               self.camera_id, self._mtx_path)
+        return ready, codec
 
     # ---- main loop ---------------------------------------------------------
     def _run(self) -> None:
@@ -254,7 +313,12 @@ class RTSPReader:
         frame_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.0
 
         while self._running:
-            if not self._connect():
+            ready, codec = self._wait_for_source()
+            if not ready:
+                self._health_state = CameraHealthState.RECONNECTING
+                time.sleep(_READY_POLL_SECS)
+                continue
+            if not self._connect(codec):
                 self._reconnect_count += 1
                 self._health_state = CameraHealthState.RECONNECTING
                 logger.warning("Reconnect camera=%s delay=%ss",
