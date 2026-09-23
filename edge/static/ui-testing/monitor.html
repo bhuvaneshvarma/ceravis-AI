@@ -247,7 +247,13 @@ function bestTarget(camState) {
 }
 function pickCamera(state) {
   const cams = Object.keys(state);
-  if (!cams.length) return { cam: null, searching: true };
+  // The AI has no frame from ANY camera: still show a registered camera's live
+  // video. Live view comes from MediaMTX, not the AI — blanking it because the
+  // AI is starved hid a working stream behind "NO SIGNAL".
+  if (!cams.length) {
+    const reg = Object.keys(CAM_NAMES);
+    return { cam: reg.includes(M.cam) ? M.cam : (reg[0] || null), searching: true };
+  }
   const withTarget = camsWithTarget(state);
   if (M.cam && withTarget.includes(M.cam))      // target still here -> stay
     return { cam: M.cam, searching: false };
@@ -367,9 +373,9 @@ function updateHeader() {
   const camName = CAM_NAMES[M.cam] || M.cam || "—";
   if (M.searching) {
     modeEl.className = "pill pill-warn"; modeEl.textContent = "SEARCHING";
-    activeEl.textContent = M.cam
-      ? `Scanning ${camName} — no enrolled target in view`
-      : "No cameras available";
+    activeEl.textContent = !M.cam ? "No cameras registered"
+      : !M.state[M.cam] ? `${camName} — the AI is not receiving video yet`
+      : `Scanning ${camName} — no enrolled target in view`;
   } else {
     const t = bestTarget(M.state[M.cam]);
     const who = (t && t.recipient_id) || "target";
@@ -440,6 +446,7 @@ async function pollCloud() {
   // gave up on it.
   const okTxt = c => c.state === "queued" ? "⏳ QUEUED"
     : c.state === "dropped" ? "✗ DROPPED"
+    : c.endpoint === "event" && /^INFO ·/.test(c.label || "") ? "ℹ INFO"
     : c.endpoint === "event" ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
     : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
   const stateCls = c => c.state === "queued" ? "cs-wait"

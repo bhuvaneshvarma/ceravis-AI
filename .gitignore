@@ -49,6 +49,8 @@ edge/data/last_reboot.json
 # Per-install runtime config — never ship a seeded/example copy
 edge/data/zones.json
 edge/data/account.json
+# ConfigStore writes atomically via a sibling temp file (config_store.py)
+edge/data/*.json.tmp
 edge/data/ceravis_api_wire.jsonl
 
 # Docker / logs

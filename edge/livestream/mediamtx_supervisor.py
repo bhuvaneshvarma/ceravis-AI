@@ -6,7 +6,14 @@ Runs MediaMTX as a supervised CHILD of this process — one systemd service
 
 On start it writes data/mediamtx.yml from settings + the registered cameras,
 spawns the binary, and a monitor thread respawns it (with backoff) if it ever
-dies. stop() terminates it cleanly with the app.
+dies. stop() shuts it down GRACEFULLY with the app — SIGINT, because MediaMTX
+(v1.9.x) catches only SIGINT: SIGTERM kills it outright (exit -15), cutting the
+open recording segment and orphaning its FFmpeg children.
+
+An outage is ONE event with a start and an end: "DOWN" once, with the real cause
+(the signal or exit code plus MediaMTX's own last log lines), then "RECOVERED"
+once the backbone has answered again for _STABLE_SECS. A crash-loop therefore
+reports once instead of flooding, and the console never ends on a stale DOWN.
 
 TLS: if the installer-generated cert pair exists (data/certs/server.crt/.key),
 HLS and WebRTC are served over HTTPS — that's the link shared to the cloud.
@@ -19,6 +26,7 @@ shared live links are disabled with one clear log line.
 
 import logging
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -36,6 +44,11 @@ from livestream.mediamtx_client import (
 
 
 logger = logging.getLogger("media")
+
+# How long a respawned MediaMTX must keep answering before the outage is closed
+# as RECOVERED. A child that answers and then dies again inside this window is
+# still the SAME outage — a flapping backbone cannot flood the console.
+_STABLE_SECS = 30.0
 
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -64,6 +77,36 @@ def recent_log(lines: int = 12) -> list[str]:
     return [ln.strip() for ln in text.splitlines() if ln.strip()][-max(1, lines):]
 
 
+def _exit_cause(code: int | None) -> str:
+    """How the child ended, in words. A negative code is a signal: MediaMTX was
+    killed from OUTSIDE this app (our own stop() never reaches here)."""
+    if code is not None and code < 0:
+        try:
+            name = signal.Signals(-code).name
+        except ValueError:
+            name = f"signal {-code}"
+        return f"was killed by {name} (from outside CERAVIS)"
+    return f"exited (code {code})"
+
+
+def _shutdown(proc: subprocess.Popen | None, timeout: float = 5.0) -> None:
+    """Stop MediaMTX the way it can close cleanly: SIGINT is the ONLY signal it
+    handles (finalises the recording segment, stops its FFmpeg children);
+    SIGTERM would kill it outright. Hard kill only if it won't go in time.
+    (Windows dev box: no SIGINT for a child — terminate() is all there is.)"""
+    if proc is None or proc.poll() is not None:
+        return
+    if os.name == "posix":
+        proc.send_signal(signal.SIGINT)
+    else:
+        proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=timeout)
+
+
 class MediaMTXSupervisor:
     def __init__(self) -> None:
         self._proc: subprocess.Popen | None = None
@@ -71,7 +114,7 @@ class MediaMTXSupervisor:
         self._running = False
         self._config_file = _abs(settings.data_path) / "mediamtx.yml"
         self._log_file = log_path()
-        self._crash_reported = False
+        self._down_since: float | None = None    # monotonic start of an open outage
         self.available = False
 
     # ---- lifecycle ---------------------------------------------------
@@ -98,13 +141,7 @@ class MediaMTXSupervisor:
 
     def stop(self) -> None:
         self._running = False
-        proc = self._proc
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        _shutdown(self._proc)
         logger.info("MediaMTX stopped")
 
     def join(self, timeout: float | None = None) -> None:
@@ -126,48 +163,70 @@ class MediaMTXSupervisor:
         backoff = 1.0
         while self._running:
             try:
-                self._write_config()
-                # MediaMTX's own output goes to data/mediamtx.log — when it
-                # dies on boot (bad config, port in use) the reason must be
-                # readable, not swallowed by DEVNULL. Bounded: fresh past 5 MB.
-                self._log_file.parent.mkdir(parents=True, exist_ok=True)
-                if (self._log_file.exists()
-                        and self._log_file.stat().st_size > 5 * 1024 * 1024):
-                    self._log_file.unlink()
-                with open(self._log_file, "ab") as log:
-                    self._proc = subprocess.Popen(
-                        [settings.mediamtx_binary, str(self._config_file)],
-                        stdout=log, stderr=subprocess.STDOUT,
-                    )
-                logger.info("MediaMTX started (pid %s, log: %s)",
-                            self._proc.pid, self._log_file)
-            except Exception:
+                proc = self._spawn()
+            except Exception as exc:
                 logger.exception("MediaMTX spawn failed")
+                self._outage(f"could not start: {exc}")
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
                 continue
+            if not self._running:          # stop() raced the spawn
+                _shutdown(proc)
+                return
             backoff = 1.0
             started_at = time.monotonic()
-            while self._running and self._proc.poll() is None:
+            while self._running and proc.poll() is None:
                 time.sleep(1.0)
-            if self._running:                       # died — respawn
-                alive = time.monotonic() - started_at
-                logger.warning("MediaMTX exited (code %s after %.0fs) — restarting",
-                               self._proc.returncode, alive)
-                # A healthy run that later died re-arms the alarm; a crash-LOOP
-                # reports once, so a failing config cannot flood the console.
-                if alive >= 30.0:
-                    self._crash_reported = False
-                if not self._crash_reported:
-                    self._crash_reported = True
-                    call_log.record(
-                        "event", False,
-                        label="Media backbone DOWN — live view & recording are dead",
-                        error="mediamtx exited (code %s): %s" % (
-                            self._proc.returncode,
-                            " | ".join(recent_log(4)) or "see data/mediamtx.log"))
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+                if (self._down_since is not None
+                        and time.monotonic() - started_at >= _STABLE_SECS
+                        and is_up()):
+                    self._recovered()
+            if not self._running:          # our own stop() — not an outage
+                return
+            cause = _exit_cause(proc.returncode)
+            logger.warning("MediaMTX %s after %.0fs — restarting",
+                           cause, time.monotonic() - started_at)
+            self._outage(cause)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+    def _spawn(self) -> subprocess.Popen:
+        self._write_config()
+        # MediaMTX's own output goes to data/mediamtx.log — when it dies on boot
+        # (bad config, port in use) the reason must be readable, not swallowed
+        # by DEVNULL. Bounded: fresh past 5 MB.
+        self._log_file.parent.mkdir(parents=True, exist_ok=True)
+        if (self._log_file.exists()
+                and self._log_file.stat().st_size > 5 * 1024 * 1024):
+            self._log_file.unlink()
+        with open(self._log_file, "ab") as log:
+            self._proc = subprocess.Popen(
+                [settings.mediamtx_binary, str(self._config_file)],
+                stdout=log, stderr=subprocess.STDOUT,
+            )
+        logger.info("MediaMTX started (pid %s, log: %s)",
+                    self._proc.pid, self._log_file)
+        return self._proc
+
+    def _outage(self, cause: str) -> None:
+        """Open an outage — reported ONCE, however many respawns it takes."""
+        if self._down_since is not None:
+            return
+        self._down_since = time.monotonic()
+        call_log.record(
+            "event", False,
+            label="Media backbone DOWN — live view & recording are dead",
+            error="mediamtx %s: %s" % (
+                cause, " | ".join(recent_log(4)) or "see data/mediamtx.log"))
+
+    def _recovered(self) -> None:
+        down = time.monotonic() - self._down_since
+        self._down_since = None
+        logger.info("MediaMTX recovered after %.0fs", down)
+        call_log.record(
+            "event", True,
+            label="INFO · Media backbone RECOVERED — live view & recording back "
+                  "(down %.0fs)" % down)
 
     # ---- config generation ----------------------------------------------
     def _write_config(self) -> None:

@@ -27,6 +27,20 @@ ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 # An engine rebuild in ExecStartPre can take several minutes — don't let
 # systemd's default 90 s start timeout kill the service mid-build.
 TimeoutStartSec=900
+# SHUTDOWN ORDER BELONGS TO THE APP. The default KillMode=control-group sends
+# SIGTERM to EVERY process in the service at the same instant — MediaMTX and its
+# FFmpeg children included — so the backbone died underneath a still-running
+# pipeline (open recording cut, a false "Media backbone DOWN" alarm on every
+# reboot, and the supervisor respawning MediaMTX into a dying service). `mixed`
+# signals ONLY the app; Pipeline.stop() then closes recording first and stops
+# MediaMTX last (gracefully, SIGINT). Anything still alive after the app exits
+# is SIGKILLed, so nothing can be orphaned.
+KillMode=mixed
+# Bound the wait on open connections (talk-back / live sockets) so the ordered
+# shutdown above actually runs, instead of being SIGKILLed at the stop timeout.
+# An env var, not a CLI flag: a uvicorn too old to know it ignores it harmlessly.
+Environment=UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=10
+TimeoutStopSec=90
 Restart=on-failure
 RestartSec=5
 
