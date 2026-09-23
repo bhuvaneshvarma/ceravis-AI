@@ -117,20 +117,19 @@ def _time_status() -> dict:
     """Edge-local time + whether the OS clock is NTP-disciplined. The whole
     system stamps events, snapshots and recordings on THIS clock, so a drifted
     or unsynced clock silently misaligns alerts with their footage."""
+    # The sync flag has ONE reader, reboot.clock_synchronized(). This used to ask
+    # timedatectl for two properties at once and take the first line as the flag,
+    # but `--value` prints them in systemd's own order (Timezone first), so a
+    # synced clock read as NOT synced (status DEGRADED) and the timezone as "yes".
     info = {"local": clock.now_iso(), "timezone": str(clock.local_tz()),
-            "ntp_synchronized": None}
+            "ntp_synchronized": reboot.clock_synchronized()}
     try:
-        out = subprocess.run(
-            ["timedatectl", "show", "-p", "NTPSynchronized", "-p", "Timezone",
-             "--value"], capture_output=True, text=True, timeout=3)
-        if out.returncode == 0:
-            vals = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
-            if vals:
-                info["ntp_synchronized"] = vals[0].lower() == "yes"
-            if len(vals) > 1:
-                info["timezone"] = vals[1]
+        out = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
+                             capture_output=True, text=True, timeout=3)
+        if out.returncode == 0 and out.stdout.strip():
+            info["timezone"] = out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        pass                                    # not systemd (dev box) — leave null
+        pass                                    # not systemd (dev box) — keep tz abbr
     return info
 
 
