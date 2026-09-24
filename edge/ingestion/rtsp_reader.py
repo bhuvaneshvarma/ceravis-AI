@@ -49,6 +49,12 @@ _OPEN_TIMEOUT_SECS = 20.0
 # How often a reader re-asks MediaMTX whether its path is receiving yet — a
 # local HTTP call, so it is cheap and the AI starts within seconds of the camera.
 _READY_POLL_SECS = 2.0
+_SKIP_CHECK_SECS = 10.0    # window over which a decoder skip must still feed the AI
+
+
+def _ai_fps() -> float:
+    """The most frames per second any AI stage takes from a camera."""
+    return max(settings.detection_fps, settings.pose_fps, 1.0)
 # Longest any caller waits on a capture release. Releasing is also the only way
 # to unblock a read() stuck on a silent stream, so it has to happen from another
 # thread — and a GStreamer capture torn down while its reader is inside read()
@@ -329,7 +335,7 @@ class RTSPReader:
         if self._decode_every is not None:
             return False
         src = cap.get(cv2.CAP_PROP_FPS) or 0.0
-        need = max(settings.detection_fps, settings.pose_fps, 1.0)
+        need = _ai_fps()
         self._decode_every = max(1, int(src // need))
         if self._decode_every > 1:
             logger.info("camera=%s decoding every %d frames (camera %.0f fps, AI needs %.0f)",
@@ -388,6 +394,7 @@ class RTSPReader:
             # Arm the stall watchdog from the connection instant, so "connected but
             # never delivered a first frame" is caught too, not just mid-stream stalls.
             self._last_frame_monotonic = time.monotonic()
+            skip_window, skip_frames = time.monotonic(), 0
 
             while self._running and self._capture is not None:
                 if frame_interval:                       # 0 => uncapped, no pacing
@@ -425,6 +432,21 @@ class RTSPReader:
                 self._last_frame_time = clock.now()
                 self._last_frame_monotonic = time.monotonic()   # feed the watchdog
                 self._update_fps()
+                # The camera's reported rate is nominal: in low light it sends
+                # far fewer frames (the C260: 25 -> ~7.6 fps at night), and a skip
+                # learned from 25 then starved the AI at 3.8 fps (2026-09-24).
+                # A skip that no longer feeds the AI is dropped for good.
+                skip_frames += 1
+                span = time.monotonic() - skip_window
+                if (self._decode_every or 1) > 1 and span >= _SKIP_CHECK_SECS:
+                    if skip_frames / span < 0.9 * _ai_fps():
+                        logger.warning("camera=%s delivers %.1f fps while decoding every %d "
+                                       "frames (camera slowed down, e.g. low light) — "
+                                       "decoding every frame from now on", self.camera_id,
+                                       skip_frames / span, self._decode_every)
+                        self._decode_every = 1
+                        break
+                    skip_window, skip_frames = time.monotonic(), 0
                 self._frame_buffer.update(
                     camera_id=self.camera_id, frame=frame,
                     frame_id=self._frame_id, timestamp=self._last_frame_time,

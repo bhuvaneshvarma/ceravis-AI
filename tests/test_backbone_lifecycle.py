@@ -327,6 +327,23 @@ try:
     check("once it is, the AI gets frames",
           boot.frames_captured > 0 and fed,
           str(boot.frames_captured))
+
+    # A decoder skip that no longer feeds the AI (the camera slowed down in
+    # low light) is dropped: the reader reconnects decoding every frame.
+    real_check, real_need = rr._SKIP_CHECK_SECS, rr._ai_fps
+    rr._SKIP_CHECK_SECS, rr._ai_fps = 0.2, (lambda: 1e6)
+    mtx.source_state = lambda name: (True, "h264")
+    starve = rr.RTSPReader(cam, FrameBuffer(), source_url="rtsp://127.0.0.1:8554/edgeXYZ/LOUNGE",
+                           target_fps=50)
+    starve._decode_every = 2
+    starve.start()
+    time.sleep(1.0)
+    starve.stop()
+    starve.join(2)
+    rr._SKIP_CHECK_SECS, rr._ai_fps = real_check, real_need
+    check("a skip that starves the AI is dropped for good (decode every frame)",
+          starve._decode_every == 1 and starve.reconnect_count >= 1,
+          f"every={starve._decode_every} reconnects={starve.reconnect_count}")
 finally:
     rr.cv2.VideoCapture, rr._OPEN_TIMEOUT_SECS = real_vc, real_timeout
     rr._READY_POLL_SECS = real_poll
