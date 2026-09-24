@@ -6,10 +6,11 @@ Face identity — the second, clothing-independent cue next to body ReID.
 Body ReID matches mostly on clothes, so it cannot tell two people in similar
 jeans and shirts apart, and it loses the recipient when they change clothes.
 The face does neither. This module finds a face in the upper body of a person
-box (YuNet: detection + 5 landmarks, MIT licence), aligns it and embeds it
-(SFace: 128-d, Apache-2.0), and scores it against the recipient's enrolled
-faces. Both models run on the device's own OpenCV (CPU), and only for the few
-tracks where identity is actually in question — see TrackingRunner._maybe_face.
+box (YuNet: detection + 5 landmarks, MIT licence, the device's OpenCV), aligns
+it to the standard ArcFace template and embeds it (AuraFace: ResNet100 ArcFace,
+512-d, Apache-2.0, TensorRT on the GPU), and scores it against the recipient's
+enrolled faces — only for the few tracks where identity is actually in
+question (see TrackingRunner._maybe_face).
 
 It is EVIDENCE for the one lock decision in reid/target_lock.py, not a second
 identity mechanism: a clear match confirms a body match, a clear mismatch
@@ -30,7 +31,12 @@ from config.settings import settings
 logger = logging.getLogger("reid")
 
 _EDGE_ROOT = Path(__file__).resolve().parents[1]
-FACE_DIM = 128
+FACE_DIM = 512
+# The ArcFace 112x112 template the 5 landmarks are aligned to (eyes, nose, mouth
+# corners, in YuNet's order). Checked on the bench: embeddings from this
+# alignment equal OpenCV's own alignCrop to cosine >= 0.9999.
+_TEMPLATE = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
+                      [41.5493, 92.3655], [70.7299, 92.2041]], np.float32)
 _UPPER_FRAC = 0.55     # a person's face is in the upper body of their box
 _MIN_REGION_PX = 64    # smaller regions hold no usable face (and trip YuNet 2022mar)
 _LIVE_MAX_PX = 640     # YuNet input bound for live regions (CPU cost)
@@ -42,9 +48,21 @@ def _path(p: str) -> Path:
     return q if q.is_absolute() else _EDGE_ROOT / q
 
 
+def _similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """Least-squares similarity transform (Umeyama) mapping src -> dst, 2x3."""
+    ms, md = src.mean(0), dst.mean(0)
+    sc, dc = src - ms, dst - md
+    u, sv, vt = np.linalg.svd(dc.T @ sc / len(src))
+    d = np.diag([1.0, float(np.sign(np.linalg.det(u) * np.linalg.det(vt)))])
+    r = u @ d @ vt
+    scale = float(np.trace(np.diag(sv) @ d) / (sc ** 2).sum(1).mean())
+    return np.hstack([scale * r, (md - scale * r @ ms)[:, None]]).astype(np.float32)
+
+
 class FaceIdentity:
-    """YuNet + SFace. OpenCV nets are not thread-safe: one instance per thread
-    that uses it (the tracking runner and the enrollment worker each own one)."""
+    """YuNet + AuraFace. The OpenCV detector and the TensorRT engine are used
+    from one thread each: one instance per thread that uses it (the tracking
+    runner and the enrollment worker each own one)."""
 
     def __init__(self) -> None:
         self._det = None
@@ -57,9 +75,10 @@ class FaceIdentity:
                            "run setup/export_models.py", det.name, rec.name)
             return
         try:
+            from detection.trt_engine import TensorRTEngine
             self._det = cv2.FaceDetectorYN.create(str(det), "", (320, 320), 0.8, 0.3, 20)
-            self._rec = cv2.FaceRecognizerSF.create(str(rec), "")
-            logger.info("face identity ready (YuNet + SFace)")
+            self._rec = TensorRTEngine(str(rec))
+            logger.info("face identity ready (YuNet + AuraFace)")
         except Exception:
             logger.exception("face identity off — model load failed")
             self._det = self._rec = None
@@ -69,7 +88,7 @@ class FaceIdentity:
         return self._det is not None and self._rec is not None
 
     def embed_person(self, frame: np.ndarray, bbox) -> tuple[np.ndarray | None, float]:
-        """(unit 128-d face vector, face width in px) for the person whose box is
+        """(unit 512-d face vector, face width in px) for the person whose box is
         `bbox` (x1, y1, x2, y2 in frame pixels), or (None, 0.0)."""
         if not self.ready:
             return None, 0.0
@@ -120,10 +139,15 @@ class FaceIdentity:
         return out
 
     def _feature(self, img: np.ndarray, face: np.ndarray) -> np.ndarray | None:
+        """Align the face to the ArcFace template and embed it (AuraFace)."""
         try:
-            aligned = self._rec.alignCrop(img, face)
-            v = self._rec.feature(aligned).ravel().astype(np.float32)
-        except cv2.error:
+            m = _similarity(face[4:14].reshape(5, 2).astype(np.float32), _TEMPLATE)
+            aligned = cv2.warpAffine(img, m, (112, 112))
+            x = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB).astype(np.float32)
+            x = ((x - 127.5) / 127.5).transpose(2, 0, 1)[None]
+            v = np.asarray(self._rec.infer(np.ascontiguousarray(x))[0],
+                           np.float32).ravel()
+        except Exception:
             return None
         n = float(np.linalg.norm(v))
         return v / n if n > 0 else None

@@ -563,25 +563,24 @@ class Settings(BaseSettings):
     # Body ReID matches mostly on clothes: at the 0.80 bar it recognised the
     # recipient in a DIFFERENT outfit only 31% of the time, and some strangers in
     # similar clothes still reach 0.8+. The face is independent evidence. YuNet
-    # finds the face in the upper body of a track (MIT licence) and SFace embeds
-    # it (Apache-2.0); both run on the device's own OpenCV. Measured jointly on
-    # the SAME crops (bench, 2026-09-23: 751 strangers, the recipient in both
-    # outfits):
-    #   body >= 0.80 only                          strangers 0.8%  recipient
-    #                                              same outfit 97.6%, other 31.0%
-    #   body >= 0.80, or body >= match AND face >= face_confirm_score, and never
-    #   when a visible face < face_veto_score      strangers 0.27% recipient
-    #                                              same outfit 97.6%, other 83.3%
-    # A visible face that is clearly someone else also RELEASES a lock, and a
-    # face-confirmed lock may learn the recipient's new outfit. Colour only —
-    # faces are not trusted in infrared (no night data). Faces are computed only
-    # for tracks that already match the body gallery, or are the target.
+    # finds the face and its 5 landmarks in the upper body of a track (MIT,
+    # device OpenCV); the face is aligned to the standard ArcFace template and
+    # AuraFace embeds it (fal/AuraFace-v1: ResNet100 ArcFace, Apache-2.0, trained
+    # on commercially usable data; TensorRT on the GPU, ~9 ms a face).
+    # AuraFace replaced SFace after an A/B on the bench (2026-09-24, 40 recipient
+    # vs 430 stranger faces): the gap between the recipient's 5th percentile and
+    # the strongest stranger was 0.026 for SFace and 0.067 for AuraFace.
+    # A visible face that is clearly someone else RELEASES a lock and vetoes a
+    # candidate; a confirming face lets a body match at the verify bar lock and
+    # a new outfit be learned. Colour only (no night face data). Faces are
+    # computed only for tracks that already match the body gallery, or the target.
     face_enabled: bool = True
     face_detector_path: str = "models/face/face_detection_yunet_2022mar.onnx"
-    face_recognizer_path: str = "models/face/face_recognition_sface_2021dec.onnx"
-    # Pinned to the exact opencv_zoo commits and checked by SHA-256 when setup
-    # fetches them (setup/export_models.py). YuNet 2022mar: the last release that
-    # the device's OpenCV 4.5.4 FaceDetectorYN accepts (2023mar+ needs 4.8).
+    face_recognizer_onnx_path: str = "models/face/auraface_glintr100.onnx"
+    face_recognizer_path: str = "models/face/auraface_glintr100.engine"
+    # Pinned to exact upstream revisions and checked by SHA-256 when setup fetches
+    # them (setup/export_models.py builds the recognizer engine on the device).
+    # YuNet 2022mar: the last release the device's OpenCV 4.5.4 accepts.
     face_detector_url: str = (
         "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
         "c97242ce7f2a554e288b50eabd9f5df957e78801/models/face_detection_yunet/"
@@ -589,14 +588,22 @@ class Settings(BaseSettings):
     face_detector_sha256: str = (
         "50ef07f702a31741ca46a4c0d947773b64143b9362780237bf0d427d6c79bab7")
     face_recognizer_url: str = (
-        "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
-        "ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/"
-        "face_recognition_sface_2021dec.onnx")
+        "https://huggingface.co/fal/AuraFace-v1/resolve/"
+        "af6d057c9b0ec4071d4c49c80e3539258798b609/glintr100.onnx")
     face_recognizer_sha256: str = (
-        "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79")
+        "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60")
     face_min_px: float = 40.0          # narrower faces are not used as evidence
-    face_confirm_score: float = 0.55   # SFace cosine: strangers 1.0%, recipient 95%
-    face_veto_score: float = 0.30      # below every recipient face measured (min .332)
+    # AuraFace cosine bars, set from the JOINT body+face test on the bench
+    # (2026-09-24, production code, 710 stranger crops, the recipient in both
+    # outfits). New lock = body >= 0.80, or body >= the verify bar AND a face >=
+    # face_confirm_score; a visible face < face_veto_score vetoes / releases:
+    #   body only 0.80           strangers 0.00%  recipient same 97.6%, other 31.0%
+    #   confirm 0.50, veto 0.20  strangers 0.00%  recipient same 97.6%, other 78.6%
+    #   confirm 0.45, veto 0.20  strangers 0.14%  recipient same 97.6%, other 85.7%
+    # 0.50: the precision-first row. The veto sits below every recipient face
+    # measured (lowest 0.313).
+    face_confirm_score: float = 0.50
+    face_veto_score: float = 0.20
     face_max_age_secs: float = 10.0    # a track's face look older than this is ignored
     # Night lock rules. By day a lock that stops matching is released after
     # target_mismatch_release_checks. At night "stops matching" is mostly the

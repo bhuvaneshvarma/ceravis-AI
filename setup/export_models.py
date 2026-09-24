@@ -165,9 +165,9 @@ def _fetch_verified(path: Path, url: str, sha256: str) -> None:
 
 
 def fetch_face_models() -> None:
-    """YuNet + SFace for face identity (edge/reid/face_identity.py). Plain ONNX
-    files OpenCV loads directly — nothing to build, only fetch, pinned to an
-    exact upstream commit and checked by SHA-256. The URLs and hashes live in
+    """YuNet + AuraFace for face identity (edge/reid/face_identity.py): each
+    fetched once, pinned to an exact upstream revision and checked by SHA-256;
+    the AuraFace engine is then built here. The URLs and hashes live in
     edge/config/settings.py, the one place they are defined."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "edge"))
     try:
@@ -178,12 +178,13 @@ def fetch_face_models() -> None:
     if not settings.face_enabled:
         print("[skip] face identity disabled")
         return
-    for path, url, sha in (
-            (settings.face_detector_path, settings.face_detector_url,
-             settings.face_detector_sha256),
-            (settings.face_recognizer_path, settings.face_recognizer_url,
-             settings.face_recognizer_sha256)):
-        _fetch_verified(Path(path), url, sha)
+    _fetch_verified(Path(settings.face_detector_path), settings.face_detector_url,
+                    settings.face_detector_sha256)
+    # The recognizer (AuraFace) runs on TensorRT: fetch the ONNX, build the
+    # engine on this device (engines are GPU-specific) once.
+    onnx = Path(settings.face_recognizer_onnx_path)
+    _fetch_verified(onnx, settings.face_recognizer_url, settings.face_recognizer_sha256)
+    build_engine(onnx, Path(settings.face_recognizer_path))
 
 
 # ---------------------------------------------------------------- main

@@ -71,7 +71,7 @@ class EnrollmentManager:
             body/          embeddings.npy  (K, dim) ReID embeddings (colour)
                            embeddings_ir.npy  the same crops, infrared view
                            adaptive[_ir].npy  live-learned looks per modality
-            face/          embeddings.npy  (K, 128) enrolled faces (SFace)
+            face/          embeddings.npy  (K, 512) enrolled faces (AuraFace)
             status.json    enrollment job state
     """
 
@@ -229,8 +229,17 @@ class EnrollmentManager:
         np.save(root / "face" / "embeddings.npy", faces.astype(np.float32))
 
     def has_face_embeddings(self, recipient_id: str) -> bool:
+        """Faces from THIS face model exist (possibly zero rows: enrolled, no
+        clear face). A file from another model (another width, e.g. the 128-d
+        SFace era) does not count, so it is re-embedded from the photos."""
+        from reid.face_identity import FACE_DIM
         root = self.get_recipient_folder(recipient_id)
-        return bool(root and (root / "face" / "embeddings.npy").exists())
+        f = root / "face" / "embeddings.npy" if root else None
+        try:
+            return bool(f and f.exists()
+                        and np.load(f, mmap_mode="r").shape[-1] == FACE_DIM)
+        except Exception:
+            return False
 
     def load_face_gallery(self) -> dict[str, np.ndarray]:
         """recipient_id -> (K, 128) enrolled faces, for every recipient."""
