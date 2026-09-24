@@ -88,6 +88,27 @@ check("posture holds (not flipped to sitting) as the legs clip off",
       last in (Posture.STANDING, Posture.WALKING), str(last))
 
 
+print("\n1b. a LOADED GPU (4.5 pose frames/s per camera) still sees sit and walk")
+# The bench on 2026-09-24: pose ran ~4.5 frames/s per camera, so the last 8
+# samples spanned ~1.8 s and every 'within 1.5 s' check failed -> a seated
+# person stayed STANDING. The window is time now, not a sample count.
+SLOW = 1 / 4.5
+trs = PostureTracker()
+t0 = clock.now()
+_, t1 = feed(trs, 11, [STAND] * 8, t0, dt=SLOW)
+slow_sit = [body(head_y=h, sh_y=h + 60, hip_y=360, sh_w=44)
+            for h in (170, 210, 245, 265, 265, 265, 265, 265)]
+last, _ = feed(trs, 11, slow_sit, t1, dt=SLOW)
+check("at 4.5 frames/s the head-drop sit (legs hidden) is read as SITTING",
+      last == Posture.SITTING, str(last))
+trw = PostureTracker()
+_, t1 = feed(trw, 12, [STAND] * 8, t0, dt=SLOW)
+walk = [body(head_y=100, sh_y=165, hip_y=330, knee_y=450, ank_y=560, cx=200 + 35 * i)
+        for i in range(1, 9)]
+last, _ = feed(trw, 12, walk, t1, dt=SLOW)
+check("at 4.5 frames/s a steady walk is read as WALKING", last == Posture.WALKING, str(last))
+
+
 print("\n2. sitting behind a TABLE (legs hidden, body inside frame) IS a sit")
 tr2 = PostureTracker()
 t0 = clock.now()

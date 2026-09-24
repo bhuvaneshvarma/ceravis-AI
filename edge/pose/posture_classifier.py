@@ -396,15 +396,24 @@ class PostureTracker:
         return out(stable)
 
     # ---- transition helpers -----------------------------------------
+    @staticmethod
+    def _window_start(hist: deque):
+        """The oldest sample within walking_motion_window_secs of the newest.
+        The motion window is TIME, not a frame count: with the GPU loaded, pose
+        ran ~4.5 frames/s per camera, the last HISTORY samples spanned ~1.8 s,
+        and every check demanding oldest-to-newest <= 1.5 s failed — sit/stand
+        and walking never switched (bench, 2026-09-24)."""
+        t_new = hist[-1][0]
+        return next(x for x in hist
+                    if (t_new - x[0]).total_seconds() <= settings.walking_motion_window_secs)
+
     def _is_moving(self, st: _TrackState, raw: PostureResult) -> bool:
         """Scale-normalized centroid speed over the window, with a pixel floor."""
         if len(st.last_centroids) < 2:
             return False
-        t_old, x_old, y_old, _ = st.last_centroids[0]
+        t_old, x_old, y_old, _ = self._window_start(st.last_centroids)
         t_new, x_new, y_new, _ = st.last_centroids[-1]
         dt = max((t_new - t_old).total_seconds(), 1e-3)
-        if dt > settings.walking_motion_window_secs:
-            return False
         disp = math.hypot(x_new - x_old, y_new - y_old)
         speed_frac = (disp / dt) / max(raw.body_ref_px, 1.0)     # body-lengths / sec
         return (speed_frac >= settings.walking_motion_body_fraction
@@ -417,10 +426,9 @@ class PostureTracker:
         stand->sit. Normalized by body length so it is distance-independent."""
         if len(st.last_heads) < 2:
             return False
-        t_old, y_old, _, _ = st.last_heads[0]
+        t_old, y_old, _, _ = self._window_start(st.last_heads)
         t_new, y_new, ref_new, _ = st.last_heads[-1]
-        dt = (t_new - t_old).total_seconds()
-        if dt <= 0 or dt > settings.walking_motion_window_secs:
+        if (t_new - t_old).total_seconds() <= 0:
             return False
         dy_frac = (y_new - y_old) / max(ref_new, 1.0)    # +ve = head moved DOWN
         thr = settings.posture_transition_head_frac
@@ -435,7 +443,7 @@ class PostureTracker:
         <1 receding. 1.0 when there isn't enough history to tell."""
         if len(st.last_heads) < 2:
             return 1.0
-        span_old = st.last_heads[0][3]
+        span_old = self._window_start(st.last_heads)[3]
         span_new = st.last_heads[-1][3]
         return (span_new / span_old) if span_old > 1.0 else 1.0
 
@@ -451,10 +459,9 @@ class PostureTracker:
         move the head vertically without any change of posture."""
         if len(st.last_heads) < 2:
             return None
-        t_old, y_old, _, _ = st.last_heads[0]
+        t_old, y_old, _, _ = self._window_start(st.last_heads)
         t_new, y_new, ref_new, _ = st.last_heads[-1]
-        dt = (t_new - t_old).total_seconds()
-        if dt <= 0 or dt > settings.walking_motion_window_secs:
+        if (t_new - t_old).total_seconds() <= 0:
             return None
         if raw.torso_angle_deg >= settings.fall_torso_angle_deg:
             return None                                   # not upright — fall owns this
