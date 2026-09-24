@@ -235,6 +235,11 @@ class FakeCap:
     def set(self, *a):
         return True
 
+    def get(self, prop):
+        return FakeCap.FPS
+
+    FPS = 0.0
+
     def read(self):
         return True, np.zeros((36, 64, 3), np.uint8)
 
@@ -274,6 +279,32 @@ try:
     gst = [o for o in OPENS if o != reader._source_url]
     check("known codec -> only that codec's pipelines are tried",
           bool(gst) and all("rtph265depay" in o for o in gst), str(gst))
+
+    # A camera sending far more than the AI takes: the hardware decoder is told
+    # to hand over only every Nth frame (learned once, then reused).
+    for fps, want in ((25.0, 2), (0.0, 1)):
+        skip = rr.RTSPReader(cam, FrameBuffer(),
+                             source_url="rtsp://127.0.0.1:8554/edgeXYZ/LOUNGE")
+        FakeCap.FPS = fps
+        OPENS.clear(); CAPS.clear()
+        rr.cv2.VideoCapture = lambda src, *a: FakeCap(src)
+        object.__setattr__(rr.settings, "is_production", True)
+        skip._connect("h265")
+        gst = [o for o in OPENS if o != skip._source_url]
+        if want > 1:
+            check(f"a {fps:.0f} fps camera is reopened decoding every {want}nd frame",
+                  len(gst) == 2 and "drop-frame-interval" not in gst[0]
+                  and f"drop-frame-interval={want}" in gst[1] and CAPS[0].released, str(gst))
+        else:
+            check("an unreported camera rate skips nothing (one open)",
+                  len(gst) == 1 and "drop-frame-interval" not in gst[0], str(gst))
+        OPENS.clear()
+        skip._capture = None
+        skip._connect("h265")
+        check(f"…the learned skip is reused on reconnect (fps={fps:.0f})",
+              len(OPENS) == 1 and (f"drop-frame-interval={want}" in OPENS[0]) == (want > 1),
+              str(OPENS))
+    FakeCap.FPS = 0.0
 
     # The whole reader, as at boot: the path is not received yet -> it waits
     # without opening anything -> MediaMTX receives it -> it opens -> frames.

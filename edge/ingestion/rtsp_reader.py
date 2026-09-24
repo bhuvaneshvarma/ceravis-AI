@@ -81,6 +81,7 @@ class RTSPReader:
         # one stuck thread per camera, never a pile-up).
         self._hung_open: threading.Thread | None = None
         self._was_ready: bool | None = None     # last logged path readiness
+        self._decode_every: int | None = None   # hw decoder frame skip, learned once
 
         self._capture: cv2.VideoCapture | None = None
         # The capture already handed to _release — held so stop(), the watchdog
@@ -219,7 +220,9 @@ class RTSPReader:
     def _gst_pipeline(self, codec: str, hw: bool) -> str:
         depay = ("rtph265depay ! h265parse" if codec == "h265"
                  else "rtph264depay ! h264parse")
-        decode = ("nvv4l2decoder ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert"
+        skip = self._decode_every or 1
+        decode = (("nvv4l2decoder" + (f" drop-frame-interval={skip}" if skip > 1 else ""))
+                  + " ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert"
                   if hw else
                   ("avdec_h265" if codec == "h265" else "avdec_h264") + " ! videoconvert")
         # ZERO added buffering between the camera and YOLO, on purpose:
@@ -302,6 +305,9 @@ class RTSPReader:
         for name, pipeline in attempts:
             cap = self._open(name, pipeline)
             if cap is not None and cap.isOpened():
+                if name.startswith("hw-gst") and self._learn_decode_skip(cap):
+                    self._release(cap, "decode skip")   # reopen with the skip applied
+                    return self._connect(codec)
                 self._capture = cap
                 self._health_state = CameraHealthState.RUNNING
                 logger.info("Connected camera=%s via %s (%s)", self.camera_id, name,
@@ -311,6 +317,24 @@ class RTSPReader:
                 cap.release()
                 logger.warning("Open via %s failed camera=%s", name, self.camera_id)
         return False
+
+    def _learn_decode_skip(self, cap: cv2.VideoCapture) -> bool:
+        """Once per reader: let the hardware decoder hand over only every Nth
+        frame when the camera sends far more than the AI takes (at most
+        max(detection_fps, pose_fps)). Every frame handed over is copied out of
+        video memory and colour-converted on the CPU whether or not anyone uses
+        it — measured 2026-09-24: a 25 fps 4K camera cost 0.82 of a core, 0.46
+        at every 2nd frame. An unreported camera rate (0) skips nothing. True
+        when the capture must be reopened for the skip to apply."""
+        if self._decode_every is not None:
+            return False
+        src = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        need = max(settings.detection_fps, settings.pose_fps, 1.0)
+        self._decode_every = max(1, int(src // need))
+        if self._decode_every > 1:
+            logger.info("camera=%s decoding every %d frames (camera %.0f fps, AI needs %.0f)",
+                        self.camera_id, self._decode_every, src, need)
+        return self._decode_every > 1
 
     def _wait_for_source(self) -> tuple[bool, str | None]:
         """Via MediaMTX: (ready, codec) of this reader's path. Direct: always
