@@ -280,8 +280,7 @@ class TrackingRunner:
                 continue                       # not a candidate — no face needed
             face, px = self._face.embed_person(
                 fd.frame, (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2))
-            if face is not None:
-                self._features.set_face(camera_id, t.track_id, face, px)
+            self._features.set_face(camera_id, t.track_id, face, px)
 
     def _follow_light(self, camera_id: str) -> bool:
         """Is this camera on infrared right now — and if it has just SWITCHED,

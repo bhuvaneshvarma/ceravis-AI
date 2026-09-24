@@ -45,8 +45,10 @@ FC, FV, PX = settings.face_confirm_score, settings.face_veto_score, settings.fac
 
 
 def lock(body: float, face=None, boxes=BOXES, night=None, mgr=None):
+    """face: (score, px); None = looked, no face visible; "unseen" = not
+    looked at yet."""
     mgr = mgr or TargetLockManager(Gallery())
-    faces = {} if face is None else {1: face}
+    faces = {} if face == "unseen" else {1: (None, 0.0) if face is None else face}
     out = mgr.update("CAM", boxes, lambda tid: np.array([body], np.float32), night,
                      face_for=(lambda tid, rid: faces.get(tid)))
     return mgr, out
@@ -67,6 +69,9 @@ _, out = lock(A + 0.05, face=(FV - 0.1, PX + 20), night=NightContext(ir=True))
 check("infrared: a face never vetoes (no night face data)", out.target_track_id == 1)
 _, out = lock(V - 0.05, face=(FC + 0.2, PX + 20))
 check("a face cannot lock a body below the verify bar", out.target_track_id is None)
+_, out = lock(A + 0.05, face="unseen")
+check("strong body, face not looked at yet: waits for the look (no new lock)",
+      out.target_track_id is None)
 
 print("\n2. an existing lock")
 mgr, out = lock(A + 0.02)
@@ -79,6 +84,9 @@ check("...and that look may be learned", out.face_confirmed and out.adaptive is 
 mgr, out = lock(A + 0.02)
 _, out = lock(A + 0.02, mgr=mgr)
 check("no face: verified on body as before", out.target_track_id == 1 and not out.face_confirmed)
+mgr, out = lock(A + 0.02)
+_, out = lock(A + 0.02, face="unseen", mgr=mgr)
+check("an existing lock is held while its face look is pending", out.target_track_id == 1)
 
 print("\n3. no face evidence at all == the body-only decision")
 for body in (V - 0.05, (V + A) / 2, A + 0.02):

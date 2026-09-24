@@ -388,14 +388,15 @@ class TargetLockManager:
 
     def _face_verdict(self, tid: int, recipient_id: str | None, ir: bool) -> str | None:
         """'veto' / 'confirm' / None from the track's latest face look — by
-        day only, and only for a face wide enough to be evidence."""
+        day only, and only for a face wide enough to be evidence. 'pending'
+        when the face could be read but has not been looked at yet."""
         if ir or self._face_for is None or not recipient_id or not settings.face_enabled:
             return None
         f = self._face_for(tid, recipient_id)
         if f is None:
-            return None
+            return "pending"
         score, px = f
-        if px < settings.face_min_px:
+        if score is None or px < settings.face_min_px:
             return None
         if score < settings.face_veto_score:
             return "veto"
@@ -540,6 +541,12 @@ class TargetLockManager:
                else settings.reid_acquire_min_score)
         if acquire and best[0] < bar and best[6] != "confirm":
             return None                       # not confident enough for a NEW lock
+        if acquire and best[6] == "pending":
+            # Body alone never takes a NEW lock before the face had its look
+            # (≤ one ReID tick): a stranger in the recipient's colours scored
+            # 0.80 on the body and was locked for a second until the face
+            # released it (bench, 2026-09-24). No face in view still locks.
+            return None
         self._last_match_rid = best[4]
         self._last_recency = best[5]
         return (best[1], best[0], best[2], best[3])

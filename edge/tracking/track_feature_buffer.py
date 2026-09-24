@@ -36,9 +36,10 @@ class TrackFeature:
     frame_id: int
     timestamp: datetime
     modality: str = "color"
-    face: np.ndarray | None = None    # latest unit 128-d face vector, if seen
+    face: np.ndarray | None = None    # latest unit face vector, if seen
     face_px: float = 0.0              # its width in frame pixels
     face_at: float = 0.0              # monotonic time it was seen
+    face_looked: float = 0.0          # monotonic time of the latest look, face or not
 
 
 class TrackFeatureBuffer:
@@ -60,15 +61,19 @@ class TrackFeatureBuffer:
                 smooth=smooth, curr=curr, frame_id=frame_id, timestamp=timestamp,
                 modality=modality,
                 face=old.face if old else None, face_px=old.face_px if old else 0.0,
-                face_at=old.face_at if old else 0.0)
+                face_at=old.face_at if old else 0.0,
+                face_looked=old.face_looked if old else 0.0)
 
-    def set_face(self, camera_id: str, track_id: int, face: np.ndarray,
+    def set_face(self, camera_id: str, track_id: int, face: np.ndarray | None,
                  face_px: float) -> None:
-        """Attach a fresh face look to an existing track record."""
+        """Record a face look on an existing track record — `face` None when
+        the look found no usable face (the look itself still counts)."""
         with self._lock:
             rec = self._feats.get(camera_id, {}).get(track_id)
             if rec is not None:
-                rec.face, rec.face_px, rec.face_at = face, float(face_px), time.monotonic()
+                rec.face_looked = time.monotonic()
+                if face is not None:
+                    rec.face, rec.face_px, rec.face_at = face, float(face_px), rec.face_looked
 
     def get(self, camera_id: str, track_id: int) -> TrackFeature | None:
         with self._lock:

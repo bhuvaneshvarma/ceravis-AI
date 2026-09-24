@@ -234,15 +234,18 @@ class ReIDRunner:
 
             def face_for(tid: int, rid: str):
                 """(face score vs rid's enrolled faces, face px) for this
-                track's latest face look, if it is recent enough."""
-                if self._face_gallery is None:
-                    return None
+                track's latest face look; (None, 0) when the look found no
+                usable face; None when it has not been looked at recently."""
+                if self._face_gallery is None or self._face_gallery.size == 0:
+                    return (None, 0.0)          # no enrolled faces: a look can't help
                 rec = self._features.get(camera_id, tid)
-                if (rec is None or rec.face is None
-                        or face_now - rec.face_at > settings.face_max_age_secs):
+                max_age = settings.face_max_age_secs
+                if rec is None or face_now - rec.face_looked > max_age:
                     return None
-                score = self._face_gallery.score(rec.face, rid)
-                return None if score is None else (score, rec.face_px)
+                score = (self._face_gallery.score(rec.face, rid)
+                         if rec.face is not None and face_now - rec.face_at <= max_age
+                         else None)
+                return (None, 0.0) if score is None else (score, rec.face_px)
 
             night = (NightContext(ir=True,
                                   sole_recipient=self._sole_recipient(camera_id,
