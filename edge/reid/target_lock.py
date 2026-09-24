@@ -243,7 +243,10 @@ class TargetLockManager:
                 self._verified(st, m.score)
                 self._remember(st, box)
                 self._emit(out, st, tid, m.score, m.view_label)
-                if self._alone(boxes, tid):
+                # Learn only when a readable face does not disagree: a weak or
+                # not-yet-read face on a locked track is exactly how a stranger
+                # in the recipient's colours taught the gallery (2026-09-24).
+                if self._alone(boxes, tid) and face not in ("weak", "pending"):
                     out.adaptive = (tid, st.recipient_id, m.score)
                     out.learn_ir = ir and st.learnable
                     out.face_confirmed = face == "confirm"

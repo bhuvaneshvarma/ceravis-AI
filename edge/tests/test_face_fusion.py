@@ -97,6 +97,12 @@ _, out = lock(A + 0.15, mgr=mgr)
 check("after a face veto the same track is not re-locked on body alone", out.target_track_id is None)
 _, out = lock(A + 0.15, face=(FC + 0.05, PX + 20), mgr=mgr)
 check("...but a confirming face may lock it again", out.target_track_id == 1)
+mgr, out = lock(A + 0.02)
+_, out = lock(settings.reid_adaptive_min_score + 0.05, face=((FV + settings.face_acquire_score) / 2, PX + 20), mgr=mgr)
+check("a locked track whose readable face does not vouch is NOT learned from",
+      out.target_track_id == 1 and out.adaptive is None)
+_, out = lock(settings.reid_adaptive_min_score + 0.05, mgr=mgr)
+check("...with no face in view, a strong body look still is", out.adaptive is not None)
 
 print("\n3. no face evidence at all == the body-only decision")
 for body in (V - 0.05, (V + A) / 2, A + 0.02):
