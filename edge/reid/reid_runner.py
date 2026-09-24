@@ -262,6 +262,10 @@ class ReIDRunner:
             # this camera and no confident reacquire here. Both drop the focus so
             # the recipient is searched for on EVERY camera; the manager keeps
             # who they are for the fast same-camera return.
+            if outcome.released:
+                logger.info("reid: %s lock released (track %s): %s", camera_id,
+                            self._target_track.get(camera_id, (None,))[0],
+                            outcome.release_reason)
             if outcome.released or outcome.lost:
                 self._targets.unlock(camera_id)
             if outcome.target_track_id is not None and outcome.recipient_id:

@@ -38,6 +38,7 @@ class Gallery:
         return m
 
 
+settings.face_enabled = True                   # this file tests the face mechanism itself
 BOXES = {1: (100, 100, 180, 400)}
 V = settings.reid_match_threshold            # verify bar
 A = settings.reid_acquire_min_score          # new-lock bar

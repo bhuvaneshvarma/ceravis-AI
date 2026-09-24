@@ -115,6 +115,7 @@ class LockOutcome:
     adaptive: tuple | None = None        # (track_id, recipient_id, score) or None
     recency: float | None = None         # recency score behind an acquire/reacquire
     released: bool = False               # lock was dropped this tick (confirmed mismatch)
+    release_reason: str = ""             # why — logged by the runner
     # The target is locked but NOT confirmed on this camera this tick (its track
     # is gone and no confident reacquire here). The caller widens the search —
     # drops the per-camera registry focus so EVERY camera is scanned to re-find
@@ -235,7 +236,7 @@ class TargetLockManager:
                 st.recipient_id = None
                 st.track_id = None
                 st.mismatch_streak = 0
-                out.released = True
+                out.released, out.release_reason = True, "face veto"
                 return out
             if m.recipient_id == st.recipient_id and (m.is_match or face == "confirm"):
                 st.mismatch_streak = 0
@@ -274,6 +275,7 @@ class TargetLockManager:
                 st.track_id = None
                 st.mismatch_streak = 0
                 out.released = True
+                out.release_reason = f"body mismatch x{settings.target_mismatch_release_checks} (last {m.score:.2f})"
                 return out
             self._emit(out, st, tid, m.score)     # tentatively hold one more tick
             return out

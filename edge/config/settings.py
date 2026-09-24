@@ -574,7 +574,11 @@ class Settings(BaseSettings):
     # candidate; a confirming face lets a body match at the verify bar lock and
     # a new outfit be learned. Colour only (no night face data). Faces are
     # computed only for tracks that already match the body gallery, or the target.
-    face_enabled: bool = True
+    # OFF (2026-09-24, the user's call, backed by the live Q&A): with the lights on
+    # the lock was dropped 6 of 6 times while BoT-SORT still held the same track
+    # and the body scored 0.89-0.90 — the face veto fired on a turned/profile face.
+    # Identity is body-only (the bars below) until the face is re-validated.
+    face_enabled: bool = False
     face_detector_path: str = "models/face/face_detection_yunet_2022mar.onnx"
     face_recognizer_onnx_path: str = "models/face/auraface_glintr100.onnx"
     face_recognizer_path: str = "models/face/auraface_glintr100.engine"
