@@ -302,7 +302,11 @@ class Settings(BaseSettings):
     # A NEW lock is where precision matters most; keeping one is backed by the
     # tracker's own continuity and released only after repeated mismatches.
     # Re-measure on each site/model change (the acceptance test in the audit).
-    reid_match_threshold: float = 0.70       # cosine; keep / verify a lock
+    # KEEP bar re-measured live (2026-09-24 evening, body-only, current gallery):
+    # the recipient while correctly locked (336 s): min 0.662, p1 0.703, p50
+    # 0.905 — at 0.70 two dips while walking/turning released him; strangers vs
+    # the same gallery: p50 0.566, p99 0.625, max 0.640. 0.65 splits the two.
+    reid_match_threshold: float = 0.65       # cosine; keep / verify a lock
 
     # ---- Hybrid set-to-set matching ---------------------------------
     # The query is scored against EVERY stored vector of each recipient and
