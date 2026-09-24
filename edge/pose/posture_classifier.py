@@ -33,7 +33,7 @@ treated as missing and their joint contributes only to the absent-flag.
 import math
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
 from config.settings import settings
@@ -85,6 +85,10 @@ class PostureResult:
     # cleanly means the person is walking away from / toward the camera. This is
     # what separates a real sit-down from a recede when the legs are hidden.
     span_px: float = 1.0
+    # Mid-hip image point: the pivot that stays put when a person bends over or
+    # slumps onto a desk, and drops to the ground when they fall.
+    hip_x: float = 0.0
+    hip_y: float = 0.0
 
 
 # =====================================================================
@@ -207,7 +211,7 @@ def classify_frame(pose: PoseEstimation, frame_h: int = 0) -> PostureResult:
     if torso_ang >= fall_thr:
         return PostureResult(Posture.FALLEN, 0.85, torso_ang, knee_ang,
                              centroid, body_ref, head_y, head_x,
-                             legs_visible=bool(present), span_px=span)
+                             legs_visible=bool(present), span_px=span, hip_x=hx, hip_y=hy)
 
     # Decide sit vs stand ONLY when the legs are actually visible (knee joint
     # angle available). Bent knees => sitting, straight => standing.
@@ -215,10 +219,10 @@ def classify_frame(pose: PoseEstimation, frame_h: int = 0) -> PostureResult:
         if knee_ang < 140.0:
             return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang,
                                  centroid, body_ref, head_y, head_x,
-                                 legs_visible=True, span_px=span)
+                                 legs_visible=True, span_px=span, hip_x=hx, hip_y=hy)
         return PostureResult(Posture.STANDING, 0.75, torso_ang, knee_ang,
                              centroid, body_ref, head_y, head_x,
-                             legs_visible=True, span_px=span)
+                             legs_visible=True, span_px=span, hip_x=hx, hip_y=hy)
 
     # Legs NOT visible: two very different reasons, and the tracker must tell
     # them apart (see PostureTracker.update):
@@ -233,7 +237,7 @@ def classify_frame(pose: PoseEstimation, frame_h: int = 0) -> PostureResult:
     return PostureResult(Posture.UNKNOWN, 0.40, torso_ang, knee_ang,
                          centroid, body_ref, head_y, head_x,
                          legs_visible=False, truncated_bottom=truncated,
-                         span_px=span)
+                         span_px=span, hip_x=hx, hip_y=hy)
 
 
 # =====================================================================
@@ -245,6 +249,7 @@ class _TrackState:
     last_postures: deque
     last_centroids: deque        # (ts, x, y, body_ref_px)
     last_heads: deque            # (ts, head_y, body_ref_px)
+    last_hips: deque             # (ts, hip_x, hip_y, body_ref_px) — fall descent
     fall_streak: int = 0
     walk_streak: int = 0
     stable: Posture = Posture.UNKNOWN   # last CONFIRMED sit/stand/fall posture
@@ -256,6 +261,7 @@ class _TrackState:
     fall_down: bool = False              # DOWN: streak-confirmed horizontal (label)
     fall_alerted: bool = False           # latch: one alert per fall episode
     fall_confirmed_pending: bool = False # a fall to emit (drained by confirm_fall)
+    born: datetime | None = None         # first pose seen for this track
 
 
 class PostureTracker:
@@ -270,6 +276,8 @@ class PostureTracker:
     """
 
     HISTORY = 8
+    HIP_HISTORY = 64     # ~5 s at pose rate: covers fall_descent_window_secs
+    STALE_SECS = 60.0    # a track unseen this long is gone (ids never repeat)
 
     def __init__(self) -> None:
         self._state: dict[tuple[str, int], _TrackState] = defaultdict(
@@ -277,9 +285,11 @@ class PostureTracker:
                 last_postures=deque(maxlen=self.HISTORY),
                 last_centroids=deque(maxlen=self.HISTORY),
                 last_heads=deque(maxlen=self.HISTORY),
+                last_hips=deque(maxlen=self.HIP_HISTORY),
             )
         )
         self._last_fall: dict[tuple[str, int], datetime] = {}
+        self._updates = 0
 
     def update(
         self,
@@ -289,6 +299,9 @@ class PostureTracker:
         floor_query=None,          # callable(head_x, head_y) -> bool|None, or None
         frame_h: int = 0,          # AI frame height — lets the classifier see truncation
     ) -> PostureResult:
+        self._updates += 1
+        if self._updates % 512 == 0:
+            self._forget_stale(pose.timestamp)
         st = self._state[(camera_id, track_id)]
         raw = classify_frame(pose, frame_h)
 
@@ -300,11 +313,15 @@ class PostureTracker:
         if raw.head_y > 0.0:
             st.last_heads.append((pose.timestamp, raw.head_y,
                                   raw.body_ref_px, raw.span_px))
+        if st.born is None:
+            st.born = pose.timestamp
+        if raw.hip_y > 0.0:
+            st.last_hips.append((pose.timestamp, raw.hip_x, raw.hip_y, raw.body_ref_px))
 
         # The ONE fall machine: the DOWN state is the FALLEN label the UI and
         # rules read AND the alert trigger — the moment a fall is detected it is
         # raised (confirm_fall), with no post-fall wait. Same signal, one depth.
-        self._update_fall_fsm(st, raw, pose.timestamp, floor_query)
+        self._update_fall_fsm(camera_id, track_id, st, raw, pose.timestamp, floor_query)
 
         def out(posture: Posture) -> PostureResult:
             return PostureResult(posture, raw.confidence, raw.torso_angle_deg,
@@ -364,7 +381,9 @@ class PostureTracker:
             st.sit_stand_streak = 0
             st.occluded_streak = 0                # no head motion -> don't switch
 
-        stable = st.stable if st.stable != Posture.UNKNOWN else raw.posture
+        # A horizontal frame the fall machine did not confirm is not FALLEN.
+        stable = (st.stable if st.stable != Posture.UNKNOWN
+                  else Posture.UNKNOWN if raw.posture == Posture.FALLEN else raw.posture)
 
         # ---- walking: confirmed standing + sustained, scale-normalized motion
         if stable == Posture.STANDING:
@@ -450,12 +469,14 @@ class PostureTracker:
         return None
 
     # ---- the ONE fall FSM -------------------------------------------
-    def _update_fall_fsm(self, st: _TrackState, raw: PostureResult,
-                         ts: datetime, floor_query) -> None:
+    def _update_fall_fsm(self, camera_id: str, track_id: int, st: _TrackState,
+                         raw: PostureResult, ts: datetime, floor_query) -> None:
         """Single owner of the fall signal — detection IS the alert, no wait:
 
-          DOWN   — N consecutive ~horizontal frames (fall_confirmation_frames):
-                   the FALLEN posture label update() returns (monitor dot, rules).
+          DOWN   — N consecutive ~horizontal frames (fall_confirmation_frames)
+                   whose HIPS dropped on the way (_hip_drop): the FALLEN posture
+                   label update() returns (monitor dot, rules). Latched for the
+                   rest of the horizontal streak, so lying still stays FALLEN.
           ALERT  — the SAME DOWN, at/near the ground, raised the INSTANT it is
                    seen (confirm_fall drains it). Falls are prioritised: a person
                    who fell and is already moving or getting back up has still
@@ -472,7 +493,10 @@ class PostureTracker:
             st.fall_streak += 1
         else:
             st.fall_streak = 0
-        st.fall_down = st.fall_streak >= settings.fall_confirmation_frames
+            st.fall_down = False
+        if st.fall_streak >= settings.fall_confirmation_frames and not st.fall_down:
+            need = settings.fall_min_hip_drop
+            st.fall_down = need <= 0 or self._hip_drop(camera_id, track_id, st, raw, ts) >= need
 
         near = floor_query(raw.head_x, raw.head_y) if floor_query is not None else None
         near_ok = (near is True) or (near is None and not settings.fall_require_near_floor)
@@ -484,6 +508,41 @@ class PostureTracker:
                 st.fall_confirmed_pending = True   # …alert NOW
         else:
             st.fall_alerted = False            # got up / only bending -> re-arm
+
+    def _hip_drop(self, camera_id: str, track_id: int, st: _TrackState,
+                  raw: PostureResult, ts: datetime) -> float:
+        """How far the hips now sit below their highest point in the last
+        fall_descent_window_secs, in torso lengths. A fall carries the hips to
+        the ground; bending over or slumping onto a desk pivots about hips that
+        stay put. A track younger than the window — a fall is exactly when a
+        tracker tends to swap ids — also reads the tracks it may have replaced:
+        this camera's tracks last seen before it appeared, with hips within
+        reach of this spot. Someone still in view beside them is another person
+        and never lends their height."""
+        horizon = ts - timedelta(seconds=settings.fall_descent_window_secs)
+        young = st.born is None or st.born > horizon
+        born = st.born or ts
+        reach = 1.5 * raw.body_ref_px
+        top, ref = raw.hip_y, raw.body_ref_px
+        for (cam, tid), other in self._state.items():
+            if cam != camera_id or not other.last_hips:
+                continue
+            if tid != track_id and (not young or other.last_hips[-1][0] >= born):
+                continue
+            for t, x, y, r in other.last_hips:
+                if t >= horizon and (tid == track_id or abs(x - raw.hip_x) <= reach):
+                    top, ref = min(top, y), max(ref, r)
+        return (raw.hip_y - top) / max(ref, 1.0)
+
+    def _forget_stale(self, now: datetime) -> None:
+        """Drop tracks unseen for STALE_SECS. Track ids only grow (hundreds a
+        day per camera), so without this the per-track state lived as long as
+        the process."""
+        horizon = now - timedelta(seconds=self.STALE_SECS)
+        for key in [k for k, st in self._state.items()
+                    if not st.last_centroids or st.last_centroids[-1][0] < horizon]:
+            self._state.pop(key, None)
+            self._last_fall.pop(key, None)
 
     # Helpers for FallRule
     def confirm_fall(self, camera_id: str, track_id: int) -> bool:

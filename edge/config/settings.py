@@ -701,6 +701,16 @@ class Settings(BaseSettings):
     # floor zone match before alerting (fewer false positives, but misses falls
     # outside the drawn zone) — draw a floor zone and this stays a good default.
     fall_require_near_floor: bool = False
+    # A fall carries the HIPS to the ground; bending over, or slumping forward
+    # onto a desk, pivots about hips that stay where they were. So a horizontal
+    # torso is a fall only when the hips also dropped this many torso-lengths
+    # below their highest point in the last fall_descent_window_secs. Measured
+    # on the bench (2026-09-24, no zones drawn): all 42 pose-confirmed "falls"
+    # in 5 h were people bending or leaning at a desk. A standing fall drops the
+    # hips ~1.5 torso-lengths, a fall from a chair or out of bed ~0.8.
+    # 0 = off (any confirmed horizontal torso is a fall).
+    fall_min_hip_drop: float = 0.5
+    fall_descent_window_secs: float = 4.0
     # Furniture zones give a height reference: a fall also counts when the body
     # drops BELOW the height of nearby furniture (table/chair/bed/counter) — the
     # "whole body lower than a table/chair/bed" rule. Draw these as named zones.
