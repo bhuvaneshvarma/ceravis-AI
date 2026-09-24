@@ -601,9 +601,14 @@ class Settings(BaseSettings):
     #   confirm 0.50, veto 0.20  strangers 0.00%  recipient same 97.6%, other 78.6%
     #   confirm 0.45, veto 0.20  strangers 0.14%  recipient same 97.6%, other 85.7%
     # 0.50: the precision-first row. The veto sits below every recipient face
-    # measured (lowest 0.313).
+    # measured (lowest 0.313). It was 0.20, which let half the strangers
+    # through: live Q&A 2026-09-24 held a stranger (face 0.23-0.28 on every
+    # look) as the recipient and raised no_motion for him. Same test data:
+    #   veto 0.20  strangers vetoed 26.5%  recipient wrongly vetoed 0%
+    #   veto 0.30  strangers vetoed 71.4%  recipient wrongly vetoed 0%
+    #   veto 0.35  strangers vetoed 93.9%  recipient wrongly vetoed 2.8%
     face_confirm_score: float = 0.50
-    face_veto_score: float = 0.20
+    face_veto_score: float = 0.30
     face_max_age_secs: float = 10.0    # a track's face look older than this is ignored
     # Night lock rules. By day a lock that stops matching is released after
     # target_mismatch_release_checks. At night "stops matching" is mostly the
