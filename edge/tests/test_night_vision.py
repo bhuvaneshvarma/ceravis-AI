@@ -624,6 +624,19 @@ illumination.reset()
 
 
 print()
+print("context identity needs the rest of the home to be EMPTY for a while")
+from reid.reid_runner import ReIDRunner                     # noqa: E402
+rr = ReIDRunner.__new__(ReIDRunner)
+rr._targets = types.SimpleNamespace(all=lambda: {}, last_recipient=lambda: None)
+rr._gallery = types.SimpleNamespace(recipient_ids=lambda: ["76"])
+rr._last_person = {"LOUNGE": time.monotonic() - 3}
+check("someone seen next door 3 s ago -> no context identity",
+      rr._sole_recipient("LIVING", {1: (0, 0, 10, 10)}) is None)
+rr._last_person["LOUNGE"] = time.monotonic() - 30
+check("next door empty for 30 s -> the lone person may be the recipient",
+      rr._sole_recipient("LIVING", {1: (0, 0, 10, 10)}) == "76")
+
+print()
 if failures:
     print(f"{len(failures)} night-vision check(s) FAILED:")
     for f in failures:

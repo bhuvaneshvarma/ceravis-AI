@@ -5,8 +5,6 @@ import queue
 import threading
 import time
 
-from common import clock
-from common.freshness import TRACK_FRESH_SECS, is_fresh
 from config.settings import settings
 from enrollment.enrollment_manager import EnrollmentManager
 from ingestion import illumination
@@ -89,6 +87,11 @@ class ReIDRunner:
         # otherwise. Remembering the last track set per camera is what makes
         # 'did anything change' answerable without a model.
         self._seen_tracks: dict[str, frozenset] = {}
+        # camera -> monotonic time a person was last tracked there. "Nobody
+        # else in the home" must hold for a while, not for one tick: at night
+        # detection flickers, and one empty tick next door let the context rule
+        # lock a second person (bench, 2026-09-24 18:48 and 18:52).
+        self._last_person: dict[str, float] = {}
         self._last_match: dict[str, float] = {}
         # The recipient's current track per camera, so the instant it departs we
         # file a recipient-TAGGED exit record — the evidence that re-finds them
@@ -173,11 +176,9 @@ class ReIDRunner:
         the recipient is — the only enrolled one, or the last one ever locked."""
         if not settings.night_context_lock or len(boxes) != 1:
             return None
-        now = clock.now()
-        for cam, res in self._tracks.get_all().items():
-            if (cam != camera_id and res.tracks
-                    and is_fresh(res.timestamp, now, TRACK_FRESH_SECS)):
-                return None
+        quiet = time.monotonic() - settings.night_context_others_empty_secs
+        if any(cam != camera_id and seen > quiet for cam, seen in self._last_person.items()):
+            return None                       # someone was elsewhere just now
         if any(cam != camera_id for cam in self._targets.all()):
             return None
         enrolled = self._gallery.recipient_ids()
@@ -188,6 +189,8 @@ class ReIDRunner:
 
     def _tick(self) -> None:
         for camera_id, track_result in self._tracks.get_all().items():
+            if track_result.tracks:
+                self._last_person[camera_id] = time.monotonic()
             if not track_result.tracks:
                 self._seen_tracks.pop(camera_id, None)
                 # The room emptied. If the recipient was locked here, they have

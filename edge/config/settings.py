@@ -631,6 +631,8 @@ class Settings(BaseSettings):
     # "context", shown as such). Such a lock never teaches the gallery.
     night_context_lock: bool = True
     night_context_min_track_secs: float = 3.0
+    # ... and every other camera must have tracked NOBODY for this long.
+    night_context_others_empty_secs: float = 10.0
     # ...and must have MOVED (centre or height shifted by this fraction of its
     # size) — the known night phantom, a white chair the IR gain lifts into a
     # steady "person", never does. Draw an ignore zone over a chair that keeps
