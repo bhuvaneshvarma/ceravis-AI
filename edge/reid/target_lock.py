@@ -151,6 +151,9 @@ class TargetLockManager:
         # Context identity needs a person seen steadily AND alive — a phantom
         # the infrared gain lifts off a chair can be steady, but never moves.
         self._seen: dict[str, dict[int, list]] = {}
+        # (camera, track_id) -> monotonic time its face last said "not the
+        # recipient". Such a track is locked again only on a CONFIRMING face.
+        self._face_no: dict[tuple[str, int], float] = {}
 
     def forget(self, camera_id: str) -> None:
         self._state.pop(camera_id, None)
@@ -205,7 +208,8 @@ class TargetLockManager:
             if st.was_frozen:
                 st.was_frozen = False
                 cand = self._best_match(boxes, feat_for, want=st.recipient_id,
-                                        spatial_from=st, acquire=False, ir=ir)
+                                        spatial_from=st, acquire=False,
+                                        camera_id=camera_id, ir=ir)
                 if cand is None:
                     # Nobody re-verified after the huddle: the id may have been
                     # swapped under us, so nothing seen from here on may teach
@@ -227,6 +231,7 @@ class TargetLockManager:
                 # A clear face that is NOT the recipient: the strongest possible
                 # contradiction. Release now instead of riding out the mismatch
                 # count on the wrong person.
+                self._face_no[(camera_id, tid)] = time.monotonic()
                 st.recipient_id = None
                 st.track_id = None
                 st.mismatch_streak = 0
@@ -389,7 +394,8 @@ class TargetLockManager:
     def _face_verdict(self, tid: int, recipient_id: str | None, ir: bool) -> str | None:
         """'veto' / 'confirm' / None from the track's latest face look — by
         day only, and only for a face wide enough to be evidence. 'pending'
-        when the face could be read but has not been looked at yet."""
+        when the face could be read but has not been looked at yet; 'weak' for
+        a readable face that neither vetoes nor vouches (< face_acquire_score)."""
         if ir or self._face_for is None or not recipient_id or not settings.face_enabled:
             return None
         f = self._face_for(tid, recipient_id)
@@ -402,7 +408,7 @@ class TargetLockManager:
             return "veto"
         if score >= settings.face_confirm_score:
             return "confirm"
-        return None
+        return "weak" if score < settings.face_acquire_score else None
 
     def _contradicted(self, feat, m, recipient_id: str) -> bool:
         """Positive evidence this is NOT the recipient: another enrolled person
@@ -507,8 +513,18 @@ class TargetLockManager:
             if want is not None and m.recipient_id != want:
                 continue
             face = self._face_verdict(tid, m.recipient_id, ir)
+            key = (camera_id, tid)
             if face == "veto":
+                self._face_no[key] = time.monotonic()
                 continue                      # their face says someone else
+            said_no = self._face_no.get(key)
+            if said_no is not None:
+                if time.monotonic() - said_no > settings.face_veto_hold_secs:
+                    self._face_no.pop(key, None)
+                elif face != "confirm":
+                    continue                  # only the face may undo its own "no"
+            if acquire and face == "weak":
+                continue                      # a readable face must vouch for a NEW lock
             if spatial_from is not None and not self._within(spatial_from, box):
                 continue
             score, rec = self._fuse(m.recipient_id, m.score, feat, ir)

@@ -609,6 +609,14 @@ class Settings(BaseSettings):
     #   veto 0.35  strangers vetoed 93.9%  recipient wrongly vetoed 2.8%
     face_confirm_score: float = 0.50
     face_veto_score: float = 0.30
+    # A NEW lock with a readable face needs that face to vouch (>= this), not
+    # merely not-veto: live Q&A 2026-09-24, a stranger in the recipient's
+    # colours scored body 0.86-0.95 with face 0.23-0.30. Measured: strangers
+    # p95 0.36, recipient p5 0.47. Body alone still locks when no face shows.
+    face_acquire_score: float = 0.40
+    # After a face says "not the recipient", that track is locked again only on
+    # a confirming face, for this long (stops the veto/re-lock flicker).
+    face_veto_hold_secs: float = 60.0
     face_max_age_secs: float = 10.0    # a track's face look older than this is ignored
     # Night lock rules. By day a lock that stops matching is released after
     # target_mismatch_release_checks. At night "stops matching" is mostly the

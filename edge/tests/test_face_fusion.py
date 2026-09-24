@@ -69,6 +69,10 @@ _, out = lock(A + 0.05, face=(FV - 0.1, PX + 20), night=NightContext(ir=True))
 check("infrared: a face never vetoes (no night face data)", out.target_track_id == 1)
 _, out = lock(V - 0.05, face=(FC + 0.2, PX + 20))
 check("a face cannot lock a body below the verify bar", out.target_track_id is None)
+_, out = lock(A + 0.15, face=((FV + settings.face_acquire_score) / 2, PX + 20))
+check("strong body, readable face that does not vouch: no NEW lock", out.target_track_id is None)
+_, out = lock(A + 0.05, face=(settings.face_acquire_score + 0.02, PX + 20))
+check("strong body, readable face that vouches: locks", out.target_track_id == 1)
 _, out = lock(A + 0.05, face="unseen")
 check("strong body, face not looked at yet: waits for the look (no new lock)",
       out.target_track_id is None)
@@ -87,6 +91,12 @@ check("no face: verified on body as before", out.target_track_id == 1 and not ou
 mgr, out = lock(A + 0.02)
 _, out = lock(A + 0.02, face="unseen", mgr=mgr)
 check("an existing lock is held while its face look is pending", out.target_track_id == 1)
+mgr, out = lock(A + 0.02)
+_, out = lock(A + 0.15, face=(FV - 0.1, PX + 20), mgr=mgr)
+_, out = lock(A + 0.15, mgr=mgr)
+check("after a face veto the same track is not re-locked on body alone", out.target_track_id is None)
+_, out = lock(A + 0.15, face=(FC + 0.05, PX + 20), mgr=mgr)
+check("...but a confirming face may lock it again", out.target_track_id == 1)
 
 print("\n3. no face evidence at all == the body-only decision")
 for body in (V - 0.05, (V + A) / 2, A + 0.02):
