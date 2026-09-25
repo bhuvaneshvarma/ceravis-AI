@@ -290,23 +290,22 @@ class Settings(BaseSettings):
     reid_input_width: int = 128
     reid_embedding_dim: int = 512            # osnet_x1_0 = 512; BoT_R50 = 2048
     reid_fps: float = 3.0
-    # ---- Lock bars, set from MEASURED scores (bench, 2026-09-23) --------
-    # 836-853 stranger crops from a day of recordings vs the recipient's
-    # gallery (production detector / crop / gate / extractor / match). With the
-    # old bars half of all strangers could take a lock (acquire 0.60: 49.5%;
-    # match 0.55: 78%) and the device followed the wrong people. Per-crop
-    # stranger pass rate -> recipient pass rate at the new bars:
-    #   match   0.70:  9.4% ->  97.6% (either outfit)     keep a lock
-    #   acquire 0.80:  0.6% ->  97.6% (same outfit)       take a NEW lock
-    #   adaptive 0.85: 0.0% ->  95.2%                     learn a new look
-    # A NEW lock is where precision matters most; keeping one is backed by the
-    # tracker's own continuity and released only after repeated mismatches.
-    # Re-measure on each site/model change (the acceptance test in the audit).
-    # KEEP bar re-measured live (2026-09-24 evening, body-only, current gallery):
-    # the recipient while correctly locked (336 s): min 0.662, p1 0.703, p50
-    # 0.905 — at 0.70 two dips while walking/turning released him; strangers vs
-    # the same gallery: p50 0.566, p99 0.625, max 0.640. 0.65 splits the two.
-    reid_match_threshold: float = 0.65       # cosine; keep / verify a lock
+    # ---- Lock bars — the DAYLIGHT rule set (config/scene_rules.py) ------
+    # Every identity threshold below is the DAY value; an infrared camera reads
+    # its own night_* value where one is set (see "Night rule set" below).
+    # The day bars are RESTORED (2026-09-25, the user's call) to the values from
+    # before night vision existed: keep 0.55, new lock 0.60, learn 0.70, recency
+    # 0.65 — the tracking the recipient was happy with. Measured trade-off with
+    # the current body model (ImageNet OSNet, bench 2026-09-23, 836-853 stranger
+    # crops vs the recipient's gallery), share of STRANGER crops that pass:
+    #   keep    0.55: 78%     (0.70: 9.4%)
+    #   acquire 0.60: 49.5%   (0.80: 0.6%)
+    #   learn   0.70: 9.4%    (0.85: 0%)
+    # i.e. with several people in view a stranger can be taken for the
+    # recipient. The pick margin, the negative pool and the recency veto below
+    # are the day guards against that; the lasting fix is a stronger identity
+    # signal (face / a better body model), after which these are re-measured.
+    reid_match_threshold: float = 0.55       # cosine; keep / verify a lock
 
     # ---- Hybrid set-to-set matching ---------------------------------
     # The query is scored against EVERY stored vector of each recipient and
@@ -328,7 +327,7 @@ class Settings(BaseSettings):
     reid_adaptive_max: int = 100             # per recipient; over cap, the most
                                              # redundant vector is dropped (keeps
                                              # diverse outfits, not just newest)
-    reid_adaptive_min_score: float = 0.85    # learn only looks no stranger reached
+    reid_adaptive_min_score: float = 0.70    # day: only capture above this match score
     reid_adaptive_dedup_cos: float = 0.92    # skip near-duplicates of existing vectors
     reid_adaptive_min_interval_secs: float = 4.0  # min seconds between capture attempts
     reid_adaptive_rebuild_secs: float = 5.0  # min seconds between gallery rebuilds
@@ -448,7 +447,7 @@ class Settings(BaseSettings):
     reid_recency_ttl_secs: float = 120.0     # older looks stop counting as "recent"
     reid_recency_weight: float = 0.45        # blend: (1-w)*gallery + w*recency
     reid_recency_min_score: float = 0.45     # VETO floor — only when memory exists
-    reid_recency_min_push_score: float = 0.80  # only remember confident sightings
+    reid_recency_min_push_score: float = 0.65  # only remember confident sightings
 
     # ---- Pipeline focus / efficiency --------------------------------
     crop_padding_frac: float = 0.08          # margin around a person box for crops
@@ -509,7 +508,7 @@ class Settings(BaseSettings):
     #     searching rather than pick one of two;
     #   * a candidate that looks more like a KNOWN bystander (auto-negative pool)
     #     than like the recipient is vetoed outright.
-    reid_acquire_min_score: float = 0.80     # bar to take a NEW lock (>= verify bar)
+    reid_acquire_min_score: float = 0.60     # bar to take a NEW lock (>= verify bar)
     reid_target_pick_margin: float = 0.05    # winner must beat 2nd track by this
     reid_negative_veto_margin: float = 0.05  # veto if neg-score exceeds fused by this
     # After the target's track is lost on a camera, keep trying the fast
@@ -523,9 +522,9 @@ class Settings(BaseSettings):
     # brightness is IR reflectance, not visible colour. Detection, pose and
     # motion are shape-driven and barely notice. Identity does — a colour-trained
     # appearance model cannot vouch for a person it only knows in colour. So the
-    # modality of every camera is tracked (ONE owner) and identity switches to
-    # night rules on the cameras that need them. A camera in colour runs EXACTLY
-    # the daytime path; every rule below only ever acts on an infrared camera.
+    # modality of every camera is tracked (ONE owner) and each camera runs the
+    # night rule set while it is on infrared (below). A camera in colour runs
+    # EXACTLY the day rule set.
     #
     # Master switch. False = every camera reads as colour, i.e. the behaviour
     # before night vision existed.
@@ -548,20 +547,46 @@ class Settings(BaseSettings):
     illumination_onvif_poll_secs: float = 300.0
     illumination_onvif_recheck_secs: float = 3600.0
 
-    # ReID on an infrared camera. The IR gallery holds (a) every enrollment
-    # crop re-embedded as luminance only — built automatically, back-filled for
-    # recipients enrolled before night vision — and (b) real infrared looks of
-    # the recipient learned live at night (below). An IR query is matched
-    # against the IR gallery only; a colour query against the colour gallery
-    # only, exactly as before. Separate bars so night can be tuned from night
-    # data without moving the daytime numbers. Measured on the bench at night
-    # (133 infrared stranger crops vs the infrared gallery): acquire 0.60 let
-    # 23.3% through, 0.75 none (recipient 97.6%); match 0.65 = 9.0%. The
-    # recipient figure is from enrollment photos made monochrome, so it is
-    # optimistic — the night CONTEXT lock (sole person in the home) still
-    # covers a recipient the model cannot vouch for in the dark.
-    reid_ir_match_threshold: float = 0.65
-    reid_ir_acquire_min_score: float = 0.75
+    # ---- Night rule set (config/scene_rules.py) ---------------------
+    # Every camera runs ONE engine with TWO complete rule sets. The day set is
+    # every setting as declared in this file; the night set is a clone of it in
+    # which each night_<name> below replaces <name> — on an infrared camera
+    # only (env NIGHT_<NAME>). Anything without a night_ twin is inherited, so
+    # the night set is always complete, and tuning the dark never moves a
+    # daytime number. To tune another rule for the night, add its night_ twin.
+    #
+    # Identity data follows the modality by itself: the IR gallery holds every
+    # enrollment crop re-embedded as luminance only (built automatically) plus
+    # real infrared looks learned live; an IR query is matched against the IR
+    # gallery only, a colour query against the colour gallery only.
+    #
+    # Lock bars, measured on the bench at night (133 infrared stranger crops vs
+    # the infrared gallery): acquire 0.60 let 23.3% through, 0.75 none
+    # (recipient 97.6% — from enrollment photos made monochrome, so optimistic);
+    # match 0.65 = 9.0%. The context lock below still covers a recipient the
+    # model cannot vouch for in the dark.
+    night_reid_match_threshold: float = 0.65
+    night_reid_acquire_min_score: float = 0.75
+    # The infrared gallery / recency / negative pool learn ONLY from a lock
+    # whose identity was established by a gallery match at least this strong on
+    # that very track and never broken since (e.g. verified in lamplight and
+    # carried by the tracker when the lights went out), in solitude. Above every
+    # infrared stranger score measured (max 0.75).
+    night_reid_adaptive_min_score: float = 0.85
+    # Hold an uncontradicted lock and rejoin one person re-detected in place;
+    # context identity for the only person in the home; hold visitor snapshots
+    # while the recipient is located nowhere (the policies are described with
+    # their day values below).
+    night_lock_hold_uncontradicted: bool = True
+    night_lock_context_identity: bool = True
+    night_visitor_hold_unlocated: bool = True
+    # Crop sharpness after a light denoise: infrared sensor noise inflates the
+    # Laplacian variance and would pass a smear as "sharp" (a smear scores
+    # 55-208 raw by day vs 1.6-5.9 denoised in IR).
+    night_crop_sharpness_denoise: bool = True
+    night_crop_min_sharpness: float = 8.0
+    # Faces are not used in the dark (no infrared face data yet).
+    night_face_enabled: bool = False
 
     # ---- Face identity (a second, clothing-independent cue) -----------
     # Body ReID matches mostly on clothes: at the 0.80 bar it recognised the
@@ -626,18 +651,27 @@ class Settings(BaseSettings):
     # a confirming face, for this long (stops the veto/re-lock flicker).
     face_veto_hold_secs: float = 60.0
     face_max_age_secs: float = 10.0    # a track's face look older than this is ignored
-    # Night lock rules. By day a lock that stops matching is released after
-    # target_mismatch_release_checks. At night "stops matching" is mostly the
-    # model being blind, not a different person, so a lock is HELD on the
-    # tracker's own continuity unless something positively CONTRADICTS it
-    # (another enrolled person matches, or the look is a known non-target).
-    night_hold_lock: bool = True
-    # Context identity: at night, if exactly ONE person is visible in the whole
-    # home, the recipient is not locked anywhere else, and that person has been
-    # seen steadily for night_context_min_track_secs without contradicting the
+    # ---- Scene policies: DAY values (the night set turns them on) -----
+    # A lock that stops matching is released after
+    # target_mismatch_release_checks — by day a mismatch is evidence. With this
+    # on, "stops matching" is read as the model being blind, not a different
+    # person: the lock is HELD on the tracker's continuity unless something
+    # positively CONTRADICTS it (another enrolled person matches, or the look is
+    # a known non-target), and ONE person re-detected right where the target
+    # vanished rejoins it.
+    lock_hold_uncontradicted: bool = False
+    # Context identity: if exactly ONE person is visible in the whole home, the
+    # recipient is not locked anywhere else, and that person has been seen
+    # steadily and has moved (night_context_* below) without contradicting the
     # recipient's looks, they are taken to be the recipient (identity basis
     # "context", shown as such). Such a lock never teaches the gallery.
-    night_context_lock: bool = True
+    lock_context_identity: bool = False
+    # An unidentified person's visitor snapshot is held while the recipient is
+    # located nowhere — they may BE the recipient, unrecognised.
+    visitor_hold_unlocated: bool = False
+    # Measure crop sharpness after a light denoise (see the night set).
+    crop_sharpness_denoise: bool = False
+    # Context identity parameters (used wherever lock_context_identity is on).
     night_context_min_track_secs: float = 3.0
     # ... and every other camera must have tracked NOBODY for this long.
     night_context_others_empty_secs: float = 10.0
@@ -646,19 +680,6 @@ class Settings(BaseSettings):
     # steady "person", never does. Draw an ignore zone over a chair that keeps
     # firing (detection drops it before anything else sees it).
     night_context_min_move_frac: float = 0.15
-    # Learn the recipient's REAL infrared look. Only from a lock whose identity
-    # was established by a gallery match on this very track and never broken
-    # since (e.g. verified in lamplight, carried by the tracker when the lights
-    # go out), only in solitude — so every night the gallery gets better at the
-    # night. Same cap / dedup / throttle as the daytime adaptive store.
-    reid_ir_adaptive_enabled: bool = True
-    # Crop sharpness at night is measured after a light denoise: infrared sensor
-    # noise inflates the Laplacian variance and would pass a smear as "sharp".
-    crop_min_sharpness_ir: float = 8.0
-    # Visitor snapshots: on an infrared camera, while the recipient is not
-    # located anywhere, an unidentified person may well BE the recipient — hold
-    # their visitor snapshot rather than report the recipient as a visitor.
-    visitor_ir_hold: bool = True
 
     # ---- Posture (sitting / standing / walking / fallen) ------------
     # Walking is scale-normalized (motion relative to the person's own body

@@ -34,6 +34,7 @@ definition of "good crop" serves both gating and choosing.
 import numpy as np
 from dataclasses import dataclass
 
+from config import scene_rules
 from config.settings import settings
 
 try:
@@ -85,7 +86,8 @@ def assess(crop: np.ndarray, bbox, frame_w: int, frame_h: int,
            confidence: float = 1.0, ir: bool = False) -> Quality:
     """Judge one person crop. `bbox` is the source box in FRAME coordinates —
     needed for the truncation test, which cannot be seen from the crop alone.
-    `ir`: the crop comes from an infrared camera (noise-robust sharpness)."""
+    `ir`: the crop comes from an infrared camera — judged by the night rule
+    set (noise-robust sharpness)."""
     if crop is None or crop.size == 0:
         return Quality(False, 0.0, "empty crop")
 
@@ -110,8 +112,9 @@ def assess(crop: np.ndarray, bbox, frame_w: int, frame_h: int,
         return Quality(False, 0.0, "truncated at the frame edge",
                        area, aspect, 0.0, True)
 
-    sharp = _sharpness(crop, denoise=ir)
-    floor = settings.crop_min_sharpness_ir if ir else settings.crop_min_sharpness
+    rules = scene_rules.for_ir(ir)
+    sharp = _sharpness(crop, denoise=rules.crop_sharpness_denoise)
+    floor = rules.crop_min_sharpness
     if sharp < floor:
         return Quality(False, 0.0, f"too blurred{' in IR' if ir else ''} "
                                    f"(lap var {sharp:.1f})",

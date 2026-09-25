@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from config import scene_rules
 from config.settings import settings
 from ingestion.illumination import Modality
 
@@ -155,13 +156,12 @@ class FaissGallery:
         for: lock on by agreement of the whole stored set, at that moment.
 
         `modality` picks the vectors compared against ("color" or "ir"); an "ir"
-        query defaults to the infrared threshold.
+        query defaults to the night rule set's threshold (config/scene_rules.py).
         """
         alpha = settings.reid_hybrid_alpha if alpha is None else alpha
         top_k = settings.reid_hybrid_top_k if top_k is None else top_k
         if threshold is None:
-            threshold = (settings.reid_ir_match_threshold if modality == _IR
-                         else settings.reid_match_threshold)
+            threshold = scene_rules.for_ir(modality == _IR).reid_match_threshold
         margin = settings.reid_match_margin if margin is None else margin
         min_votes = settings.reid_hybrid_min_votes if min_votes is None else min_votes
         vote_floor = settings.reid_hybrid_vote_floor if vote_floor is None else vote_floor

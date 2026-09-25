@@ -49,6 +49,7 @@ from reid.identity_buffer import IdentityBuffer            # noqa: E402
 from reid.identity_schema import Identity                  # noqa: E402
 from reid.recency_buffer import RecencyBuffer              # noqa: E402
 from reid.target_lock import NightContext, TargetLockManager  # noqa: E402
+from config import scene_rules  # noqa: E402
 from reid.track_memory import TrackMemory                  # noqa: E402
 from rules.rule_context import RuleContext                 # noqa: E402
 from rules.target_motion import TargetMotionDetector       # noqa: E402
@@ -294,8 +295,7 @@ class _Gallery:
     def match(self, feat, modality="color"):
         self.calls.append(modality)
         s_r, s_b = float(feat @ TARGET), float(feat @ OTHER)
-        thr = (settings.reid_ir_match_threshold if modality == "ir"
-               else settings.reid_match_threshold)
+        thr = scene_rules.for_ir(modality == "ir").reid_match_threshold
         if s_r >= s_b:
             return MatchResult("ravi", s_r, None, s_r - s_b,
                                s_r >= thr and s_r - s_b >= settings.reid_match_margin)
@@ -630,11 +630,40 @@ rr = ReIDRunner.__new__(ReIDRunner)
 rr._targets = types.SimpleNamespace(all=lambda: {}, last_recipient=lambda: None)
 rr._gallery = types.SimpleNamespace(recipient_ids=lambda: ["76"])
 rr._last_person = {"LOUNGE": time.monotonic() - 3}
+illumination.observe("LIVING", ir_frame())                  # the night rule set
 check("someone seen next door 3 s ago -> no context identity",
       rr._sole_recipient("LIVING", {1: (0, 0, 10, 10)}) is None)
 rr._last_person["LOUNGE"] = time.monotonic() - 30
 check("next door empty for 30 s -> the lone person may be the recipient",
       rr._sole_recipient("LIVING", {1: (0, 0, 10, 10)}) == "76")
+illumination.reset()
+check("a colour camera (day rule set) never uses context identity",
+      rr._sole_recipient("LIVING", {1: (0, 0, 10, 10)}) is None)
+
+print()
+print("two complete rule sets: night overrides, day untouched, the rest inherited")
+check("day keep bar is the restored pre-night value",
+      scene_rules.DAY.reid_match_threshold == settings.reid_match_threshold == 0.55)
+check("night keep bar is its own", scene_rules.NIGHT.reid_match_threshold
+      == settings.night_reid_match_threshold)
+check("a rule with no night twin is inherited by the night set",
+      scene_rules.NIGHT.reid_target_pick_margin == settings.reid_target_pick_margin)
+check("policies: off by day, on at night",
+      not scene_rules.DAY.lock_hold_uncontradicted
+      and scene_rules.NIGHT.lock_hold_uncontradicted
+      and not scene_rules.DAY.lock_context_identity
+      and scene_rules.NIGHT.lock_context_identity)
+_old = settings.night_reid_acquire_min_score
+settings.night_reid_acquire_min_score = 0.91
+check("tuning a night value moves only the night set",
+      scene_rules.NIGHT.reid_acquire_min_score == 0.91
+      and scene_rules.DAY.reid_acquire_min_score == settings.reid_acquire_min_score)
+settings.night_reid_acquire_min_score = _old
+illumination.observe("cam9", ir_frame())
+check("an infrared camera runs the night set, an unknown one the day set",
+      scene_rules.for_camera("cam9") is scene_rules.NIGHT
+      and scene_rules.for_camera("nobody") is scene_rules.DAY)
+illumination.reset()
 
 print()
 if failures:

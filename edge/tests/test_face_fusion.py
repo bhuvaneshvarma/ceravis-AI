@@ -14,6 +14,7 @@ import numpy as np
 from config.settings import settings
 from reid.face_identity import FaceGallery
 from reid.target_lock import TargetLockManager, NightContext
+from config import scene_rules
 from tracking.track_feature_buffer import TrackFeatureBuffer
 
 FAILURES: list[str] = []
@@ -66,7 +67,8 @@ _, out = lock(A + 0.05, face=(FV - 0.1, PX + 20))
 check("strong body but a face that is someone else: VETOED", out.target_track_id is None)
 _, out = lock(A + 0.05, face=(FV - 0.1, PX - 20))
 check("a face too small to trust is not evidence: locks on body", out.target_track_id == 1)
-_, out = lock(A + 0.05, face=(FV - 0.1, PX + 20), night=NightContext(ir=True))
+NA = scene_rules.NIGHT.reid_acquire_min_score   # the night set's new-lock bar
+_, out = lock(NA + 0.05, face=(FV - 0.1, PX + 20), night=NightContext(ir=True))
 check("infrared: a face never vetoes (no night face data)", out.target_track_id == 1)
 _, out = lock(V - 0.05, face=(FC + 0.2, PX + 20))
 check("a face cannot lock a body below the verify bar", out.target_track_id is None)

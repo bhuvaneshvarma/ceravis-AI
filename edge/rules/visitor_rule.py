@@ -48,8 +48,8 @@ import uuid
 from collections import deque
 
 from common import clock
+from config import scene_rules
 from config.settings import settings
-from ingestion import illumination
 from rules.rule_context import RuleContext
 from schemas.event import Event
 
@@ -167,11 +167,12 @@ class VisitorRule:
 
     @staticmethod
     def _night_hold(ctx: RuleContext, camera_id: str, now, located: list) -> bool:
-        """On an infrared camera, hold an unidentified person while the
-        recipient is located nowhere — they may BE the recipient, unrecognised
-        in the dark. Evaluated at most once per tick (`located` caches it). If
-        the recipient's whereabouts cannot be read, nothing is held."""
-        if not settings.visitor_ir_hold or not illumination.is_ir(camera_id):
+        """Where the camera's rule set says so (the night set), hold an
+        unidentified person while the recipient is located nowhere — they may
+        BE the recipient, unrecognised in the dark. Evaluated at most once per
+        tick (`located` caches it). If the recipient's whereabouts cannot be
+        read, nothing is held."""
+        if not scene_rules.for_camera(camera_id).visitor_hold_unlocated:
             return False
         if not located:
             find = getattr(ctx, "find_recipient", None)

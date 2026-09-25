@@ -7,6 +7,7 @@ import time
 import numpy as np
 
 from common.crops import crop_person
+from config import scene_rules
 from config.settings import settings
 from detection.detection_buffer import DetectionBuffer
 from detection.detection_schema import BoundingBox, DetectionClass
@@ -250,13 +251,14 @@ class TrackingRunner:
         """Attach a face look to the tracks whose identity is in question.
 
         Only where it can change a decision, so the CPU cost stays small: a
-        colour camera (faces are not trusted in infrared), a recipient with
-        enrolled faces, at the ReID rate, and only tracks whose body already
-        matches the gallery at the verify bar — or the locked target itself,
-        whose face can confirm it or give it away."""
-        if (ir or self._face_gallery is None or self._face_gallery.size == 0
+        camera whose rule set uses faces (the night set does not), a recipient
+        with enrolled faces, at the ReID rate, and only tracks whose body
+        already matches the gallery at the verify bar — or the locked target
+        itself, whose face can confirm it or give it away."""
+        rules = scene_rules.for_ir(ir)
+        if (self._face_gallery is None or self._face_gallery.size == 0
                 or self._features is None or self._frames is None
-                or self._gallery is None or not settings.face_enabled):
+                or self._gallery is None or not rules.face_enabled):
             return
         now = time.monotonic()
         if now - self._last_face.get(camera_id, 0.0) < 1.0 / settings.reid_fps:
@@ -276,7 +278,7 @@ class TrackingRunner:
             if rec is None:
                 continue
             if (t.track_id != target and self._gallery.match(rec.smooth).score
-                    < settings.reid_match_threshold):
+                    < rules.reid_match_threshold):
                 continue                       # not a candidate — no face needed
             face, px = self._face.embed_person(
                 fd.frame, (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2))

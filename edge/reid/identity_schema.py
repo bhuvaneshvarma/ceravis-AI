@@ -24,7 +24,7 @@ class Identity(BaseModel):
     #   "continuity" night: held on the tracker's continuity because the camera
     #                is on infrared and nothing contradicts it;
     #   "context"    night: the only person in the home, not contradicting the
-    #                recipient's looks (see settings.night_context_lock).
+    #                recipient's looks (see settings.lock_context_identity).
     identity_basis: str | None = None
     # The picture the identity was judged on: "color" or "ir" (night vision).
     modality: str | None = None

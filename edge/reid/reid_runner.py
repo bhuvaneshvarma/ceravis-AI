@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 
+from config import scene_rules
 from config.settings import settings
 from enrollment.enrollment_manager import EnrollmentManager
 from ingestion import illumination
@@ -35,10 +36,12 @@ class ReIDRunner:
 
     No frame access, no inference on this path — so it can't lag the stream.
 
-    Night vision: per camera per tick it tells the lock manager whether the
-    camera is on infrared and — only when this is the single person in the
-    whole home and the recipient is locked nowhere else — who a lone person
-    there would be (NightContext). Night learning goes to the infrared store.
+    Day and night: per camera per tick it tells the lock manager whether the
+    camera is on infrared (which picks its rule set, config/scene_rules.py)
+    and — only where that set allows context identity, this is the single
+    person in the whole home and the recipient is locked nowhere else — who a
+    lone person there would be (NightContext). Night learning goes to the
+    infrared store.
     """
 
     def __init__(
@@ -109,7 +112,7 @@ class ReIDRunner:
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="reid-runner")
         self._thread.start()
-        if settings.reid_adaptive_enabled:
+        if scene_rules.DAY.reid_adaptive_enabled or scene_rules.NIGHT.reid_adaptive_enabled:
             self._adapt_thread = threading.Thread(
                 target=self._adaptive_loop, daemon=True, name="reid-adaptive")
             self._adapt_thread.start()
@@ -170,11 +173,13 @@ class ReIDRunner:
         """Who a lone person on this infrared camera would be — or None when
         context identity must not be used right now.
 
-        All of: the setting is on; exactly ONE person here and NO fresh person
+        All of: the camera's rule set allows it (lock_context_identity — the
+        night set); exactly ONE person here and NO fresh person
         on any other camera (one person in the whole home); the recipient is not
         locked on another camera (else this is somebody else); and we know who
         the recipient is — the only enrolled one, or the last one ever locked."""
-        if not settings.night_context_lock or len(boxes) != 1:
+        if (not scene_rules.for_camera(camera_id).lock_context_identity
+                or len(boxes) != 1):
             return None
         quiet = time.monotonic() - settings.night_context_others_empty_secs
         if any(cam != camera_id and seen > quiet for cam, seen in self._last_person.items()):
@@ -206,11 +211,14 @@ class ReIDRunner:
                 self._identities.prune(camera_id, set())
                 continue
             ir = illumination.is_ir(camera_id)
-            # An UNLOCKED infrared camera is evaluated every tick, not only on
-            # track-set changes: the night context identity needs a person to
-            # have been seen steadily, which an event-only cadence would stretch
-            # to the 20 s heartbeat. By day, and once locked, nothing changes.
-            night_search = ir and self._targets.get(camera_id) is None
+            rules = scene_rules.for_ir(ir)
+            # An UNLOCKED camera whose rule set allows context identity (the
+            # night set) is evaluated every tick, not only on track-set changes:
+            # context identity needs a person to have been seen steadily, which
+            # an event-only cadence would stretch to the 20 s heartbeat. By day,
+            # and once locked, nothing changes.
+            night_search = (rules.lock_context_identity
+                            and self._targets.get(camera_id) is None)
             if settings.reid_event_driven and not night_search:
                 ids = frozenset(t.track_id for t in track_result.tracks)
                 if self._identity_event(camera_id, ids) is None:
@@ -347,23 +355,23 @@ class ReIDRunner:
                         # A face-confirmed sighting is learnable below the body
                         # bar: that is the recipient in today's clothes.
                         confirmed = outcome.face_confirmed
-                        if confirmed or score >= settings.reid_recency_min_push_score:
+                        if confirmed or score >= rules.reid_recency_min_push_score:
                             self._recency.push(rid, rec.curr)
                         self._queue_adapt(camera_id, tid, rid, score, rec.curr,
-                                          gate=not confirmed)
-                    elif outcome.learn_ir and settings.reid_ir_adaptive_enabled:
+                                          rules, gate=not confirmed)
+                    elif outcome.learn_ir and rules.reid_adaptive_enabled:
                         # Night: the evidence is a strong verification carried
                         # on this very track (learnable), not tonight's score.
                         self._recency.push(rid, rec.curr, modality)
                         self._queue_adapt(camera_id, tid, rid, score, rec.curr,
-                                          modality=modality, gate=False)
+                                          rules, modality=modality, gate=False)
 
     # ---- adaptive online learning (off the inference tick) -----------
-    def _queue_adapt(self, camera_id, track_id, rid, score, emb,
+    def _queue_adapt(self, camera_id, track_id, rid, score, emb, rules,
                      modality: str = "color", gate: bool = True) -> None:
-        if not settings.reid_adaptive_enabled:
+        if not rules.reid_adaptive_enabled:
             return
-        if gate and score < settings.reid_adaptive_min_score:
+        if gate and score < rules.reid_adaptive_min_score:
             return
         now = time.monotonic()
         if now - self._last_adapt_attempt < settings.reid_adaptive_min_interval_secs:

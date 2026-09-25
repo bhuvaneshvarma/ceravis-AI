@@ -19,27 +19,32 @@ IDs is the enrolled recipient and keeps that decision through trouble:
               near the last known spot AND matches appearance, re-lock and the
               recipient keeps following — original identity restored.
 
-Night vision. On a camera streaming INFRARED (ingestion/illumination.py) the
-appearance model is half-blind, so "does not match" mostly means "cannot tell",
-not "someone else". The same machine then runs three night rules, each a
-fallback that only acts on an infrared camera and only when the normal path
+Day and night. Every decision reads the camera's RULE SET for this tick
+(config/scene_rules.py): the day set on a colour camera, the night set on one
+streaming INFRARED (ingestion/illumination.py). Same machine, two complete sets
+of bars and policies. In infrared the appearance model is half-blind, so "does
+not match" mostly means "cannot tell", not "someone else" — the night set
+turns on three policies, each a fallback that acts only when the normal path
 found nothing:
 
-  hold      : verification inconclusive and nothing CONTRADICTS the lock
+  hold      : (lock_hold_uncontradicted) verification inconclusive and
+              nothing CONTRADICTS the lock
               (another enrolled person matching, or a known non-target's look)
               -> keep it on the tracker's continuity instead of counting a
               mismatch. A contradiction still releases it exactly as by day.
-  rejoin    : the locked track vanished and ONE person reappears within the
+  rejoin    : (same policy) the locked track vanished and ONE person
+              reappears within the
               reacquire radius, uncontradicted -> the same person (someone
               re-detected in bed after a blanket hid them).
-  context   : no lock, and the runner has established this is the only person
+  context   : (lock_context_identity) no lock, and the runner has
+              established this is the only person
               in the home and the recipient is locked nowhere else -> once
               they have been seen steadily AND have moved (a white chair the
               infrared lifts into a "person" never moves), take them to be the
               recipient.
 
-Face evidence (reid/face_identity.py) is folded into the same decisions, by
-day only: a visible face that clearly is NOT the recipient vetoes a candidate
+Face evidence (reid/face_identity.py) is folded into the same decisions
+where the rule set enables it (face_enabled; never at night): a visible face that clearly is NOT the recipient vetoes a candidate
 and releases a lock outright; one that clearly IS them lets a body match at the
 verify bar take a new lock, keeps a lock through body drift (new clothes) and
 lets that look be learned. No face in view = the body rules, unchanged. Bars
@@ -58,6 +63,7 @@ plan; the caller applies it to the registry / identity buffer / adaptive queue.
 import time
 from dataclasses import dataclass, field
 
+from config import scene_rules
 from config.settings import settings
 
 VERIFIED, CONTINUITY, CONTEXT = "verified", "continuity", "context"
@@ -91,8 +97,8 @@ class _CamState:
     was_frozen: bool = False            # last tick froze on a neighbour (huddle) — re-verify on exit
     basis: str = VERIFIED               # why this track is the target (see module doc)
     # The identity on THIS track was established by a strong gallery match
-    # (>= reid_adaptive_min_score) and never broken since — the only lock the
-    # infrared gallery may learn from.
+    # (>= the NIGHT set's reid_adaptive_min_score) and never broken since — the
+    # only lock the infrared gallery may learn from.
     learnable: bool = False
 
 
@@ -165,7 +171,7 @@ class TargetLockManager:
         """
         boxes:    track_id -> (x1, y1, x2, y2)
         feat_for: track_id -> smooth feature (np.ndarray) or None
-        night:    None / ir=False = a colour camera: the daytime path, unchanged.
+        night:    None / ir=False = a colour camera: the day rule set.
         face_for: (track_id, recipient_id) -> (face score, face width px) or
                   None — the track's latest face look against that recipient's
                   enrolled faces. None disables face evidence entirely.
@@ -177,6 +183,7 @@ class TargetLockManager:
         if not boxes:
             return out
         ir = night is not None and night.ir
+        rules = self._rules = scene_rules.for_ir(ir)
 
         occluded = self._occlusion(boxes)
 
@@ -253,10 +260,10 @@ class TargetLockManager:
                     out.face_confirmed = face == "confirm"
                 return out
 
-            if (ir and settings.night_hold_lock
+            if (rules.lock_hold_uncontradicted
                     and not self._contradicted(feat, m, st.recipient_id)):
-                # NIGHT HOLD: the model cannot vouch for them in infrared, but
-                # nothing says it is someone else — the tracker has followed
+                # HOLD (night set): the model cannot vouch for them in infrared,
+                # but nothing says it is someone else — the tracker has followed
                 # this person all along. A contradiction still releases below.
                 st.mismatch_streak = 0
                 if st.basis == VERIFIED:
@@ -270,12 +277,13 @@ class TargetLockManager:
 
             # mismatch while clearly visible -> count toward release
             st.mismatch_streak += 1
-            if st.mismatch_streak >= settings.target_mismatch_release_checks:
+            if st.mismatch_streak >= rules.target_mismatch_release_checks:
                 st.recipient_id = None
                 st.track_id = None
                 st.mismatch_streak = 0
                 out.released = True
-                out.release_reason = f"body mismatch x{settings.target_mismatch_release_checks} (last {m.score:.2f})"
+                out.release_reason = (f"body mismatch x{rules.target_mismatch_release_checks}"
+                                      f" (last {m.score:.2f}, {rules.name} rules)")
                 return out
             self._emit(out, st, tid, m.score)     # tentatively hold one more tick
             return out
@@ -300,8 +308,8 @@ class TargetLockManager:
                     out.adaptive = (tid, st.recipient_id, score)
                     out.learn_ir = ir and st.learnable
                 return out
-            if ir and settings.night_hold_lock:
-                rejoin = self._night_rejoin(st, boxes, feat_for)
+            if rules.lock_hold_uncontradicted:
+                rejoin = self._night_rejoin(st, boxes, feat_for, ir)
                 if rejoin is not None:
                     # NIGHT REJOIN: one person, right where the recipient was,
                     # nothing against them. A NEW track, so not learnable.
@@ -347,10 +355,10 @@ class TargetLockManager:
                 out.adaptive = (tid, rid, score)
                 out.learn_ir = ir and st.learnable
             return out
-        if (ir and settings.night_context_lock and night.sole_recipient
-                and len(boxes) == 1):
+        if (rules.lock_context_identity and night is not None
+                and night.sole_recipient and len(boxes) == 1):
             pick = self._context_pick(camera_id, boxes, feat_for,
-                                      night.sole_recipient)
+                                      night.sole_recipient, ir)
             if pick is not None:
                 # NIGHT CONTEXT: the only person in the home, seen steadily,
                 # not contradicting the recipient. Never teaches the gallery.
@@ -368,6 +376,7 @@ class TargetLockManager:
     # ---- helpers -----------------------------------------------------
     _last_match_rid: str | None = None
     _last_recency: float | None = None
+    _rules = scene_rules.DAY               # this tick's rule set (set in update)
 
     # ---- night-vision helpers ------------------------------------------
     @staticmethod
@@ -383,9 +392,11 @@ class TargetLockManager:
 
     @staticmethod
     def _verified(st: _CamState, score: float) -> None:
-        """A gallery match just established the identity on this track."""
+        """A gallery match just established the identity on this track. It may
+        teach the INFRARED stores only if it clears the night set's learn bar,
+        whichever set verified it (a lamplit lock carried into the dark)."""
         st.basis = VERIFIED
-        st.learnable = score >= settings.reid_adaptive_min_score
+        st.learnable = score >= scene_rules.NIGHT.reid_adaptive_min_score
 
     def _match(self, feat, ir: bool):
         """Gallery match in the query's own modality. The daytime call is
@@ -397,23 +408,25 @@ class TargetLockManager:
     _face_for = None
 
     def _face_verdict(self, tid: int, recipient_id: str | None, ir: bool) -> str | None:
-        """'veto' / 'confirm' / None from the track's latest face look — by
-        day only, and only for a face wide enough to be evidence. 'pending'
-        when the face could be read but has not been looked at yet; 'weak' for
-        a readable face that neither vetoes nor vouches (< face_acquire_score)."""
-        if ir or self._face_for is None or not recipient_id or not settings.face_enabled:
+        """'veto' / 'confirm' / None from the track's latest face look — where
+        the rule set enables faces, and only for a face wide enough to be
+        evidence. 'pending' when the face could be read but has not been looked
+        at yet; 'weak' for a readable face that neither vetoes nor vouches
+        (< face_acquire_score)."""
+        rules = scene_rules.for_ir(ir)
+        if self._face_for is None or not recipient_id or not rules.face_enabled:
             return None
         f = self._face_for(tid, recipient_id)
         if f is None:
             return "pending"
         score, px = f
-        if score is None or px < settings.face_min_px:
+        if score is None or px < rules.face_min_px:
             return None
-        if score < settings.face_veto_score:
+        if score < rules.face_veto_score:
             return "veto"
-        if score >= settings.face_confirm_score:
+        if score >= rules.face_confirm_score:
             return "confirm"
-        return "weak" if score < settings.face_acquire_score else None
+        return "weak" if score < rules.face_acquire_score else None
 
     def _contradicted(self, feat, m, recipient_id: str) -> bool:
         """Positive evidence this is NOT the recipient: another enrolled person
@@ -424,12 +437,12 @@ class TargetLockManager:
         if self._memory is not None and feat is not None:
             own = m.score if (m is not None and m.recipient_id == recipient_id) else 0.0
             neg = self._memory.negative_score(feat)
-            if (neg >= settings.reid_negative_veto_score
-                    and neg - own >= settings.reid_negative_veto_margin):
+            if (neg >= self._rules.reid_negative_veto_score
+                    and neg - own >= self._rules.reid_negative_veto_margin):
                 return True
         return False
 
-    def _night_rejoin(self, st: _CamState, boxes, feat_for):
+    def _night_rejoin(self, st: _CamState, boxes, feat_for, ir: bool):
         """(track_id, score) of the ONE person now standing where the lost
         recipient was, if nothing contradicts them — else None."""
         if len(boxes) != 1:
@@ -440,12 +453,13 @@ class TargetLockManager:
         feat = feat_for(tid)
         if feat is None:
             return tid, st.last_score
-        m = self._match(feat, True)
+        m = self._match(feat, ir)
         if self._contradicted(feat, m, st.recipient_id):
             return None
         return tid, (m.score if m.recipient_id == st.recipient_id else 0.0)
 
-    def _context_pick(self, camera_id: str, boxes, feat_for, recipient_id: str):
+    def _context_pick(self, camera_id: str, boxes, feat_for, recipient_id: str,
+                      ir: bool):
         """(track_id, score) when the lone person here may be taken to be the
         recipient: seen for night_context_min_track_secs, has MOVED, not
         contradicting them. No usable look (a person lying under a blanket fails
@@ -458,7 +472,7 @@ class TargetLockManager:
         feat = feat_for(tid)
         if feat is None:
             return tid, 0.0
-        m = self._match(feat, True)
+        m = self._match(feat, ir)
         if self._contradicted(feat, m, recipient_id):
             return None
         return tid, (m.score if m.recipient_id == recipient_id else 0.0)
@@ -503,8 +517,8 @@ class TargetLockManager:
         gamble on which one is real. Steady-state verification above stays on the
         gallery alone; all of this applies only to acquire / reacquire.
 
-        `ir` matches in the infrared gallery against the infrared bars, with
-        the infrared recency window."""
+        `ir` matches in the infrared gallery, with the infrared recency
+        window; every bar comes from this tick's rule set."""
         self._last_match_rid = None
         self._last_recency = None
         scored = []  # (fused_score, tid, view, box, recipient_id, recency, face)
@@ -524,7 +538,7 @@ class TargetLockManager:
                 continue                      # their face says someone else
             said_no = self._face_no.get(key)
             if said_no is not None:
-                if time.monotonic() - said_no > settings.face_veto_hold_secs:
+                if time.monotonic() - said_no > self._rules.face_veto_hold_secs:
                     self._face_no.pop(key, None)
                 elif face != "confirm":
                     continue                  # only the face may undo its own "no"
@@ -537,8 +551,8 @@ class TargetLockManager:
                 continue                      # recency veto — see _fuse
             if self._memory is not None:
                 neg = self._memory.negative_score(feat)
-                if (neg >= settings.reid_negative_veto_score
-                        and neg - score >= settings.reid_negative_veto_margin):
+                if (neg >= self._rules.reid_negative_veto_score
+                        and neg - score >= self._rules.reid_negative_veto_margin):
                     continue                  # looks more like a known non-target
                 # Cross-camera boost: does this candidate also match the
                 # recipient's OWN recent exit from another room? If so, lift it
@@ -556,10 +570,9 @@ class TargetLockManager:
         scored.sort(key=lambda t: t[0], reverse=True)
         best = scored[0]
         if (len(scored) > 1
-                and best[0] - scored[1][0] < settings.reid_target_pick_margin):
+                and best[0] - scored[1][0] < self._rules.reid_target_pick_margin):
             return None                       # a look-alike ties the winner — pick nobody
-        bar = (settings.reid_ir_acquire_min_score if ir
-               else settings.reid_acquire_min_score)
+        bar = self._rules.reid_acquire_min_score
         if acquire and best[0] < bar and best[6] != "confirm":
             return None                       # not confident enough for a NEW lock
         if acquire and best[6] == "pending":
@@ -585,9 +598,9 @@ class TargetLockManager:
                else self._recency.score(rid, feat))
         if rec is None:
             return gallery_score, None        # no memory — gallery alone
-        if rec < settings.reid_recency_min_score:
+        if rec < self._rules.reid_recency_min_score:
             return None, rec                  # nothing like the last sighting
-        w = settings.reid_recency_weight
+        w = self._rules.reid_recency_weight
         return (1.0 - w) * gallery_score + w * rec, rec
 
     @staticmethod
