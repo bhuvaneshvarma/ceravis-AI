@@ -259,18 +259,28 @@ try:
     check("a hung open is ABANDONED at the timeout, not waited on forever",
           got is None and time.monotonic() - t0 < 2.0)
     check("…and remembered as still stuck",
-          reader._hung_open is not None and reader._hung_open.is_alive())
+          len(reader._hung_opens) == 1 and reader._hung_opens[0].is_alive())
 
     object.__setattr__(rr.settings, "is_production", True)
     OPENS.clear()
     rr.cv2.VideoCapture = lambda src, *a: FakeCap(src)
     reader._connect("h264")
-    check("while a GStreamer open is stuck, only FFmpeg is tried (no pile-up)",
+    check("ONE stuck open does not bar the hardware decoder (it is tried first)",
+          bool(OPENS) and "nvv4l2decoder" in OPENS[0] and not reader._software, str(OPENS))
+    reader._capture = None
+    rr.cv2.VideoCapture = lambda src, *a: FakeCap(src, block=gate)
+    reader._open("hw-gst-h264", "rtspsrc ! fake")          # a second open hangs too
+    OPENS.clear()
+    rr.cv2.VideoCapture = lambda src, *a: FakeCap(src)
+    reader._connect("h264")
+    check(f"with {rr._MAX_HUNG_OPENS} opens stuck, only FFmpeg is tried (bounded, no pile-up)",
           OPENS == [reader._source_url], str(OPENS))
+    check("…and the reader knows it is on software decoding", reader._software)
     gate.set()
-    reader._hung_open.join(2)
-    check("the abandoned open, when it finally returns, releases itself",
-          any(c.src == "rtspsrc ! fake" and c.released for c in CAPS))
+    for t in reader._hung_opens:
+        t.join(2)
+    check("the abandoned opens, when they finally return, release themselves",
+          sum(c.src == "rtspsrc ! fake" and c.released for c in CAPS) == 2)
 
     OPENS.clear()
     reader._capture = None
@@ -344,6 +354,25 @@ try:
     check("a skip that starves the AI is dropped for good (decode every frame)",
           starve._decode_every == 1 and starve.reconnect_count >= 1,
           f"every={starve._decode_every} reconnects={starve.reconnect_count}")
+
+    # Software decoding is a stop-gap: a reader that could only open FFmpeg
+    # goes back for the hardware decoder every _SW_RETRY_SECS.
+    real_sw = rr._SW_RETRY_SECS
+    rr._SW_RETRY_SECS = 0.2
+    object.__setattr__(rr.settings, "is_production", True)
+    OPENS.clear()
+    rr.cv2.VideoCapture = lambda src, *a: FakeCap(src, opened=not src.startswith("rtspsrc"))
+    sw = rr.RTSPReader(cam, FrameBuffer(), source_url="rtsp://127.0.0.1:8554/edgeXYZ/LOUNGE",
+                       target_fps=50)
+    sw.start()
+    time.sleep(1.0)
+    sw.stop()
+    sw.join(2)
+    rr._SW_RETRY_SECS = real_sw
+    hw_tries = sum("nvv4l2decoder" in o for o in OPENS)
+    check("a reader on software decoding goes back for the hardware decoder",
+          sw.reconnect_count >= 1 and hw_tries >= 2,
+          f"reconnects={sw.reconnect_count} hw tries={hw_tries}")
 finally:
     rr.cv2.VideoCapture, rr._OPEN_TIMEOUT_SECS = real_vc, real_timeout
     rr._READY_POLL_SECS = real_poll

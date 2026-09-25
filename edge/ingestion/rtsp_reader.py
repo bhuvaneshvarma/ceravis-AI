@@ -50,6 +50,15 @@ _OPEN_TIMEOUT_SECS = 20.0
 # local HTTP call, so it is cheap and the AI starts within seconds of the camera.
 _READY_POLL_SECS = 2.0
 _SKIP_CHECK_SECS = 10.0    # window over which a decoder skip must still feed the AI
+# Software decoding is a stop-gap, never a home. One hung hardware open
+# (2026-09-25 14:14, living room, during a stream stall) left the 4K H.265 camera
+# on CPU FFmpeg for over two hours: a big share of the CPU, and a decoder that
+# could not keep up turned the stream into grey concealment frames. So a hung
+# open no longer bars GStreamer while fewer than _MAX_HUNG_OPENS are still
+# stuck, and a reader on software decoding goes back for the hardware decoder
+# every _SW_RETRY_SECS.
+_MAX_HUNG_OPENS = 2
+_SW_RETRY_SECS = 120.0
 
 
 def _ai_fps() -> float:
@@ -82,12 +91,13 @@ class RTSPReader:
         self._via_mediamtx = source_url is not None
         self._mtx_path = (urlparse(self._source_url).path.lstrip("/")
                           if self._via_mediamtx else None)
-        # An open abandoned after _OPEN_TIMEOUT_SECS that has STILL not returned.
-        # While it lives, GStreamer is not tried again for this camera (at most
-        # one stuck thread per camera, never a pile-up).
-        self._hung_open: threading.Thread | None = None
+        # Opens abandoned after _OPEN_TIMEOUT_SECS that have STILL not returned.
+        # GStreamer is tried again while fewer than _MAX_HUNG_OPENS are stuck —
+        # bounded, never a pile-up of stuck threads per camera.
+        self._hung_opens: list[threading.Thread] = []
         self._was_ready: bool | None = None     # last logged path readiness
         self._decode_every: int | None = None   # hw decoder frame skip, learned once
+        self._software = False                  # connected via plain FFmpeg (stop-gap)
 
         self._capture: cv2.VideoCapture | None = None
         # The capture already handed to _release — held so stop(), the watchdog
@@ -285,7 +295,7 @@ class RTSPReader:
             if done.is_set():
                 return box["cap"]
             box["abandoned"] = True
-        self._hung_open = t
+        self._hung_opens.append(t)
         logger.error("camera=%s open via %s HUNG for %.0fs — abandoned; the reader "
                      "carries on", self.camera_id, name, _OPEN_TIMEOUT_SECS)
         return None
@@ -299,9 +309,10 @@ class RTSPReader:
         codecs = [codec] if codec else ["h264", "h265"]
         # hw GStreamer first (per codec), then sw GStreamer, then plain FFmpeg —
         # so ingestion still works where the NVIDIA plugins aren't available.
-        # A GStreamer open still stuck from an earlier attempt means GStreamer is
-        # not trusted for this camera until it returns: FFmpeg only.
-        gst_ok = self._hung_open is None or not self._hung_open.is_alive()
+        # Too many GStreamer opens still stuck from earlier attempts means
+        # GStreamer is not trusted for this camera until they return: FFmpeg.
+        self._hung_opens = [t for t in self._hung_opens if t.is_alive()]
+        gst_ok = len(self._hung_opens) < _MAX_HUNG_OPENS
         attempts: list[tuple[str, str | None]] = []
         if settings.is_production and gst_ok:
             attempts += [(f"hw-gst-{c}", self._gst_pipeline(c, hw=True)) for c in codecs]
@@ -315,6 +326,7 @@ class RTSPReader:
                     self._release(cap, "decode skip")   # reopen with the skip applied
                     return self._connect(codec)
                 self._capture = cap
+                self._software = name == "ffmpeg" and settings.is_production
                 self._health_state = CameraHealthState.RUNNING
                 logger.info("Connected camera=%s via %s (%s)", self.camera_id, name,
                             "mediamtx" if self._via_mediamtx else "direct")
@@ -395,6 +407,7 @@ class RTSPReader:
             # never delivered a first frame" is caught too, not just mid-stream stalls.
             self._last_frame_monotonic = time.monotonic()
             skip_window, skip_frames = time.monotonic(), 0
+            connected_at = time.monotonic()
 
             while self._running and self._capture is not None:
                 if frame_interval:                       # 0 => uncapped, no pacing
@@ -447,6 +460,11 @@ class RTSPReader:
                         self._decode_every = 1
                         break
                     skip_window, skip_frames = time.monotonic(), 0
+                if self._software and time.monotonic() - connected_at >= _SW_RETRY_SECS:
+                    logger.warning("camera=%s on software decoding for %.0fs — "
+                                   "reconnecting to get the hardware decoder back",
+                                   self.camera_id, _SW_RETRY_SECS)
+                    break
                 self._frame_buffer.update(
                     camera_id=self.camera_id, frame=frame,
                     frame_id=self._frame_id, timestamp=self._last_frame_time,
