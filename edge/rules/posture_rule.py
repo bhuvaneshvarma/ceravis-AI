@@ -33,10 +33,14 @@ from rules.rule_context import RuleContext
 
 class PostureRule:
     def __init__(self) -> None:
-        # (camera_id, track_id) -> the last posture ANNOUNCED for the track
-        self._state: dict[tuple[str, int], Posture] = {}
-        # (camera_id, track_id) -> (candidate posture, monotonic since)
-        self._pending: dict[tuple[str, int], tuple[Posture, float]] = {}
+        # (camera_id, recipient_id) -> the last posture ANNOUNCED for them there.
+        # Keyed by the PERSON, not the tracker's id: an id switch in the middle
+        # of sitting down (the tracker re-detects someone who bends, turns or
+        # is briefly hidden) used to restart the history silently, so the
+        # sitting_down it was in the middle of was never announced.
+        self._state: dict[tuple[str, str], Posture] = {}
+        # (camera_id, recipient_id) -> (candidate posture, monotonic since)
+        self._pending: dict[tuple[str, str], tuple[Posture, float]] = {}
 
     def evaluate(self, ctx: RuleContext) -> list[Event]:
         events: list[Event] = []
@@ -47,13 +51,14 @@ class PostureRule:
         s = ctx.find_recipient(now)
         if s is None:
             return []
+        if s.posture == Posture.UNKNOWN:
+            return []                          # unreadable is not a change
         camera_id, track_id = s.camera_id, s.track.track_id
-        key = (camera_id, track_id)
+        key = (camera_id, s.identity.recipient_id or "")
         prev = self._state.get(key)
         if prev is None:
-            # First sight of this track: remember its posture, announce nothing.
-            # Only the recipient's CURRENT track is kept — track ids only ever
-            # grow, so keeping every past one was an unbounded dict.
+            # First sight of the recipient on this camera: remember their
+            # posture, announce nothing. Only this one entry is kept.
             self._state = {key: s.posture}
             self._pending.clear()
             return []

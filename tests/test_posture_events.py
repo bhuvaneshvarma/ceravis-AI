@@ -90,12 +90,23 @@ for _ in range(8):
     out += see(ctx, rule, Posture.STANDING)
 check("standing_up after it held", out == ["standing_up"])
 
-print("\n4. only the current track is remembered")
+print("\n4. the person is remembered, not the tracker's id")
 for tid in range(2, 50):
     see(ctx, rule, Posture.STANDING, track=tid)
-check("state holds one track, not 49", len(rule._state) == 1)
-check("a new track's first posture is not an event",
-      see(ctx, rule, Posture.SITTING, track=99) == [])
+check("state holds one entry, not 49", len(rule._state) == 1)
+out = []
+for i in range(8):                       # sits down while the id keeps switching
+    out += see(ctx, rule, Posture.SITTING, track=100 + i)
+check("an id switch mid sit-down still announces it, once", out == ["sitting_down"])
+out = []
+for _ in range(8):
+    out += see(ctx, rule, Posture.UNKNOWN)
+for _ in range(8):
+    out += see(ctx, rule, Posture.STANDING)
+check("an unreadable posture is not a change (sitting -> unknown -> standing = one standing_up)",
+      out == ["standing_up"])
+ctx.sighting = None
+check("no recipient located -> nothing", rule.evaluate(ctx) == [])
 
 print()
 if FAILURES:
