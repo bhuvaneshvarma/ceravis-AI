@@ -94,6 +94,15 @@ class SceneLight:
 # ---- measurement (pure) --------------------------------------------------
 
 _MEASURE_WIDTH = 160       # colour variation survives heavy downscaling
+# A picture must show SOMETHING to have a modality. A decoder's error-
+# concealment frame (a broken stream, before the next keyframe) is flat
+# neutral grey — no colour, so it read as infrared: the living room flipped to
+# "night vision" 129 times in daylight on 2026-09-25 (luma 128, colour
+# variation 0-2), resetting the tracker's appearance each time. Real frames on
+# the bench, day and infrared: luma std 55-69 on the 160-px image, neutral mid-
+# grey pixels <= 2.5%. Flat (std < 8) or mostly mid-grey (> 50%) = no opinion.
+_MIN_LUMA_STD = 8.0
+_MAX_MIDGREY_FRAC = 0.5
 
 
 def measure(img: np.ndarray | None) -> tuple[float | None, float | None]:
@@ -101,8 +110,9 @@ def measure(img: np.ndarray | None) -> tuple[float | None, float | None]:
 
     colour_variation is the 90th percentile of |Cr - median Cr| + |Cb - median
     Cb| over pixels that are neither crushed nor clipped (chroma is noise there).
-    Returns (None, luma) when too few pixels are usable to judge — a room so dark
-    the sensor shows only noise has no modality to read."""
+    Returns (None, luma) when the picture cannot be judged: too few usable
+    pixels (a room so dark the sensor shows only noise), or no picture at all
+    (a flat / decoder-grey frame)."""
     if img is None or img.size == 0 or not _HAVE_CV2:
         return None, None
     if img.ndim == 2 or img.shape[2] == 1:
@@ -114,6 +124,9 @@ def measure(img: np.ndarray | None) -> tuple[float | None, float | None]:
     ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb).reshape(-1, 3).astype(np.float32)
     y = ycc[:, 0]
     luma = float(np.mean(y))
+    midgrey = np.abs(ycc - 128.0).max(axis=1) <= 3.0
+    if float(np.std(y)) < _MIN_LUMA_STD or float(np.mean(midgrey)) > _MAX_MIDGREY_FRAC:
+        return None, luma
     usable = (y > 20.0) & (y < 235.0)
     if int(np.count_nonzero(usable)) < max(16, usable.size // 20):
         return None, luma

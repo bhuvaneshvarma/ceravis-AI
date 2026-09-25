@@ -84,9 +84,13 @@ def colour_frame() -> np.ndarray:
 def ir_frame(tint=(0, 0, 0)) -> np.ndarray:
     """What the camera streams at night: luminance only (+ an optional UNIFORM
     tint, which is a cast, not colour)."""
-    g = RNG.integers(30, 220, (360, 640)).astype(np.uint8)
+    g = np.zeros((360, 640), np.uint8)             # a room: things of different
+    for i in range(8):                              # IR brightness, plus sensor noise
+        for j in range(4):
+            g[j * 90:(j + 1) * 90, i * 80:(i + 1) * 80] = RNG.integers(30, 220)
     g = cv2.GaussianBlur(g, (7, 7), 2)
     f = cv2.merge([g, g, g]).astype(np.int16) + np.array(tint, np.int16)
+    f += RNG.integers(-6, 7, (360, 640, 1), dtype=np.int16)
     return np.clip(f, 0, 255).astype(np.uint8)
 
 
@@ -94,7 +98,10 @@ def band_frame(d: int = 5) -> np.ndarray:
     """Barely-coloured: chroma wobbling +-d around neutral — inside the dead
     band (the 160-px measurement averages pixel-level chroma noise down, which is
     exactly what keeps infrared sensor noise from reading as colour)."""
-    y = RNG.integers(60, 200, (360, 640)).astype(np.uint8)
+    y = np.zeros((360, 640), np.uint8)             # the same kind of room
+    for i in range(8):
+        for j in range(4):
+            y[j * 90:(j + 1) * 90, i * 80:(i + 1) * 80] = RNG.integers(60, 200)
     sign = np.where(RNG.random((360, 640)) < 0.5, -1, 1)
     cr = np.clip(128 + d * sign, 0, 255).astype(np.uint8)
     cb = np.clip(128 - d * sign, 0, 255).astype(np.uint8)
@@ -123,6 +130,20 @@ check("a black frame cannot be judged (None, not a guess)",
 m = illumination.monochrome(colour_frame())
 check("monochrome() yields three identical channels",
       np.array_equal(m[..., 0], m[..., 1]) and np.array_equal(m[..., 1], m[..., 2]))
+
+grey = np.full((720, 1280, 3), 128, np.uint8)             # decoder concealment
+check("a flat decoder-grey frame has no modality (not infrared)",
+      illumination.measure(grey)[0] is None)
+part = colour_frame().copy()
+part[: part.shape[0] * 3 // 4] = 128                        # 3/4 concealed
+check("a mostly-concealed frame has no modality either",
+      illumination.measure(part)[0] is None)
+illumination.reset()
+illumination.observe("gcam", colour_frame())
+for _ in range(settings.illumination_confirm_samples + 2):
+    illumination.observe("gcam", grey)
+check("a colour camera fed grey frames stays colour", not illumination.is_ir("gcam"))
+illumination.reset()
 
 print("\n2. hysteresis: decide at once, switch only on sustained evidence")
 illumination.reset()
