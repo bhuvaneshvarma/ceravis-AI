@@ -23,10 +23,12 @@ Covered:
                media is swept, and finished receipts are capped by count.
   Console    — an upload shows as QUEUED at once, and a discarded one is always
                reported rather than silently lost.
-  Send-first — a healthy upload is delivered from RAM with no row and no spool
-               file; it is written down only when it must wait (failed attempt,
-               link down, past the hold time, stopping), keeping its alertId
-               link across a restart.
+  Zero-copy  — every upload is one row the moment it is raised (write-ahead);
+               a still already on disk is REFERENCED, never copied or deleted by
+               the queue; only a clip handed over as bytes is spooled, once, and
+               released on delivery; a vanished file retries, never drops; the
+               byte cap counts only what the queue spooled; an idle sender
+               sleeps until woken instead of polling.
 
 Pure python + sqlite; no TensorRT, no camera, no network. Runs on the dev box:
 
@@ -275,8 +277,7 @@ settings.outbox_max_items = 5
 keep = [sender.queue_alert(7, "FALL", f"fall {i}") for i in range(3)]
 toss = [sender.queue_snapshot(7, f"posture {i}", "LOUNGE", image=b"jpg",
                               priority=PRIORITY_AMBIENT) for i in range(6)]
-# Send-first: the outage is discovered by the first attempt, which writes the
-# whole RAM tier down; the window then holds on the durable queue as rows land.
+# Every upload is a row the moment it is queued, so the window holds as they land.
 pump(sender, outbox, rounds=1)
 states = {j: outbox.job(j)["state"] for j in keep + toss}
 check("the queue is held at the cap",
@@ -387,7 +388,6 @@ check("but a settled crash-orphan is reclaimed",
 # is under test, and the cap itself is lowered rather than queueing 500 jobs.
 settings.outbox_history_secs = 86400.0
 outbox_store._HISTORY_MAX_ROWS = 10
-# Queued during an outage so all 30 are ROWS (a healthy send leaves none).
 server.online = False
 for i in range(30):
     sender.queue_alert(7, "FALL", f"receipt {i}", priority=PRIORITY_FALL)
@@ -478,106 +478,125 @@ check("and the queue is empty", outbox.stats()["pending"] == 0)
 
 
 # --------------------------------------------------------------------------
-# SEND FIRST, SPOOL ON FAILURE (2026-09-23): the RAM tier.
+# WRITE-AHEAD, ZERO-COPY (2026-09-25): replaced the RAM tier.
 settings.outbox_max_items = 2000
 outbox_store._HISTORY_MAX_ROWS = 500
 server.online = True
 server.received.clear()
-DB2 = _TMP / "ram.db"
+DB2 = _TMP / "zero.db"
 store2, ob2, snd2 = build(server, DB2)
-
-
-def rows(store) -> int:
-    return store.fetchall("SELECT COUNT(*) FROM outbox")[0][0]
+events = _TMP / "events"
+events.mkdir(exist_ok=True)
 
 
 def spooled() -> int:
     return len(list(spool.glob("*")))
 
 
-print("\n15. a healthy send never touches the disk")
+print("\n15. a still already on disk is queued by reference, never copied")
+still = events / "fall-still.jpg"
+still.write_bytes(b"jpeg-bytes-of-the-fall")
 before = spooled()
-a = snd2.queue_alert(7, "FALL", "ram fall", priority=PRIORITY_FALL)
-p = snd2.queue_snapshot(7, "ram fall", "LOUNGE", image=b"jpg-in-ram",
-                        depends_on=a, category="FALL", priority=PRIORITY_FALL)
-check("both are pending, held in memory",
-      ob2.stats()["pending"] == 2 and ob2.stats()["in_memory"] == 2)
-check("no row was written for them", rows(store2) == 0)
-check("no media was spooled for them", spooled() == before)
-check("the head is the fall, straight from RAM", ob2.head()["job_id"] == a)
+a = snd2.queue_alert(7, "FALL", "zc fall", priority=PRIORITY_FALL)
+p = snd2.queue_snapshot(7, "zc fall", "LOUNGE", image_path=still, depends_on=a,
+                        category="FALL", priority=PRIORITY_FALL)
+row = ob2.job(p)
+check("it is a durable row the moment it is queued (write-ahead)",
+      row is not None and row["state"] == "pending")
+check("its media is the event's own file, referenced in place",
+      row["blob_path"] == str(still.resolve()) and row["blob_owned"] == 0)
+check("nothing was copied into the spool", spooled() == before)
+check("the sender reads the real bytes at send time",
+      ob2.blob(row) == b"jpeg-bytes-of-the-fall")
 pump(snd2, ob2)
-check("both delivered", [r[1] for r in server.received] == ["ram fall", "ram fall"])
-check("the photo carried the alertId its alert was just given",
-      server.received[1][2] == ob2.job(a)["result_id"] is not None)
-check("still no row and no spool file after delivery",
-      rows(store2) == 0 and spooled() == before)
-check("the console still lists both as sent",
-      {j["job_id"] for j in ob2.recent(10) if j["state"] == "done"} >= {a, p})
+check("both delivered, the photo linked to its alert",
+      [r[1] for r in server.received] == ["zc fall", "zc fall"]
+      and server.received[1][2] == ob2.job(a)["result_id"] is not None)
+check("the event's own still is NOT deleted by the queue", still.exists())
 
-print("\n16. a job that waits past the hold time is written down")
-settings.outbox_ram_hold_secs = 0.0
-w = snd2.queue_snapshot(7, "waiting", "LOUNGE", image=b"jpg-w",
-                        priority=PRIORITY_AMBIENT)
-ob2.next_ready(min_priority=PRIORITY_FALL + 1)   # a tick that cannot take it
-check("it is now a durable row", ob2._sql_pending(w))
-check("with its media spooled", ob2.blob(ob2.job(w)) == b"jpg-w")
-settings.outbox_ram_hold_secs = 5.0
-pump(snd2, ob2)
-check("and it is still delivered", any(r[1] == "waiting" for r in server.received))
-
-print("\n17. a failed first attempt spills, keeping its alert link across a restart")
-server.received.clear()
-server.reject_texts = {"photo that fails"}
-a2 = snd2.queue_alert(7, "FALL", "alert that lands", priority=PRIORITY_FALL)
-p2 = snd2.queue_snapshot(7, "photo that fails", "LOUNGE", image=b"jpg-p2",
-                         depends_on=a2, priority=PRIORITY_FALL)
-pump(snd2, ob2, rounds=2)
-landed_id = ob2.job(a2)["result_id"]
-check("the alert went straight from RAM", landed_id is not None
-      and not ob2._sql_pending(a2))
-check("the rejected photo is now on disk", ob2._sql_pending(p2))
-store2.close()                                       # restart
-store2, ob2, snd2 = build(server, DB2)
-server.reject_texts = set()
-ob2.wake_all()
-pump(snd2, ob2)
-got = [r for r in server.received if r[1] == "photo that fails"]
-check("after the restart it is delivered", len(got) == 1)
-check("linked to the alertId issued before the restart", got[0][2] == landed_id)
-
-print("\n18. while the link is down, new uploads go straight to disk")
+print("\n16. a clip handed over as bytes is spooled once, released on delivery")
 server.online = False
-d1 = snd2.queue_alert(7, "FALL", "outage 1", priority=PRIORITY_FALL)
-pump(snd2, ob2, rounds=1)                            # discovers the outage
-d2 = snd2.queue_alert(7, "FALL", "outage 2", priority=PRIORITY_FALL)
-check("the first spilled on its failed attempt", ob2._sql_pending(d1))
-check("the next went to disk without an attempt", ob2._sql_pending(d2)
-      and ob2.stats()["in_memory"] == 0)
+c = snd2.queue_snapshot(7, "zc clip", "LOUNGE", video=b"mp4-clip-bytes",
+                        priority=PRIORITY_FALL)
+check("its bytes are written to the spool exactly once", spooled() == before + 1
+      and ob2.job(c)["blob_owned"] == 1)
 server.online = True
 snd2.kick()
 pump(snd2, ob2)
-check("both delivered once the link is back",
-      {"outage 1", "outage 2"} <= {r[1] for r in server.received})
-n0 = rows(store2)
-snd2.queue_alert(7, "FALL", "back to normal", priority=PRIORITY_FALL)
-pump(snd2, ob2)
-check("and sending is RAM-first again (no new row)", rows(store2) == n0)
+check("delivered", any(r[1] == "zc clip" for r in server.received))
+check("and its spool file is gone", spooled() == before)
 
-print("\n19. a graceful stop writes RAM down; nothing is lost")
-server.online = True
-server.received.clear()
-s1 = snd2.queue_alert(7, "FALL", "raised as we stop", priority=PRIORITY_FALL)
-snd2.stop()
-check("it was written down on stop", ob2._sql_pending(s1))
-late = snd2.queue_snapshot(7, "late clip", "LOUNGE", video=b"mp4",
-                           priority=PRIORITY_FALL)
-check("an upload queued after stop goes straight to disk", ob2._sql_pending(late))
-store2.close()
-store2, ob2, snd2 = build(server, DB2)
+print("\n17. a referenced file that vanished retries — it is never dropped")
+gone = events / "gone.jpg"
+gone.write_bytes(b"x")
+g = snd2.queue_snapshot(7, "zc gone", "LOUNGE", image_path=gone,
+                        priority=PRIORITY_AMBIENT)
+gone.unlink()
+pump(snd2, ob2, rounds=3)
+check("still pending after failed attempts", ob2.job(g)["state"] == "pending"
+      and ob2.job(g)["attempts"] > 0)
+check("with the reason recorded", "missing" in (ob2.job(g)["last_error"] or ""))
+gone.write_bytes(b"restored")                        # the file comes back
+ob2.wake_all()
 pump(snd2, ob2)
-check("both are delivered after the restart",
-      {"raised as we stop", "late clip"} <= {r[1] for r in server.received})
+check("and delivered once it is readable again",
+      any(r[1] == "zc gone" for r in server.received))
+
+print("\n18. the byte cap counts only what the queue itself spooled")
+server.online = False
+settings.outbox_max_blob_mb = 0.00001                # ~10 bytes
+big = events / "big.jpg"
+big.write_bytes(b"y" * 4096)
+refs = [snd2.queue_snapshot(7, f"zc ref {i}", "LOUNGE", image_path=big,
+                            priority=PRIORITY_AMBIENT) for i in range(3)]
+check("referenced stills cost no spool, so none is evicted",
+      all(ob2.job(j)["state"] == "pending" for j in refs))
+own = snd2.queue_snapshot(7, "zc owned", "LOUNGE", video=b"z" * 4096,
+                          priority=PRIORITY_AMBIENT)
+check("spooled bytes over the cap are shed, lowest priority first",
+      sum(ob2.job(j)["state"] == "dead" for j in refs + [own]) >= 1)
+settings.outbox_max_blob_mb = 1024.0
+server.online = True
+snd2.kick()
+pump(snd2, ob2)
+
+print("\n19. an idle sender sleeps; a new upload wakes it at once")
+check("the queue is empty", ob2.stats()["pending"] == 0)
+waits = [snd2._tick(lane, lo, hi) for lane, lo, hi in outbox_sender._LANES]
+check(f"an empty lane waits the full safety beat ({min(waits):.0f} s), not a 1 s poll",
+      min(waits) >= settings.outbox_poll_secs)
+for ev in snd2._wake.values():
+    ev.clear()
+snd2.queue_alert(7, "FALL", "wake me", priority=PRIORITY_FALL)
+check("queueing sets every lane's wake event", all(ev.is_set() for ev in snd2._wake.values()))
+pump(snd2, ob2)
+
+print("\n19b. a table from before zero-copy migrates and still delivers")
 store2.close()
+legacy = SqliteStore(str(_TMP / "legacy.db"))
+legacy.execute("""CREATE TABLE outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, label TEXT,
+    priority INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL, created_epoch REAL NOT NULL, payload TEXT NOT NULL,
+    blob_path TEXT, blob_part TEXT, blob_bytes INTEGER NOT NULL DEFAULT 0,
+    depends_on TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL NOT NULL DEFAULT 0, last_error TEXT, sent_at TEXT,
+    result_id INTEGER)""")
+(spool / "legacyjob.jpg").write_bytes(b"old-spooled")
+legacy.execute("""INSERT INTO outbox (job_id, kind, label, priority, created_at,
+    created_epoch, payload, blob_path, blob_part, blob_bytes) VALUES
+    ('legacyjob','saveSnapshot','old row',1,'2026-09-24T00:00:00',?,
+     '{"patient_id": 7, "text": "old row", "camera_number": "LOUNGE"}',
+     'legacyjob.jpg','image',11)""", (time.time(),))
+legacy.close()
+store4, ob4, snd4 = build(server, _TMP / "legacy.db")
+check("the old row reads back as spooled (owned) media",
+      ob4.job("legacyjob")["blob_owned"] == 1 and ob4.blob(ob4.job("legacyjob")) == b"old-spooled")
+pump(snd4, ob4)
+check("it is delivered and its spool file released",
+      any(r[1] == "old row" for r in server.received)
+      and not (spool / "legacyjob.jpg").exists())
+store4.close()
 
 # --------------------------------------------------------------------------
 print("\n20. keeping an overloaded server healthy")

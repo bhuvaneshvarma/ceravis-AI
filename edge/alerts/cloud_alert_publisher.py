@@ -200,11 +200,14 @@ class CloudAlertPublisher:
         category = _category_of(event)
         n = len(paths)
         for i, rel in enumerate(paths):
-            img = self._image_bytes(rel)
-            if not img:
+            # Shared resolver (common.event_snapshots) — the file the enricher
+            # wrote. Queued BY REFERENCE: the outbox reads it once, at send time,
+            # so a still is never copied into RAM or a spool to wait its turn.
+            f = snapshot_file(rel)
+            if f is None:
                 continue
             label = describe(event, f"frame {i + 1} of {n}" if n > 1 else None)
-            self._sender.queue_snapshot(pid, label, camera_number, image=img,
+            self._sender.queue_snapshot(pid, label, camera_number, image_path=f,
                                         depends_on=alert_job, category=category,
                                         priority=priority)
 
@@ -266,16 +269,3 @@ class CloudAlertPublisher:
                                     priority=PRIORITY_FALL)
         logger.info("fall clip queued: %d bytes, alert job=%s", len(clip),
                     alert_job)
-
-    def _image_bytes(self, rel_path: str) -> bytes | None:
-        # Shared resolver (common.event_snapshots) — same one the enricher
-        # writes through and the events API serves from. Raw JPEG bytes: the
-        # saveSnapshot `image` file part is the file itself, not base64.
-        f = snapshot_file(rel_path)
-        if f is None:
-            return None
-        try:
-            return f.read_bytes()
-        except Exception:
-            logger.exception("snapshot read failed: %s", f)
-            return None
