@@ -321,6 +321,30 @@ keep = mgr12.update("camB", {1: _box(200), 2: _box(545)},
 check("no swap -> the lock stays put", keep.target_track_id == 1)
 
 
+print("\none detection frame without the person is not an empty room")
+import types                                                         # noqa: E402
+from reid.reid_runner import ReIDRunner                              # noqa: E402
+rr = ReIDRunner.__new__(ReIDRunner)
+_empty = types.SimpleNamespace(tracks=[], timestamp=None, frame_id=9)
+rr._tracks = types.SimpleNamespace(get_all=lambda: {"CAM": _empty})
+_unlocked, _retired = [], []
+rr._targets = types.SimpleNamespace(recipient=lambda c: "ravi",
+                                    unlock=lambda c: _unlocked.append(c))
+rr.memory = types.SimpleNamespace(retire=lambda *a, **k: _retired.append(a),
+                                  prune=lambda *a: None)
+rr._identities = types.SimpleNamespace(prune=lambda *a: None)
+rr._seen_tracks = {"CAM": frozenset({1})}
+rr._target_track = {"CAM": (1, "ravi")}
+rr._last_person = {"CAM": time.monotonic()}
+rr._tick()
+check("a single miss keeps the lock (no unlock, no exit filed)",
+      not _unlocked and not _retired and rr._target_track.get("CAM") == (1, "ravi"))
+rr._last_person["CAM"] = time.monotonic() - settings.reid_empty_room_grace_secs - 0.1
+rr._tick()
+check("nobody tracked for the whole grace -> the room is emptied, lock dropped",
+      _unlocked == ["CAM"] and len(_retired) == 1 and "CAM" not in rr._target_track)
+
+
 if failures:
     print(f"\n{len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

@@ -435,6 +435,12 @@ class Settings(BaseSettings):
     # that re-checks a long-held lock occasionally.
     reid_event_driven: bool = True
     reid_heartbeat_secs: float = 20.0
+    # A room counts as EMPTIED (lock dropped on that camera, exit filed, search
+    # widened) only after nobody has been tracked there this long. Single
+    # detection frames without the person — turning, motion blur, a moment
+    # behind furniture — used to drop the lock on every miss. Short, so a real
+    # departure is still handed to the next room at once.
+    reid_empty_room_grace_secs: float = 1.5
     # ---- Recency memory (short-term "how they look RIGHT NOW") ------
     # The gallery is general (every outfit we ever stored) and therefore blunt at
     # reacquisition: two people can both clear a general threshold. This keeps the

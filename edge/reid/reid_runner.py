@@ -196,6 +196,14 @@ class ReIDRunner:
         for camera_id, track_result in self._tracks.get_all().items():
             if track_result.tracks:
                 self._last_person[camera_id] = time.monotonic()
+            elif (time.monotonic() - self._last_person.get(camera_id, 0.0)
+                  < settings.reid_empty_room_grace_secs):
+                # One detection frame with nobody in it is not an empty room: a
+                # person turning, blurred or briefly hidden is missed for a frame
+                # or two, and that used to unlock the recipient and file their
+                # exit on every miss. Hold everything as it is; the room counts
+                # as emptied only once nobody has been tracked for the grace.
+                continue
             if not track_result.tracks:
                 self._seen_tracks.pop(camera_id, None)
                 # The room emptied. If the recipient was locked here, they have
