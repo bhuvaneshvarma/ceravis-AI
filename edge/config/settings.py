@@ -779,6 +779,12 @@ class Settings(BaseSettings):
     posture_hidden_sit_secs: float = 5.0
     posture_hidden_sit_max_move: float = 0.3
     posture_hidden_sit_max_torso_deg: float = 45.0
+    # ...and with the legs hidden, HIPS travelling at least this many torso
+    # lengths over the motion window = walking = STANDING (soft). Walking covers
+    # ~3 torso lengths in 1.5 s; arms and head moving at a desk move the
+    # keypoint centroid but not the hips (a seated worker typing read as a
+    # mover on the centroid).
+    posture_hidden_walk_travel: float = 1.0
     # ...and every posture change (first commit, sit<->stand, walking) must
     # ALSO have held this long: a short time window instead of a bare frame
     # count, which meant 0.25 s at 12 poses/s but 0.7 s at 4.5 (the pose rate

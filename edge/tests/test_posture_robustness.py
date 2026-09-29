@@ -180,11 +180,46 @@ last, _ = feed(tr4c, 42, [stand_legs] * 6, t2)
 check("...and replaced by the legs' own evidence when they show (standing)",
       tr4c._state[("c", 42)].stable == Posture.STANDING and not tr4c._state[("c", 42)].soft,
       str(tr4c._state[("c", 42)].stable))
-walker = [body(head_y=250, sh_y=310, hip_y=380, cx=150 + 40 * i, sh_w=44) for i in range(80)]
-tr4d = PostureTracker()
-last, _ = feed(tr4d, 43, walker, clock.now())
-check("moving along behind the furniture: no sitting guessed",
-      tr4d._state[("c", 43)].stable == Posture.UNKNOWN, str(tr4d._state[("c", 43)].stable))
+
+print("\n4d. the head height is the person's own reference (walking behind furniture)")
+# A: walking with the legs visible, then behind a table at the SAME head height,
+# then stopping there — the head never came down, so never sitting.
+tr4e = PostureTracker()
+t0 = clock.now()
+walk_legs = [body(head_y=150, sh_y=210, hip_y=300, knee_y=400, ank_y=490, cx=100 + 12 * i)
+             for i in range(15)]
+_, t1 = feed(tr4e, 44, walk_legs, t0)
+check("A: walking with legs visible -> standing",
+      tr4e._state[("c", 44)].stable == Posture.STANDING)
+walk_hidden = [body(head_y=150, sh_y=210, hip_y=300, cx=280 + 12 * i) for i in range(15)]
+stop_hidden = [body(head_y=150 + (i % 2), sh_y=210, hip_y=300, cx=460) for i in range(80)]
+last, _ = feed(tr4e, 44, walk_hidden + stop_hidden, t1)
+check("A: behind the table, same head height, stopped 8 s -> still standing",
+      tr4e._state[("c", 44)].stable == Posture.STANDING, str(last))
+# B: first seen already walking behind furniture, then stops at the same height.
+tr4f = PostureTracker()
+t0 = clock.now()
+walker = [body(head_y=250, sh_y=310, hip_y=380, cx=150 + 12 * i, sh_w=44) for i in range(20)]
+_, t1 = feed(tr4f, 45, walker, t0)
+check("B: first seen walking behind furniture -> standing (people walk upright)",
+      tr4f._state[("c", 45)].stable == Posture.STANDING and tr4f._state[("c", 45)].soft,
+      str(tr4f._state[("c", 45)].stable))
+still = [body(head_y=250 + (i % 2), sh_y=310, hip_y=380, cx=390, sh_w=44) for i in range(80)]
+_, t2 = feed(tr4f, 45, still, t1)
+check("B: ...then stops there 8 s at the same head height -> still standing, not sitting",
+      tr4f._state[("c", 45)].stable == Posture.STANDING, str(tr4f._state[("c", 45)].stable))
+# C: ...and then really sits down behind it: head AND hips come down.
+sitdown = [body(head_y=h, sh_y=h + 60, hip_y=h + 130, cx=390, sh_w=44)
+           for h in (270, 300, 330, 350, 350, 350, 350, 350)]
+_, _ = feed(tr4f, 45, sitdown, t2)
+check("C: ...a real sit-down behind the furniture (head + hips down) -> sitting",
+      tr4f._state[("c", 45)].stable == Posture.SITTING, str(tr4f._state[("c", 45)].stable))
+typing = [body(head_y=250 + (i % 3) * 4, sh_y=310, hip_y=380, cx=200 + (i % 4) * 6, sh_w=44)
+          for i in range(80)]
+tr4g = PostureTracker()
+last, _ = feed(tr4g, 46, typing, clock.now())
+check("a seated worker's arms and head moving (hips put): sitting, not a walker",
+      tr4g._state[("c", 46)].stable == Posture.SITTING, str(tr4g._state[("c", 46)].stable))
 
 
 print("\n5. a single noisy first frame does not stamp a posture (a short window)")

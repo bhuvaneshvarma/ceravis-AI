@@ -293,10 +293,13 @@ class _TrackState:
     commit_since: datetime | None = None
     occluded_since: datetime | None = None
     # Legs hidden, no posture yet: where the hips were when they last moved,
-    # and since when they have stayed (the seated-at-furniture read).
+    # and since when they have stayed (the seated-at-furniture read) — or the
+    # streak of upright walking (the walking-behind-furniture read).
     still_anchor: tuple | None = None
     still_since: datetime | None = None
-    soft: bool = False                  # stable = SITTING was inferred, not seen
+    move_streak: int = 0
+    move_since: datetime | None = None
+    soft: bool = False                  # stable was inferred with the legs hidden
     # ---- the ONE fall machine (label depth = alert depth, no wait) ----
     fall_down: bool = False              # DOWN: streak-confirmed horizontal (label)
     fall_alerted: bool = False           # latch: one alert per fall episode
@@ -422,13 +425,17 @@ class PostureTracker:
         elif (raw.legs_visible is False and not raw.truncated_bottom
                 and st.stable == Posture.UNKNOWN):
             # No posture yet and the legs are HIDDEN by furniture (a desk, a
-            # table, a sofa arm), body inside the frame: with no knee to read,
-            # someone upright whose hips have stayed put is seated — people do
-            # not stand still behind furniture for long. Bench, 2026-09-29: 13
-            # of 14 seated office workers stayed UNKNOWN for a whole minute.
-            # Marked soft: the legs' own evidence replaces it when they show.
-            if self._settled_hidden(st, raw, ts):
-                st.stable = Posture.SITTING
+            # table, a sofa arm), body inside the frame (bench, 2026-09-29: 13 of
+            # 14 seated office workers stayed UNKNOWN for a whole minute).
+            # Moving upright = STANDING (people walk upright); settled upright =
+            # SITTING. Either is soft: the legs' own evidence replaces it when
+            # they show. From there on the person's OWN head height is the
+            # reference: walking behind a table and stopping keeps the head
+            # where it was — standing — and a real sit-down behind it drops the
+            # head and the hips (the switch below needs both).
+            want = self._hidden_posture(st, raw, ts)
+            if want is not None:
+                st.stable = want
                 st.soft = True
         elif (raw.legs_visible is False and not raw.truncated_bottom
                 and st.stable in (Posture.STANDING, Posture.SITTING)):
@@ -445,6 +452,7 @@ class PostureTracker:
                          settings.posture_confirm_secs):
                     st.stable = want
                     st.occluded_streak = 0
+                    st.soft = False           # a seen head + hip movement
             else:
                 st.occluded_streak = 0
         else:
@@ -474,13 +482,30 @@ class PostureTracker:
         return out(stable)
 
     # ---- transition helpers -----------------------------------------
+    def _hidden_posture(self, st: _TrackState, raw: PostureResult, ts) -> Posture | None:
+        """No posture yet, legs hidden: STANDING once the HIPS have been
+        travelling (walking — arms and head moving at a desk do not move the
+        hips) for the confirm window, SITTING once upright and settled
+        (_settled_hidden); None until either has held."""
+        if raw.torso_angle_deg >= settings.posture_hidden_sit_max_torso_deg:
+            st.still_anchor, st.move_streak = None, 0
+            return None
+        if self._hip_travel(st) >= settings.posture_hidden_walk_travel:
+            st.still_anchor = None
+            if st.move_streak == 0:
+                st.move_since = ts
+            st.move_streak += 1
+            return (Posture.STANDING if _held(st.move_streak, st.move_since, ts,
+                                              settings.walking_confirm_frames,
+                                              settings.posture_confirm_secs) else None)
+        st.move_streak = 0
+        return Posture.SITTING if self._settled_hidden(st, raw, ts) else None
+
     @staticmethod
     def _settled_hidden(st: _TrackState, raw: PostureResult, ts) -> bool:
-        """Upright, and the hips (else the keypoint centroid) have stayed within
-        posture_hidden_sit_max_move torso-lengths for posture_hidden_sit_secs."""
-        if raw.torso_angle_deg >= settings.posture_hidden_sit_max_torso_deg:
-            st.still_anchor = None
-            return False
+        """The hips (else the keypoint centroid) have stayed within
+        posture_hidden_sit_max_move torso-lengths for posture_hidden_sit_secs
+        (the caller has checked the person is upright)."""
         x, y = (raw.hip_x, raw.hip_y) if raw.hip_y > 0.0 else raw.centroid_xy
         a = st.still_anchor
         if (a is None or math.hypot(x - a[0], y - a[1])
@@ -575,6 +600,14 @@ class PostureTracker:
                 and (hip_dy is None or hip_dy <= -hip)):     # ...and the hips went up
             return Posture.STANDING
         return None
+
+    def _hip_travel(self, st: _TrackState) -> float:
+        """How far the hips moved over the motion window, in torso lengths."""
+        if len(st.last_hips) < 2:
+            return 0.0
+        _t0, x0, y0, _r0 = self._window_start(st.last_hips)
+        _t1, x1, y1, ref = st.last_hips[-1]
+        return math.hypot(x1 - x0, y1 - y0) / max(ref, 1.0)
 
     def _hip_shift(self, st: _TrackState) -> float | None:
         """Vertical hip movement over the motion window in torso lengths
