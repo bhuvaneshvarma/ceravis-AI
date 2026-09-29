@@ -17,8 +17,10 @@ ingestion/illumination.py) — because the two are matched against different
 galleries. The tracker drops appearance history on a modality switch, so a
 record is never a blend of the two.
 
-A record may also carry the track's latest FACE look (reid/face_identity.py),
-set separately at the ReID rate and kept across the per-tick body updates.
+A record also carries the track's recent USABLE face looks (reid/face_identity
+.py) — a few, not one: a face decision is made on several looks, never on a
+single glance. They are set separately and kept across the per-tick body
+updates.
 """
 
 import time
@@ -36,10 +38,26 @@ class TrackFeature:
     frame_id: int
     timestamp: datetime
     modality: str = "color"
-    face: np.ndarray | None = None    # latest unit face vector, if seen
-    face_px: float = 0.0              # its width in frame pixels
-    face_at: float = 0.0              # monotonic time it was seen
+    # Recent usable face looks, oldest first: (unit face vector, width px,
+    # monotonic time). At most _FACE_LOOKS are kept.
+    face_looks: tuple = ()
     face_looked: float = 0.0          # monotonic time of the latest look, face or not
+
+    @property
+    def face(self) -> np.ndarray | None:
+        """The latest usable face vector, or None."""
+        return self.face_looks[-1][0] if self.face_looks else None
+
+    @property
+    def face_px(self) -> float:
+        return self.face_looks[-1][1] if self.face_looks else 0.0
+
+    @property
+    def face_at(self) -> float:
+        return self.face_looks[-1][2] if self.face_looks else 0.0
+
+
+_FACE_LOOKS = 6
 
 
 class TrackFeatureBuffer:
@@ -60,8 +78,7 @@ class TrackFeatureBuffer:
             per[track_id] = TrackFeature(
                 smooth=smooth, curr=curr, frame_id=frame_id, timestamp=timestamp,
                 modality=modality,
-                face=old.face if old else None, face_px=old.face_px if old else 0.0,
-                face_at=old.face_at if old else 0.0,
+                face_looks=old.face_looks if old else (),
                 face_looked=old.face_looked if old else 0.0)
 
     def set_face(self, camera_id: str, track_id: int, face: np.ndarray | None,
@@ -73,7 +90,8 @@ class TrackFeatureBuffer:
             if rec is not None:
                 rec.face_looked = time.monotonic()
                 if face is not None:
-                    rec.face, rec.face_px, rec.face_at = face, float(face_px), rec.face_looked
+                    rec.face_looks = (rec.face_looks
+                                      + ((face, float(face_px), rec.face_looked),))[-_FACE_LOOKS:]
 
     def get(self, camera_id: str, track_id: int) -> TrackFeature | None:
         with self._lock:

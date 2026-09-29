@@ -44,11 +44,15 @@ found nothing:
               recipient.
 
 Face evidence (reid/face_identity.py) is folded into the same decisions
-where the rule set enables it (face_enabled; never at night): a visible face that clearly is NOT the recipient vetoes a candidate
-and releases a lock outright; one that clearly IS them lets a body match at the
-verify bar take a new lock, keeps a lock through body drift (new clothes) and
-lets that look be learned. No face in view = the body rules, unchanged. Bars
-from a joint body+face test on the bench — see settings.face_*.
+where the rule set enables it (face_enabled; never at night), and it comes
+FIRST. It is judged on the track's usable looks of the last few seconds, never
+on one glance: several looks that all say "someone else" veto a candidate and
+release a lock; several that say "the recipient" CONFIRM — which takes a new
+lock whatever the clothes (the body bar and the clothes-based recency /
+bystander vetoes do not apply; only another enrolled person's body can
+contradict it), keeps a lock through body drift, and lets the new outfit be
+learned. No usable face = the body rules, unchanged. Bars from a joint
+body+face test on the bench — see settings.face_*.
 
 Every lock carries its BASIS — "verified" (a gallery match; every daytime lock),
 "continuity" or "context" — so consumers and the monitor can say how sure it is.
@@ -135,8 +139,9 @@ class LockOutcome:
     # Infrared: `adaptive` is approved for the IR gallery (a learnable lock in
     # solitude). By day this is always False and `adaptive` keeps its meaning.
     learn_ir: bool = False
-    # The target's own face confirmed them this tick: `adaptive` may be learned
-    # even below reid_adaptive_min_score (their body looks different today).
+    # The target's own face confirmed them this tick (verify, or a face-first
+    # acquire): `adaptive` may be learned even below reid_adaptive_min_score —
+    # their body looks different today, and the face vouches for it.
     face_confirmed: bool = False
 
 
@@ -307,6 +312,7 @@ class TargetLockManager:
                         and self._alone(boxes, tid)):
                     out.adaptive = (tid, st.recipient_id, score)
                     out.learn_ir = ir and st.learnable
+                    out.face_confirmed = self._last_face_first
                 return out
             if rules.lock_hold_uncontradicted:
                 rejoin = self._night_rejoin(st, boxes, feat_for, ir)
@@ -354,6 +360,7 @@ class TargetLockManager:
                     and self._alone(boxes, tid)):
                 out.adaptive = (tid, rid, score)
                 out.learn_ir = ir and st.learnable
+                out.face_confirmed = self._last_face_first
             return out
         if (rules.lock_context_identity and night is not None
                 and night.sole_recipient and len(boxes) == 1):
@@ -376,6 +383,7 @@ class TargetLockManager:
     # ---- helpers -----------------------------------------------------
     _last_match_rid: str | None = None
     _last_recency: float | None = None
+    _last_face_first: bool = False         # the last pick was made by the face
     _rules = scene_rules.DAY               # this tick's rule set (set in update)
 
     # ---- night-vision helpers ------------------------------------------
@@ -408,25 +416,32 @@ class TargetLockManager:
     _face_for = None
 
     def _face_verdict(self, tid: int, recipient_id: str | None, ir: bool) -> str | None:
-        """'veto' / 'confirm' / None from the track's latest face look — where
-        the rule set enables faces, and only for a face wide enough to be
-        evidence. 'pending' when the face could be read but has not been looked
-        at yet; 'weak' for a readable face that neither vetoes nor vouches
-        (< face_acquire_score)."""
+        return self._face_eval(tid, recipient_id, ir)[0]
+
+    def _face_eval(self, tid: int, recipient_id: str | None, ir: bool):
+        """(verdict, best score) from the track's usable face looks of the last
+        face_max_age_secs — where the rule set enables faces. Verdicts:
+          'pending' not looked at yet (a new lock waits for the look);
+          'veto'    >= face_veto_min_looks usable looks, ALL below the veto bar;
+          'confirm' >= face_confirm_min_looks looks at or above the confirm bar;
+          'weak'    a readable face that does not vouch (best < acquire bar);
+          None      no usable face / nothing decisive either way.
+        One glance never decides: a turned or small face is not a usable look
+        (reid/face_identity.py), and a verdict needs several."""
         rules = scene_rules.for_ir(ir)
         if self._face_for is None or not recipient_id or not rules.face_enabled:
-            return None
+            return None, None
         f = self._face_for(tid, recipient_id)
         if f is None:
-            return "pending"
-        score, px = f
-        if score is None or px < rules.face_min_px:
-            return None
-        if score < rules.face_veto_score:
-            return "veto"
-        if score >= rules.face_confirm_score:
-            return "confirm"
-        return "weak" if score < rules.face_acquire_score else None
+            return "pending", None
+        best, n, n_pass = f
+        if best is None or not n:
+            return None, None
+        if n >= rules.face_veto_min_looks and best < rules.face_veto_score:
+            return "veto", best
+        if n_pass >= rules.face_confirm_min_looks:
+            return "confirm", best
+        return ("weak" if best < rules.face_acquire_score else None), best
 
     def _contradicted(self, feat, m, recipient_id: str) -> bool:
         """Positive evidence this is NOT the recipient: another enrolled person
@@ -517,21 +532,28 @@ class TargetLockManager:
         gamble on which one is real. Steady-state verification above stays on the
         gallery alone; all of this applies only to acquire / reacquire.
 
+        FACE FIRST: a candidate whose own face CONFIRMS the recipient (several
+        usable looks) is taken ahead of every body match, whatever they wear —
+        clothes are exactly what the body score and the recency / bystander
+        vetoes measure, so none of those apply to it. Two face-confirmed
+        candidates lock nobody.
+
         `ir` matches in the infrared gallery, with the infrared recency
         window; every bar comes from this tick's rule set."""
         self._last_match_rid = None
         self._last_recency = None
+        self._last_face_first = False
         scored = []  # (fused_score, tid, view, box, recipient_id, recency, face)
+        faced = []   # face-confirmed: (face best, tid, view, box, recipient_id)
         for tid, box in boxes.items():
             feat = feat_for(tid)
             if feat is None:
                 continue
             m = self._match(feat, ir)
-            if not m.is_match:
-                continue
-            if want is not None and m.recipient_id != want:
-                continue
-            face = self._face_verdict(tid, m.recipient_id, ir)
+            rid = want if want is not None else m.recipient_id
+            if m.is_match and m.recipient_id != rid:
+                continue                      # the body is ANOTHER enrolled person
+            face, fbest = self._face_eval(tid, rid, ir)
             key = (camera_id, tid)
             if face == "veto":
                 self._face_no[key] = time.monotonic()
@@ -542,10 +564,15 @@ class TargetLockManager:
                     self._face_no.pop(key, None)
                 elif face != "confirm":
                     continue                  # only the face may undo its own "no"
-            if acquire and face == "weak":
-                continue                      # a readable face must vouch for a NEW lock
             if spatial_from is not None and not self._within(spatial_from, box):
                 continue
+            if face == "confirm":
+                faced.append((fbest, tid, m.view_label, box, rid))
+                continue
+            if not m.is_match:
+                continue
+            if acquire and face == "weak":
+                continue                      # a readable face must vouch for a NEW lock
             score, rec = self._fuse(m.recipient_id, m.score, feat, ir)
             if score is None:
                 continue                      # recency veto — see _fuse
@@ -565,6 +592,13 @@ class TargetLockManager:
                         w = settings.reid_continuation_weight
                         score = (1.0 - w) * score + w * cont
             scored.append((score, tid, m.view_label, box, m.recipient_id, rec, face))
+        if faced:
+            if len(faced) > 1:
+                return None                   # two faces say "recipient" — pick nobody
+            fbest, tid, view, box, rid = faced[0]
+            self._last_match_rid = rid
+            self._last_face_first = True
+            return (tid, fbest, view, box)
         if not scored:
             return None
         scored.sort(key=lambda t: t[0], reverse=True)
@@ -573,7 +607,7 @@ class TargetLockManager:
                 and best[0] - scored[1][0] < self._rules.reid_target_pick_margin):
             return None                       # a look-alike ties the winner — pick nobody
         bar = self._rules.reid_acquire_min_score
-        if acquire and best[0] < bar and best[6] != "confirm":
+        if acquire and best[0] < bar:
             return None                       # not confident enough for a NEW lock
         if acquire and best[6] == "pending":
             # Body alone never takes a NEW lock before the face had its look

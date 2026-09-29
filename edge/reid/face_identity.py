@@ -48,6 +48,14 @@ def _path(p: str) -> Path:
     return q if q.is_absolute() else _EDGE_ROOT / q
 
 
+def yaw_ratio(face: np.ndarray) -> float:
+    """How far a YuNet face is turned: the nose's offset from the eyes' midpoint
+    in eye-distances (0 = straight at the camera, ~0.5 = half profile)."""
+    (rx, ry), (lx, ly), (nx, _ny) = face[4:6], face[6:8], face[8:10]
+    eye = max(float(np.hypot(lx - rx, ly - ry)), 1.0)
+    return abs(float(nx) - (rx + lx) / 2.0) / eye
+
+
 def _similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     """Least-squares similarity transform (Umeyama) mapping src -> dst, 2x3."""
     ms, md = src.mean(0), dst.mean(0)
@@ -89,17 +97,28 @@ class FaceIdentity:
 
     def embed_person(self, frame: np.ndarray, bbox) -> tuple[np.ndarray | None, float]:
         """(unit 512-d face vector, face width in px) for the person whose box is
-        `bbox` (x1, y1, x2, y2 in frame pixels), or (None, 0.0)."""
+        `bbox` (x1, y1, x2, y2 in frame pixels), or (None, 0.0) when no USABLE
+        face of THEIRS shows.
+
+        Theirs: the face's centre lies inside their own box — a neighbour's face
+        at the edge of the padded region is not their evidence. Usable: at least
+        face_min_px wide and turned no more than face_max_yaw_ratio. A small or
+        turned face is exactly where the recipient scores like a stranger (bench,
+        2026-09-24: their own looks 0.17-0.29 at 35-47 px, 0.42-0.60 at >= 110
+        px), so such a look is never evidence."""
         if not self.ready:
             return None, 0.0
         x1, y1, x2, y2 = bbox
-        region, _, _ = crop_person(frame, x1, y1, x2, y1 + _UPPER_FRAC * (y2 - y1), 0.15)
+        region, ox, _ = crop_person(frame, x1, y1, x2, y1 + _UPPER_FRAC * (y2 - y1), 0.15)
         if region.size == 0 or min(region.shape[:2]) < _MIN_REGION_PX:
             return None, 0.0
-        faces = self._faces(region, _LIVE_MAX_PX)
+        faces = [f for f in self._faces(region, _LIVE_MAX_PX)
+                 if x1 <= ox + f[0] + f[2] / 2.0 <= x2]
         if not faces:
             return None, 0.0
         best = max(faces, key=lambda r: r[-1])
+        if best[2] < settings.face_min_px or yaw_ratio(best) > settings.face_max_yaw_ratio:
+            return None, 0.0
         return self._feature(region, best), float(best[2])
 
     def embed_photo(self, img: np.ndarray) -> tuple[np.ndarray | None, str]:
@@ -113,7 +132,7 @@ class FaceIdentity:
         faces.sort(key=lambda r: float(r[2] * r[3]), reverse=True)
         if len(faces) > 1 and faces[1][2] * faces[1][3] >= 0.5 * faces[0][2] * faces[0][3]:
             return None, "two faces"
-        if faces[0][2] < settings.face_min_px:
+        if faces[0][2] < settings.face_enroll_min_px:
             return None, "face too small"
         v = self._feature(img, faces[0])
         return (v, "") if v is not None else (None, "no face")

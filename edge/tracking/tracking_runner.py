@@ -248,13 +248,18 @@ class TrackingRunner:
                 self._shots.prune(camera_id, alive)
 
     def _maybe_face(self, camera_id: str, tracks, ir: bool) -> None:
-        """Attach a face look to the tracks whose identity is in question.
+        """Attach face looks to the tracks whose identity is in question — on
+        a camera whose rule set uses faces (the night set does not), for a
+        recipient with enrolled faces, at most at the ReID rate.
 
-        Only where it can change a decision, so the CPU cost stays small: a
-        camera whose rule set uses faces (the night set does not), a recipient
-        with enrolled faces, at the ReID rate, and only tracks whose body
-        already matches the gallery at the verify bar — or the locked target
-        itself, whose face can confirm it or give it away."""
+          SEARCHING (the recipient is locked on no camera): the face comes
+            first, so everyone here is looked at — the longest-unlooked first,
+            face_search_max_per_tick per tick — and a face that confirms the
+            recipient can lock them in any clothes.
+          LOCKED (here or next door): the tracker carries identity between
+            looks. The target, and anyone whose body could pass for them, is
+            re-checked only every face_recheck_secs — enough to catch an id
+            swap in a huddle, a small fraction of the per-tick cost."""
         rules = scene_rules.for_ir(ir)
         if (self._face_gallery is None or self._face_gallery.size == 0
                 or self._features is None or self._frames is None
@@ -273,13 +278,25 @@ class TrackingRunner:
         if fd is None:
             return
         target = self._targets.get(camera_id) if self._targets is not None else None
+        locked = target is not None or bool(self._targets and self._targets.all())
+        due = []
         for t in tracks:
             rec = self._features.get(camera_id, t.track_id)
             if rec is None:
                 continue
+            if not locked:
+                due.append((rec.face_looked, t))
+                continue
+            if now - rec.face_looked < settings.face_recheck_secs:
+                continue
             if (t.track_id != target and self._gallery.match(rec.smooth).score
                     < rules.reid_match_threshold):
-                continue                       # not a candidate — no face needed
+                continue                       # cannot pass for them — no face needed
+            due.append((rec.face_looked, t))
+        due.sort(key=lambda d: d[0])
+        if not locked:
+            due = due[:settings.face_search_max_per_tick]
+        for _, t in due:
             face, px = self._face.embed_person(
                 fd.frame, (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2))
             self._features.set_face(camera_id, t.track_id, face, px)

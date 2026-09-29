@@ -96,6 +96,7 @@ class ReIDRunner:
         # lock a second person (bench, 2026-09-24 18:48 and 18:52).
         self._last_person: dict[str, float] = {}
         self._last_match: dict[str, float] = {}
+        self._last_face: dict[str, float] = {}    # newest face look evaluated
         # The recipient's current track per camera, so the instant it departs we
         # file a recipient-TAGGED exit record — the evidence that re-finds them
         # in the next room (reid/track_memory.target_continuation).
@@ -138,7 +139,8 @@ class ReIDRunner:
             if sleep > 0:
                 time.sleep(sleep)
 
-    def _identity_event(self, camera_id: str, ids: frozenset) -> str | None:
+    def _identity_event(self, camera_id: str, ids: frozenset,
+                        face_at: float = 0.0) -> str | None:
         """Why this camera needs a gallery match THIS tick, or None to skip.
 
         A stable set of tracks carries its identities for free — BoT-SORT
@@ -147,7 +149,10 @@ class ReIDRunner:
         for an hour cost ~10,800 matches at a flat 3 Hz.
 
         The heartbeat is the safety net: a long-held lock is re-checked
-        occasionally so a slow drift onto the wrong person cannot persist."""
+        occasionally so a slow drift onto the wrong person cannot persist.
+        A new FACE look on this camera (`face_at`, the newest look time) is an
+        event too: face evidence arrives a moment after a track is born, and
+        waiting for the heartbeat would hold a face-confirmed lock back 20 s."""
         now = time.monotonic()
         prev = self._seen_tracks.get(camera_id)
         self._seen_tracks[camera_id] = ids
@@ -165,6 +170,9 @@ class ReIDRunner:
             return fire('new track')    # a track was born or re-entered
         if prev - ids:
             return fire('track lost')   # someone left; the lock may be stale
+        if face_at > self._last_face.get(camera_id, 0.0):
+            self._last_face[camera_id] = face_at
+            return fire('face look')
         if (now - self._last_match.get(camera_id, now)) >= settings.reid_heartbeat_secs:
             return fire('heartbeat')
         return None
@@ -229,7 +237,9 @@ class ReIDRunner:
                             and self._targets.get(camera_id) is None)
             if settings.reid_event_driven and not night_search:
                 ids = frozenset(t.track_id for t in track_result.tracks)
-                if self._identity_event(camera_id, ids) is None:
+                looks = [r.face_looked for r in (self._features.get(camera_id, i)
+                                                 for i in ids) if r is not None]
+                if self._identity_event(camera_id, ids, max(looks, default=0.0)) is None:
                     # Nothing changed — BoT-SORT carries identity, so the gallery
                     # re-match is skipped. But keep the registry lock FRESH while
                     # the target's track is still here, or its TTL lapses between
@@ -252,19 +262,24 @@ class ReIDRunner:
             face_now = time.monotonic()
 
             def face_for(tid: int, rid: str):
-                """(face score vs rid's enrolled faces, face px) for this
-                track's latest face look; (None, 0) when the look found no
-                usable face; None when it has not been looked at recently."""
+                """The track's face evidence against rid's enrolled faces:
+                (best score, usable looks, looks >= face_confirm_score) over
+                its looks of the last face_max_age_secs — (None, 0, 0) when no
+                look found a usable face; None when it has not been looked at
+                recently."""
                 if self._face_gallery is None or self._face_gallery.size == 0:
-                    return (None, 0.0)          # no enrolled faces: a look can't help
+                    return (None, 0, 0)         # no enrolled faces: a look can't help
                 rec = self._features.get(camera_id, tid)
                 max_age = settings.face_max_age_secs
                 if rec is None or face_now - rec.face_looked > max_age:
                     return None
-                score = (self._face_gallery.score(rec.face, rid)
-                         if rec.face is not None and face_now - rec.face_at <= max_age
-                         else None)
-                return (None, 0.0) if score is None else (score, rec.face_px)
+                scores = [s for s in (self._face_gallery.score(v, rid)
+                                      for v, _px, at in rec.face_looks
+                                      if face_now - at <= max_age) if s is not None]
+                if not scores:
+                    return (None, 0, 0)
+                return (max(scores), len(scores),
+                        sum(1 for s in scores if s >= settings.face_confirm_score))
 
             night = (NightContext(ir=True,
                                   sole_recipient=self._sole_recipient(camera_id,

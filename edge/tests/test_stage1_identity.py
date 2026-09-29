@@ -132,7 +132,7 @@ print("\n5. gallery matching fires on EVENTS, not every tick")
 # bare instance — no FAISS, no engine, no camera needed.
 from reid.reid_runner import ReIDRunner                        # noqa: E402
 r = ReIDRunner.__new__(ReIDRunner)
-r._seen_tracks, r._last_match = {}, {}
+r._seen_tracks, r._last_match, r._last_face = {}, {}, {}
 
 check("first sighting is an event",
       r._identity_event("camA", frozenset({1})) == "first sighting")
