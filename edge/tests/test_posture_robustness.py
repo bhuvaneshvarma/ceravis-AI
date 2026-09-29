@@ -177,6 +177,26 @@ check(f"agreeing frames that have held {settings.posture_confirm_secs} s commit 
       tr5._state[("c", 5)].stable == Posture.STANDING)
 
 
+print("\n6. seated FACING the camera: the thigh points at the lens")
+from pose.posture_classifier import classify_frame   # noqa: E402
+head = {0: (200, 150), 1: (191, 148), 2: (209, 148), 3: (185, 150), 4: (215, 150),
+        5: (178, 200), 6: (222, 200), 11: (184, 300), 12: (216, 300)}
+seated = {**head, **{13: (170, 335), 14: (230, 335), 15: (180, 440), 16: (220, 440)}}
+standing = {**head, **{13: (180, 400), 14: (220, 400), 15: (184, 490), 16: (216, 490)}}
+r = classify_frame(PoseEstimation(track_id=6, camera_id="c", frame_id=0,
+                                  timestamp=clock.now(), keypoints=_kp(seated)))
+check("short thigh + long shin, knee ~153 deg (read STANDING before): SITTING",
+      r.posture == Posture.SITTING, f"{r.posture.value} knee {r.avg_knee_angle_deg:.0f}")
+r = classify_frame(PoseEstimation(track_id=6, camera_id="c", frame_id=0,
+                                  timestamp=clock.now(), keypoints=_kp(standing)))
+check("thigh ~ shin, straight knee: STANDING", r.posture == Posture.STANDING, r.posture.value)
+straight = {**head, **{13: (184, 335), 14: (216, 335), 15: (184, 440), 16: (216, 440)}}
+r = classify_frame(PoseEstimation(track_id=6, camera_id="c", frame_id=0,
+                                  timestamp=clock.now(), keypoints=_kp(straight)))
+check("a short thigh with a dead-straight knee is not enough on its own",
+      r.posture == Posture.STANDING, r.posture.value)
+
+
 if failures:
     print(f"\n{len(failures)} FAILED: " + "; ".join(failures))
     sys.exit(1)

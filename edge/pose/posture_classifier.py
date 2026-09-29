@@ -204,6 +204,20 @@ def classify_frame(pose: PoseEstimation, frame_h: int = 0) -> PostureResult:
         if present:
             knee_ang = sum(present) / len(present)
 
+    # Thigh / shin length in the IMAGE, per visible leg. Standing, both are
+    # vertical and foreshortened alike by the camera's tilt, so the ratio stays
+    # near its anatomical ~1.1 at any camera height. Seated FACING the camera,
+    # the thigh points at the lens and shrinks (to ~1.1 x tan(tilt)) while the
+    # shin stays vertical — and the 2D knee angle then reads nearly straight.
+    def _leg_ratio(h, k, a):
+        if min(kps[h][2], kps[k][2], kps[a][2]) <= _MIN_KP_CONF:
+            return None
+        shin = math.hypot(kps[a][0] - kps[k][0], kps[a][1] - kps[k][1])
+        return math.hypot(kps[k][0] - kps[h][0], kps[k][1] - kps[h][1]) / max(shin, 1.0)
+    ratios = [r for r in (_leg_ratio(LEFT_HIP, LEFT_KNEE, LEFT_ANKLE),
+                          _leg_ratio(RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE)) if r is not None]
+    thigh_shin = sum(ratios) / len(ratios) if ratios else None
+
     # ---- decision tree (view-invariant) ---------------------------
     fall_thr = settings.fall_torso_angle_deg
 
@@ -214,9 +228,16 @@ def classify_frame(pose: PoseEstimation, frame_h: int = 0) -> PostureResult:
                              legs_visible=bool(present), span_px=span, hip_x=hx, hip_y=hy)
 
     # Decide sit vs stand ONLY when the legs are actually visible (knee joint
-    # angle available). Bent knees => sitting, straight => standing.
+    # angle available). Bent knees => sitting, straight => standing — or a
+    # thigh foreshortened toward the camera with a not-quite-straight knee:
+    # someone seated facing the camera. Bench (2026-09-29, people near the
+    # camera, labelled by eye): sofa sitters read "standing" at knee 149-170
+    # deg with thigh/shin 0.57-0.82; standing/walking people 1.02-1.70.
     if present:
-        if knee_ang < 140.0:
+        foreshortened = (thigh_shin is not None
+                         and thigh_shin < settings.posture_sit_thigh_shin_max
+                         and knee_ang < settings.posture_sit_max_knee_deg)
+        if knee_ang < 140.0 or foreshortened:
             return PostureResult(Posture.SITTING, 0.80, torso_ang, knee_ang,
                                  centroid, body_ref, head_y, head_x,
                                  legs_visible=True, span_px=span, hip_x=hx, hip_y=hy)

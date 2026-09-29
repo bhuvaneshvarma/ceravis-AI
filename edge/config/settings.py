@@ -751,6 +751,15 @@ class Settings(BaseSettings):
     # frames so one bad frame cannot stamp a wrong posture that then has to be
     # corroborated away.
     posture_commit_frames: int = 2
+    # Seated facing the camera, the thigh points at the lens: its image length
+    # shrinks against the shin and the 2D knee angle reads nearly straight, so
+    # sofa sitters near the camera were classed STANDING (bench, 2026-09-29:
+    # 16 of 19 at knee 149-170 deg). thigh/shin below this with a knee below
+    # posture_sit_max_knee_deg = SITTING. Measured near the camera: sitters
+    # 0.57-0.82, standing/walking 1.02-1.70; of 45 people the rule flips, 1 real
+    # person was standing (and 8 were reflections in a glass door).
+    posture_sit_thigh_shin_max: float = 0.85
+    posture_sit_max_knee_deg: float = 172.0
     # ...and every posture change (first commit, sit<->stand, walking) must
     # ALSO have held this long: a short time window instead of a bare frame
     # count, which meant 0.25 s at 12 poses/s but 0.7 s at 4.5 (the pose rate
