@@ -373,6 +373,33 @@ try:
     check("a reader on software decoding goes back for the hardware decoder",
           sw.reconnect_count >= 1 and hw_tries >= 2,
           f"reconnects={sw.reconnect_count} hw tries={hw_tries}")
+
+    # stop() must never free a capture while the reader thread is inside
+    # read() (a use-after-free that aborted the process at a later thread exit).
+    class SlowCap(FakeCap):
+        in_read = False
+        bad = []
+
+        def read(self):
+            SlowCap.in_read = True
+            time.sleep(0.05)
+            SlowCap.in_read = False
+            return True, np.zeros((36, 64, 3), np.uint8)
+
+        def release(self):
+            SlowCap.bad.append(SlowCap.in_read)
+            self.released = True
+    object.__setattr__(rr.settings, "is_production", False)
+    rr.cv2.VideoCapture = lambda src, *a: SlowCap(src)
+    slow = rr.RTSPReader(cam, FrameBuffer(), source_url="rtsp://127.0.0.1:8554/edgeXYZ/LOUNGE",
+                         target_fps=50)
+    slow.start()
+    time.sleep(0.5)
+    slow.stop()
+    slow.join(2)
+    check("stop(): the capture is released after read() returns, never during it",
+          SlowCap.bad and not any(SlowCap.bad), str(SlowCap.bad))
+    check("...and the reader has ended", not slow._thread.is_alive())
 finally:
     rr.cv2.VideoCapture, rr._OPEN_TIMEOUT_SECS = real_vc, real_timeout
     rr._READY_POLL_SECS = real_poll

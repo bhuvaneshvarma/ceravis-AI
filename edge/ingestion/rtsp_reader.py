@@ -71,6 +71,9 @@ def _ai_fps() -> float:
 # shutdown thread until systemd SIGKILLed the service, MediaMTX and the
 # recorders 90 s later. Past this bound the release is abandoned, not awaited.
 _RELEASE_TIMEOUT_SECS = 3.0
+# How long stop() lets the reader thread leave read() and release its own
+# capture before releasing it from outside (see RTSPReader.stop).
+_STOP_WAIT_SECS = 2.0
 
 
 class RTSPReader:
@@ -167,8 +170,21 @@ class RTSPReader:
         self._watchdog_thread.start()
 
     def stop(self) -> None:
+        """Stop the reader. The reader thread itself leaves read() (a frame
+        arrives within a fraction of a second) and releases its own capture.
+        Releasing it from HERE while that thread was still inside read() freed
+        the capture under it — a use-after-free that corrupted the heap and
+        aborted the process at a later thread exit (`tcache_thread_shutdown():
+        unaligned tcache chunk detected`, 2026-09-24 and at the 2026-09-25 16:30
+        refresh). Only a reader still stuck after _STOP_WAIT_SECS (a silent
+        stream) has its capture released from here, to unblock it."""
         self._running = False
         self._health_state = CameraHealthState.OFFLINE
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(_STOP_WAIT_SECS)
+            if not t.is_alive():
+                return
         self._release(self._capture, "stop")
 
     def _release(self, cap: cv2.VideoCapture | None, why: str) -> None:
