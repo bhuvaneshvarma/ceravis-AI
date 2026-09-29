@@ -155,7 +155,7 @@ check("the head-rise with legs hidden is read as standing up (not stuck sitting)
       and last in (Posture.STANDING, Posture.WALKING), str(last))
 
 
-print("\n5. a single noisy first frame does not stamp a posture (commit needs 2)")
+print("\n5. a single noisy first frame does not stamp a posture (a short window)")
 tr5 = PostureTracker()
 t0 = clock.now()
 one = PoseEstimation(track_id=5, camera_id="c", frame_id=0, timestamp=t0,
@@ -167,7 +167,13 @@ check("one frame is not yet a committed stable posture",
 tr5.update("c", 5, PoseEstimation(track_id=5, camera_id="c", frame_id=1,
            timestamp=t0 + timedelta(seconds=0.1), keypoints=STAND),
            frame_h=FRAME_H)
-check("a second agreeing frame commits it",
+check("a second agreeing frame 0.1 s later is not yet a window",
+      tr5._state[("c", 5)].stable == Posture.UNKNOWN)
+for k in range(2, 6):                           # agreeing frames up to +0.5 s
+    tr5.update("c", 5, PoseEstimation(track_id=5, camera_id="c", frame_id=k,
+               timestamp=t0 + timedelta(seconds=0.1 * k), keypoints=STAND),
+               frame_h=FRAME_H)
+check(f"agreeing frames that have held {settings.posture_confirm_secs} s commit it",
       tr5._state[("c", 5)].stable == Posture.STANDING)
 
 

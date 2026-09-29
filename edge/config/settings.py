@@ -277,6 +277,20 @@ class Settings(BaseSettings):
     pose_input_size: int = 640
     pose_confidence_threshold: float = 0.35
     pose_fps: float = 12.0
+    # Once the target is locked its pose is SAMPLED at this rate (every 2nd
+    # frame at pose_fps): posture changes far slower than the frame rate, and
+    # every posture / fall decision is made over a time window (below). Pose
+    # was the largest GPU user with the AI on (2026-09-24: 0.49 s of GPU per s).
+    pose_locked_fps: float = 6.0
+    # The target's pose crop: padded by this fraction of the box on every side
+    # (raised arms, a foot mid-stride and a body tipping over all leave the
+    # tracker's box — the ReID crop's 0.08 cut them off), then letterboxed.
+    pose_crop_padding_frac: float = 0.25
+    # The target's skeleton is the one whose keypoint box fits the target's
+    # box (IoU >= pose_target_min_iou); one that fits a neighbour's box within
+    # pose_target_margin_iou as well is ambiguous and that frame is not read.
+    pose_target_min_iou: float = 0.3
+    pose_target_margin_iou: float = 0.1
 
     # ---- ReID (OSNet by default; FastReid supported) ----------------
     # OSNet x1_0 is light + accurate — ideal for the Orin Nano. Build its
@@ -737,6 +751,11 @@ class Settings(BaseSettings):
     # frames so one bad frame cannot stamp a wrong posture that then has to be
     # corroborated away.
     posture_commit_frames: int = 2
+    # ...and every posture change (first commit, sit<->stand, walking) must
+    # ALSO have held this long: a short time window instead of a bare frame
+    # count, which meant 0.25 s at 12 poses/s but 0.7 s at 4.5 (the pose rate
+    # varies with load, and is pose_locked_fps once the target is locked).
+    posture_confirm_secs: float = 0.4
     # A posture CHANGE is only announced (standing_up, sitting_down, walking_
     # started/stopped — each a cloud snapshot) once the new posture has held
     # this long. The classifier's own confirmations above count FRAMES, i.e. a
@@ -747,6 +766,9 @@ class Settings(BaseSettings):
     posture_event_dwell_secs: float = 3.0
     fall_torso_angle_deg: float = 60.0              # > = horizontal
     fall_confirmation_frames: int = 3
+    # ...lasting at least this long (a few hundred ms of horizontal torso, not a
+    # single frame or a burst of them) — together with the hip drop below.
+    fall_confirm_secs: float = 0.4
     fall_cooldown_secs: float = 30.0
     # ---- Fall: detection IS the alert (prioritised, no wait) ---------
     # A confirmed FALLEN label (fall_confirmation_frames of ~horizontal torso)

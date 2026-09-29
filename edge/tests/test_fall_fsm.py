@@ -51,7 +51,8 @@ def _feed(tracker, cam, tid, coords, t0, n, dt=0.1, fq=floor_q):
 
 def test_fall_fires_immediately():
     # A fall must alert the INSTANT it is detected — right after the label
-    # confirms (fall_confirmation_frames), with NO immobility wait.
+    # confirms (fall_confirmation_frames lasting fall_confirm_secs), with NO
+    # immobility wait.
     from config.settings import settings
     tr = PostureTracker()
     t0 = clock.now()
@@ -69,7 +70,9 @@ def test_fall_fires_immediately():
         t = t + timedelta(seconds=0.1)
     print(f"[immediate] fired after {fired_at} FALLEN frame(s)")
     assert fired_at, "a fall onto the floor must confirm"
-    assert fired_at <= settings.fall_confirmation_frames + 1, \
+    window = max(settings.fall_confirmation_frames,
+                 int(round(settings.fall_confirm_secs / 0.1)) + 1)
+    assert fired_at <= window, \
         "must fire as soon as the label confirms — no post-fall wait"
     print("[immediate] PASS")
 

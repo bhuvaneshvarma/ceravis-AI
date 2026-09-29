@@ -20,6 +20,13 @@ from tracking.track_buffer import TrackBuffer
 logger = logging.getLogger("pose")
 
 
+def _kp_box(pose: PoseEstimation):
+    """The box around a skeleton's confident keypoints, or None."""
+    xs = [k.x for k in pose.keypoints if k.confidence > 0.1]
+    ys = [k.y for k in pose.keypoints if k.confidence > 0.1]
+    return (min(xs), min(ys), max(xs), max(ys)) if xs and ys else None
+
+
 def _iou(a, b) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
@@ -43,6 +50,15 @@ class PoseRunner:
 
     Until a target is locked (or when ReID is disabled) it falls back to
     full-frame pose + IoU association, so posture works for everyone.
+
+    Target crop: padded by pose_crop_padding_frac (raised arms, a foot mid-
+    stride, a body tipping over all leave the tracker's box) and letterboxed by
+    the model, so the skeleton is not squashed. Anyone else inside that padded
+    crop is a risk — a neighbour's skeleton can be the most confident one — so
+    the target's skeleton is the one that FITS the target's box; a skeleton
+    that fits a neighbour as well is skipped for that frame rather than read.
+    Once locked, the target's pose runs at pose_locked_fps: posture changes far
+    slower than the frame rate, and every decision is made over a time window.
     """
 
     def __init__(
@@ -68,6 +84,7 @@ class PoseRunner:
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_seen: dict[str, int] = {}
+        self._last_target_pose: dict[str, float] = {}
 
     @property
     def is_running(self) -> bool:
@@ -127,17 +144,23 @@ class PoseRunner:
             if settings.target_only_pose and target_tid is not None:
                 tgt = next((t for t in track_result.tracks
                             if t.track_id == target_tid), None)
-                if tgt is not None and self._pose_target(camera_id, fd, tgt):
-                    continue   # handled target-only; done with this camera
+                if tgt is not None:
+                    now = time.monotonic()
+                    if (now - self._last_target_pose.get(camera_id, 0.0)
+                            < 1.0 / max(settings.pose_locked_fps, 0.1)):
+                        continue   # locked: the target's pose is sampled, not every frame
+                    if self._pose_target(camera_id, fd, tgt, track_result.tracks):
+                        self._last_target_pose[camera_id] = now
+                        continue   # handled target-only; done with this camera
 
             # Fallback: full-frame pose for everyone (pre-lock / ReID off).
             self._pose_full_frame(camera_id, fd, track_result)
 
     # ---- target-only crop path --------------------------------------
-    def _pose_target(self, camera_id: str, fd, track) -> bool:
+    def _pose_target(self, camera_id: str, fd, track, tracks=()) -> bool:
         crop, ox, oy = crop_person(
             fd.frame, track.bbox.x1, track.bbox.y1,
-            track.bbox.x2, track.bbox.y2, settings.crop_padding_frac,
+            track.bbox.x2, track.bbox.y2, settings.pose_crop_padding_frac,
         )
         if crop.size == 0:
             return False
@@ -152,10 +175,24 @@ class PoseRunner:
         if not result.poses:
             return True   # ran inference, no pose — still "handled"
 
-        # Best pose in the crop, keypoints shifted back to frame space.
-        pose = max(result.poses,
-                   key=lambda p: sum(k.confidence for k in p.keypoints))
-        shifted = self._shift(pose, ox, oy, camera_id, fd.frame_id, fd.timestamp)
+        # The TARGET's skeleton: the one that fits the target's box best —
+        # not the most confident one, which may belong to a neighbour inside
+        # the padded crop. Keypoints shifted back to frame space first.
+        tbox = (track.bbox.x1, track.bbox.y1, track.bbox.x2, track.bbox.y2)
+        others = [(t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2)
+                  for t in tracks if t.track_id != track.track_id]
+        best, best_fit = None, 0.0
+        for p in result.poses:
+            q = self._shift(p, ox, oy, camera_id, fd.frame_id, fd.timestamp)
+            kb = _kp_box(q)
+            fit = _iou(kb, tbox) if kb else 0.0
+            if fit > best_fit:
+                best, best_fit = (q, kb), fit
+        if best is None or best_fit < settings.pose_target_min_iou:
+            return True   # no skeleton of theirs this frame — hold the posture
+        shifted, kb = best
+        if any(_iou(kb, o) >= best_fit - settings.pose_target_margin_iou for o in others):
+            return True   # fits a neighbour as well: ambiguous, not read
         self._poses.update(
             result.model_copy(update={"poses": [shifted]})
         )
@@ -181,20 +218,25 @@ class PoseRunner:
             self._metrics.record(time.perf_counter() - t)
         self._poses.update(result)
 
-        for pose in result.poses:
-            xs = [k.x for k in pose.keypoints if k.confidence > 0.1]
-            ys = [k.y for k in pose.keypoints if k.confidence > 0.1]
-            if not xs or not ys:
+        # One skeleton per person and one person per skeleton: the best-
+        # fitting pairs first. Two skeletons used to be able to land on the
+        # same track, the second overwriting the first's posture.
+        pairs = []
+        for i, pose in enumerate(result.poses):
+            pbox = _kp_box(pose)
+            if pbox is None:
                 continue
-            pbox = (min(xs), min(ys), max(xs), max(ys))
-            best_iou, best = 0.0, None
             for tr in track_result.tracks:
                 iou = _iou(pbox, (tr.bbox.x1, tr.bbox.y1, tr.bbox.x2, tr.bbox.y2))
-                if iou > best_iou:
-                    best_iou, best = iou, tr
-            if best is None or best_iou < 0.2:
+                if iou >= 0.2:
+                    pairs.append((iou, i, tr.track_id))
+        used_p, used_t = set(), set()
+        for iou, i, tid in sorted(pairs, reverse=True):
+            if i in used_p or tid in used_t:
                 continue
-            self._classify(camera_id, best.track_id, pose, frame_h=fd.height)
+            used_p.add(i)
+            used_t.add(tid)
+            self._classify(camera_id, tid, result.poses[i], frame_h=fd.height)
 
     # ---- shared posture write ---------------------------------------
     def _classify(self, camera_id: str, track_id: int,

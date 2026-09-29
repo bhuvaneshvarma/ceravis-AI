@@ -240,6 +240,13 @@ def classify_frame(pose: PoseEstimation, frame_h: int = 0) -> PostureResult:
                          span_px=span, hip_x=hx, hip_y=hy)
 
 
+def _held(streak: int, since, ts, frames: int, secs: float) -> bool:
+    """A streak confirms only when it has both enough frames AND has lasted
+    `secs` — a short window, whatever the pose rate."""
+    return (streak >= frames and since is not None
+            and (ts - since).total_seconds() >= secs)
+
+
 # =====================================================================
 # Per-track stateful tracker — adds walking + N-frame fall confirmation
 # =====================================================================
@@ -257,6 +264,13 @@ class _TrackState:
     commit_base: Posture = Posture.UNKNOWN   # candidate for the FIRST sit/stand commit
     commit_streak: int = 0              # agreeing frames toward that first commit
     occluded_streak: int = 0            # head-only sit/stand (legs hidden) toward a switch
+    # When each streak began: a streak confirms only once it has ALSO lasted a
+    # minimum time (_held), so a burst of fast frames cannot decide.
+    fall_since: datetime | None = None
+    walk_since: datetime | None = None
+    sit_stand_since: datetime | None = None
+    commit_since: datetime | None = None
+    occluded_since: datetime | None = None
     # ---- the ONE fall machine (label depth = alert depth, no wait) ----
     fall_down: bool = False              # DOWN: streak-confirmed horizontal (label)
     fall_alerted: bool = False           # latch: one alert per fall episode
@@ -271,8 +285,13 @@ class PostureTracker:
 
     Adds:
       - WALKING: STANDING + centroid motion > threshold over window
-      - FALLEN: requires N consecutive FALLEN frames (default 3)
+      - FALLEN: N consecutive horizontal frames lasting >= fall_confirm_secs
       - Cooldown so we don't re-emit FALLEN within fall_cooldown_secs
+
+    Every change is decided over a short WINDOW, never a single frame: a new
+    posture needs its frame count AND posture_confirm_secs (a fall,
+    fall_confirm_secs). Frame counts alone meant 0.25 s at 12 poses/s but 0.7 s
+    at 4.5, and the pose rate varies with load and with the lock.
     """
 
     HISTORY = 8
@@ -339,24 +358,32 @@ class PostureTracker:
         # fraction of body length, sustained for N frames. UNKNOWN frames (e.g.
         # legs left the frame) HOLD the confirmed state — so a small shift while
         # seated can no longer flip the label to standing.
+        ts = pose.timestamp
         base = raw.posture if raw.posture in (Posture.STANDING, Posture.SITTING) else None
         if base is not None:
             if st.stable in (Posture.UNKNOWN, Posture.FALLEN):
                 # First commit needs a few AGREEING frames, so one foreshortened
                 # (ceiling-mounted) knee read can't stamp a wrong starting posture
                 # that then has to be corroborated back off.
-                st.commit_streak = (st.commit_streak + 1
-                                    if base == st.commit_base else 1)
+                if base == st.commit_base and st.commit_streak:
+                    st.commit_streak += 1
+                else:
+                    st.commit_streak, st.commit_since = 1, ts
                 st.commit_base = base
-                if st.commit_streak >= settings.posture_commit_frames:
+                if _held(st.commit_streak, st.commit_since, ts,
+                         settings.posture_commit_frames, settings.posture_confirm_secs):
                     st.stable = base
                     st.commit_streak = 0
                 st.sit_stand_streak = 0
             elif base == st.stable:
                 st.sit_stand_streak = 0
             elif self._head_supports(st, st.stable, base) and not self._receding(st):
+                if st.sit_stand_streak == 0:
+                    st.sit_stand_since = ts
                 st.sit_stand_streak += 1
-                if st.sit_stand_streak >= settings.posture_transition_confirm_frames:
+                if _held(st.sit_stand_streak, st.sit_stand_since, ts,
+                         settings.posture_transition_confirm_frames,
+                         settings.posture_confirm_secs):
                     st.stable = base
                     st.sit_stand_streak = 0
             else:
@@ -369,8 +396,12 @@ class PostureTracker:
             # shift alone — the case that was stuck reporting STANDING forever.
             want = self._occluded_transition(st, raw)
             if want is not None and want != st.stable:
+                if st.occluded_streak == 0:
+                    st.occluded_since = ts
                 st.occluded_streak += 1
-                if st.occluded_streak >= settings.posture_transition_confirm_frames:
+                if _held(st.occluded_streak, st.occluded_since, ts,
+                         settings.posture_transition_confirm_frames,
+                         settings.posture_confirm_secs):
                     st.stable = want
                     st.occluded_streak = 0
             else:
@@ -387,8 +418,14 @@ class PostureTracker:
 
         # ---- walking: confirmed standing + sustained, scale-normalized motion
         if stable == Posture.STANDING:
-            st.walk_streak = st.walk_streak + 1 if self._is_moving(st, raw) else 0
-            if st.walk_streak >= settings.walking_confirm_frames:
+            if self._is_moving(st, raw):
+                if st.walk_streak == 0:
+                    st.walk_since = ts
+                st.walk_streak += 1
+            else:
+                st.walk_streak = 0
+            if _held(st.walk_streak, st.walk_since, ts,
+                     settings.walking_confirm_frames, settings.posture_confirm_secs):
                 return out(Posture.WALKING)
         else:
             st.walk_streak = 0
@@ -481,7 +518,7 @@ class PostureTracker:
         """Single owner of the fall signal — detection IS the alert, no wait:
 
           DOWN   — N consecutive ~horizontal frames (fall_confirmation_frames)
-                   whose HIPS dropped on the way (_hip_drop): the FALLEN posture
+                   lasting >= fall_confirm_secs, whose HIPS dropped on the way (_hip_drop): the FALLEN posture
                    label update() returns (monitor dot, rules). Latched for the
                    rest of the horizontal streak, so lying still stays FALLEN.
           ALERT  — the SAME DOWN, at/near the ground, raised the INSTANT it is
@@ -497,11 +534,14 @@ class PostureTracker:
         zone drawn a confirmed horizontal is taken as a fall (fail loud)."""
         # ---- DOWN: the label-level state ----------------------------
         if raw.posture == Posture.FALLEN:      # torso ~horizontal this frame
+            if st.fall_streak == 0:
+                st.fall_since = ts
             st.fall_streak += 1
         else:
             st.fall_streak = 0
             st.fall_down = False
-        if st.fall_streak >= settings.fall_confirmation_frames and not st.fall_down:
+        if (_held(st.fall_streak, st.fall_since, ts, settings.fall_confirmation_frames,
+                  settings.fall_confirm_secs) and not st.fall_down):
             need = settings.fall_min_hip_drop
             st.fall_down = need <= 0 or self._hip_drop(camera_id, track_id, st, raw, ts) >= need
 
