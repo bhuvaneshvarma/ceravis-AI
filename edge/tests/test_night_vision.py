@@ -612,8 +612,8 @@ with tempfile.TemporaryDirectory() as tmp:
 from tracking.botsort import BoTSORT                        # noqa: E402
 
 bt = BoTSORT(track_high_thresh=0.5, track_low_thresh=0.1, new_track_thresh=0.6,
-             match_thresh=0.8, track_buffer=30, proximity_thresh=0.5,
-             appearance_thresh=0.25, with_reid=True, frame_rate=10.0)
+             match_thresh=0.8, proximity_thresh=0.5,
+             appearance_thresh=0.25, with_reid=True, lost_secs=2.0)
 xywh = np.array([[150.0, 250.0, 90.0, 300.0]], np.float32)
 for _ in range(3):
     tracks = bt.update(xywh, np.array([0.9], np.float32), np.stack([DAY_A]))

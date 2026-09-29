@@ -142,11 +142,10 @@ class TrackingRunner:
                 track_low_thresh=settings.tracker_low_thresh,
                 new_track_thresh=settings.tracker_new_track_thresh,
                 match_thresh=settings.tracker_match_thresh,
-                track_buffer=settings.tracker_track_buffer,
                 proximity_thresh=settings.tracker_proximity_thresh,
                 appearance_thresh=settings.tracker_appearance_thresh,
                 with_reid=self._with_reid,
-                frame_rate=settings.detection_fps,
+                lost_secs=settings.tracker_lost_secs,
             )
         return self._trackers[camera_id]
 
@@ -200,6 +199,12 @@ class TrackingRunner:
             persons = [d for d in det_result.detections
                        if d.class_name == DetectionClass.PERSON]
             if not persons:
+                # Still a tracker step: every track goes LOST and expires on
+                # time, so nobody's id outlives an empty room and is handed to
+                # the next person who appears at the same spot.
+                if camera_id in self._trackers:
+                    self._trackers[camera_id].update(
+                        np.zeros((0, 4), np.float32), np.zeros(0, np.float32), None)
                 self._tracks.update(TrackResult(
                     camera_id=camera_id, frame_id=det_result.frame_id,
                     timestamp=det_result.timestamp, tracks=[]))

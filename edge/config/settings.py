@@ -486,11 +486,17 @@ class Settings(BaseSettings):
     # Two-stage ByteTrack association + Kalman + OSNet appearance fusion. The
     # appearance term (the SAME OSNet that feeds the gallery) is what stops the
     # target ID jumping to a person who crosses in front; a lost track is kept
-    # for tracker_track_buffer frames and re-matched by appearance on return.
+    # for tracker_lost_secs and re-matched by appearance on return.
     tracker_high_thresh: float = 0.5
     tracker_low_thresh: float = 0.1
     tracker_new_track_thresh: float = 0.6
-    tracker_track_buffer: int = 30           # frames a lost track survives for re-id
+    # How long a LOST track (the person missed by the detector: turned, hidden
+    # behind furniture or another person) survives to be re-found with its own
+    # id. Seconds of wall time, not tracker updates: it was 10 updates, i.e. 1 s
+    # at the active detection rate but 5 s at the idle rate, and frames with
+    # nobody in them did not count at all — so a track could outlive an empty
+    # room indefinitely and be inherited by the next person at that spot.
+    tracker_lost_secs: float = 2.0
     tracker_match_thresh: float = 0.8
     tracker_proximity_thresh: float = 0.5    # appearance is vetoed below this IoU
     tracker_appearance_thresh: float = 0.25  # max appearance distance to fuse

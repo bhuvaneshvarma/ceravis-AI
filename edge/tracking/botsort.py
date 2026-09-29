@@ -24,6 +24,8 @@ static wall units, so GMC would only add per-frame optical-flow cost.
 
 from enum import IntEnum
 
+import time
+
 import numpy as np
 
 from tracking.kalman_filter import KalmanFilterWH
@@ -60,6 +62,7 @@ class STrack:
         self.smooth_feat: np.ndarray | None = None
         self.curr_feat: np.ndarray | None = None
         self.alpha = 0.9                     # EMA momentum for appearance
+        self.last_seen = 0.0                 # monotonic time of the last match
         if feat is not None:
             self.update_features(feat)
 
@@ -117,6 +120,7 @@ class STrack:
         self.track_id = self.next_id()
         self.frame_id = frame_id
         self.start_frame = frame_id
+        self.last_seen = time.monotonic()
 
     def re_activate(self, det: "STrack", frame_id: int, new_id: bool = False) -> None:
         self.mean, self.covariance = self.shared_kalman.update(
@@ -127,12 +131,14 @@ class STrack:
         self.state = TrackState.TRACKED
         self.is_activated = True
         self.frame_id = frame_id
+        self.last_seen = time.monotonic()
         self.score = det.score
         if new_id:
             self.track_id = self.next_id()
 
     def update(self, det: "STrack", frame_id: int) -> None:
         self.frame_id = frame_id
+        self.last_seen = time.monotonic()
         self.tracklet_len += 1
         self.mean, self.covariance = self.shared_kalman.update(
             self.mean, self.covariance, det._xywh)
@@ -184,9 +190,8 @@ class BoTSORT:
 
     def __init__(self, *, track_high_thresh: float, track_low_thresh: float,
                  new_track_thresh: float, match_thresh: float,
-                 track_buffer: int, proximity_thresh: float,
-                 appearance_thresh: float, with_reid: bool,
-                 frame_rate: float = 10.0) -> None:
+                 proximity_thresh: float, appearance_thresh: float,
+                 with_reid: bool, lost_secs: float = 2.0) -> None:
         self.track_high_thresh = track_high_thresh
         self.track_low_thresh = track_low_thresh
         self.new_track_thresh = new_track_thresh
@@ -199,7 +204,9 @@ class BoTSORT:
         self.lost_stracks: list[STrack] = []
         self.removed_stracks: list[STrack] = []
         self.frame_id = 0
-        self.max_time_lost = int(frame_rate / 30.0 * track_buffer)
+        # A lost track expires after this much WALL time (see
+        # settings.tracker_lost_secs) — the same at any detection rate.
+        self.lost_secs = float(lost_secs)
 
     def reset_appearance(self) -> None:
         """Forget every track's appearance history; keep the motion state.
@@ -305,9 +312,10 @@ class BoTSORT:
             det.activate(self.frame_id)
             activated.append(det)
 
-        # ---- expire lost tracks past the buffer ----
+        # ---- expire lost tracks past their time ----
+        now = time.monotonic()
         for track in self.lost_stracks:
-            if self.frame_id - track.frame_id > self.max_time_lost:
+            if now - track.last_seen > self.lost_secs:
                 track.mark_removed()
                 removed.append(track)
 
