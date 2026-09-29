@@ -214,6 +214,12 @@ sitdown = [body(head_y=h, sh_y=h + 60, hip_y=h + 130, cx=390, sh_w=44)
 _, _ = feed(tr4f, 45, sitdown, t2)
 check("C: ...a real sit-down behind the furniture (head + hips down) -> sitting",
       tr4f._state[("c", 45)].stable == Posture.SITTING, str(tr4f._state[("c", 45)].stable))
+bad_first = [body(head_y=250, sh_y=310, hip_y=310, sh_w=44)]            # a hip 1 torso too high
+seated = [body(head_y=250 + (i % 2), sh_y=310, hip_y=380, sh_w=44) for i in range(80)]
+tr4h = PostureTracker()
+last, _ = feed(tr4h, 47, bad_first + seated, clock.now())
+check("one bad hip reading at a track's birth is not walking: seated -> sitting",
+      tr4h._state[("c", 47)].stable == Posture.SITTING, str(tr4h._state[("c", 47)].stable))
 typing = [body(head_y=250 + (i % 3) * 4, sh_y=310, hip_y=380, cx=200 + (i % 4) * 6, sh_w=44)
           for i in range(80)]
 tr4g = PostureTracker()

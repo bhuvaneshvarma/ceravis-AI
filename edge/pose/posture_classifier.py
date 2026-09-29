@@ -490,7 +490,7 @@ class PostureTracker:
         if raw.torso_angle_deg >= settings.posture_hidden_sit_max_torso_deg:
             st.still_anchor, st.move_streak = None, 0
             return None
-        if self._hip_travel(st) >= settings.posture_hidden_walk_travel:
+        if self._hip_travel(st) >= settings.posture_hidden_walk_travel / 2.0:
             st.still_anchor = None
             if st.move_streak == 0:
                 st.move_since = ts
@@ -515,15 +515,16 @@ class PostureTracker:
         return (ts - st.still_since).total_seconds() >= settings.posture_hidden_sit_secs
 
     @staticmethod
-    def _window_start(hist: deque):
-        """The oldest sample within walking_motion_window_secs of the newest.
+    def _window_start(hist: deque, secs: float | None = None):
+        """The oldest sample within `secs` (default walking_motion_window_secs)
+        of the newest.
         The motion window is TIME, not a frame count: with the GPU loaded, pose
         ran ~4.5 frames/s per camera, the last HISTORY samples spanned ~1.8 s,
         and every check demanding oldest-to-newest <= 1.5 s failed — sit/stand
         and walking never switched (bench, 2026-09-24)."""
         t_new = hist[-1][0]
-        return next(x for x in hist
-                    if (t_new - x[0]).total_seconds() <= settings.walking_motion_window_secs)
+        span = settings.walking_motion_window_secs if secs is None else secs
+        return next(x for x in hist if (t_new - x[0]).total_seconds() <= span)
 
     def _is_moving(self, st: _TrackState, raw: PostureResult) -> bool:
         """Scale-normalized centroid speed over the window, with a pixel floor."""
@@ -602,12 +603,19 @@ class PostureTracker:
         return None
 
     def _hip_travel(self, st: _TrackState) -> float:
-        """How far the hips moved over the motion window, in torso lengths."""
-        if len(st.last_hips) < 2:
+        """How far the hips travelled in BOTH halves of the motion window (the
+        smaller of the two), in torso lengths. Walking moves the hips all the
+        way through; one bad hip estimate at a track's birth (bench, 2026-09-29:
+        a seated man's first hip a torso too high, conf 0.23) is a single jump,
+        inside one half only."""
+        if len(st.last_hips) < 3:
             return 0.0
-        _t0, x0, y0, _r0 = self._window_start(st.last_hips)
-        _t1, x1, y1, ref = st.last_hips[-1]
-        return math.hypot(x1 - x0, y1 - y0) / max(ref, 1.0)
+        half = settings.walking_motion_window_secs / 2.0
+        _ta, xa, ya, _ = self._window_start(st.last_hips)
+        _tm, xm, ym, _ = self._window_start(st.last_hips, half)
+        _tb, xb, yb, ref = st.last_hips[-1]
+        ref = max(ref, 1.0)
+        return min(math.hypot(xm - xa, ym - ya), math.hypot(xb - xm, yb - ym)) / ref
 
     def _hip_shift(self, st: _TrackState) -> float | None:
         """Vertical hip movement over the motion window in torso lengths
