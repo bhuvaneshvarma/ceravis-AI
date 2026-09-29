@@ -747,6 +747,11 @@ class Settings(BaseSettings):
     # behind a desk. Larger than the corroboration frac above because here it is
     # the ONLY evidence (no knee angle to back it up).
     posture_occluded_sit_head_frac: float = 0.20
+    # ...and the HIPS must move the same way by at least this (torso lengths):
+    # standing up / sitting down moves the hips ~one torso length; a seated
+    # person lifting the head off a desk moved the head 0.40 up with the hips
+    # 0.23 DOWN (bench, 2026-09-29) and was read as standing up.
+    posture_occluded_hip_frac: float = 0.20
     # Receding guard: a person walking AWAY shrinks uniformly and their head also
     # slides down the image — which is NOT a sit. Treat a body-scale change beyond
     # this fraction over the window as approach/recede and veto a head-only
@@ -766,6 +771,14 @@ class Settings(BaseSettings):
     # person was standing (and 8 were reflections in a glass door).
     posture_sit_thigh_shin_max: float = 0.85
     posture_sit_max_knee_deg: float = 172.0
+    # Legs HIDDEN by furniture and no posture yet: upright (torso below this
+    # angle) with the hips staying within posture_hidden_sit_max_move torso-
+    # lengths for posture_hidden_sit_secs = SITTING (soft: replaced by the legs'
+    # own evidence when they show). Bench, 2026-09-29: 13 of 14 people seated at
+    # desks (knees / ankles hidden, hips visible) stayed UNKNOWN for a minute.
+    posture_hidden_sit_secs: float = 5.0
+    posture_hidden_sit_max_move: float = 0.3
+    posture_hidden_sit_max_torso_deg: float = 45.0
     # ...and every posture change (first commit, sit<->stand, walking) must
     # ALSO have held this long: a short time window instead of a bare frame
     # count, which meant 0.25 s at 12 poses/s but 0.7 s at 4.5 (the pose rate

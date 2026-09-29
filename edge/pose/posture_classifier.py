@@ -292,6 +292,11 @@ class _TrackState:
     sit_stand_since: datetime | None = None
     commit_since: datetime | None = None
     occluded_since: datetime | None = None
+    # Legs hidden, no posture yet: where the hips were when they last moved,
+    # and since when they have stayed (the seated-at-furniture read).
+    still_anchor: tuple | None = None
+    still_since: datetime | None = None
+    soft: bool = False                  # stable = SITTING was inferred, not seen
     # ---- the ONE fall machine (label depth = alert depth, no wait) ----
     fall_down: bool = False              # DOWN: streak-confirmed horizontal (label)
     fall_alerted: bool = False           # latch: one alert per fall episode
@@ -382,7 +387,10 @@ class PostureTracker:
         ts = pose.timestamp
         base = raw.posture if raw.posture in (Posture.STANDING, Posture.SITTING) else None
         if base is not None:
-            if st.stable in (Posture.UNKNOWN, Posture.FALLEN):
+            st.still_anchor = None
+            if st.stable in (Posture.UNKNOWN, Posture.FALLEN) or st.soft:
+                # (A SITTING inferred from hidden legs is replaced by the legs'
+                # own evidence as soon as they are seen, like a first commit.)
                 # First commit needs a few AGREEING frames, so one foreshortened
                 # (ceiling-mounted) knee read can't stamp a wrong starting posture
                 # that then has to be corroborated back off.
@@ -395,6 +403,7 @@ class PostureTracker:
                          settings.posture_commit_frames, settings.posture_confirm_secs):
                     st.stable = base
                     st.commit_streak = 0
+                    st.soft = False
                 st.sit_stand_streak = 0
             elif base == st.stable:
                 st.sit_stand_streak = 0
@@ -410,6 +419,17 @@ class PostureTracker:
             else:
                 st.sit_stand_streak = 0
             st.occluded_streak = 0
+        elif (raw.legs_visible is False and not raw.truncated_bottom
+                and st.stable == Posture.UNKNOWN):
+            # No posture yet and the legs are HIDDEN by furniture (a desk, a
+            # table, a sofa arm), body inside the frame: with no knee to read,
+            # someone upright whose hips have stayed put is seated — people do
+            # not stand still behind furniture for long. Bench, 2026-09-29: 13
+            # of 14 seated office workers stayed UNKNOWN for a whole minute.
+            # Marked soft: the legs' own evidence replaces it when they show.
+            if self._settled_hidden(st, raw, ts):
+                st.stable = Posture.SITTING
+                st.soft = True
         elif (raw.legs_visible is False and not raw.truncated_bottom
                 and st.stable in (Posture.STANDING, Posture.SITTING)):
             # Legs HIDDEN by furniture (a table/desk), body well inside the frame:
@@ -454,6 +474,21 @@ class PostureTracker:
         return out(stable)
 
     # ---- transition helpers -----------------------------------------
+    @staticmethod
+    def _settled_hidden(st: _TrackState, raw: PostureResult, ts) -> bool:
+        """Upright, and the hips (else the keypoint centroid) have stayed within
+        posture_hidden_sit_max_move torso-lengths for posture_hidden_sit_secs."""
+        if raw.torso_angle_deg >= settings.posture_hidden_sit_max_torso_deg:
+            st.still_anchor = None
+            return False
+        x, y = (raw.hip_x, raw.hip_y) if raw.hip_y > 0.0 else raw.centroid_xy
+        a = st.still_anchor
+        if (a is None or math.hypot(x - a[0], y - a[1])
+                > settings.posture_hidden_sit_max_move * max(raw.body_ref_px, 1.0)):
+            st.still_anchor, st.still_since = (x, y), ts
+            return False
+        return (ts - st.still_since).total_seconds() >= settings.posture_hidden_sit_secs
+
     @staticmethod
     def _window_start(hist: deque):
         """The oldest sample within walking_motion_window_secs of the newest.
@@ -512,9 +547,13 @@ class PostureTracker:
 
     def _occluded_transition(self, st: _TrackState,
                              raw: PostureResult) -> Posture | None:
-        """Sit<->stand inferred from the HEAD alone, for when a table/desk hides
-        the legs so no knee angle exists. Guarded against approach/recede — both
-        move the head vertically without any change of posture."""
+        """Sit<->stand inferred from the HEAD, for when a table/desk hides the
+        legs so no knee angle exists — corroborated by the HIPS moving the same
+        way (standing up lifts the hips ~one torso length; lifting the head off
+        a desk or leaning back while seated moves the head, not the hips: bench
+        2026-09-29, head up 0.40 torso with the hips going DOWN 0.23). Guarded
+        against approach/recede — both move the head vertically without any
+        change of posture."""
         if len(st.last_heads) < 2:
             return None
         t_old, y_old, _, _ = self._window_start(st.last_heads)
@@ -527,11 +566,26 @@ class PostureTracker:
         thr = settings.posture_occluded_sit_head_frac
         scale = self._scale_ratio(st)
         recede = settings.posture_recede_shrink_frac
-        if dy_frac >= thr and scale >= (1.0 - recede):    # head DOWN, not receding
+        hip = settings.posture_occluded_hip_frac
+        hip_dy = self._hip_shift(st)
+        if (dy_frac >= thr and scale >= (1.0 - recede)       # head DOWN, not receding
+                and (hip_dy is None or hip_dy >= hip)):      # ...and the hips came down
             return Posture.SITTING
-        if dy_frac <= -thr and scale <= (1.0 + recede):   # head UP, not approaching
+        if (dy_frac <= -thr and scale <= (1.0 + recede)      # head UP, not approaching
+                and (hip_dy is None or hip_dy <= -hip)):     # ...and the hips went up
             return Posture.STANDING
         return None
+
+    def _hip_shift(self, st: _TrackState) -> float | None:
+        """Vertical hip movement over the motion window in torso lengths
+        (+ = down), or None with too little hip history."""
+        if len(st.last_hips) < 2:
+            return None
+        t_old, _x0, y_old, _r0 = self._window_start(st.last_hips)
+        t_new, _x1, y_new, ref = st.last_hips[-1]
+        if (t_new - t_old).total_seconds() <= 0:
+            return None
+        return (y_new - y_old) / max(ref, 1.0)
 
     # ---- the ONE fall FSM -------------------------------------------
     def _update_fall_fsm(self, camera_id: str, track_id: int, st: _TrackState,

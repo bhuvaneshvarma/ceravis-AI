@@ -144,8 +144,9 @@ sit_full = body(head_y=250, sh_y=310, hip_y=380, knee_y=380, ank_y=430)
 _, t1 = feed(tr4, 4, [sit_full] * 5, t0)
 check("seeded as sitting", tr4._state[("c", 4)].stable == Posture.SITTING,
       str(tr4._state[("c", 4)].stable))
-# stand up: legs hidden by the desk again, head rises, shoulder width steady.
-standup = [body(head_y=h, sh_y=h + 60, hip_y=360, sh_w=44)
+# stand up: legs hidden by the desk again, head AND hips rise, shoulder width
+# steady (standing up lifts the hips about one torso length).
+standup = [body(head_y=h, sh_y=h + 60, hip_y=h + 130, sh_w=44)
            for h in (230, 190, 150, 120, 120, 120, 120)]
 last, _ = feed(tr4, 4, standup, t1)
 # The confirmed posture must leave SITTING; the live label may be WALKING while
@@ -153,6 +154,37 @@ last, _ = feed(tr4, 4, standup, t1)
 check("the head-rise with legs hidden is read as standing up (not stuck sitting)",
       tr4._state[("c", 4)].stable == Posture.STANDING
       and last in (Posture.STANDING, Posture.WALKING), str(last))
+
+print("\n4b. lifting the head off the desk while seated is NOT a stand")
+tr4b = PostureTracker()
+t0 = clock.now()
+_, t1 = feed(tr4b, 41, [sit_full] * 5, t0)
+lean = [body(head_y=h, sh_y=h + 60, hip_y=380 + (250 - h) // 4, sh_w=44)
+        for h in (250, 220, 190, 160, 160, 160, 160)]    # head up, hips sink back
+last, _ = feed(tr4b, 41, lean, t1)
+check("head up with the hips going down: still sitting",
+      tr4b._state[("c", 41)].stable == Posture.SITTING, str(tr4b._state[("c", 41)].stable))
+
+print("\n4c. seated at a desk from the first sight (legs never seen)")
+tr4c = PostureTracker()
+t0 = clock.now()
+desk = [body(head_y=250 + (i % 3), sh_y=310, hip_y=380, sh_w=44) for i in range(80)]
+last, _ = feed(tr4c, 42, desk[:30], t0)                 # 3 s: not yet
+check(f"before {settings.posture_hidden_sit_secs} s settled: no posture guessed",
+      tr4c._state[("c", 42)].stable == Posture.UNKNOWN)
+last, t2 = feed(tr4c, 42, desk[30:], t0 + timedelta(seconds=3.0))
+check("upright, hips still, legs hidden for longer: SITTING (soft)",
+      last == Posture.SITTING and tr4c._state[("c", 42)].soft)
+stand_legs = body(head_y=150, sh_y=210, hip_y=300, knee_y=400, ank_y=490)
+last, _ = feed(tr4c, 42, [stand_legs] * 6, t2)
+check("...and replaced by the legs' own evidence when they show (standing)",
+      tr4c._state[("c", 42)].stable == Posture.STANDING and not tr4c._state[("c", 42)].soft,
+      str(tr4c._state[("c", 42)].stable))
+walker = [body(head_y=250, sh_y=310, hip_y=380, cx=150 + 40 * i, sh_w=44) for i in range(80)]
+tr4d = PostureTracker()
+last, _ = feed(tr4d, 43, walker, clock.now())
+check("moving along behind the furniture: no sitting guessed",
+      tr4d._state[("c", 43)].stable == Posture.UNKNOWN, str(tr4d._state[("c", 43)].stable))
 
 
 print("\n5. a single noisy first frame does not stamp a posture (a short window)")
