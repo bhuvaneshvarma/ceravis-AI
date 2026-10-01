@@ -173,7 +173,7 @@ class FaceIdentity:
 
 
 class FaceGallery:
-    """recipient_id -> (K, 128) enrolled face vectors, best-cosine scoring.
+    """recipient_id -> (K, 512) enrolled face vectors, best-cosine scoring.
     Rebuilt by the enrollment worker next to the body gallery; the swap is a
     single reference assignment, so readers never see a half-built gallery."""
 
@@ -196,3 +196,7 @@ class FaceGallery:
         if g is None or feat is None:
             return None
         return float(np.max(g @ feat))
+
+    def best(self, feat: np.ndarray) -> float:
+        """Best cosine against ANY enrolled recipient's faces (0 when none)."""
+        return max((float(np.max(g @ feat)) for g in self._g.values()), default=0.0)

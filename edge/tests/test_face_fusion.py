@@ -173,6 +173,24 @@ check("nothing new -> skipped", rr._identity_event("CAM", ids, 0.0) is None)
 check("a new face look -> evaluated now", rr._identity_event("CAM", ids, 5.0) == "face look")
 check("...once", rr._identity_event("CAM", ids, 5.0) is None)
 
+print("\n6. searching: a face that already said 'not the recipient' is not re-checked")
+from types import SimpleNamespace                               # noqa: E402
+from tracking.tracking_runner import TrackingRunner             # noqa: E402
+tr = TrackingRunner.__new__(TrackingRunner)
+tr._face_gallery = g                                            # ravi = e[:3]
+stranger = e[100]                                               # cosine 0 to ravi
+now = 1000.0
+rec = SimpleNamespace(face_looks=tuple((stranger, 90.0, now - 1) for _ in range(3)))
+check("3 fresh usable looks, all clearly someone else -> answered",
+      tr._face_answered(rec, now))
+check("...but only while they are fresh",
+      not tr._face_answered(rec, now + settings.face_max_age_secs + 2))
+rec2 = SimpleNamespace(face_looks=((stranger, 90.0, now - 1), (e[0], 90.0, now - 1),
+                                   (stranger, 90.0, now - 1)))
+check("one look like the recipient keeps them in the search", not tr._face_answered(rec2, now))
+rec3 = SimpleNamespace(face_looks=((stranger, 90.0, now - 1),) * 2)
+check("too few looks -> not answered yet", not tr._face_answered(rec3, now))
+
 print()
 if FAILURES:
     raise SystemExit(f"{len(FAILURES)} check(s) FAILED: {FAILURES}")

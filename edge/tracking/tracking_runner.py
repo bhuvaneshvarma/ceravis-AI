@@ -258,9 +258,11 @@ class TrackingRunner:
         recipient with enrolled faces, at most at the ReID rate.
 
           SEARCHING (the recipient is locked on no camera): the face comes
-            first, so everyone here is looked at — the longest-unlooked first,
-            face_search_max_per_tick per tick — and a face that confirms the
-            recipient can lock them in any clothes.
+            first, so everyone here is looked at — the longest-unlooked first
+            (a new arrival before anyone), face_search_max_per_tick per tick —
+            and a face that confirms the recipient can lock them in any
+            clothes. Someone whose face has already answered "not the
+            recipient" is not looked at again until those looks age out.
           LOCKED (here or next door): the tracker carries identity between
             looks. The target, and anyone whose body could pass for them, is
             re-checked only every face_recheck_secs — enough to catch an id
@@ -290,7 +292,8 @@ class TrackingRunner:
             if rec is None:
                 continue
             if not locked:
-                due.append((rec.face_looked, t))
+                if not self._face_answered(rec, now):
+                    due.append((rec.face_looked, t))
                 continue
             if now - rec.face_looked < settings.face_recheck_secs:
                 continue
@@ -305,6 +308,17 @@ class TrackingRunner:
             face, px = self._face.embed_person(
                 fd.frame, (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2))
             self._features.set_face(camera_id, t.track_id, face, px)
+
+    def _face_answered(self, rec, now: float) -> bool:
+        """Has this person's face already said "not the recipient"? At least
+        face_veto_min_looks usable looks inside face_max_age_secs, every one
+        below the veto bar for every enrolled recipient — the same evidence
+        that vetoes them in the lock. Looking again would only repeat it."""
+        fresh = [v for v, _px, at in rec.face_looks
+                 if now - at <= settings.face_max_age_secs]
+        return (len(fresh) >= settings.face_veto_min_looks
+                and all(self._face_gallery.best(v) < settings.face_veto_score
+                        for v in fresh))
 
     def _follow_light(self, camera_id: str) -> bool:
         """Is this camera on infrared right now — and if it has just SWITCHED,
