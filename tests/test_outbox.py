@@ -277,8 +277,9 @@ check("the spooled clip survived too", outbox.blob(outbox.job(fc)) == CLIP)
 print("\n6. any answered call clears the path: what was kept goes at once")
 settings.outbox_backoff_base_secs = settings.outbox_backoff_max_secs = 60.0
 settings.outbox_overload_pause_max_urgent_secs = 60.0
+tried = outbox.job(fa)["attempts"]
 sender.start()
-until(lambda: outbox.job(fa)["attempts"] >= 1, 3.0)   # it probed, failed, paused
+until(lambda: outbox.job(fa)["attempts"] > tried, 3.0)  # it probed, failed, paused
 server.online = True
 time.sleep(0.5)
 check("while paused nothing is fired at the server", server.received == [])
