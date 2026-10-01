@@ -7,7 +7,7 @@ With the MediaMTX backbone up, the source is the rock-solid localhost
 restream (rtsp://127.0.0.1:8554/<camera>) — MediaMTX owns the actual camera
 connection, its flaky WiFi transport and its reconnects, and fans the same
 compressed stream out to live view / recording without re-encoding. This
-reader is then purely: pull loopback RTSP -> hardware-decode -> BGR frames.
+reader is then purely: pull loopback RTSP -> hardware-decode -> BGRx frames.
 
 These frames feed the AI and nothing else: no viewer is ever served from
 here, so the path is tuned solely for handing YOLO the freshest frame — no
@@ -253,10 +253,16 @@ class RTSPReader:
         depay = ("rtph265depay ! h265parse" if codec == "h265"
                  else "rtph264depay ! h264parse")
         skip = self._decode_every or 1
+        # Hardware: the GPU's converter (nvvidconv) hands over BGRx and the
+        # frame goes to the app as it is — no CPU colour pass over every 4K
+        # frame (bench, 2026-10-01: the reader 48% -> 25% of a core on the 4K
+        # camera). Only what is used loses the fourth channel (ingestion/
+        # frame_data.py). Software fallback: BGR, as before.
         decode = (("nvv4l2decoder" + (f" drop-frame-interval={skip}" if skip > 1 else ""))
-                  + " ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert"
+                  + " ! nvvidconv ! video/x-raw,format=BGRx"
                   if hw else
-                  ("avdec_h265" if codec == "h265" else "avdec_h264") + " ! videoconvert")
+                  ("avdec_h265" if codec == "h265" else "avdec_h264")
+                  + " ! videoconvert ! video/x-raw,format=BGR")
         # ZERO added buffering between the camera and YOLO, on purpose:
         #   latency=0        the loopback pull is interleaved TCP — every packet
         #                    arrives, in order, so the jitterbuffer has nothing
@@ -272,7 +278,7 @@ class RTSPReader:
             f"rtspsrc location={self._source_url} protocols=tcp "
             f"latency={int(settings.rtsp_latency_ms)} ! "
             f"{depay} ! {decode} ! "
-            f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
+            f"appsink drop=true max-buffers=1 sync=false"
         )
 
     def _open(self, name: str, pipeline: str | None) -> cv2.VideoCapture | None:

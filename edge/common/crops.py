@@ -15,6 +15,8 @@ def crop_person(frame: np.ndarray, x1: float, y1: float, x2: float, y2: float,
 
     Returns (crop, x_offset, y_offset) so keypoints found in crop space can be
     mapped back to full-frame coordinates: frame_x = crop_x + x_offset.
+    The crop is always 3-channel BGR: from a 4-channel BGRx frame (the hardware
+    decoder's own output) only the crop's pixels lose the fourth channel.
     """
     h, w = frame.shape[:2]
     bw, bh = (x2 - x1), (y2 - y1)
@@ -25,4 +27,4 @@ def crop_person(frame: np.ndarray, x1: float, y1: float, x2: float, y2: float,
     cy2 = min(h, int(y2 + py))
     if cx2 <= cx1 or cy2 <= cy1:
         return np.empty((0, 0, 3), dtype=frame.dtype), 0, 0
-    return frame[cy1:cy2, cx1:cx2], cx1, cy1
+    return frame[cy1:cy2, cx1:cx2, :3], cx1, cy1

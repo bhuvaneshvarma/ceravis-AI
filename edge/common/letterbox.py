@@ -13,6 +13,9 @@ def letterbox(frame: np.ndarray, size: int = 640,
 
     Returns (canvas, ratio, pad_x, pad_y). Map a model-space point back to
     original-frame coords with:  x_orig = (x_model - pad_x) / ratio.
+
+    A 4-channel BGRx frame (the hardware decoder's own output) is resized as
+    it is and only the small result loses its fourth channel.
     """
     h, w = frame.shape[:2]
     r = min(size / h, size / w)
@@ -20,7 +23,7 @@ def letterbox(frame: np.ndarray, size: int = 640,
     resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
     canvas = np.full((size, size, 3), color, dtype=np.uint8)
     dw, dh = (size - nw) // 2, (size - nh) // 2
-    canvas[dh:dh + nh, dw:dw + nw] = resized
+    canvas[dh:dh + nh, dw:dw + nw] = resized[..., :3]
     return canvas, r, dw, dh
 
 

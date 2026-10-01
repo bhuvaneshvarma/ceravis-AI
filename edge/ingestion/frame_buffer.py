@@ -37,7 +37,7 @@ class FrameBuffer:
         height, width = frame.shape[:2]
         frame_data = FrameData(
             camera_id=camera_id,
-            frame=frame,
+            image=frame,
             frame_id=frame_id,
             timestamp=timestamp,
             width=width,

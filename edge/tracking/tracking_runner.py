@@ -311,7 +311,7 @@ class TrackingRunner:
             due = due[:settings.face_search_max_per_tick]
         for _, t in due:
             face, px = self._face.embed_person(
-                fd.frame, (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2))
+                fd.image, (t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2))
             self._features.set_face(camera_id, t.track_id, face, px)
 
     def _face_answered(self, rec, now: float) -> bool:
@@ -363,9 +363,9 @@ class TrackingRunner:
         if fd is None:
             return
         self._last_shot[camera_id] = now
-        fh, fw = fd.frame.shape[:2]
+        fh, fw = fd.image.shape[:2]
         for t in tracks:
-            crop, _, _ = crop_person(fd.frame, t.bbox.x1, t.bbox.y1,
+            crop, _, _ = crop_person(fd.image, t.bbox.x1, t.bbox.y1,
                                      t.bbox.x2, t.bbox.y2,
                                      settings.crop_padding_frac)
             q = crop_quality.assess(crop, t.bbox, fw, fh, t.confidence, ir=ir)
@@ -440,12 +440,12 @@ class TrackingRunner:
         if fd is None:
             return None
 
-        fh, fw = fd.frame.shape[:2]
+        fh, fw = fd.image.shape[:2]
         t = time.perf_counter()
         out = []
         zero = np.zeros(settings.reid_embedding_dim, dtype=np.float32)
         for d in persons:
-            crop, _, _ = crop_person(fd.frame, d.bbox.x1, d.bbox.y1,
+            crop, _, _ = crop_person(fd.image, d.bbox.x1, d.bbox.y1,
                                      d.bbox.x2, d.bbox.y2, settings.crop_padding_frac)
             q = crop_quality.assess(crop, d.bbox, fw, fh, d.confidence, ir=ir)
             if not q.ok:

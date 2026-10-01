@@ -136,7 +136,7 @@ class DetectionRunner:
             try:
                 t = time.perf_counter()
                 result = self._detector.detect(
-                    frame=fd.frame,
+                    frame=fd.image,
                     camera_id=fd.camera_id,
                     frame_id=fd.frame_id,
                     timestamp=fd.timestamp,

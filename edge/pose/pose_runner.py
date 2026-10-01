@@ -159,7 +159,7 @@ class PoseRunner:
     # ---- target-only crop path --------------------------------------
     def _pose_target(self, camera_id: str, fd, track, tracks=()) -> bool:
         crop, ox, oy = crop_person(
-            fd.frame, track.bbox.x1, track.bbox.y1,
+            fd.image, track.bbox.x1, track.bbox.y1,
             track.bbox.x2, track.bbox.y2, settings.pose_crop_padding_frac,
         )
         if crop.size == 0:
@@ -211,7 +211,7 @@ class PoseRunner:
     def _pose_full_frame(self, camera_id: str, fd, track_result) -> None:
         t = time.perf_counter()
         result = self._estimator.estimate(
-            frame=fd.frame, camera_id=camera_id,
+            frame=fd.image, camera_id=camera_id,
             frame_id=fd.frame_id, timestamp=fd.timestamp,
         )
         if self._metrics:

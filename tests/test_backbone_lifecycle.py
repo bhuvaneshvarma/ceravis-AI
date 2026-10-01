@@ -406,6 +406,37 @@ finally:
     mtx.source_state = real_state
     object.__setattr__(rr.settings, "is_production", real_prod)
 
+print("\nthe hardware frame stays BGRx; only what is used loses the 4th channel")
+import numpy as np                                           # noqa: E402
+from common import clock                                     # noqa: E402
+from common.crops import crop_person                         # noqa: E402
+from common.letterbox import letterbox                       # noqa: E402
+from ingestion import illumination                           # noqa: E402
+hw_pipe = rr.RTSPReader(cam, FrameBuffer(), source_url="rtsp://x/LOUNGE")._gst_pipeline("h265", hw=True)
+sw_pipe = rr.RTSPReader(cam, FrameBuffer(), source_url="rtsp://x/LOUNGE")._gst_pipeline("h265", hw=False)
+check("hardware path: BGRx from nvvidconv to the app, no CPU videoconvert",
+      "format=BGRx ! appsink" in hw_pipe and "videoconvert" not in hw_pipe, hw_pipe)
+check("software fallback: BGR, as before", "videoconvert ! video/x-raw,format=BGR ! appsink" in sw_pipe)
+bgrx = np.zeros((90, 160, 4), np.uint8)
+bgrx[..., 0], bgrx[..., 1], bgrx[..., 2], bgrx[..., 3] = 10, 20, 30, 255
+fb = FrameBuffer()
+fb.update("C", bgrx, 1, clock.now(), 10.0)
+fd = fb.get("C")
+check("the buffer keeps the frame as delivered", fd.image is bgrx)
+check("the whole-frame BGR view is made on first use, and kept",
+      fd.frame.shape == (90, 160, 3) and fd.frame is fd.frame
+      and tuple(fd.frame[0, 0]) == (10, 20, 30))
+crop, _, _ = crop_person(fd.image, 10, 10, 50, 60)
+check("a person crop is 3-channel BGR", crop.ndim == 3 and crop.shape[2] == 3
+      and tuple(crop[5, 5]) == (10, 20, 30))
+canvas, *_ = letterbox(fd.image, 64)
+check("the letterboxed model input is 3-channel", canvas.shape == (64, 64, 3))
+check("the light meter reads a BGRx frame like BGR",
+      illumination.measure(bgrx) == illumination.measure(bgrx[..., :3].copy()))
+bgr = np.ascontiguousarray(bgrx[..., :3])
+fb.update("C", bgr, 2, clock.now(), 10.0)
+check("a software-decoded BGR frame passes through untouched", fb.get("C").frame is bgr)
+
 
 if FAILURES:
     print(f"\n{len(FAILURES)} FAILED: " + "; ".join(FAILURES))

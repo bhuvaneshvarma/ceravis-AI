@@ -121,7 +121,7 @@ def measure(img: np.ndarray | None) -> tuple[float | None, float | None]:
     if w > _MEASURE_WIDTH:
         img = cv2.resize(img, (_MEASURE_WIDTH, max(1, int(h * _MEASURE_WIDTH / w))),
                          interpolation=cv2.INTER_AREA)
-    ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb).reshape(-1, 3).astype(np.float32)
+    ycc = cv2.cvtColor(np.ascontiguousarray(img[..., :3]), cv2.COLOR_BGR2YCrCb).reshape(-1, 3).astype(np.float32)
     y = ycc[:, 0]
     luma = float(np.mean(y))
     midgrey = np.abs(ycc - 128.0).max(axis=1) <= 3.0
@@ -315,7 +315,7 @@ class IlluminationMonitor:
                     if self._last_frame.get(cam) == fd.frame_id:
                         continue              # a stalled camera adds no evidence
                     self._last_frame[cam] = fd.frame_id
-                    observe(cam, fd.frame)
+                    observe(cam, fd.image)
             except Exception:
                 logger.exception("illumination sample failed")
             sleep = interval - (time.perf_counter() - t0)

@@ -208,7 +208,7 @@ check("too few looks -> not answered yet", not tr._face_answered(rec3, now))
 print("\n7. searching: who gets a face look this tick")
 looked = []
 tr._features = TrackFeatureBuffer()
-tr._frames = SimpleNamespace(get=lambda cam: SimpleNamespace(frame=None))
+tr._frames = SimpleNamespace(get=lambda cam: SimpleNamespace(image=None))
 tr._gallery = SimpleNamespace(size=1)
 tr._targets = SimpleNamespace(get=lambda cam: None, all=lambda: {})
 tr._face = SimpleNamespace(ready=True,

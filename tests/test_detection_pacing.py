@@ -44,7 +44,7 @@ class Frames:
     """Each camera delivers a new frame every 1/15 s (a 15 fps reader)."""
     def get_all_latest(self):
         fid = int(NOW[0] * 15)
-        return {c: NS(camera_id=c, frame_id=fid, frame=None, timestamp=None)
+        return {c: NS(camera_id=c, frame_id=fid, image=None, timestamp=None)
                 for c in PEOPLE}
 
 
