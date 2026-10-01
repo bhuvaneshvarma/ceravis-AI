@@ -285,8 +285,12 @@ class ReIDRunner:
                                   sole_recipient=self._sole_recipient(camera_id,
                                                                       boxes))
                      if ir else None)
+            # House sense: one person, one room. Whoever is locked on another
+            # camera right now can be found here only by their own face.
+            elsewhere = frozenset(self._targets.recipient(cam)
+                                  for cam in self._targets.all() if cam != camera_id)
             outcome = self._manager.update(camera_id, boxes, feat_for, night,
-                                           face_for=face_for)
+                                           face_for=face_for, elsewhere=elsewhere)
 
             # Apply the lock decision to the shared registry (pose + UI read it).
             # released = confirmed mismatch; lost = the locked track is gone from

@@ -102,6 +102,18 @@ o2 = mgr.update("CAM", two, lambda tid: np.array([V - 0.1], np.float32),
                 face_for=lambda tid, rid: looks(FC + 0.05, NC))
 check("two faces that both confirm: pick nobody", o2.target_track_id is None)
 
+print("\n1b. house sense: locked in another room -> only their own face finds them here")
+mgr = TargetLockManager(Gallery())
+o = mgr.update("CAM", BOXES, lambda tid: np.array([A + 0.2], np.float32),
+               face_for=lambda tid, rid: (None, 0, 0), elsewhere=frozenset({"ravi"}))
+check("a strong body look-alike does not lock while they are locked next door",
+      o.target_track_id is None)
+o = mgr.update("CAM", BOXES, lambda tid: np.array([V - 0.1], np.float32),
+               face_for=lambda tid, rid: looks(FC + 0.05, NC), elsewhere=frozenset({"ravi"}))
+check("their own confirming face still does", o.target_track_id == 1 and o.face_confirmed)
+_, out = lock(A + 0.2)
+check("nobody locked elsewhere: the body rules as before", out.target_track_id == 1)
+
 print("\n2. an existing lock")
 mgr, out = lock(A + 0.02)
 _, out = lock(A + 0.02, face=looks(FV - 0.1, NV), mgr=mgr)

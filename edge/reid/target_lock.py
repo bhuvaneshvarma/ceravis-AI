@@ -172,7 +172,7 @@ class TargetLockManager:
 
     def update(self, camera_id: str, boxes: dict[int, tuple],
                feat_for, night: NightContext | None = None,
-               face_for=None) -> LockOutcome:
+               face_for=None, elsewhere: frozenset = frozenset()) -> LockOutcome:
         """
         boxes:    track_id -> (x1, y1, x2, y2)
         feat_for: track_id -> smooth feature (np.ndarray) or None
@@ -180,8 +180,12 @@ class TargetLockManager:
         face_for: (track_id, recipient_id) -> (face score, face width px) or
                   None — the track's latest face look against that recipient's
                   enrolled faces. None disables face evidence entirely.
+        elsewhere: recipients locked on ANOTHER camera right now. One person
+                  is in one room: here they can be found only by their own
+                  face, never by a body that merely looks like them.
         """
         self._face_for = face_for
+        self._elsewhere = elsewhere
         st = self._state.setdefault(camera_id, _CamState())
         out = LockOutcome()
         self._age(camera_id, boxes)
@@ -384,6 +388,7 @@ class TargetLockManager:
     _last_match_rid: str | None = None
     _last_recency: float | None = None
     _last_face_first: bool = False         # the last pick was made by the face
+    _elsewhere: frozenset = frozenset()    # recipients locked on another camera
     _rules = scene_rules.DAY               # this tick's rule set (set in update)
 
     # ---- night-vision helpers ------------------------------------------
@@ -564,6 +569,8 @@ class TargetLockManager:
                     self._face_no.pop(key, None)
                 elif face != "confirm":
                     continue                  # only the face may undo its own "no"
+            if rid in self._elsewhere and face != "confirm":
+                continue                      # they are locked in another room
             if spatial_from is not None and not self._within(spatial_from, box):
                 continue
             if face == "confirm":
