@@ -1,31 +1,22 @@
 from __future__ import annotations
 
 """
-The cloud outbox — a durable, ordered, bounded queue of app-server uploads.
+The cloud outbox — the SSD store of event uploads whose send FAILED.
 
-Everything the device wants to push to app.ceravishealth.in as a RESULT OF AN
-EVENT (saveAlert, and the saveSnapshot stills + fall clips that belong to it)
-is handed here and sent from here. There is no second path: the publisher
-never calls the API directly, so "the alert fired" and "the alert was
-delivered" are one mechanism with two states instead of two mechanisms that can
-disagree. On a healthy network the queue is drained within milliseconds and is
-invisible; during an outage it is the thing that keeps the incident.
+Every event upload to app.ceravishealth.in (saveAlert, and the saveSnapshot
+stills + fall clips that belong to it) is sent live the moment it is raised
+(integration/outbox_sender.py). Only an upload whose send fails is written
+here, under its own job id, and sent from here once the server answers again.
+On a healthy network this table stays empty; during an outage it is the thing
+that keeps the incident.
 
-WRITE-AHEAD, ZERO-COPY (2026-09-25)
-  The industry store-and-forward shape (OpenTelemetry's persistent sending
-  queue, Fluent Bit's filesystem buffer, Android WorkManager): every upload is
-  ONE small SQLite row the moment it is raised, and the sender works from the
-  rows. A crash or power cut can therefore lose nothing, not even an upload in
-  its first second.
-  The media is never copied to get there. An event still already lives on disk
+ZERO-COPY
+  The media is never copied to get here. An event still already lives on disk
   (the enricher wrote it, EventStore's retention owns it), so its row simply
   REFERENCES that file (`blob_owned = 0`) and the sender reads it once, at send
   time. Only bytes that have no home of their own — a fall clip merged in a temp
   dir — are written to the spool, once, and that file belongs to the queue
   (`blob_owned = 1`) and is deleted the moment its job leaves the queue.
-  This replaced a RAM tier (send from memory, spill on failure) that held every
-  still in RAM, copied it to the spool on any wait, and needed ~300 lines of
-  two-tier bookkeeping to keep ordering and alert linkage exact across it.
 
 Why a queue and not a retry loop:
   * The whole system keeps working offline (streams, AI, recording, LAN live
@@ -146,9 +137,8 @@ _COLS = ("seq", "job_id", "kind", "label", "priority", "state", "created_at",
 
 class OutboxStore:
     """The durable FIFO itself. Thread-safe by way of SqliteStore's lock: the
-    event thread enqueues while the sender thread drains, and each statement is
-    atomic. The two sender lanes read disjoint priority windows, so no row-level
-    locking or lease is needed."""
+    send workers keep failed uploads while the one drainer thread sends them,
+    and each statement is atomic, so no row-level locking or lease is needed."""
 
     def __init__(self, store: SqliteStore,
                  on_drop: Callable[[dict, str], None] | None = None) -> None:
@@ -271,16 +261,17 @@ class OutboxStore:
                 priority: int = PRIORITY_AMBIENT, blob: bytes | None = None,
                 blob_file: str | Path | None = None,
                 blob_part: str | None = None, blob_ext: str = "bin",
-                depends_on: str | None = None) -> str | None:
+                depends_on: str | None = None,
+                job_id: str | None = None) -> str | None:
         """Append one upload to the tail of the queue — one row, written now.
-        Returns its job_id (the handle a dependent job uses as `depends_on`), or
-        None if it could not be persisted (then nothing was queued and the
-        caller has lost nothing it had).
+        Returns its job_id (the handle a dependent job uses as `depends_on`;
+        an upload that failed live passes its own, so every attempt carries the
+        same Idempotency-Key), or None if it could not be persisted.
 
         Media is either `blob_file` — an existing file, referenced in place and
         never copied or deleted here — or `blob` bytes, spooled once to a file
         the queue owns."""
-        job_id = uuid.uuid4().hex
+        job_id = job_id or uuid.uuid4().hex
         priority = self._capped_priority(priority, depends_on)
         media, size, owned = None, 0, 1
         try:
@@ -392,24 +383,7 @@ class OutboxStore:
     _DEP_READY = ("(depends_on IS NULL OR depends_on NOT IN "
                   "(SELECT job_id FROM outbox WHERE state=?))")
 
-    @staticmethod
-    def _priority_clause(min_priority, max_priority) -> tuple[str, list]:
-        """Optional priority window, so a caller can ask for only part of the
-        queue. The delivery lanes use DISJOINT windows, which is what lets two
-        senders share one queue with no claim table and no locking: they can
-        never select the same row."""
-        sql, params = "", []
-        if min_priority is not None:
-            sql += " AND priority>=?"
-            params.append(int(min_priority))
-        if max_priority is not None:
-            sql += " AND priority<=?"
-            params.append(int(max_priority))
-        return sql, params
-
-    def next_ready(self, now: float | None = None, *,
-                   min_priority: int | None = None,
-                   max_priority: int | None = None) -> dict | None:
+    def next_ready(self, now: float | None = None) -> dict | None:
         """The next job to actually SEND: highest priority, oldest, that is DUE
         (its backoff has elapsed) and whose alert dependency is satisfied.
 
@@ -420,32 +394,28 @@ class OutboxStore:
         the due jobs, and seq breaks ties, so an incident stays in order and a
         fall still goes first."""
         now = time.time() if now is None else now
-        clause, extra = self._priority_clause(min_priority, max_priority)
         rows = self._store.fetchall(
             "SELECT " + ", ".join(_COLS) + " FROM outbox "
-            f"WHERE state=? AND next_attempt<=? AND {self._DEP_READY}{clause} "
+            f"WHERE state=? AND next_attempt<=? AND {self._DEP_READY} "
             "ORDER BY priority DESC, seq ASC LIMIT 1",
-            (STATE_PENDING, now, STATE_PENDING, *extra))
+            (STATE_PENDING, now, STATE_PENDING))
         return self._row(rows[0] if rows else None)
 
-    def next_due_at(self, *, min_priority: int | None = None,
-                    max_priority: int | None = None) -> float | None:
+    def next_due_at(self) -> float | None:
         """The earliest time any eligible pending job becomes due, so the sender
         can sleep exactly until then instead of polling. None when the queue has
         no eligible pending job (empty, or everything is dependency-blocked
         behind a job that is itself counted here)."""
-        clause, extra = self._priority_clause(min_priority, max_priority)
         rows = self._store.fetchall(
             "SELECT MIN(next_attempt) FROM outbox "
-            f"WHERE state=? AND {self._DEP_READY}{clause}",
-            (STATE_PENDING, STATE_PENDING, *extra))
+            f"WHERE state=? AND {self._DEP_READY}",
+            (STATE_PENDING, STATE_PENDING))
         return rows[0][0] if rows and rows[0][0] is not None else None
 
     def wake_all(self) -> None:
         """Clear every pending job's backoff so they are all due NOW. Called when
-        an external signal — the status heartbeat getting a clean response —
-        reports the server reachable, so the queue drains at once instead of
-        waiting out the retry timer."""
+        any app-server call gets a clean answer — the path is clear — so the
+        kept uploads go at once instead of waiting out their retry timers."""
         self._store.execute(
             "UPDATE outbox SET next_attempt=0 WHERE state=? AND next_attempt>0",
             (STATE_PENDING,))

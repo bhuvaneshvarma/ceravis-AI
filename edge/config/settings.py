@@ -934,10 +934,10 @@ class Settings(BaseSettings):
     # TURNED OFF (2026-08-27, by request): blank = the reporter thread never
     # starts, so the device sends no beat at all. Two consequences to know about
     # while it is off — (1) the cloud can no longer tell this device is alive,
-    # because absence of beats WAS the liveness signal; (2) the cloud outbox
-    # loses its "server is reachable, drain now" kick and falls back to its own
-    # capped backoff, so a queued upload leaves within <=30s of the link
-    # returning instead of immediately (outbox_backoff_max_secs).
+    # because absence of beats WAS the liveness signal; (2) one fewer "server
+    # is reachable" signal for the cloud outbox — any other answered call (a
+    # recordingEvent, an upload) still sends what it kept, and its own capped
+    # backoff (outbox_backoff_max_secs) is the floor.
     # To switch it back on, restore the url below:
     #   https://app.ceravishealth.in/ch/v1/ai/edge/status
     status_heartbeat_url: str = ""
@@ -980,15 +980,14 @@ class Settings(BaseSettings):
     reboot_delay_secs: float = 3.0
     reboot_command: str = "sudo -n /bin/systemctl reboot"
 
-    # ---- Cloud outbox (the offline-safe upload queue) ---------------
+    # ---- Cloud outbox (the uploads whose send failed) ----------------
     # Every event-path upload (saveAlert + its saveSnapshot stills and fall
-    # clips) is queued in SQLite and sent from there FALLS FIRST, then oldest
-    # first, so a network outage delays delivery instead of losing the incident.
-    # The device keeps working offline throughout; the queue drains itself the
-    # moment the link is back (the status heartbeat kicks it), and a fall goes
-    # ahead of whatever ambient backlog piled up in front of it. A job's media is
-    # deleted only when its call SUCCEEDS, so nothing generated is ever discarded
-    # before it lands, and a delivering device holds no spool at all.
+    # clips) is SENT LIVE the moment it is raised, side by side. Only a failed
+    # send is kept in SQLite on the SSD, and kept uploads go FALLS FIRST, then
+    # oldest first, as soon as any app-server call is answered again (a
+    # recordingEvent, an upload, the status beat) — so a network outage delays
+    # delivery instead of losing the incident. A kept job's media is deleted only
+    # when its call SUCCEEDS, and a delivering device holds no spool at all.
     #
     # NOTHING IS DROPPED FOR AN ERROR. Every failure — a dead link, a 5xx, a 4xx
     # (including a server mid-maintenance returning 400), even 401/404 — just
@@ -1004,22 +1003,23 @@ class Settings(BaseSettings):
     outbox_max_items: int = 5000             # pending jobs
     outbox_max_blob_mb: float = 1024.0       # media the queue spooled itself (clips)
     # Retry backoff (exponential, jittered) between attempts on a failing job.
-    # The cap keeps a recovered link draining within ~a minute even without the
-    # heartbeat kick. A failing job backs off here while the sender steps around
-    # it to deliver others — it never blocks the queue.
+    # The cap is also the slowest probe of a server that stays down (one kept
+    # upload per pause). A failing job backs off here while the sender steps
+    # around it to deliver others — it never blocks the queue.
     outbox_backoff_base_secs: float = 2.0
     outbox_backoff_max_secs: float = 30.0
-    # An idle lane sleeps until a new upload or the heartbeat wakes it; this is
-    # only the safety beat (it also paces the window trim). Was a 1 s poll.
+    # An idle drainer sleeps until a failed upload or an answered call wakes it;
+    # this is only the safety beat (it also paces the window trim).
     outbox_poll_secs: float = 30.0
     # How long a finished (sent or dropped) job stays as a receipt for the sync
     # console before the row is pruned.
     outbox_history_secs: float = 21600.0     # 6h
-    # Load control toward the app server. After an overload answer (429/502/
-    # 503/504) the lane pauses — doubling per consecutive one, or as long as a
-    # Retry-After says — capped SHORT for the urgent lane (alerts keep trying)
-    # and longer for ambient. Ambient uploads are also paced to at most one per
-    # interval, so a burst of events can never become a burst of requests.
+    # Load control toward the app server. After no answer or an overload answer
+    # (429/502/503/504) sending of kept uploads pauses — doubling per consecutive
+    # one, or as long as a Retry-After says — capped SHORT when an alarm failed
+    # and longer otherwise; ambient photos raised meanwhile are kept instead of
+    # sent (an alarm is always tried live). A kept ambient backlog is paced to
+    # at most one per interval.
     outbox_overload_pause_max_secs: float = 60.0
     outbox_overload_pause_max_urgent_secs: float = 5.0
     outbox_bulk_min_interval_secs: float = 1.0

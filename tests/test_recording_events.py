@@ -153,11 +153,9 @@ stale = [outbox.enqueue("recordingEvent",
 fall = sender.queue_alert(7, "FALL", "someone fell", priority=PRIORITY_FALL)
 check("10 stale rows and a fall are queued", outbox.stats()["pending"] == 11)
 
-lanes = {lane: (lo, hi) for lane, lo, hi in outbox_sender._LANES}
 t0 = time.time()
-for _ in range(40):                       # drive the lanes to a standstill
-    for lane, (lo, hi) in lanes.items():
-        sender._tick(lane, lo, hi)
+for _ in range(40):                       # drive the drainer to a standstill
+    sender._drain_tick()
     if outbox.stats()["pending"] == 0:
         break
 elapsed = time.time() - t0

@@ -255,11 +255,9 @@ class Pipeline:
                 logger.exception("RuleEngine disabled")
 
         # ---- cloud forward (recipient falls -> saveAlert/saveSnapshot) ----
-        # Two halves of ONE path: the publisher decides what to send and writes
-        # it to the durable outbox; the sender is the only thing that touches
-        # the network, draining the queue urgent-first. Split this way, an internet
-        # outage costs delivery time and nothing else — the incident is on disk
-        # the instant it is detected, and leaves as soon as the link is back.
+        # Two halves of ONE path: the publisher decides what to send; the sender
+        # sends it live at once and keeps on the SSD only what fails, sending
+        # that as soon as any app-server call is answered again.
         outbox = None
         outbox_sender = None
         cloud_alert_publisher = None
@@ -301,11 +299,7 @@ class Pipeline:
         status_reporter = None
         try:
             from integration.status_reporter import StatusReporter
-            # The heartbeat is the reachability probe; when it confirms the
-            # server is up it kicks the outbox so queued uploads drain at once
-            # instead of waiting out their own retry backoff.
-            on_online = outbox_sender.kick if outbox_sender is not None else None
-            status_reporter = StatusReporter(on_online=on_online)
+            status_reporter = StatusReporter()
             status_reporter.start()
         except Exception:
             logger.exception("StatusReporter disabled")
@@ -336,9 +330,9 @@ class Pipeline:
         # stopped in this order on shutdown (reverse of dependency). The
         # recording controller goes first so open segments are closed while
         # MediaMTX is still up; MediaMTX itself stops last (see stop()).
-        # The publisher stops before the sender, so nothing new is queued while
-        # the sender makes its last pass; whatever is still queued stays on disk
-        # and goes out on the next start.
+        # The publisher stops before the sender, so nothing new is raised while
+        # the sender stops; whatever was not sent is kept on disk and goes out
+        # on the next start.
         self._shutdown = [
             status_reporter, recording_controller, recording_events,
             cloud_alert_publisher,

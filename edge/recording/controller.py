@@ -379,7 +379,7 @@ class RecordingController:
         self._proof.sweep()                # throttled housekeeping (once per tick)
 
     def set_event_sink(self, sender) -> None:
-        """Attach the cloud reporter (integration.outbox_sender.OutboxSender).
+        """Attach the cloud reporter (integration.recording_events).
         Wired at boot once the outbox exists — the recorder is built before it,
         and must keep working whether or not this is ever called."""
         self._event_sink = sender

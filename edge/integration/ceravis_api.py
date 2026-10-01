@@ -106,11 +106,29 @@ def _wire_redact(body):
     return out
 
 
+# Who hears that the app server just answered a call with a 2xx — the proof the
+# path to it is clear. The cloud outbox registers its kick() here, so ANY good
+# answer (a recordingEvent, an upload, the status beat) sends what it kept.
+_REACHABLE: list = []
+
+
+def on_reachable(callback) -> None:
+    if callback not in _REACHABLE:
+        _REACHABLE.append(callback)
+
+
 def _wire(endpoint: str, method: str, url: str, request, *,
           status: int | None = None, response: str | None = None,
           error: str | None = None, latency_ms: float | None = None) -> None:
     """Append one full request/response record to data/ceravis_api_wire.jsonl.
-    Best-effort — any failure here is swallowed and never affects the call."""
+    Best-effort — any failure here is swallowed and never affects the call.
+    Every call ends here, so this is also where a 2xx answer is announced."""
+    if status is not None and 200 <= status < 300:
+        for callback in list(_REACHABLE):
+            try:
+                callback()
+            except Exception:
+                logger.exception("on_reachable hook failed")
     try:
         base = settings.data_path
         base = base if base.is_absolute() else (_EDGE_ROOT / base)
@@ -580,8 +598,9 @@ def send_recording_event(payload: dict) -> None:
     `end`/`seconds` are null on "started": the stretch is still open, and the
     matching "finalized" carries the SAME `start` so the two pair up.
 
-    Raises CeravisApiError on any failure — the caller is the outbox, so a
-    failed event is retried rather than lost.
+    Raises CeravisApiError on any failure; the caller (recording_events) sends
+    once and never retries. A 2xx here is also what tells the cloud outbox the
+    path is clear (on_reachable).
     """
     if not is_configured():
         raise CeravisApiError(

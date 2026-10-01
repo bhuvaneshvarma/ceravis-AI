@@ -1,421 +1,452 @@
 from __future__ import annotations
 
 """
-The one thread that talks to the app server on the event path.
+Event uploads to the app server: SENT THE MOMENT THEY ARE RAISED, kept on the
+SSD only when a send fails.
 
-It walks the outbox from the head and delivers one job at a time. Single
-consumer, so ordering is decided entirely by the queue: highest priority first,
-oldest first within a tier.
+SEND NOW, SIDE BY SIDE (2026-10-01)
+    An alert, its photo and its clip go straight to the server on a worker
+    thread: nothing is written to disk first, and nothing waits behind another
+    upload. Before this every upload went through the queue, drained ONE call at
+    a time, while the server takes ~9.5 s to accept an alert and ~2 s per photo
+    — so each upload also waited for everything ahead of it (23-24 Sep: the
+    worst 10% left 10 s+ late, a fall photo 23 s). Now alarms (fall, no-motion)
+    have their own workers and ambient photos theirs, so a fall never waits for
+    a posture photo, and a photo waits only for its OWN alert, whose server
+    alertId it carries.
 
-That means a FALL leaves the device before anything else in the queue, however
-much ambient traffic was raised ahead of it — and within the incident, the
-alert, the still that shows it and the clip that proves it still arrive in the
-order they happened, because they share a tier.
+ONLY A FAILURE IS KEPT
+    A send that fails — no answer, 5xx, 4xx — is written to the outbox table
+    (storage/outbox_store.py) with its reason and the SAME job id, so the retry
+    carries the same Idempotency-Key. In RAM there are only the few uploads in
+    flight, and a still there is just the path of its file, read at send time.
 
-KEEP EVERYTHING UNTIL IT IS SENT
-    A failed upload is NEVER dropped for the failure itself — not an outage, not
-    a 5xx, not a 4xx. Every error just schedules another attempt. The ONLY two
-    ways a job leaves the queue are a clean successful send, or reaching the
-    outer age window (`outbox_window_secs`, 48h) — the single safety bound so a
-    server that never comes back cannot fill the disk forever. Everything the
-    device generated for an event — the alert, its still, its annotation, its
-    clip, the alertId linkage — is preserved on disk until it has actually
-    landed. (Under genuine disk pressure the capacity caps still shed the
-    lowest-priority AMBIENT wallpaper first; a fall is never the victim.)
+THE PATH IS CLEAR -> SEND WHAT WAS KEPT
+    Every app-server call that gets a 2xx — a recordingEvent (camera started /
+    finalized), a direct upload, the status heartbeat — reports it through
+    ceravis_api.on_reachable, which calls kick(): the kept uploads are sent at
+    once, falls first, oldest first. While the server stays down the drainer
+    tries ONE kept upload per pause (2 s doubling, capped), so a dead server is
+    probed, not flooded, and ambient photos raised meanwhile go straight to the
+    SSD instead of each timing out against it. An alarm is always tried live.
 
-    This is deliberate for a safety product: "we gave up early" is the worst
-    outcome. A 400 that looks permanent may be a server mid-maintenance (a DB
-    swap), so the request that failed this minute can succeed the next.
+NEVER DROPPED FOR AN ERROR
+    A kept upload leaves the table only by a successful send or by the 48h age
+    window (outbox_window_secs). A 401/403/404/413 also raises a needs-attention
+    note (bad key, wrong patient, clip too large) — still retried, nothing lost.
+    A kept job that keeps failing sits on its own backoff and is stepped around.
 
-STEP AROUND A STUCK JOB, DON'T STALL BEHIND IT
-    Because nothing is dropped, a job that keeps failing must not block the ones
-    behind it. A failing job sits in the future on its backoff, so it is not
-    "due"; the sender delivers the next job that IS due (see next_ready), and the
-    broken one is retried when its timer comes up. A snapshot the server keeps
-    refusing can never hold up the fall alert queued behind it. Order is still
-    kept where it matters: a snapshot waits for the alert it depends on, and a
-    fall still outranks everything.
+ALERT LINKAGE
+    A photo needs its alert's server alertId. While the alert is in flight the
+    photo waits beside it (not on a worker) and goes the moment it lands; if
+    the alert is kept, so is the photo, linked by job id, and the drainer stamps
+    the real alertId once the alert is delivered.
 
-NEEDS ATTENTION, STILL NOT DROPPED
-    A 401/403/404/413 usually means a real config problem (bad key, wrong
-    patient, clip too big). Those keep retrying like everything else — but they
-    also raise a loud needs-attention note on the console and /system/status, so
-    a human fixes the cause while no data is lost in the meantime.
-
-DRAINED BY THE HEARTBEAT
-    The status heartbeat already probes the server every 60s. When it gets a
-    clean response — the server is reachable again — it kicks this sender, which
-    clears the backoff and drains the queue at once rather than waiting out the
-    retry timer. The sender's own capped backoff is the fallback if the
-    heartbeat is disabled.
-
-ALERT LINKAGE ACROSS AN OUTAGE
-    A snapshot belongs to an alert by `alertId`, which only exists after the
-    server has accepted the alert. Offline, there is no alertId — so the
-    publisher links the snapshot to the alert's local job_id (`depends_on`) and
-    this sender substitutes the real alertId at delivery time, once the alert
-    ahead of it in the queue has landed. The link therefore survives a week
-    offline. If that alert was itself given up on, the snapshot still goes out,
-    unlinked — a fall photo with no alert row beats no fall photo.
-
-Delivery is AT LEAST ONCE: a reply lost after the server committed will be
-retried and can duplicate. Every alert and snapshot therefore carries its job
-id as an Idempotency-Key header, identical on every retry — a backend that
-honours it turns this into exactly-once; until then the duplicate is the safe
-failure direction.
-
-KEEP THE SERVER HEALTHY
-    An overload answer (429/502/503/504) pauses the whole LANE, not just the
-    job — doubling per consecutive one, or as long as Retry-After says — so a
-    struggling server is not fed the next upload at once. The urgent lane's
-    pause is capped short so an alarm keeps trying; ambient uploads are also
-    paced to one per interval, so a burst of events never becomes a burst of
-    requests.
+Delivery is AT LEAST ONCE: an upload still in flight at shutdown is also kept,
+and may arrive twice — the Idempotency-Key lets the backend drop the duplicate.
+An upload in flight at the instant of a power cut is not kept (it was never
+written down) — the price of sending without a write in front of it.
 """
 
 import logging
+import queue
 import random
 import threading
 import time
+import uuid
+from collections import OrderedDict
+from pathlib import Path
 
 from config.settings import settings
 from integration import call_log
 from integration.ceravis_api import (
-    CeravisApiError, alert_id_of, is_configured, save_alert, save_snapshot,
+    CeravisApiError, alert_id_of, is_configured, on_reachable, save_alert,
+    save_snapshot,
 )
 from storage.outbox_store import PRIORITY_ALERT, PRIORITY_AMBIENT, OutboxStore
 
 
 logger = logging.getLogger("outbox")
 
-# Server responses that usually mean a human must act (bad/expired API key,
-# wrong patient id, payload too large). These are RETRIED like any other error —
-# nothing is dropped — but they also raise the needs-attention note so the cause
-# gets fixed instead of silently retried forever.
+# Answers that usually mean a human must act (bad/expired API key, wrong patient
+# id, payload too large): still retried, but they raise the needs-attention note.
 _ATTENTION_STATUSES = {401, 403, 404, 413}
 
-# The server (or the proxy in front of it) is OVERLOADED, not rejecting this
-# job: stop the whole lane for a moment instead of firing the next upload into
-# it. On 2026-09-23 a burst of full-4K snapshots drew 200 of these in twenty
-# minutes, and the fall alert in that window took 18 s to land.
+# The server (or the proxy in front of it) is OVERLOADED or unreachable — the
+# path is the problem, not this upload — so sending pauses instead of firing the
+# next upload into it. On 2026-09-23 a burst of 4K snapshots drew 200 of these.
 _OVERLOAD_STATUSES = {429, 502, 503, 504}
 
-# Job kinds this build no longer knows how to send. A device upgrading from an
-# older build can still have rows for them, so _deliver clears them instead of
-# retrying something that will never succeed. Never remove a kind from here
-# without being sure no device in the field still has such rows queued.
+# Kinds this build no longer sends. A device upgrading from an older build can
+# still have rows for them; they are cleared on sight instead of retried.
 _RETIRED_KINDS = {"recordingEvent"}
 
-# TWO delivery lanes over ONE queue, split by priority.
-#
-# Delivery is synchronous: a thread can only be inside one request at a time, so
-# on a single lane an alert waits for whatever is ALREADY in flight — a slow
-# ambient upload, or (2026-09-09) a doomed one retrying against a dead endpoint.
-# Priority ordering cannot help there, because the socket is already busy. With
-# two lanes the urgent one is idle and waiting at the moment an alarm is raised.
-#
-# The windows are DISJOINT, which is the whole trick: the two senders can never
-# select the same row, so there is no claim table, no lock and no double-send.
-# Falls, alerts and their media share the urgent lane, so an incident still
-# leaves in the order it happened.
-_LANE_URGENT = "urgent"
-_LANE_BULK = "bulk"
-_LANES = (
-    (_LANE_URGENT, PRIORITY_ALERT, None),        # priority >= ALERT
-    (_LANE_BULK, None, PRIORITY_ALERT - 1),      # priority <  ALERT (ambient)
-)
+# Worker threads per class. Alarms never share a worker with an ambient photo.
+_WORKERS = {"alarm": 2, "ambient": 2}
+# Ambient photos waiting for a worker past this go to the SSD (drained in turn)
+# rather than piling up in RAM behind a slow server.
+_AMBIENT_MAX_WAITING = 8
+# alertIds of alerts delivered live, for photos and clips raised after them.
+_ALERT_IDS_KEPT = 256
+
+
+class _Upload:
+    """One upload in flight. `media` is a Path (a still on disk) or bytes (a
+    clip); `children` are the photos waiting for this alert's alertId."""
+    __slots__ = ("job_id", "kind", "payload", "label", "priority", "media",
+                 "part", "depends_on", "children")
+
+    def __init__(self, kind: str, payload: dict, label: str, priority: int, *,
+                 media=None, part: str | None = None,
+                 depends_on: str | None = None) -> None:
+        self.job_id = uuid.uuid4().hex
+        self.kind, self.payload, self.label = kind, payload, label
+        self.priority, self.media, self.part = priority, media, part
+        self.depends_on = depends_on
+        self.children: list[_Upload] = []
 
 
 class OutboxSender:
-    """Drains OutboxStore -> the CERAVIS app server, urgent-first, forever."""
+    """Sends event uploads live; keeps the failed ones on the SSD and sends
+    them when the path is clear."""
 
     def __init__(self, outbox: OutboxStore) -> None:
         self._outbox = outbox
         self._outbox.set_drop_listener(self._log_drop)
         self._running = False
         self._threads: list[threading.Thread] = []
-        self._wake: dict[str, threading.Event] = {
-            lane: threading.Event() for lane, _lo, _hi in _LANES}
-        # Currently failing to deliver? Drives the once-per-transition logging
-        # and the console-quiet-while-retrying behaviour. "offline" (no response)
-        # and "rejecting" (server answered with an error) are tracked separately
-        # so the log names which one it is.
-        # Per LANE, so the ambient lane failing cannot make the alert lane
-        # announce an outage it is not having (or clear one it is).
-        self._degraded: dict[str, bool] = {}
-        self._problem: dict[str, str] = {}   # lane -> "offline" | "rejecting"
+        self._work = {cls: queue.Queue() for cls in _WORKERS}
+        self._lock = threading.Lock()
+        self._live: dict[str, _Upload] = {}            # raised, not finished
+        self._alert_ids: OrderedDict = OrderedDict()   # job_id -> alertId (live)
+        self._wake = threading.Event()                 # the drainer's
+        self._kept = True        # anything on the SSD? (checked on the first pass)
+        self._paused_until = 0.0                       # monotonic
+        self._failures = 0                             # consecutive path failures
+        self._last_drained = 0.0
         self._trimmed_at = 0.0
-        # Per lane: sending pauses until this monotonic time after an overload
-        # answer, and the streak of those answers sets how long the pause is.
-        self._paused_until: dict[str, float] = {}
-        self._overloads: dict[str, int] = {}
-        self._last_sent: dict[str, float] = {}
+        self._problem: str | None = None               # "offline" | "rejecting"
 
     # ---- lifecycle ---------------------------------------------------
     def start(self) -> None:
         if self._running:
             return
         self._running = True
-        for lane, lo, hi in _LANES:
-            thread = threading.Thread(target=self._run, args=(lane, lo, hi),
-                                      daemon=True, name=f"cloud-outbox-{lane}")
-            self._threads.append(thread)
-            thread.start()
-        depth = self._outbox.stats()["pending"]
-        logger.info("Cloud outbox on — %d upload(s) waiting, %.0fh window, "
-                    "cap %d, lanes: %s", depth,
-                    settings.outbox_window_secs / 3600.0,
-                    settings.outbox_max_items,
-                    ", ".join(lane for lane, _lo, _hi in _LANES))
+        on_reachable(self.kick)
+        for cls, n in _WORKERS.items():
+            for i in range(n):
+                self._spawn(self._worker, self._work[cls], f"cloud-send-{cls}-{i}")
+        self._spawn(self._drain, None, "cloud-outbox-drain")
+        logger.info("Cloud uploads on — sent live; %d kept on the SSD from "
+                    "before", self._outbox.stats()["pending"])
+
+    def _spawn(self, target, arg, name: str) -> None:
+        thread = threading.Thread(target=target,
+                                  args=() if arg is None else (arg,),
+                                  daemon=True, name=name)
+        self._threads.append(thread)
+        thread.start()
 
     def stop(self) -> None:
+        """Stop sending. Uploads not started yet are kept on the SSD."""
         self._running = False
-        for event in self._wake.values():
-            event.set()
+        self._wake.set()
+        for work in self._work.values():
+            while True:
+                try:
+                    self._keep(work.get_nowait(), "not sent before shutdown")
+                except queue.Empty:
+                    break
 
     def join(self, timeout: float | None = None) -> None:
+        """Wait for the workers, then keep whatever is still in flight."""
+        end = None if timeout is None else time.monotonic() + timeout
         for thread in self._threads:
-            thread.join(timeout)
+            thread.join(None if end is None else max(0.0, end - time.monotonic()))
+        with self._lock:
+            left = list(self._live.values())
+        for up in left:
+            if up.job_id in self._live:   # a parent's keep may have taken it
+                self._keep(up, "in flight at shutdown")
 
     def kick(self) -> None:
-        """The server is reachable — drain now. Wired to the status heartbeat:
-        a clean 60s beat means the app server is answering, so clear every
-        pending job's backoff and wake the loop, and the queue empties at once
-        instead of each job waiting out its own retry timer. Safe to call when
-        the queue is empty (a no-op) and safe to call often."""
+        """The path to the server is clear (an app-server call just got a 2xx):
+        send what was kept, now. Called on every good answer, so it costs
+        nothing while nothing is kept (or once this sender is stopped)."""
+        if not (self._running and self._kept):
+            return
+        self._paused_until, self._failures = 0.0, 0
         self._outbox.wake_all()
-        for event in self._wake.values():
-            event.set()
+        self._wake.set()
 
     # ---- what producers call -----------------------------------------
-    # Queue (one row, media referenced — see the store's WRITE-AHEAD, ZERO-COPY),
-    # then wake the loop, so an upload on a healthy link goes out in the same
-    # breath it was raised.
     def queue_alert(self, patient_id, alert_type: str, message: str, *,
-                    priority: int = PRIORITY_ALERT) -> str | None:
-        """Queue one saveAlert; the returned job_id is what its snapshots link
-        to until the server issues the real alertId."""
-        job_id = self._outbox.enqueue_alert(patient_id, alert_type, message,
-                                            priority=priority)
-        self._queued("saveAlert", job_id, f"{alert_type} · {message}")
-        return job_id
+                    priority: int = PRIORITY_ALERT) -> str:
+        """Send one saveAlert. The returned id is what its photos link to."""
+        return self._raise(_Upload(
+            "saveAlert", {"patient_id": patient_id, "alert_type": alert_type,
+                          "message": message},
+            f"{alert_type} · {message}", priority))
 
     def queue_snapshot(self, patient_id, text: str, camera_number: str, *,
                        image: bytes | None = None, video: bytes | None = None,
                        image_path=None, category: str | None = None,
                        depends_on: str | None = None,
                        priority: int = PRIORITY_AMBIENT) -> str | None:
-        """Queue one saveSnapshot — a still (bytes, or a file already on disk
-        via `image_path`, which is referenced rather than copied) or a clip."""
-        job_id = self._outbox.enqueue_snapshot(
-            patient_id, text, camera_number, image=image, video=video,
-            image_path=image_path, category=category, depends_on=depends_on,
-            priority=priority)
-        self._queued("saveSnapshot", job_id, text)
-        return job_id
+        """Send one saveSnapshot — a still (bytes, or a file on disk via
+        `image_path`, read at send time) or a clip."""
+        media = Path(image_path) if image_path is not None else (image or video)
+        if not media:
+            return None
+        return self._raise(_Upload(
+            "saveSnapshot", {"patient_id": patient_id, "text": text,
+                             "camera_number": camera_number, "category": category},
+            text, priority, media=media, part="video" if video else "image",
+            depends_on=depends_on))
 
-    def _queued(self, kind: str, job_id: str | None, label: str) -> None:
-        if job_id is None:
-            return
-        # The console shows the upload the instant the event happens, before the
-        # server has seen anything — during an outage that QUEUED line is the
-        # proof the detection was captured and is waiting, not lost.
-        call_log.record(kind, True, label=label, direction="out", state="queued")
-        for event in self._wake.values():
-            event.set()
+    def _raise(self, up: _Upload) -> str:
+        with self._lock:
+            parent = self._live.get(up.depends_on) if up.depends_on else None
+            self._live[up.job_id] = up
+            if parent is not None:          # its alert is on its way: go with it
+                parent.children.append(up)
+                return up.job_id
+        if not self._running:
+            self._keep(up, "sending is stopped")
+        elif up.depends_on and self._kept_job(up.depends_on):
+            self._keep(up, "its alert is kept on the SSD")
+        else:
+            if up.depends_on:
+                up.payload["alert_id"] = self._alert_id(up.depends_on)
+            self._dispatch(up)
+        return up.job_id
 
-    # ---- loop --------------------------------------------------------
-    def _run(self, lane: str, lo: int | None, hi: int | None) -> None:
-        wake = self._wake[lane]
+    def _dispatch(self, up: _Upload) -> None:
+        if up.priority >= PRIORITY_ALERT:
+            self._work["alarm"].put(up)            # an alarm is always tried live
+        elif time.monotonic() < self._paused_until:
+            self._keep(up, "app server unavailable — kept until it answers")
+        elif self._work["ambient"].qsize() >= _AMBIENT_MAX_WAITING:
+            self._keep(up, "photos are waiting for the server — kept")
+        else:
+            self._work["ambient"].put(up)
+
+    # ---- live sending ------------------------------------------------
+    def _worker(self, work: queue.Queue) -> None:
+        while self._running:
+            try:
+                up = work.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if not self._running:
+                self._keep(up, "not sent before shutdown")
+                continue
+            try:
+                media = up.media.read_bytes() if isinstance(up.media, Path) else up.media
+                result = self._call(up.kind, up.payload, media, up.part, up.job_id)
+            except Exception as exc:               # noqa: BLE001 — kept, never lost
+                self._keep(up, exc)
+                continue
+            self._recovered()
+            self._finish(up, result)
+
+    def _finish(self, up: _Upload, alert_id=None, kept: bool = False) -> None:
+        """An upload is done (delivered or kept): release the photos waiting
+        for it — live with its alertId, or onto the SSD behind it."""
+        with self._lock:
+            self._live.pop(up.job_id, None)
+            if up.kind == "saveAlert" and not kept:
+                self._alert_ids[up.job_id] = alert_id
+                while len(self._alert_ids) > _ALERT_IDS_KEPT:
+                    self._alert_ids.popitem(last=False)
+            children, up.children = up.children, []
+        for child in children:
+            if kept or not self._running:
+                self._keep(child, "its alert is kept on the SSD")
+            else:
+                child.payload["alert_id"] = alert_id
+                self._dispatch(child)
+
+    def _keep(self, up: _Upload, why) -> None:
+        """Onto the SSD, with the reason, under the upload's own job id. A real
+        failed attempt (`why` an exception) also counts against the path."""
+        media = up.media
+        job_id = self._outbox.enqueue(
+            up.kind, up.payload, label=up.label, priority=up.priority,
+            blob=media if isinstance(media, bytes) else None,
+            blob_file=media if isinstance(media, Path) else None,
+            blob_part=up.part, blob_ext="mp4" if up.part == "video" else "jpg",
+            depends_on=up.depends_on, job_id=up.job_id)
+        if job_id is not None:
+            self._kept = True
+            if isinstance(why, Exception):
+                self._failed(job_id, 0, why, alarm=up.priority >= PRIORITY_ALERT)
+            # The console's line for it: the detection is captured and waiting.
+            call_log.record(up.kind, True, label=up.label, direction="out",
+                            state="queued")
+            self._wake.set()
+        self._finish(up, kept=True)
+
+    # ---- the drainer: what was kept ----------------------------------
+    def _drain(self) -> None:
         while self._running:
             wait = settings.outbox_poll_secs
             try:
-                wait = self._tick(lane, lo, hi)
+                wait = self._drain_tick()
             except Exception:
-                logger.exception("outbox: %s sender tick failed", lane)
+                logger.exception("outbox: drain tick failed")
             if wait <= 0:
-                continue                 # a backlog drains back-to-back
-            wake.wait(timeout=wait)
-            wake.clear()
+                continue                   # a backlog drains back-to-back
+            self._wake.wait(timeout=wait)
+            self._wake.clear()
 
-    def _tick(self, lane: str, lo: int | None, hi: int | None) -> float:
-        """Deliver this lane's next READY job. Returns how long to wait before
-        looking again; 0 means there is more to send right now.
-
-        Ready = due (backoff elapsed) and dependency satisfied — so a job that
-        is mid-backoff is stepped over rather than blocking the queue. When
-        nothing is ready, sleep exactly until the earliest one is due. The
-        priority window is what keeps the two lanes off each other's rows."""
-        if lane == _LANE_URGENT:
-            self._trim_periodically()    # one lane owns it; twice would be waste
+    def _drain_tick(self) -> float:
+        """Send the next kept upload that is ready. Returns how long to wait
+        before looking again; 0 means there is more to send right now."""
+        self._trim_periodically()
         if not is_configured():
             return settings.outbox_poll_secs
         mono = time.monotonic()
-        wait = self._paused_until.get(lane, 0.0) - mono     # server overloaded
-        if lane == _LANE_BULK:                              # ambient is paced
-            wait = max(wait, self._last_sent.get(lane, 0.0)
-                       + settings.outbox_bulk_min_interval_secs - mono)
-        if wait > 0:
-            return wait
+        if self._paused_until > mono:                # probing a down server
+            return self._paused_until - mono
         now = time.time()
-        job = self._outbox.next_ready(now, min_priority=lo, max_priority=hi)
-        if job is not None:
-            self._deliver(lane, job)
-            return 0.0                   # keep draining while there is work
-        # Nothing ready: sleep until the earliest job is due, or — empty lane —
-        # until a producer or the heartbeat wakes us (the beat is only a safety
-        # net; a new upload sets the lane's event at once).
-        due_at = self._outbox.next_due_at(min_priority=lo, max_priority=hi)
-        if due_at is None:
-            return settings.outbox_poll_secs
-        return max(0.05, min(due_at - now, settings.outbox_poll_secs))
+        job = self._outbox.next_ready(now)
+        if job is None:
+            due_at = self._outbox.next_due_at()
+            if due_at is None:
+                self._kept = self._outbox.stats()["pending"] > 0
+                return settings.outbox_poll_secs
+            return max(0.05, min(due_at - now, settings.outbox_poll_secs))
+        if job["priority"] < PRIORITY_ALERT and job["kind"] not in _RETIRED_KINDS:
+            # an ambient backlog is paced (a retired row never reaches the server)
+            gap = self._last_drained + settings.outbox_bulk_min_interval_secs - mono
+            if gap > 0:
+                return gap
+        self._deliver(job)
+        return 0.0
 
     def _trim_periodically(self) -> None:
-        """The window is normally enforced as jobs are queued. During a long
-        outage nothing new may be queued for hours, so the sender re-applies it
-        on a slow beat — otherwise a backlog could outlive its own window and
-        then flood the server with stale uploads on reconnect."""
+        """Re-apply the 48h window on a slow beat: during a long outage nothing
+        new may be kept for hours, and a backlog must not outlive its window."""
         now = time.monotonic()
-        if now - self._trimmed_at < 60.0:
-            return
-        self._trimmed_at = now
-        self._outbox.trim()
+        if now - self._trimmed_at >= 60.0:
+            self._trimmed_at = now
+            self._outbox.trim()
 
-    def _deliver(self, lane: str, job: dict) -> None:
+    def _deliver(self, job: dict) -> None:
         if job["kind"] in _RETIRED_KINDS:
-            # A kind this build no longer sends. Rows for it can still be in the
-            # queue on a device upgrading from an older build, and since nothing
-            # here is ever dropped for failing, they would otherwise retry until
-            # the 48h window — the exact behaviour that delayed a fall alert on
-            # 2026-09-09. Clear them on sight, once, with the reason recorded.
             self._outbox.mark_dead(
                 job["job_id"],
                 f"{job['kind']} is no longer sent from the outbox — moved to the "
                 "best-effort reporter (integration/recording_events.py)")
             return
-
-        # Pacing counts REQUESTS to the server — a row cleared locally above
-        # (a retired kind) never touched it, so it never holds the lane.
-        self._last_sent[lane] = time.monotonic()
-        # While deliveries are failing, the API client's own per-call console
-        # record is silenced: the first failure was reported and the queue's
-        # depth carries the rest, so a long outage cannot flush the log.
-        call_log.quiet_retries(any(self._degraded.values()))
+        self._last_drained = time.monotonic()
+        # While the path is failing, the API client's per-call console line is
+        # silenced: the first failure was reported, the kept count says the rest.
+        call_log.quiet_retries(self._problem is not None)
+        payload = dict(job["payload"])
         try:
-            result_id = self._send(job)
-        except CeravisApiError as exc:
-            self._failed(lane, job, exc)
+            media = self._outbox.blob(job) if job["kind"] == "saveSnapshot" else None
+            if payload.get("alert_id") is None:
+                payload["alert_id"] = self._alert_id(job.get("depends_on"))
+            result = self._call(job["kind"], payload, media, job["blob_part"],
+                                job["job_id"])
+        except Exception as exc:                   # noqa: BLE001 — retried, never lost
+            self._failed(job["job_id"], job["attempts"], exc,
+                         alarm=job["priority"] >= PRIORITY_ALERT)
             return
-        except Exception as exc:
-            # A bug in our own send code is not a reason to lose the event — it
-            # is retried like any other failure (bounded by the 48h window),
-            # loudly, so nothing generated is ever thrown away.
-            logger.exception("outbox: %s job raised — will retry", job["kind"])
-            self._failed(lane, job, CeravisApiError(f"internal error: {exc}"))
-            return
-        self._outbox.mark_sent(job["job_id"], result_id)
-        self._overloads[lane] = 0
-        self._recovered(lane)
+        self._outbox.mark_sent(job["job_id"], result)
+        self._recovered()
 
-    def _recovered(self, lane: str) -> None:
-        """A delivery just succeeded — clear THIS lane's degraded state and say
-        so once. Attention is cleared globally: any success proves the server is
-        answering us again."""
-        self._outbox.clear_attention()
-        if self._degraded.get(lane):
-            logger.info("outbox[%s]: deliveries recovered — draining %d queued "
-                        "upload(s)", lane, self._outbox.stats()["pending"])
-            self._degraded[lane] = False
-            self._problem.pop(lane, None)
-
-    def _send(self, job: dict) -> int | None:
-        payload = job["payload"]
-        if job["kind"] == "saveAlert":
-            resp = save_alert(payload["patient_id"], payload["alert_type"],
-                              payload["message"], idempotency_key=job["job_id"])
-            return alert_id_of(resp)
-        if job["kind"] == "saveSnapshot":
-            media = self._outbox.blob(job)
-            part = job["blob_part"]
+    # ---- shared ------------------------------------------------------
+    @staticmethod
+    def _call(kind: str, payload: dict, media, part, key: str) -> int | None:
+        """One request. The job id is the Idempotency-Key, identical on every
+        attempt of the same upload."""
+        if kind == "saveAlert":
+            return alert_id_of(save_alert(payload["patient_id"], payload["alert_type"],
+                                          payload["message"], idempotency_key=key))
+        if kind == "saveSnapshot":
             if not media:
-                # The spooled file is gone (external disk corruption — the queue
-                # itself never releases it before delivery). Nothing to send, so
-                # this attempt fails and retries; it rides to the 48h window
-                # rather than being dropped, honouring "never discard an event".
-                raise CeravisApiError("media body missing from the spool")
-            save_snapshot(
-                payload["patient_id"], payload.get("text") or "",
-                payload.get("camera_number") or "",
-                image=media if part == "image" else None,
-                video=media if part == "video" else None,
-                alert_id=self._alert_id_for(job),
-                category=payload.get("category"),
-                idempotency_key=job["job_id"])
+                raise CeravisApiError("media body missing")
+            save_snapshot(payload["patient_id"], payload.get("text") or "",
+                          payload.get("camera_number") or "",
+                          image=media if part == "image" else None,
+                          video=media if part == "video" else None,
+                          alert_id=payload.get("alert_id"),
+                          category=payload.get("category"), idempotency_key=key)
             return None
-        raise CeravisApiError(f"unknown outbox job kind {job['kind']!r}")
+        raise CeravisApiError(f"unknown upload kind {kind!r}")
 
-    def _alert_id_for(self, job: dict):
-        """The server-issued alertId this snapshot belongs to, resolved from the
-        alert job it was queued against. None when there is no parent, the
-        parent was dropped, or the server returned no id — the snapshot is sent
-        unlinked rather than held back."""
-        explicit = job["payload"].get("alert_id")
-        if explicit is not None:
-            return explicit
-        parent_id = job.get("depends_on")
-        if not parent_id:
+    def _alert_id(self, parent: str | None):
+        """The server alertId of the alert `parent` (a job id): from a live
+        delivery, or from its kept row once the drainer delivered it. None when
+        there is no parent or no id — the photo then goes unlinked rather than
+        held back."""
+        if not parent:
             return None
-        parent = self._outbox.job(parent_id)
-        return parent["result_id"] if parent else None
+        with self._lock:
+            if parent in self._alert_ids:
+                return self._alert_ids[parent]
+        row = self._outbox.job(parent)
+        return row["result_id"] if row else None
 
-    def _failed(self, lane: str, job: dict, exc: CeravisApiError) -> None:
-        """A delivery attempt failed. The job is NEVER dropped here — it is
-        rescheduled on a capped exponential backoff, and only the 48h age window
-        (enforced by the store's trim) ever gives up on it. A code that usually
-        means a human must act also raises the needs-attention note."""
-        attempts = job["attempts"] + 1
-        status = getattr(exc, "status", None)
-        delay = min(settings.outbox_backoff_base_secs * (2 ** (attempts - 1)),
-                    settings.outbox_backoff_max_secs)
-        delay *= random.uniform(0.8, 1.2)   # jitter: a fleet must not sync up
-        retry_at = time.time() + delay
-        self._outbox.mark_retry(job["job_id"], str(exc), retry_at)
+    def _kept_job(self, job_id: str) -> bool:
+        """Is this alert waiting on the SSD (not delivered yet)?"""
+        row = self._outbox.job(job_id)
+        return bool(row and row["state"] == "pending")
+
+    def _failed(self, job_id: str, attempts: int, exc: Exception, *,
+                alarm: bool) -> None:
+        """An attempt failed. The upload stays kept, retried on a capped
+        backoff (only the 48h window ever gives up on it). When the PATH is the
+        problem — no answer, or an overload answer — sending pauses too, so the
+        server gets one probe per pause rather than every upload at once."""
+        if not isinstance(exc, CeravisApiError):
+            logger.error("outbox: upload raised %r — kept, will retry", exc)
+            exc = CeravisApiError(f"internal error: {exc}")
+        status = exc.status
+        delay = min(settings.outbox_backoff_base_secs * (2 ** attempts),
+                    settings.outbox_backoff_max_secs) * random.uniform(0.8, 1.2)
+        self._outbox.mark_retry(job_id, str(exc), time.time() + delay)
         if status in _ATTENTION_STATUSES:
-            self._outbox.flag_attention(status, str(exc), job.get("label", ""))
-
-        if status in _OVERLOAD_STATUSES:
-            # Back the whole lane off, doubling per consecutive overload answer,
-            # or for exactly as long as the server asked (Retry-After). The
-            # urgent lane's pause is capped short: an alarm keeps trying.
-            n = self._overloads[lane] = self._overloads.get(lane, 0) + 1
-            cap = (settings.outbox_overload_pause_max_urgent_secs if lane == _LANE_URGENT
-                   else settings.outbox_overload_pause_max_secs)
-            pause = getattr(exc, "retry_after", None)
+            self._outbox.flag_attention(status, str(exc))
+        if status is None or status in _OVERLOAD_STATUSES:
+            self._failures += 1
+            pause = exc.retry_after
             if pause is None:
-                pause = settings.outbox_backoff_base_secs * (2 ** (n - 1))
-            self._paused_until[lane] = time.monotonic() + min(pause, cap)
-
-        # One transition line, not one per retry: "offline" (no response at all)
-        # and "rejecting" (the server answered with an error) are different news.
+                pause = settings.outbox_backoff_base_secs * (2 ** (self._failures - 1))
+            cap = (settings.outbox_overload_pause_max_urgent_secs if alarm
+                   else settings.outbox_overload_pause_max_secs)
+            # An alarm shortens a longer pause an ambient failure set.
+            mono = time.monotonic()
+            until = mono + min(pause, cap)
+            active = self._paused_until > mono
+            self._paused_until = (min(self._paused_until, until) if alarm and active
+                                  else until)
         problem = "offline" if status is None else "rejecting"
-        self._degraded[lane] = True
-        if self._problem.get(lane) != problem:
-            self._problem[lane] = problem
+        if self._problem != problem:
+            self._problem = problem
+            kept = self._outbox.stats()["pending"]
             if problem == "offline":
-                logger.warning("outbox[%s]: app server unreachable — %d upload(s) "
-                               "queued, retrying until the %.0fh window", lane,
-                               self._outbox.stats()["pending"],
-                               settings.outbox_window_secs / 3600.0)
+                logger.warning("outbox: app server unreachable — %d upload(s) kept "
+                               "on the SSD, sent when it answers again", kept)
             else:
-                logger.warning("outbox[%s]: app server rejecting uploads (HTTP %s)"
-                               " — %d queued and retrying; nothing is dropped",
-                               lane, status, self._outbox.stats()["pending"])
+                logger.warning("outbox: app server rejecting uploads (HTTP %s) — "
+                               "%d kept and retried; nothing is dropped", status, kept)
 
-    # ---- console -----------------------------------------------------
+    def _recovered(self) -> None:
+        """A delivery succeeded: the path works and the config is accepted."""
+        self._failures = 0
+        self._outbox.clear_attention()
+        if self._problem is not None:
+            self._problem = None
+            logger.info("outbox: app server answering again — sending %d kept "
+                        "upload(s)", self._outbox.stats()["pending"])
+
     def _log_drop(self, job: dict, reason: str) -> None:
-        """A discarded upload is news: it is the only case where an event the
-        device detected never reaches the cloud, so it lands on the same sync
-        console as every call, with the reason."""
+        """A discarded upload is news: the only case where an event the device
+        detected never reaches the cloud."""
         call_log.record(job["kind"], False, label=job.get("label"),
                         direction="out", state="dropped", error=reason)
         logger.warning("outbox: dropped %s (%s) — %s", job["kind"],

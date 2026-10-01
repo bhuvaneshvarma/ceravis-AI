@@ -10,14 +10,13 @@ it queues saveAlert with:
     alertType     = the event type, upper-cased (e.g. "FALL")
     messageText   = the event's one wording (alerts.alert_format.describe)
 
-It does not talk to the network itself. Every upload is handed to the cloud
-outbox (storage/outbox_store.py) and delivered by the one sender thread, in
-order — so an alert raised while the internet is down is kept and sent when it
-returns, instead of being logged and lost. Detection, streaming, recording and
-LAN live view are unaffected either way; only the cloud hop waits.
+It does not talk to the network itself. Every upload is handed to the sender
+(integration/outbox_sender.py), which sends it live at once and keeps it on the
+SSD only if the send fails — so an alert raised while the internet is down is
+sent when it returns, instead of being logged and lost. Detection, streaming,
+recording and LAN live view are unaffected either way; only the cloud hop waits.
 
-Queueing never blocks this loop and never raises: if the queue itself cannot
-persist a job it says so and the event loop carries on. Stays silent if the app
+Handing over never blocks this loop and never raises. Stays silent if the app
 server isn't configured or no account has been verified yet.
 """
 
@@ -80,8 +79,7 @@ def _category_of(event) -> str:
 class CloudAlertPublisher:
     def __init__(self, bus: EventBus, sender: OutboxSender) -> None:
         self._queue = bus.subscribe()
-        # The ONLY way out of this process to the app server. No direct-send
-        # fallback: one path means "raised" and "delivered" can never disagree.
+        # The ONLY way out of this process to the app server for event uploads.
         self._sender = sender
         self._account = AccountConfig()
         self._cameras = CameraConfig()
@@ -159,9 +157,9 @@ class CloudAlertPublisher:
                     error="not sent — no verified account (run setup step 1)")
                 continue
             message = describe(event)
-            # The alert is queued FIRST and its media is queued against it, so
-            # the server always sees the alert before the media that belongs to
-            # it: same priority tier, lower sequence number — offline or on.
+            # The alert is raised FIRST and its media against it, so the server
+            # always sees the alert before the media that belongs to it (the
+            # photo carries the alertId the alert is given) — offline or on.
             alert_job = None
             priority = _priority_of(etype, is_alert)
             if is_alert:
