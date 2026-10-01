@@ -215,7 +215,9 @@ async def _duplex(camera_id: str, seconds: float) -> int:
         return _dbfs(math.sqrt(sum(v * v for v in vals) / len(vals))) if vals else None
 
     before = level(marks["start"] - seconds + 0.5, marks["start"])
-    during = level(marks["start"] + 1.0, marks["end"])
+    # …at BOTH edges: room audio stamped at the very end may already be after the
+    # speaker stopped (a coarse clock gives it the same timestamp as the end).
+    during = level(marks["start"] + 1.0, marks["end"] - 0.2)
     after = level(marks["end"] + 1.5, marks["end"] + seconds + 1.0)
     print(f"\n  room level before : {before} dBFS\n  while talking     : {during} dBFS"
           f"\n  after            : {after} dBFS\n")

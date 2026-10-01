@@ -339,6 +339,7 @@ async def _talk(websocket: WebSocket, log: audit.Session, camera_id: str,
             "hold_secs": IDLE_CLOSE_SECS,
             "floor_hold_secs": settings.talkback_floor_hold_secs,
             "max_turn_secs": 0,                    # none: talk while it is held
+            "frames_per_sec": SAMPLE_RATE // FRAME_BYTES,   # 50 pieces = 1 s of voice
         }
         await websocket.send_json(opened)
         log.answered(opened)
@@ -360,7 +361,12 @@ async def _talk(websocket: WebSocket, log: audit.Session, camera_id: str,
                 if now - last_stats >= 1.0 and hub.floor(talker.camera_id).get(
                         "client_id") == client_id:
                     last_stats = now
+                    # `received_hz`: samples of YOUR audio the edge received per
+                    # second since the last stats (8000 = right). The rest is the
+                    # camera link's running health.
                     await websocket.send_json({"type": "stats",
+                                               "received_hz": log.window_hz(),
+                                               "expected_hz": SAMPLE_RATE,
                                                **lines.session_health(talker.camera_id)})
                 continue
             text = message.get("text") or ""
@@ -372,6 +378,7 @@ async def _talk(websocket: WebSocket, log: audit.Session, camera_id: str,
                 continue
             kind = command.get("type") if isinstance(command, dict) else None
             if kind == "release":
+                log.released()
                 hub.release(talker)
             elif kind == "stop":
                 log.closed(1000, "client", "stop")

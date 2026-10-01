@@ -571,8 +571,12 @@ async function pollTalk() {
       <div class="cs-label">${csEsc(who)}</div>
       <div class="cs-meta">
         ${x.duration_secs != null ? `<span>${x.duration_secs} s connected</span>` : ""}
-        ${a.speech_secs ? `<span>${a.speech_secs} s of speech</span>` : ""}
-        ${a.realtime_rate != null ? `<span>${a.realtime_rate}× real time</span>` : ""}
+        ${a.held_secs ? `<span>held ${a.held_secs} s · ${a.speech_secs || 0} s of speech</span>` : ""}
+        ${a.received_hz != null ? `<span class="${a.realtime_rate >= 0.8 && a.realtime_rate <= 1.3 ? "cs-ok" : "cs-bad"}"
+             >received ${a.received_hz.toLocaleString()} Hz of ${(a.expected_hz || 8000).toLocaleString()}</span>` : ""}
+        ${(x.request || {}).query && x.request.query.mic_rate ? `<span>app says mic ${csEsc(x.request.query.mic_rate)} Hz</span>` : ""}
+        ${a.longest_gap_ms >= 200 ? `<span class="cs-bad">longest gap ${a.longest_gap_ms} ms</span>` : ""}
+        ${a.first_audio_ms != null ? `<span>first audio ${a.first_audio_ms} ms after open</span>` : ""}
         ${cl.code != null ? `<span>closed ${cl.code} by ${csEsc(cl.by)}</span>`
                           : cl.by ? `<span>closed by ${csEsc(cl.by)}</span>` : ""}
         ${x.error ? `<span class="cs-bad">${csEsc(x.error.message || x.error.code)}</span>` : ""}

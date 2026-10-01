@@ -477,19 +477,40 @@ async def main():
         await t.say(type="stop")
         await t.closed()
         await asyncio.sleep(0.2)
-        return next(x for x in get(f"/log?edge_id={EDGE_ID}&event=session&limit=5")["entries"]
-                    if x["client_id"] == client)
+        entry = next(x for x in get(f"/log?edge_id={EDGE_ID}&event=session&limit=5")["entries"]
+                     if x["client_id"] == client)
+        entry["_told"] = t.got                     # what the client itself was sent
+        return entry
 
     good = await send_for(2.6, 0.02, client="d-good")
-    check("a client at real time is judged at ~1x, with no warning",
-          good["audio"]["realtime_rate"] is not None
-          and 0.8 <= good["audio"]["realtime_rate"] <= 1.25 and "warnings" not in good)
+    ga = good["audio"]
+    check("a client at real time: ~8000 Hz received over the time held, no warning",
+          ga["received_hz"] is not None and 6400 <= ga["received_hz"] <= 10000
+          and 0.8 <= ga["realtime_rate"] <= 1.25 and ga["expected_hz"] == 8000
+          and 2.0 <= ga["held_secs"] <= 3.2 and ga["releases"] == 1
+          and ga["longest_gap_ms"] < 200 and "warnings" not in good)
+    check("…and when its audio started after open (first_audio_ms)",
+          ga["first_audio_ms"] is not None and ga["first_audio_ms"] < 1000)
+    told = [m for m in good["_told"] if m.get("type") == "stats" and m.get("received_hz")]
+    check("the app's own stats message says, live, how many Hz the edge receives",
+          told and all(6000 <= m["received_hz"] <= 10000 and m["expected_hz"] == 8000
+                       for m in told))
+    check("open states the pace in plain numbers: 50 pieces per second",
+          any(m.get("type") == "open" and m.get("frames_per_sec") == 50 for m in good["_told"]))
     fast = await send_for(2.6, 0.01, client="d-fast")
-    check("a client sending 2x real time is told it is not resampling to 8 kHz",
-          any("not resampling" in w for w in fast.get("warnings", [])))
+    check("a client sending 2x real time: ~16000 Hz, told it is not resampling to 8 kHz",
+          fast["audio"]["received_hz"] > 12000
+          and any("not resampling" in w for w in fast.get("warnings", [])))
     half = await send_for(2.6, 0.04, client="d-half")
-    check("a client sending half the frames is told how much speech is missing",
-          any("missing" in w and "EVERY" in w for w in half.get("warnings", [])))
+    check("a client sending half the pieces: ~4000 Hz, told how much audio is missing",
+          3000 <= half["audio"]["received_hz"] <= 5000
+          and any("of the audio arrived" in w and "every 160-byte piece" in w
+                  for w in half.get("warnings", [])))
+    sparse = await send_for(3.2, 1.0, client="d-sparse")
+    check("a client sending a piece a second (today's mobile build) is caught: "
+          "near-zero Hz and the long silence named",
+          sparse["audio"]["received_hz"] < 500 and sparse["audio"]["longest_gap_ms"] >= 900
+          and any("longest silence" in w for w in sparse.get("warnings", [])))
     odd = await send_for(1.0, 0.04, size=320, client="d-odd")
     check("a client sending 320-byte frames is told to send 160",
           any("320 bytes" in w for w in odd.get("warnings", [])))

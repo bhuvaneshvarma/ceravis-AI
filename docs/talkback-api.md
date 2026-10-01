@@ -254,8 +254,13 @@ carer's floor, from grant to the end of the hold) and per **refusal**.
 `&event=session` returns instead one entry per **talk socket**, as a call and its
 answer: the request (`path`, `query` with the edge_id shortened, `user_agent`),
 the edge's `response` (`open`, or the refusal), how it `close`d (code, by whom),
-and the `audio` that arrived — `frames`, `frame_sizes`, `speech_secs` and
-`realtime_rate` (1.0 = 8 kHz at real time). `warnings` says, in a client
+and the `audio` that arrived, measured against the time the button was held:
+`received_hz` (samples of the app's audio received per second — **8000 is
+right**; ~16000 = not resampled, ~4000 = half the pieces lost, near 0 = held
+back), `held_secs`, `speech_secs`, `frame_sizes`, `gaps` and `longest_gap_ms`
+(holes inside a press), `first_audio_ms` (open → first piece), `releases`. An
+app may add `&mic_rate=<its capture rate>` to the URL; it is shown next to the
+measured figure. `warnings` says, in a client
 developer's words, what to fix: frames that are not 160 bytes, audio faster than
 real time (not resampled to 8 kHz), speech missing (frames dropped), only
 silence. `&event=all` returns every kind. The monitor page's Talk-back panel
@@ -491,13 +496,14 @@ ignored.
 ```json
 { "type": "open", "camera_id": "LOUNGE", "client_id": "app-…",
   "codec": "alaw", "sample_rate": 8000, "frame_bytes": 160, "mic_gain": 1.0,
-  "hold_secs": 60.0, "floor_hold_secs": 5.0, "max_turn_secs": 0 }
+  "hold_secs": 60.0, "floor_hold_secs": 5.0, "max_turn_secs": 0,
+  "frames_per_sec": 50 }
 ```
 
 | Message | Meaning |
 |---|---|
 | `open` | The floor is yours and the camera's line is up. Send nothing before it. `mic_gain`: apply it before encoding. `hold_secs`: how long this socket may idle between presses before the edge closes it (close yours a little before). `floor_hold_secs`: how long the room stays yours after release. `max_turn_secs: 0`: no limit while held. |
-| `{"type":"stats","frames_sent":…,"frames_dropped":…,"bytes_sent":…,"queued_ms":…,"peak_queued_ms":…}` | About once a second while you speak. |
+| `{"type":"stats","received_hz":…,"expected_hz":8000,"frames_sent":…,"queued_ms":…,…}` | About once a second while you speak. `received_hz` is how many samples of YOUR audio the edge received per second since the last stats — it must be about **8000**. The other fields are the camera link's running totals. |
 | `{"type":"error","code":…,"message":…}` | A refusal, sent **just before** the close below. Show `message` as-is. |
 
 **Every refusal is an `error` frame and then a close.** The close reason repeats

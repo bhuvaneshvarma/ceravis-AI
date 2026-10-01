@@ -892,7 +892,7 @@ async def _probe(gated):
     out = _io.StringIO()
     try:
         with contextlib.redirect_stdout(out):
-            code = await cli._duplex("LOUNGE", 1.5)
+            code = await cli._duplex("LOUNGE", 2.0)   # a 1 s "during" window: robust to coarse timers
     finally:
         asyncio.create_subprocess_exec, shutil.which = real_spawn, real_which
     return code, out.getvalue()
