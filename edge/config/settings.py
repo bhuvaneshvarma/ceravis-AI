@@ -687,7 +687,8 @@ class Settings(BaseSettings):
     # When to look. While the recipient is SEARCHED for on a camera, the tracks
     # there are looked at round-robin, at most face_search_max_per_tick per ReID
     # tick. Once locked, the target (and any body look-alike) is re-checked only
-    # every face_recheck_secs — the tracker carries identity in between.
+    # every face_recheck_secs — the tracker carries identity in between. While
+    # searching, a person whose last look found no usable face waits as long.
     face_search_max_per_tick: int = 3
     face_recheck_secs: float = 3.0
     # ---- Scene policies: DAY values (the night set turns them on) -----

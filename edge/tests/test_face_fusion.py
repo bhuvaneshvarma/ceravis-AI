@@ -16,6 +16,8 @@ rules exactly as they were.
 
 Run:  PYTHONPATH=edge python edge/tests/test_face_fusion.py
 """
+import time
+
 import numpy as np
 
 from config.settings import settings
@@ -190,6 +192,36 @@ rec2 = SimpleNamespace(face_looks=((stranger, 90.0, now - 1), (e[0], 90.0, now -
 check("one look like the recipient keeps them in the search", not tr._face_answered(rec2, now))
 rec3 = SimpleNamespace(face_looks=((stranger, 90.0, now - 1),) * 2)
 check("too few looks -> not answered yet", not tr._face_answered(rec3, now))
+
+print("\n7. searching: who gets a face look this tick")
+looked = []
+tr._features = TrackFeatureBuffer()
+tr._frames = SimpleNamespace(get=lambda cam: SimpleNamespace(frame=None))
+tr._gallery = SimpleNamespace(size=1)
+tr._targets = SimpleNamespace(get=lambda cam: None, all=lambda: {})
+tr._face = SimpleNamespace(ready=True,
+                           embed_person=lambda fr, box: (looked.append(box[0]), (None, 0.0))[1])
+people = [SimpleNamespace(track_id=i, bbox=SimpleNamespace(x1=float(i), y1=0.0, x2=1.0, y2=1.0))
+          for i in (1, 2, 3)]
+for t in people:
+    tr._features.update("CAM", t.track_id, z, z, 1, None)
+
+
+def tick():
+    looked.clear()
+    tr._last_face = {}
+    tr._maybe_face("CAM", people, False)
+    return sorted(looked)
+
+
+check("everyone new is looked at", tick() == [1.0, 2.0, 3.0])
+check("a person whose look found no face is not re-looked at once", tick() == [])
+recs = [tr._features.get("CAM", i) for i in (1, 2, 3)]
+recs[0].face_looked -= settings.face_recheck_secs + 0.1
+check("...but again after face_recheck_secs", tick() == [1.0])
+recs[1].face_looks = ((e[0], 90.0, time.monotonic()),)
+recs[1].face_looked = time.monotonic()
+check("someone showing a usable face keeps being looked at", tick() == [2.0])
 
 print()
 if FAILURES:

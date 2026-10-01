@@ -261,8 +261,11 @@ class TrackingRunner:
             first, so everyone here is looked at — the longest-unlooked first
             (a new arrival before anyone), face_search_max_per_tick per tick —
             and a face that confirms the recipient can lock them in any
-            clothes. Someone whose face has already answered "not the
-            recipient" is not looked at again until those looks age out.
+            clothes. Only people still in question are looked at: not someone
+            whose face already answered "not the recipient" (until those looks
+            age out), and someone whose last look found no usable face (turned
+            away, too small) only every face_recheck_secs — in the bench living
+            room 670 of 685 looks at desk-seated people found none (2026-10-01).
           LOCKED (here or next door): the tracker carries identity between
             looks. The target, and anyone whose body could pass for them, is
             re-checked only every face_recheck_secs — enough to catch an id
@@ -292,7 +295,9 @@ class TrackingRunner:
             if rec is None:
                 continue
             if not locked:
-                if not self._face_answered(rec, now):
+                faceless = rec.face_looked > rec.face_at       # last look found none
+                if not (self._face_answered(rec, now) or (
+                        faceless and now - rec.face_looked < settings.face_recheck_secs)):
                     due.append((rec.face_looked, t))
                 continue
             if now - rec.face_looked < settings.face_recheck_secs:
