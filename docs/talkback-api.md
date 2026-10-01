@@ -249,7 +249,17 @@ GET /<edge_id>/api/v1/talkback/log?edge_id=<edge_id>[&camera=LOUNGE][&limit=100]
 ```
 
 Newest first, up to `limit` (1–1000, default 100). One entry per **talk** (a
-carer's floor, from grant to the end of the hold) and per **refusal**:
+carer's floor, from grant to the end of the hold) and per **refusal**.
+
+`&event=session` returns instead one entry per **talk socket**, as a call and its
+answer: the request (`path`, `query` with the edge_id shortened, `user_agent`),
+the edge's `response` (`open`, or the refusal), how it `close`d (code, by whom),
+and the `audio` that arrived — `frames`, `frame_sizes`, `speech_secs` and
+`realtime_rate` (1.0 = 8 kHz at real time). `warnings` says, in a client
+developer's words, what to fix: frames that are not 160 bytes, audio faster than
+real time (not resampled to 8 kHz), speech missing (frames dropped), only
+silence. `&event=all` returns every kind. The monitor page's Talk-back panel
+shows these.
 
 ```json
 { "entries": [

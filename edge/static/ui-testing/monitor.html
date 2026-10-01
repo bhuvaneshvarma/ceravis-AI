@@ -50,8 +50,10 @@
   .cs-dot.ok  { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.7); }
   .cs-dot.err { background: #f87171; box-shadow: 0 0 8px rgba(248,113,113,.7);
                 animation: blink 1.2s infinite; }
-  .cs-log { max-height: 620px; overflow-y: auto; margin-top: 10px;
+  .cs-log { max-height: 340px; overflow-y: auto; margin-top: 10px;
             display: flex; flex-direction: column; gap: 8px; }
+  .cs-head { display: flex; align-items: center; gap: 9px; }
+  .cs-head .faint { margin-left: auto; font-weight: 400; font-size: 11.5px; }
   .cs-entry { border: 1px solid var(--line); border-left: 3px solid #34d399;
               border-radius: 9px; padding: 8px 10px; background: var(--panel-2);
               font-size: 12px; }
@@ -66,6 +68,8 @@
   .cs-ep.cam   { color: #2dd4bf; border-color: rgba(45,212,191,.45); }
   .cs-ep.evt   { color: #fbbf24; border-color: rgba(251,191,36,.45); }
   .cs-ep.test  { color: #c084fc; border-color: rgba(192,132,252,.45); }
+  .cs-ep.talk  { color: #fb923c; border-color: rgba(251,146,60,.45); }
+  .cs-warn { margin-top: 4px; color: #fbbf24; font-size: 11px; }
   .cs-ok  { font-weight: 700; color: #34d399; font-size: 11px; }
   .cs-wait { font-weight: 700; color: #fbbf24; font-size: 11px; }
   .cs-queue { margin-top: 8px; padding: 7px 9px; border-radius: 9px; font-size: 11.5px;
@@ -80,11 +84,6 @@
              color: var(--muted); font-size: 10.5px; }
   .cs-meta a { color: #60a5fa; }
   .cs-alertid { color: #fbbf24; font-weight: 600; }
-  /* direction: OUT = edge -> app server, IN = app server -> this edge */
-  .cs-dir { font-size: 9.5px; font-weight: 700; letter-spacing: .5px;
-            padding: 1px 6px; border-radius: 999px; }
-  .cs-dir.out { color: #2dd4bf; border: 1px solid rgba(45,212,191,.4); }
-  .cs-dir.in  { color: #a78bfa; border: 1px solid rgba(167,139,250,.4); }
   /* expandable full exchange — request (blue) vs response (green) */
   .cs-io { margin-top: 6px; }
   .cs-io > summary { cursor: pointer; font-size: 10.5px; color: var(--muted);
@@ -140,23 +139,42 @@ moment you clicked.">📸 Snapshot</button>
 
     <div class="sidecol">
       <div class="card">
-        <h2 style="display:flex;align-items:center;gap:9px">
-          <span id="cs-dot" class="cs-dot"></span> Cloud sync console
-          <span class="faint" id="cs-stats"
-                style="margin-left:auto;font-weight:400;font-size:11.5px"></span>
-        </h2>
-        <div class="hint" style="margin-top:2px">Every AI event this device raises
-          (fall, room change, posture, stillness) and every call it fires at the
-          CERAVIS server — with HTTP result, latency, alertId and the uploaded
-          snapshot link. An amber EVENT with “not sent” tells you exactly why a
-          detection never reached the cloud. With the internet down, uploads show
-          as QUEUED and wait on disk in order — they send themselves the moment
+        <h2 class="cs-head"><span id="cs-dot" class="cs-dot"></span> App server calls
+          <span class="faint" id="cs-stats"></span></h2>
+        <div class="hint" style="margin-top:2px">↑ What this device sends to
+          app.ceravishealth.in — alerts, snapshots, clips, cameras, account — and the
+          AI events that cause them, with the HTTP result, latency and alertId. An
+          amber EVENT with “not sent” says why a detection never reached the cloud;
+          with the internet down, uploads show as QUEUED and send themselves when
           the link is back.</div>
         <div class="cs-queue" id="cs-queue" hidden></div>
         <div class="cs-log" id="cs-log">
-          <div class="faint" id="cs-empty" style="font-size:12.5px">Nothing yet —
-            trigger a test (fall, room change, stillness) and the detection plus
-            each cloud call lands here the moment it fires.</div>
+          <div class="faint cs-empty">Nothing yet — trigger a test (fall, room
+            change, stillness) and the detection plus each cloud call lands here.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cs-head"><span id="in-dot" class="cs-dot"></span> Calls received
+          <span class="faint" id="in-stats"></span></h2>
+        <div class="hint" style="margin-top:2px">↓ What the app server asks of this
+          device through the fleet tunnel — playback, timeline, snapshot, PTZ and
+          camera control — with what it asked and what the device answered.</div>
+        <div class="cs-log" id="in-log">
+          <div class="faint cs-empty">No calls received yet.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="cs-head"><span id="tb-dot" class="cs-dot"></span> Talk-back
+          <span class="faint" id="tb-stats"></span></h2>
+        <div class="hint" style="margin-top:2px">Every talk-back socket — this
+          device's live wall and every app — as a call and its answer: who
+          connected to which camera, whether the edge said <b>open</b> or refused
+          and why, how it closed, and what audio arrived. Amber lines are what an
+          app must fix (wrong frame size, not 8 kHz, audio missing).</div>
+        <div class="cs-log" id="tb-log">
+          <div class="faint cs-empty">No talk-back connections yet.</div>
         </div>
       </div>
     </div>
@@ -395,29 +413,90 @@ function updateHeader() {
   }
 }
 
-/* ---- Cloud sync console (live saveAlert/saveSnapshot status) ------- */
-const CS = { lastTs: null };
+/* ---- The three logs: app server calls, calls received, talk-back ---------
+   Each panel polls its own slice and re-renders only when its newest entry
+   changes, so a log being read does not jump. Every entry opens to the full
+   request and response. */
 const csEsc = s => String(s).replace(/[&<>"]/g,
   m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+// Pretty-print a body (JSON-string or object) for the expandable panel.
+const fmtBody = v => {
+  if (v == null) return "";
+  let s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+  if (typeof v === "string") { try { s = JSON.stringify(JSON.parse(v), null, 2); } catch (_) {} }
+  return csEsc(s);
+};
+const ioPanel = (req, res) => (req || res) ? `
+  <details class="cs-io">
+    <summary>request &amp; response</summary>
+    ${req ? `<div class="cs-req"><span class="cs-io-tag">REQUEST</span><pre>${fmtBody(req)}</pre></div>` : ""}
+    ${res ? `<div class="cs-res"><span class="cs-io-tag">RESPONSE</span><pre>${fmtBody(res)}</pre></div>` : ""}
+  </details>` : "";
+const hhmmss = ts => new Date(ts).toLocaleTimeString([], { hour12: false });
+const LAST = {};                       // panel -> newest entry it has drawn
 
-async function pollCloud() {
+function setDot(id, list, bad) {
+  document.getElementById(id).className = "cs-dot"
+    + (bad ? " err" : list.length ? (list[0].bad ? " err" : " ok") : "");
+}
+
+/* App server calls and calls received: the same record, two directions. */
+function renderCalls(logId, calls) {
+  const epCls = e => e === "saveAlert" ? "alert"
+    : e === "saveSnapshot" ? "snap" : e === "event" ? "evt"
+    : (e === "ptz" || e === "playback" || e === "timeline") ? "evt" : "cam";
+  const epTxt = e => ({ saveAlert: "ALERT", saveSnapshot: "SNAPSHOT",
+    saveCamera: "CAMERA", userDetails: "ACCOUNT", event: "EVENT",
+    getPatientPostures: "POSTURES", uploadEmbeddingFile: "UPLOAD",
+    ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE",
+    "camera-control": "CAMERA CTRL", recordingEvent: "REC EVENT" }[e]
+    || (e || "?").toUpperCase());
+  // Pipeline detections aren't HTTP calls — word their status accordingly.
+  // An upload has three states, not two: QUEUED the moment the event fires,
+  // then CALL HIT when it actually reaches the server (a second line, so an
+  // outage reads as a gap between the two), or DROPPED if it was given up on.
+  const okTxt = c => c.state === "queued" ? "⏳ QUEUED"
+    : c.state === "dropped" ? "✗ DROPPED"
+    : c.endpoint === "event" && /^INFO ·/.test(c.label || "") ? "ℹ INFO"
+    : c.endpoint === "event" ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
+    : c.direction === "in" ? (c.ok ? "✓ ANSWERED" : "✗ FAILED")
+    : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
+  const stateCls = c => c.state === "queued" ? "cs-wait" : c.ok ? "cs-ok" : "cs-bad";
+  document.getElementById(logId).innerHTML = calls.map(c => `
+    <div class="cs-entry ${c.state === "queued" ? "queued" : c.ok ? "" : "err"}">
+      <div class="cs-top">
+        <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
+        ${c.source === "test" ? `<span class="cs-ep test">TEST</span>` : ""}
+        <span class="${stateCls(c)}">${okTxt(c)}</span>
+        <span class="cs-time">${hhmmss(c.ts)}</span>
+      </div>
+      ${c.label ? `<div class="cs-label">${csEsc(c.label)}</div>` : ""}
+      <div class="cs-meta">
+        ${c.status != null ? `<span>HTTP ${c.status}</span>` : ""}
+        ${c.latency_ms != null ? `<span>${Math.round(c.latency_ms)} ms</span>` : ""}
+        ${c.alert_id != null ? `<span class="cs-alertid">alertId ${csEsc(c.alert_id)}</span>` : ""}
+        ${c.link ? `<a href="${csEsc(c.link)}" target="_blank" rel="noopener">view snapshot ↗</a>` : ""}
+        ${c.error ? `<span class="cs-bad">${csEsc(c.error)}</span>` : ""}
+      </div>
+      ${ioPanel(c.request, c.response)}
+    </div>`).join("");
+}
+
+async function pollOut() {
   let r;
-  try { r = await api("/api/v1/cloud/activity?limit=80"); } catch { return; }
+  try { r = await api("/api/v1/cloud/activity?limit=80&direction=out"); } catch { return; }
   const calls = r.calls || [];
   const okN = calls.filter(c => c.ok).length;
   document.getElementById("cs-stats").textContent =
     calls.length ? `${okN} ✓ · ${calls.length - okN} ✗` : "";
-  const dot = document.getElementById("cs-dot");
   // Red while the queue is stuck retrying — a green dot over a backlog would
   // say "cloud fine" during an outage.
-  const stalled = (r.outbox || {}).pending && (r.outbox || {}).last_error;
-  dot.className = "cs-dot" + (stalled ? " err"
-    : calls.length ? (calls[0].ok ? " ok" : " err") : "");
+  const q = r.outbox || {};
+  setDot("cs-dot", calls.map(c => ({ bad: !c.ok })), q.pending && q.last_error);
 
   // The upload queue. Depth 0 = everything raised has been delivered; anything
   // else names the backlog and how long the head has been waiting, so a network
   // outage is legible as "held, not lost" while it is happening.
-  const q = r.outbox || {};
   const qEl = document.getElementById("cs-queue");
   const attn = q.attention;
   if (q.pending || attn) {
@@ -438,64 +517,71 @@ async function pollCloud() {
         + ` · ${q.last_error ? "retrying — " + q.last_error.slice(0, 70) : "sending"}`;
   } else { qEl.hidden = true; }
 
-  if (!calls.length || calls[0].ts === CS.lastTs) return;   // nothing new — keep scroll
-  CS.lastTs = calls[0].ts;
+  if (!calls.length || calls[0].ts === LAST.out) return;   // nothing new — keep scroll
+  LAST.out = calls[0].ts;
+  renderCalls("cs-log", calls);
+}
 
-  const epCls = e => e === "saveAlert" ? "alert"
-    : e === "saveSnapshot" ? "snap" : e === "event" ? "evt"
-    : (e === "ptz" || e === "playback" || e === "timeline") ? "evt" : "cam";
-  const epTxt = e => ({ saveAlert: "ALERT", saveSnapshot: "SNAPSHOT",
-    saveCamera: "CAMERA", userDetails: "ACCOUNT", event: "EVENT",
-    getPatientPostures: "POSTURES", uploadEmbeddingFile: "UPLOAD",
-    ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE",
-    recordingEvent: "REC EVENT" }[e]
-    || (e || "?").toUpperCase());
-  // Pipeline detections aren't HTTP calls — word their status accordingly.
-  // An upload has three states, not two: QUEUED the moment the event fires,
-  // then CALL HIT when it actually reaches the server (a second line, so an
-  // outage reads as a gap between the two), or DROPPED if the sliding window
-  // gave up on it.
-  const okTxt = c => c.state === "queued" ? "⏳ QUEUED"
-    : c.state === "dropped" ? "✗ DROPPED"
-    : c.endpoint === "event" && /^INFO ·/.test(c.label || "") ? "ℹ INFO"
-    : c.endpoint === "event" ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
-    : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
-  const stateCls = c => c.state === "queued" ? "cs-wait"
-    : c.ok ? "cs-ok" : "cs-bad";
-  // Direction: OUT = this edge → app server; IN = app server → this edge.
-  const dirBadge = c => c.direction === "in" ? `<span class="cs-dir in">↓ IN</span>`
-    : c.direction === "out" ? `<span class="cs-dir out">↑ OUT</span>` : "";
-  // Pretty-print a body (JSON-string or object) for the expandable panel.
-  const fmtBody = v => {
-    if (v == null) return "";
-    let s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
-    if (typeof v === "string") { try { s = JSON.stringify(JSON.parse(v), null, 2); } catch (_) {} }
-    return csEsc(s);
-  };
-  document.getElementById("cs-log").innerHTML = calls.map(c => `
-    <div class="cs-entry ${c.state === "queued" ? "queued" : c.ok ? "" : "err"}">
+async function pollIn() {
+  let r;
+  try { r = await api("/api/v1/cloud/activity?limit=60&direction=in"); } catch { return; }
+  const calls = r.calls || [];
+  const okN = calls.filter(c => c.ok).length;
+  document.getElementById("in-stats").textContent =
+    calls.length ? `${okN} ✓ · ${calls.length - okN} ✗` : "";
+  setDot("in-dot", calls.map(c => ({ bad: !c.ok })));
+  if (!calls.length || calls[0].ts === LAST.in) return;
+  LAST.in = calls[0].ts;
+  renderCalls("in-log", calls);
+}
+
+/* Talk-back: each socket as a call (who, which camera) and its answer. */
+async function pollTalk() {
+  let r;
+  try {
+    const edge = typeof cvEdgeId === "function" ? await cvEdgeId() : "";
+    r = await api("/api/v1/talkback/log?event=session&limit=40"
+                  + (edge ? "&edge_id=" + encodeURIComponent(edge) : ""));
+  } catch { return; }
+  const list = r.entries || [];
+  const refused = x => (x.response || {}).type !== "open";
+  const nRef = list.filter(refused).length;
+  const nWarn = list.filter(x => (x.warnings || []).length).length;
+  document.getElementById("tb-stats").textContent = list.length
+    ? `${list.length - nRef} open · ${nRef} refused` + (nWarn ? ` · ${nWarn} ⚠` : "") : "";
+  setDot("tb-dot", list.map(x => ({ bad: refused(x) })));
+  if (!list.length || list[0].ended_at === LAST.talk) return;
+  LAST.talk = list[0].ended_at;
+  document.getElementById("tb-log").innerHTML = list.map(x => {
+    const res = x.response || {}, a = x.audio || {}, cl = x.close || {};
+    const status = res.type === "open" ? `<span class="cs-ok">✓ OPEN</span>`
+      : `<span class="cs-bad">✗ ${csEsc((res.code || "no answer").toUpperCase())}</span>`;
+    const who = [x.name || "unnamed", x.user_id ? `user ${x.user_id}` : "", x.holder]
+      .filter(Boolean).join(" · ");
+    const warn = (x.warnings || []).map(w => `<div class="cs-warn">⚠ ${csEsc(w)}</div>`).join("");
+    const answer = { response: res, ...(x.error ? { later_error: x.error } : {}),
+                     close: cl, audio: a, ...(x.warnings ? { warnings: x.warnings } : {}) };
+    return `
+    <div class="cs-entry ${refused(x) ? "err" : warn ? "queued" : ""}">
       <div class="cs-top">
-        <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
-        ${dirBadge(c)}
-        ${c.source === "test" ? `<span class="cs-ep test">TEST</span>` : ""}
-        <span class="${stateCls(c)}">${okTxt(c)}</span>
-        <span class="cs-time">${new Date(c.ts).toLocaleTimeString([], { hour12: false })}</span>
+        <span class="cs-ep talk">${csEsc(x.camera_id || "?")}</span>
+        ${status}
+        <span class="cs-time">${hhmmss(x.started_at)}</span>
       </div>
-      ${c.label ? `<div class="cs-label">${csEsc(c.label)}</div>` : ""}
+      <div class="cs-label">${csEsc(who)}</div>
       <div class="cs-meta">
-        ${c.status != null ? `<span>HTTP ${c.status}</span>` : ""}
-        ${c.latency_ms != null ? `<span>${Math.round(c.latency_ms)} ms</span>` : ""}
-        ${c.alert_id != null ? `<span class="cs-alertid">alertId ${csEsc(c.alert_id)}</span>` : ""}
-        ${c.link ? `<a href="${csEsc(c.link)}" target="_blank" rel="noopener">view snapshot ↗</a>` : ""}
-        ${c.error ? `<span class="cs-bad">${csEsc(c.error)}</span>` : ""}
+        ${x.duration_secs != null ? `<span>${x.duration_secs} s connected</span>` : ""}
+        ${a.speech_secs ? `<span>${a.speech_secs} s of speech</span>` : ""}
+        ${a.realtime_rate != null ? `<span>${a.realtime_rate}× real time</span>` : ""}
+        ${cl.code != null ? `<span>closed ${cl.code} by ${csEsc(cl.by)}</span>`
+                          : cl.by ? `<span>closed by ${csEsc(cl.by)}</span>` : ""}
+        ${x.error ? `<span class="cs-bad">${csEsc(x.error.message || x.error.code)}</span>` : ""}
       </div>
-      ${(c.request || c.response) ? `
-      <details class="cs-io">
-        <summary>request &amp; response</summary>
-        ${c.request ? `<div class="cs-req"><span class="cs-io-tag">REQUEST</span><pre>${fmtBody(c.request)}</pre></div>` : ""}
-        ${c.response ? `<div class="cs-res"><span class="cs-io-tag">RESPONSE</span><pre>${fmtBody(c.response)}</pre></div>` : ""}
-      </details>` : ""}
-    </div>`).join("");
+      ${refused(x) && res.message ? `<div class="cs-warn">${csEsc(res.message)}</div>` : ""}
+      ${warn}
+      ${ioPanel(x.request, answer)}
+    </div>`;
+  }).join("");
 }
 
 /* ---- recording on/off (disk saver) --------------------------------- */
@@ -529,8 +615,10 @@ document.getElementById("rec-toggle").onclick = async () => {
 
 initCamNames();
 setInterval(pollState, 400);
-setInterval(pollCloud, 2000);
-pollCloud();
+setInterval(pollOut, 2000);
+setInterval(pollIn, 3000);
+setInterval(pollTalk, 3000);
+pollOut(); pollIn(); pollTalk();
 setInterval(refreshRec, 5000);
 refreshRec();
 </script>

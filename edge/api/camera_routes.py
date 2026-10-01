@@ -405,7 +405,7 @@ def camera_control(body: dict, request: Request):
     try:
         check_edge_id(req_id)
     except HTTPException:
-        call_log.record("camera-control", False, status=409,
+        call_log.record("camera-control", False, direction="in", status=409,
                         label=f"{canon(label)} {action or '?'} rejected: edgeId "
                               f"auth (this device is '{effective_edge_id()}')")
         raise
@@ -413,11 +413,11 @@ def camera_control(body: dict, request: Request):
         raise HTTPException(400, "action must be one of: start, stop, restart")
     cam = _camera_by_label(label)
     if cam is None:
-        call_log.record("camera-control", False, status=404,
+        call_log.record("camera-control", False, direction="in", status=404,
                         label=f"{canon(label)} {action}: no such camera")
         raise HTTPException(404, f"no camera for label {label!r}")
     ok = _apply_camera_action(request, cam, action)
-    call_log.record("camera-control", bool(ok), status=200 if ok else 409,
+    call_log.record("camera-control", bool(ok), direction="in", status=200 if ok else 409,
                     label=f"{canon(label)} {action}")
     if not ok:
         raise HTTPException(409, f"camera {action} failed for {cam.camera_id}")

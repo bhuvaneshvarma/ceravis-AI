@@ -77,7 +77,7 @@ async def health():
 
 
 @router.get("/api/v1/cloud/activity")
-def cloud_activity(request: Request, limit: int = 100):
+def cloud_activity(request: Request, limit: int = 100, direction: str | None = None):
     """Rolling log of app-server calls (saveAlert/saveSnapshot/…) — feeds the
     monitor's Cloud Sync Console so end-to-end tests are verifiable on screen.
 
@@ -86,7 +86,8 @@ def cloud_activity(request: Request, limit: int = 100):
     "nothing happened" or "we are offline and holding N incidents"."""
     from integration.call_log import recent
     ob = getattr(request.app.state, "outbox", None)
-    return {"calls": recent(limit=min(int(limit), 300)),
+    return {"calls": recent(limit=min(int(limit), 300),
+                            direction=direction if direction in ("in", "out") else None),
             "outbox": ob.stats() if ob is not None else None}
 
 

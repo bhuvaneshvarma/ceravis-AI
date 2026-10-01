@@ -437,6 +437,62 @@ async def main():
     check("and who was refused, and why",
           any(e["event"] == "refused" and e["name"] == "Nurse Arun" and e["code"] == "busy"
               for e in log))
+    check("the default log is still only talks and refusals (as the app teams were given it)",
+          {e["event"] for e in log} <= {"talk", "refused"})
+
+    print("\nThe session log (each socket as a call and its response)")
+    sessions = get(f"/log?edge_id={EDGE_ID}&event=session&limit=200")["entries"]
+    granted = next((x for x in sessions if x["camera_id"] == "LOUNGE" and x["user_id"] == "u-17"
+                    and (x.get("response") or {}).get("type") == "open"), None)
+    check("a granted socket is logged: who, the call, the edge's open, how it closed",
+          granted is not None and granted["name"] == "Nurse Priya"
+          and granted["request"]["path"] == "/api/v1/talkback/LOUNGE/stream"
+          and granted["request"]["query"].get("client_id") == "p1"
+          and granted["close"]["by"] in ("client", "edge"))
+    check("…with the audio that arrived: frames, sizes and seconds of speech",
+          granted and granted["audio"]["frames"] > 0
+          and set(granted["audio"]["frame_sizes"]) == {"160"}
+          and granted["audio"]["speech_secs"] > 0)
+    busy = next((x for x in sessions if x["name"] == "Nurse Arun"
+                 and (x.get("response") or {}).get("code") == "busy"), None)
+    check("a refused socket is logged with the refusal and its close code (4409)",
+          busy is not None and busy["close"]["code"] == 4409 and busy["close"]["by"] == "edge")
+    check("the edge_id never lands in the log whole",
+          all(EDGE_ID != (x["request"]["query"].get("edge_id") or "") or len(EDGE_ID) <= 6
+              for x in sessions) and not any("E1E1" in json.dumps(x) for x in sessions))
+
+    async def send_for(seconds, every, size=160, camera="PORCH", client="diag"):
+        """A client sending `size`-byte frames every `every` seconds."""
+        await asyncio.sleep(0.8)                   # the previous carer's floor hold
+        t = await talk(camera=camera, client=client, name="Diag App")
+        await t.wait(lambda m: m.get("type") == "open")
+        # Paced on an absolute clock, like a microphone's audio clock: a plain
+        # sleep(every) drifts (on Windows 20 ms sleeps last ~29 ms), which the
+        # edge would rightly report as missing speech.
+        start = time.monotonic()
+        for i in range(round(seconds / every)):
+            await t.ws.send(bytes(size))
+            await asyncio.sleep(max(0.0, start + (i + 1) * every - time.monotonic()))
+        await t.say(type="release")
+        await t.say(type="stop")
+        await t.closed()
+        await asyncio.sleep(0.2)
+        return next(x for x in get(f"/log?edge_id={EDGE_ID}&event=session&limit=5")["entries"]
+                    if x["client_id"] == client)
+
+    good = await send_for(2.6, 0.02, client="d-good")
+    check("a client at real time is judged at ~1x, with no warning",
+          good["audio"]["realtime_rate"] is not None
+          and 0.8 <= good["audio"]["realtime_rate"] <= 1.25 and "warnings" not in good)
+    fast = await send_for(2.6, 0.01, client="d-fast")
+    check("a client sending 2x real time is told it is not resampling to 8 kHz",
+          any("not resampling" in w for w in fast.get("warnings", [])))
+    half = await send_for(2.6, 0.04, client="d-half")
+    check("a client sending half the frames is told how much speech is missing",
+          any("missing" in w and "EVERY" in w for w in half.get("warnings", [])))
+    odd = await send_for(1.0, 0.04, size=320, client="d-odd")
+    check("a client sending 320-byte frames is told to send 160",
+          any("320 bytes" in w for w in odd.get("warnings", [])))
 
 
 asyncio.run(main())

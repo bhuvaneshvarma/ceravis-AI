@@ -50,7 +50,7 @@ from talkback import audit, credentials, guard
 from talkback.lines import lines
 from talkback.mpegts import FRAME_BYTES, SAMPLE_RATE
 from talkback.protocol import TalkbackError
-from talkback.sessions import IDLE_CLOSE_SECS, Talker, hub
+from talkback.sessions import IDLE_CLOSE_SECS, Talker, hub, is_speech
 
 logger = logging.getLogger("talkback.api")
 
@@ -135,12 +135,16 @@ def list_cameras(request: Request, edge_id: str | None = Query(None)) -> dict:
 
 
 @router.get("/log")
-def talk_log(request: Request, edge_id: str | None = Query(None), camera: str | None = Query(None),
+def talk_log(request: Request, edge_id: str | None = Query(None),
+             camera: str | None = Query(None), event: str = Query("talk,refused"),
              limit: int = Query(100, ge=1, le=1000)) -> dict:
     """Who spoke into which room, when and for how long — and who was refused.
-    Newest first."""
+    Newest first. `event` picks the kinds: talk, refused (the default, as the
+    app teams were given it), session (each talk socket as a call and its
+    response, with an audio check), or `all`."""
     check_edge_id(edge_id, request.scope)
-    return {"entries": audit.recent(hub.canonical(camera) if camera else None, limit)}
+    kinds = None if event.strip() == "all" else {e.strip() for e in event.split(",") if e.strip()}
+    return {"entries": audit.recent(hub.canonical(camera) if camera else None, limit, kinds)}
 
 
 @router.get("/health")
@@ -273,45 +277,60 @@ def _identity(value: str | None, limit: int) -> str:
 
 @router.websocket("/{camera_id}/stream")
 async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
-    """A carer's microphone into one camera."""
+    """A carer's microphone into one camera. Every socket — granted, refused or
+    dropped — ends as ONE `session` entry in the talk log (talkback.audit): the
+    call, the edge's answer, how it closed, and what audio actually arrived."""
     q = websocket.query_params
     edge_id = q.get("edge_id") or q.get("edgeId")
     # The carer's control: sent again on a reconnect, it gets its floor back.
     client_id = _identity(q.get("client_id") or q.get("clientId"), 64) \
         or "srv-" + uuid.uuid4().hex[:12]
     forwarded = (websocket.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    holder = forwarded or (websocket.client.host if websocket.client else "unknown")
+    name = _identity(q.get("name") or q.get("userName"), 40)
+    user_id = _identity(q.get("user_id") or q.get("userId"), 64)
 
     await websocket.accept()
+    log = audit.Session(hub.canonical(camera_id), dict(q), holder=holder,
+                        user_agent=websocket.headers.get("user-agent", ""),
+                        name=name, user_id=user_id, client_id=client_id)
+    try:
+        await _talk(websocket, log, camera_id, edge_id, client_id, name, user_id, holder)
+    finally:
+        log.finish()
+
+
+async def _talk(websocket: WebSocket, log: audit.Session, camera_id: str,
+                edge_id: str | None, client_id: str, name: str, user_id: str,
+                holder: str) -> None:
     if not settings.talkback_enabled:
         return await _refuse(websocket, "disabled",
-                             "Talk-back is switched off on this device.")
+                             "Talk-back is switched off on this device.", log)
     try:
         check_edge_id(edge_id, websocket.scope)
     except HTTPException:
         return await _refuse(websocket, "edge_id",
                              "This device did not accept the request (edge_id "
-                             "missing or for another device).")
+                             "missing or for another device).", log)
 
     async def close(code: int, reason: str) -> None:
+        log.closed(code, "edge", reason)
         try:
             await websocket.close(code=code, reason=reason)
         except Exception:
             pass
 
     talker = Talker(
-        camera_id=hub.canonical(camera_id), client_id=client_id,
-        name=_identity(q.get("name") or q.get("userName"), 40),
-        user_id=_identity(q.get("user_id") or q.get("userId"), 64),
-        holder=forwarded or (websocket.client.host if websocket.client else "unknown"),
-        end=lambda code, message: _refuse(websocket, code, message), close=close)
+        camera_id=hub.canonical(camera_id), client_id=client_id, name=name,
+        user_id=user_id, holder=holder,
+        end=lambda code, message: _refuse(websocket, code, message, log), close=close)
     refusal = await hub.open(talker)
     if refusal is not None:
-        return await _refuse(websocket, refusal["code"], refusal["message"])
-    logger.info("talk %s open for %s (%s)", talker.camera_id,
-                talker.name or talker.holder, client_id)
+        return await _refuse(websocket, refusal["code"], refusal["message"], log)
+    logger.info("talk %s open for %s (%s)", talker.camera_id, name or holder, client_id)
     last_stats = 0.0
     try:
-        await websocket.send_json({
+        opened = {
             "type": "open", "camera_id": talker.camera_id, "client_id": client_id,
             "codec": "alaw", "sample_rate": SAMPLE_RATE, "frame_bytes": FRAME_BYTES,
             "mic_gain": settings.talkback_mic_gain,
@@ -320,18 +339,22 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
             "hold_secs": IDLE_CLOSE_SECS,
             "floor_hold_secs": settings.talkback_floor_hold_secs,
             "max_turn_secs": 0,                    # none: talk while it is held
-        })
+        }
+        await websocket.send_json(opened)
+        log.answered(opened)
         while True:
             message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
+                log.closed(message.get("code"), "client")
                 break
             chunk = message.get("bytes")
             if chunk is not None:
                 if not 0 < len(chunk) <= _MAX_CHUNK_BYTES:
                     continue
+                log.frame(len(chunk), is_speech(chunk))
                 refusal = await hub.audio(talker, chunk)
                 if refusal is not None:
-                    await _refuse(websocket, refusal["code"], refusal["message"])
+                    await _refuse(websocket, refusal["code"], refusal["message"], log)
                     break
                 now = time.monotonic()
                 if now - last_stats >= 1.0 and hub.floor(talker.camera_id).get(
@@ -351,32 +374,37 @@ async def talk_stream(websocket: WebSocket, camera_id: str) -> None:
             if kind == "release":
                 hub.release(talker)
             elif kind == "stop":
+                log.closed(1000, "client", "stop")
                 break
             # "ping" and anything unknown: nothing to do; the frame kept the
             # connection alive through the proxies, which was its only job.
     except (WebSocketDisconnect, OSError, RuntimeError):
-        pass                                       # the carer left, or we closed it
+        log.closed(None, "client", "connection lost")   # the carer left mid-stream
     except Exception:
         logger.exception("talk stream crashed for %s", client_id)
+        log.closed(1011, "edge", "crashed")
     finally:
         # Every exit lets the floor go (held for the floor hold, so a carer
         # whose network dropped can come back to it).
         await hub.leave(talker)
         await close(1000, "")
-        logger.info("talk %s closed for %s (%s)", talker.camera_id,
-                    talker.name or talker.holder, client_id)
+        logger.info("talk %s closed for %s (%s)", talker.camera_id, name or holder, client_id)
 
 
 _CLOSE_FOR = {"edge_id": WS_UNAUTHORIZED, "disabled": WS_UNAVAILABLE,
               "busy": WS_BUSY, "taken": WS_BUSY, "cooldown": WS_COOLDOWN}
 
 
-async def _refuse(websocket: WebSocket, code: str, message: str) -> None:
+async def _refuse(websocket: WebSocket, code: str, message: str,
+                  log: audit.Session) -> None:
     """Say why — the full sentence in a frame, then a close whose code and
-    (byte-capped) reason say the same."""
+    (byte-capped) reason say the same. Both go into the session's log entry."""
+    error = {"type": "error", "code": code, "message": message}
+    close_code = _CLOSE_FOR.get(code, WS_FAILED)
+    log.answered(error)
+    log.closed(close_code, "edge", code)
     try:
-        await websocket.send_json({"type": "error", "code": code, "message": message})
-        await websocket.close(code=_CLOSE_FOR.get(code, WS_FAILED),
-                              reason=_reason(code, message))
+        await websocket.send_json(error)
+        await websocket.close(code=close_code, reason=_reason(code, message))
     except Exception:
         pass

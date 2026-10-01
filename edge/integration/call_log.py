@@ -139,8 +139,10 @@ def record(endpoint: str, ok: bool, *, status: int | None = None,
         logger.exception("cloud call-log write failed")
 
 
-def recent(limit: int = 100) -> list[dict]:
-    """Newest-first records for the console."""
+def recent(limit: int = 100, direction: str | None = None) -> list[dict]:
+    """Newest-first records for the console. `direction` "in" = calls this edge
+    RECEIVED (via the fleet tunnel); "out" = everything else — the calls it
+    makes to the app server and the detections that cause them."""
     try:
         f = _file()
         if not f.exists():
@@ -148,11 +150,18 @@ def recent(limit: int = 100) -> list[dict]:
         with _LOCK:
             lines = f.read_text(encoding="utf-8").splitlines()
         out = []
-        for line in reversed(lines[-max(int(limit), 1):]):
+        for line in reversed(lines):
             try:
-                out.append(json.loads(line))
+                rec = json.loads(line)
             except ValueError:
                 continue
+            if direction == "in" and rec.get("direction") != "in":
+                continue
+            if direction == "out" and rec.get("direction") == "in":
+                continue
+            out.append(rec)
+            if len(out) >= max(int(limit), 1):
+                break
         return out
     except Exception:
         logger.exception("cloud call-log read failed")

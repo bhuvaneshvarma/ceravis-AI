@@ -59,7 +59,7 @@ _FRAME_SECS = FRAME_BYTES / SAMPLE_RATE
 _SILENCE = b"\xd5\x55"
 
 
-def _is_speech(frame: bytes) -> bool:
+def is_speech(frame: bytes) -> bool:
     return bool(frame.strip(_SILENCE))
 
 
@@ -207,7 +207,7 @@ class TalkbackHub:
         """One frame from a carer. Forwarded while their floor is speaking.
         Speech on a socket whose floor had lapsed claims it again. Returns a
         refusal when the floor is someone else's or the camera is gone."""
-        speech = _is_speech(frame)
+        speech = is_speech(frame)
         f = self._floors.get(t.camera_id)
         if f is None or f.talker is not t:
             if not speech:

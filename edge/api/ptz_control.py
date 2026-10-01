@@ -69,7 +69,7 @@ def log(ok: bool, label: str, detail: str, status: int) -> None:
     the monitor's Cloud Sync Console. Rejections included — so "did the app's
     button reach this device, and what did the camera say" is never a guess."""
     (logger.info if ok else logger.warning)("PTZ %s — %s", label or "?", detail)
-    call_log.record("ptz", ok, status=status,
+    call_log.record("ptz", ok, status=status, direction="in",
                     label=f"{canon(label)} {detail}".strip()[:300])
 
 
