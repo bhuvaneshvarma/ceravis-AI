@@ -228,8 +228,12 @@ class _FleetEdgePrefix:
         # 308 `…/page.html/` -> `…/page.html` (http only) so a page's relative
         # assets (fleet-prefix.js, ceravis.js, css) resolve against the file, not
         # a phantom directory. Done BEFORE the strip, so the full /<edge_id> stays.
+        # Same-origin only: ONE leading "/" and the rest percent-encoded, so a
+        # crafted `//evil.com/x.html/` (or /%5C…, /%09/…) can never come back as
+        # a Location the browser reads as another host — an open redirect.
         if scope["type"] == "http" and path.endswith(".html/"):
-            dest = path.rstrip("/")
+            from urllib.parse import quote
+            dest = "/" + quote(path.strip("/"))
             qs = scope.get("query_string", b"")
             if qs:
                 dest += "?" + qs.decode("latin-1")
