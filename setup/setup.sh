@@ -51,6 +51,10 @@ fi
 
 # ---- [4/6] services ---------------------------------------------------
 stage "4/6" "systemd services"
+# The app-server API key first, so the service's first start already has it: asks
+# once (a secret, kept root-only in /etc/ceravis/secrets.env) — or pass
+# CERAVIS_API_KEY=<key>.
+bash "$SCRIPTS_DIR/install_api_key.sh"
 bash "$SCRIPTS_DIR/install_service.sh"
 bash "$SCRIPTS_DIR/install_reboot_timer.sh"
 # The fleet agent enrolls this device with the Fleet Management Server by

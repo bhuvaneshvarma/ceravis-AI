@@ -23,10 +23,13 @@ PRECONDITIONS (on the edge):
   • account verified            (account.json has ceravisUserId)
   • at least one enabled camera (cameras.json)
   • CERAVIS_API_BASE_URL set    (cloud configured)
+  • the app-server API key      (the service gets it from the root-only
+    /etc/ceravis/secrets.env; a shell does not, so pass it in as below)
   • for the clip: recording ON and someone was in frame recently, else the clip
     is skipped (the alert + still still go out).
 
 Run from the repo root, on the device:
+    export CERAVIS_API_KEY=$(sudo sed -n 's/^CERAVIS_API_KEY=//p' /etc/ceravis/secrets.env)
     python tests/test_fall_incident.py                 # first enabled camera
     python tests/test_fall_incident.py KITCHEN         # a specific room / label
     python tests/test_fall_incident.py KITCHEN --no-clip   # alert + still only
@@ -49,8 +52,8 @@ from config.settings import settings
 from configuration.account_config import AccountConfig
 from configuration.camera_config import CameraConfig
 from integration.ceravis_api import (
-    CeravisApiError, alert_id_of, is_configured, room_to_enum, save_alert,
-    save_snapshot,
+    CeravisApiError, alert_id_of, api_key_problem, is_configured, room_to_enum,
+    save_alert, save_snapshot,
 )
 from livestream.mediamtx_client import record_path_name
 from recording.incident_clip import build_incident_clip
@@ -92,6 +95,11 @@ def main() -> None:
 
     if not is_configured():
         _die("CERAVIS_API_BASE_URL not set — cloud is not configured")
+    key_problem = api_key_problem()
+    if key_problem:
+        _die(f"{key_problem}. A shell does not get the service's key: first\n"
+             "    export CERAVIS_API_KEY=$(sudo sed -n 's/^CERAVIS_API_KEY=//p' "
+             "/etc/ceravis/secrets.env)")
     acct = AccountConfig().get()
     pid = acct.get("ceravisUserId")
     if not pid:

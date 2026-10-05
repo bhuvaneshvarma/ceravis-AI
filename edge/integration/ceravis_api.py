@@ -203,6 +203,26 @@ def is_configured() -> bool:
     return bool(settings.ceravis_api_base_url.strip())
 
 
+def api_key_problem() -> str | None:
+    """Why the app server refuses (or soon will refuse) this device's calls for
+    want of its key, or None. The key is a secret in the root-only
+    /etc/ceravis/secrets.env that ceravis.service loads; without it the device
+    still runs and keeps every upload queued, so nothing fails on its own — this
+    is what makes the gap loud: logged at boot (bootstrap.pipeline) and listed
+    in /api/v1/system/status problems."""
+    if not is_configured():
+        return None
+    key = settings.ceravis_api_key.strip()
+    fix = "run setup/install_api_key.sh, then restart ceravis"
+    if not key:
+        return ("app-server API key not installed — the app server refuses this "
+                f"device's alerts and snapshots (queued, not lost); {fix}")
+    if key == type(settings).model_fields["ceravis_api_key"].default:
+        return ("app-server API key is the old built-in one (public, to be "
+                f"revoked) — {fix}")
+    return None
+
+
 def _with_key(headers: dict[str, str], idempotency_key: str | None) -> dict[str, str]:
     if idempotency_key:
         headers = dict(headers, **{"Idempotency-Key": idempotency_key})

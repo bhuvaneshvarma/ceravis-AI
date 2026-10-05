@@ -32,6 +32,12 @@ echo "== [4/6] build OSNet ReID engine =="
 bash "$SETUP_DIR/export_reid.sh"
 
 echo "== [5/6] restart service + fleet agent =="
+# The app-server API key lives in the root-only /etc/ceravis/secrets.env, not in
+# the public repo: asked for once (a stored key is kept), then the unit is
+# re-installed so the /etc copy loads that file — both before the restart that
+# has to pick it up.
+bash "$SETUP_DIR/install_api_key.sh"
+bash "$SETUP_DIR/install_service.sh"
 sudo systemctl restart ceravis
 # Re-installs the agent's unit (it now loads the root-only enroll.env) and asks
 # once for the fleet enrollment key — the key left jetson.env, and without it
