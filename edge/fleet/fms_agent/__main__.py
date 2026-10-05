@@ -29,7 +29,9 @@ def main(argv: list[str] | None = None) -> int:
         # Not an error: a device without FMS_URL — or, before it has enrolled,
         # FMS_ENROLL_KEY — simply isn't in a fleet yet. Idle quietly instead of
         # crash-looping under systemd. Once enrolled it signs with its own key.
-        logging.info("fleet agent idle — set FMS_URL and FMS_ENROLL_KEY to join the fleet")
+        logging.info("fleet agent idle — %s", "set FMS_URL to join the fleet" if not cfg.url else
+                     "no fleet enrollment key: on a Jetson run setup/install_fleet_agent.sh "
+                     "(it keeps the key root-only — never put it in jetson.env)")
         if args.check:
             return 2
         agent.stop.wait()
