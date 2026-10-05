@@ -4,16 +4,40 @@
 # Server and carries out its admins' orders. setup.sh runs this for you; on a
 # device set up before the agent existed, run it once after `git pull`.
 #
-# Nothing per device: the agent reads FMS_URL + FMS_ENROLL_KEY from jetson.env,
-# enrolls itself on first start (adopting this device's current edge_id, or
-# receiving a new one) and keeps its identity in /var/lib/ceravis-fleet-agent.
+# Nothing per device: the agent reads FMS_URL from jetson.env and the fleet
+# enrollment key (the same for every device, but a SECRET) from the root-only
+# /etc/ceravis-fleet-agent/enroll.env this script writes. It enrolls itself on
+# first start (adopting this device's current edge_id, or receiving a new one)
+# and keeps its identity in /var/lib/ceravis-fleet-agent; from then on it needs
+# only its own key.
 #
-# Run:  bash setup/install_fleet_agent.sh      (idempotent — safe to re-run)
+# Run:  bash setup/install_fleet_agent.sh      (asks for the key once; idempotent)
+#       FMS_ENROLL_KEY=<key> bash setup/install_fleet_agent.sh   (unattended)
 set -euo pipefail
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SETUP_DIR")"
 UNIT_SRC="$REPO_DIR/edge/infra/systemd/ceravis-fleet-agent.service"
+KEY_FILE=/etc/ceravis-fleet-agent/enroll.env
+
+# The enrollment key: given once, kept across re-runs, readable by root only
+# (systemd hands it to the agent). Never in the repo, which is public.
+KEY="${FMS_ENROLL_KEY:-}"
+if [ -z "$KEY" ] && ! sudo test -s "$KEY_FILE" && [ -t 0 ]; then
+    read -r -s -p "Fleet enrollment key (from the FMS server's fms.env; Enter to skip): " KEY
+    echo
+fi
+if [ -n "$KEY" ]; then
+    case "$KEY" in
+        *[!A-Za-z0-9._~+/=-]*) echo "refusing: the key has unexpected characters" >&2; exit 2 ;;
+    esac
+    sudo install -d -m 700 "$(dirname "$KEY_FILE")"
+    printf 'FMS_ENROLL_KEY=%s\n' "$KEY" | sudo sh -c "umask 077 && cat > '$KEY_FILE'"
+    echo "Enrollment key saved to $KEY_FILE (root only)."
+elif ! sudo test -s "$KEY_FILE"; then
+    echo "NOTE: no enrollment key given. An already-enrolled device keeps checking in;"
+    echo "      a new one idles until you re-run this with the key."
+fi
 
 sed -e "s|/home/ceravis/ceravis2|$REPO_DIR|g" \
     -e "s|^User=.*|User=$USER|" \

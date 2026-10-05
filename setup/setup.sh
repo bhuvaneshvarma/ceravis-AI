@@ -54,7 +54,8 @@ stage "4/6" "systemd services"
 bash "$SCRIPTS_DIR/install_service.sh"
 bash "$SCRIPTS_DIR/install_reboot_timer.sh"
 # The fleet agent enrolls this device with the Fleet Management Server by
-# itself (FMS_URL + FMS_ENROLL_KEY from jetson.env) — no keys to copy.
+# itself; it asks once for the fleet enrollment key (a secret, kept root-only
+# in /etc/ceravis-fleet-agent/enroll.env) — or pass FMS_ENROLL_KEY=<key>.
 bash "$SCRIPTS_DIR/install_fleet_agent.sh"
 sudo systemctl restart ceravis
 
