@@ -12,7 +12,8 @@
 # only its own key.
 #
 # Run:  bash setup/install_fleet_agent.sh      (asks for the key once; idempotent)
-#       FMS_ENROLL_KEY=<key> bash setup/install_fleet_agent.sh   (unattended)
+#       FMS_ENROLL_KEY=<key> bash setup/install_fleet_agent.sh   (unattended, or to
+#       REPLACE a stored key — e.g. after the key is rotated on the FMS)
 set -euo pipefail
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,11 +21,11 @@ REPO_DIR="$(dirname "$SETUP_DIR")"
 UNIT_SRC="$REPO_DIR/edge/infra/systemd/ceravis-fleet-agent.service"
 KEY_FILE=/etc/ceravis-fleet-agent/enroll.env
 
-# The enrollment key: given once, kept across re-runs, readable by root only
-# (systemd hands it to the agent). Never in the repo, which is public.
+# The enrollment key: given once, kept across re-runs. On disk only root can read
+# it; systemd hands it to the agent at start. Never in the repo, which is public.
 KEY="${FMS_ENROLL_KEY:-}"
 if [ -z "$KEY" ] && ! sudo test -s "$KEY_FILE" && [ -t 0 ]; then
-    read -r -s -p "Fleet enrollment key (from the FMS server's fms.env; Enter to skip): " KEY
+    read -r -s -p "Fleet enrollment key (from the FMS server's fms.env; Enter to skip): " KEY || KEY=""
     echo
 fi
 if [ -n "$KEY" ]; then
@@ -34,9 +35,11 @@ if [ -n "$KEY" ]; then
     sudo install -d -m 700 "$(dirname "$KEY_FILE")"
     printf 'FMS_ENROLL_KEY=%s\n' "$KEY" | sudo sh -c "umask 077 && cat > '$KEY_FILE'"
     echo "Enrollment key saved to $KEY_FILE (root only)."
-elif ! sudo test -s "$KEY_FILE"; then
-    echo "NOTE: no enrollment key given. An already-enrolled device keeps checking in;"
-    echo "      a new one idles until you re-run this with the key."
+elif sudo test -s "$KEY_FILE"; then
+    echo "Keeping the enrollment key in $KEY_FILE (to replace it: FMS_ENROLL_KEY=<key> bash $0)."
+else
+    echo "NOTE: no enrollment key given. An already-enrolled device keeps checking in, but"
+    echo "      cannot re-enroll after a Reset key; a new one idles. Re-run this with the key."
 fi
 
 sed -e "s|/home/ceravis/ceravis2|$REPO_DIR|g" \

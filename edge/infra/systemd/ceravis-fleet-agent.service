@@ -5,9 +5,11 @@
 #
 # Its own unit on purpose: if the agent stops, the edge app is untouched; if the
 # edge app stops, the agent is still here to report exactly that. No per-device
-# settings — FMS_URL comes from jetson.env and the secret FMS_ENROLL_KEY from the
-# root-only enroll.env (both the same for every device; systemd reads them as
-# root, so the agent's user never needs to). On first start the agent enrolls
+# settings — FMS_URL comes from jetson.env and the secret FMS_ENROLL_KEY from
+# enroll.env (both the same for every device). On disk only root can read
+# enroll.env; systemd reads it as root and puts the key in the agent's
+# environment, so at run time the agent's own account can see it (in /proc) —
+# keep that account trusted. On first start the agent enrolls
 # itself and keeps its edge_id + own key in its StateDirectory
 # (/var/lib/ceravis-fleet-agent), never in the repo. When its code changes on
 # disk (git pull) it exits, and Restart=always brings up the new version.

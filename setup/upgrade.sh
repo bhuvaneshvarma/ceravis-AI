@@ -31,8 +31,12 @@ bash "$SETUP_DIR/install_native.sh"
 echo "== [4/6] build OSNet ReID engine =="
 bash "$SETUP_DIR/export_reid.sh"
 
-echo "== [5/6] restart service =="
+echo "== [5/6] restart service + fleet agent =="
 sudo systemctl restart ceravis
+# Re-installs the agent's unit (it now loads the root-only enroll.env) and asks
+# once for the fleet enrollment key — the key left jetson.env, and without it
+# the device cannot re-enroll after a Reset key. Keeps a key already stored.
+bash "$SETUP_DIR/install_fleet_agent.sh"
 sleep 6
 
 echo "== [6/6] verify =="
