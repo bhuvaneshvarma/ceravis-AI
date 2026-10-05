@@ -1,6 +1,6 @@
 # CERAVIS remote-access tunnel — frp CLIENT (runs on the Jetson edge).
 #
-# Copy to frpc.toml, fill in the ALL-CAPS values, then install with
+# Copy to frpc.toml, fill in serverAddr and auth.token, then install with
 # cloud/install_frpc.sh. It publishes, through the ONE shared cloud domain:
 #   • the MediaMTX WebRTC live links   (127.0.0.1:8889)
 #   • the edge API + admin pages       (127.0.0.1:8000, uvicorn)
@@ -8,14 +8,13 @@
 # separate from ceravis.service — stop/disable this alone to turn remote access
 # off; the AI pipeline is untouched.
 #
-# Fleet model: EVERY house uses the identical file below except its own EDGE_ID.
-# frps routes by URL path: /<EDGE_ID>/… -> that house's MediaMTX; /api + /ui ->
-# that house's uvicorn. Public links:
-#   live : https://<DOMAIN>/<EDGE_ID>/<ROOM>/         (MediaMTX player page)
-#   API  : https://<DOMAIN>/api/v1/…                  (open; edgeId in request)
-#   pages: https://<DOMAIN>/ui/login.html             (email + one-time-code sign-in)
-# EDGE_ID must equal edge/infra/env/jetson.env's EDGE_ID (the app server hands it
-# back at account verification and the edge writes it there for you to copy).
+# Fleet model: EVERY house uses the identical file below. Its own edge_id is
+# written in by machine (ceravis-apply-edge-id, at account verify and on every
+# boot) — leave the EDGE_ID placeholders as they are. frps routes by URL path,
+# everything under the house's own /<edge_id> prefix. Public links:
+#   live : https://<DOMAIN>/<edge_id>/<ROOM>/         (MediaMTX player page)
+#   API  : https://<DOMAIN>/<edge_id>/api/v1/…        (edgeId in request = 2nd check)
+#   pages: https://<DOMAIN>/<edge_id>/ui/login.html   (email + one-time-code sign-in)
 
 serverAddr = "EC2_PUBLIC_IP_OR_DOMAIN"   # the AWS box's public IPv4 / domain
 serverPort = 7000

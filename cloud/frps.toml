@@ -9,8 +9,8 @@
 # Fleet model (one domain, one port, many houses):
 #   Caddy (TLS, :443) ──► frps HTTP vhost (:7080) ──► the right frpc tunnel,
 #   picked by the URL path:
-#     /<edge_id>/…  ──► that home's MediaMTX :8889   (live links)
-#     /api + /ui    ──► that home's uvicorn  :8000   (edge API + admin pages)
+#     /<edge_id>/…         ──► that home's MediaMTX :8889   (live links)
+#     /<edge_id>/api | ui  ──► that home's uvicorn  :8000   (edge API + admin pages)
 # Every edge dials in with type="http" proxies + locations; frps routes by path.
 # Adding a house needs NOTHING here — only a new edge with its own edge_id.
 # See cloud/README.md.
