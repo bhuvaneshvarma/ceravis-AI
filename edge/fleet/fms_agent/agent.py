@@ -4,7 +4,8 @@ Rules it lives by:
   • No per-device setup. With no identity yet it ENROLLS by itself: it waits
     briefly for the edge app so an existing edge_id is adopted, then gets its
     permanent edge_id and its own key back. If the server later refuses its key
-    (an admin pressed Reset key), it simply enrolls again.
+    (an admin pressed Reset key), it enrolls again — which needs the fleet
+    enrollment key, so it tells the server whether it holds one.
   • The server sets the rhythm (`next_poll_after_secs`); the agent obeys.
   • First call is offset by a hash of the fingerprint, retries back off with
     jitter — thousands of devices booting together never arrive together.
@@ -70,7 +71,7 @@ class Agent:
             return self._enroll(status)
         payload = {
             "protocol": protocol.VERSION,
-            "agent": collect.facts(self.rtt_ms, self.interval),
+            "agent": collect.facts(self.rtt_ms, self.interval, bool(self.cfg.enroll_key)),
             "status": status,
             "status_error": status_error,
             "results": self.results[:protocol.MAX_RESULTS],
@@ -99,7 +100,7 @@ class Agent:
             reply = self._post(protocol.ENROLL_PATH, {
                 "protocol": protocol.VERSION, "fingerprint": self.fingerprint,
                 "edge_id": reported if isinstance(reported, str) else "",
-                "agent": collect.facts(self.rtt_ms, self.interval),
+                "agent": collect.facts(self.rtt_ms, self.interval, bool(self.cfg.enroll_key)),
             }, self.fingerprint, self.cfg.enroll_key)
         except transport.Rejected as exc:
             if exc.status == 409:
@@ -127,7 +128,8 @@ class Agent:
         code = _code_stamp()
         log.info("fleet agent started — reporting to %s", self.cfg.url)
         while not self.stop.wait(wait):
-            if exit_on_code_change and _code_stamp() != code:
+            # Answers to orders go out first: a restart must not lose them.
+            if exit_on_code_change and not self.results and _code_stamp() != code:
                 log.info("fleet agent code changed on disk — exiting so it restarts on the new version")
                 return
             try:
