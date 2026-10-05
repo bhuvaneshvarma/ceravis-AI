@@ -1,6 +1,8 @@
-"""Agent settings, read from the environment. On a Jetson, systemd loads them
-from the edge's own edge/infra/env/jetson.env (FMS_URL, FMS_ENROLL_KEY — the
-same for every device), so a device needs no per-device configuration at all."""
+"""Agent settings, read from the environment. On a Jetson, systemd loads FMS_URL
+from the edge's own edge/infra/env/jetson.env and the secret FMS_ENROLL_KEY from
+the root-only /etc/ceravis-fleet-agent/enroll.env — both the same for every
+device, so a device needs no per-device configuration at all. The enrollment key
+is needed only until the device has enrolled; then it signs with its own key."""
 from __future__ import annotations
 
 import os
