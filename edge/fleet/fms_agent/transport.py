@@ -24,9 +24,15 @@ class Rejected(Exception):
         self.status = status
 
 
+def encode(payload) -> bytes:
+    """The exact request-body bytes for `payload` (what is signed and what the
+    server's size limit counts)."""
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
 def post(url: str, path: str, payload: dict, principal: str, secret: str,
          clock_offset: float) -> tuple[dict, float]:
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")   # sign these exact bytes
+    body = encode(payload)                                  # sign these exact bytes
     stamp = f"{time.time() + clock_offset:.3f}"
     nonce = secrets.token_hex(16)
     message = protocol.request_message(principal, "POST", path, body, stamp, nonce)

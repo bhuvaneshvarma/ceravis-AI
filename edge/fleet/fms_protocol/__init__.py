@@ -63,6 +63,17 @@ def valid_edge_id(value) -> bool:
     return isinstance(value, str) and bool(EDGE_ID_RE.match(value))
 
 
+def enroll_key_id(key: str) -> str:
+    """A short one-way id of a fleet enrollment key ("" for none). The agent
+    reports it, never the key, and the server compares it with its own key's id,
+    so a device holding an old (rotated) or mistyped key is told apart from one
+    that could really enroll again."""
+    if not key:
+        return ""
+    return hmac.new(key.encode("utf-8"), b"ceravis-fms/enroll-key-id",
+                    hashlib.sha256).hexdigest()[:12]
+
+
 def _sha256_hex(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
