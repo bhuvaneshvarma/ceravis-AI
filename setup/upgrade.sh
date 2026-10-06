@@ -7,6 +7,11 @@
 # engine, and restarts the service. Idempotent — safe to re-run.
 #
 # Run:  bash setup/upgrade.sh
+#
+# After its pull it starts again on the NEW copy of itself, so steps the pull
+# brings run on this upgrade. A device whose copy predates that runs its OLD
+# steps on the upgrade that brings it: run `bash setup/upgrade.sh` once more
+# there (check_jetson.sh at the end flags a fleet agent that still needs it).
 set -euo pipefail
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,8 +19,13 @@ REPO_DIR="$(dirname "$SETUP_DIR")"
 EDGE_DIR="$REPO_DIR/edge"
 cd "$EDGE_DIR"
 
-echo "== [1/6] latest code =="
-git -C "$REPO_DIR" pull --ff-only || echo "  (pull skipped — resolve manually if needed)"
+# bash goes on reading the copy of this file it started with — the pull must
+# not leave the rest of the upgrade running the old steps. Once (env guard).
+if [ -z "${CERAVIS_UPGRADE_PULLED:-}" ]; then
+    echo "== [1/6] latest code =="
+    git -C "$REPO_DIR" pull --ff-only || echo "  (pull skipped — resolve manually if needed)"
+    CERAVIS_UPGRADE_PULLED=1 exec bash "$SETUP_DIR/upgrade.sh" "$@"
+fi
 
 echo "== [2/6] purge FastReid leftovers + stale caches =="
 rm -f models/reid/fastreid* models/reid/*fast* 2>/dev/null || true
