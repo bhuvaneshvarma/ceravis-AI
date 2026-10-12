@@ -25,10 +25,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     agent = Agent(cfg, enroll_grace=0) if args.check else Agent(cfg)   # --check never waits
     signal.signal(signal.SIGTERM, lambda *_: agent.stop.set())
-    if not cfg.configured:
-        # Not an error: a device without FMS_URL/FMS_ENROLL_KEY simply isn't in
-        # a fleet yet. Idle quietly instead of crash-looping under systemd.
-        logging.info("fleet agent idle — set FMS_URL and FMS_ENROLL_KEY to join the fleet")
+    if not (cfg.configured or (cfg.url and agent.identity)):
+        # Not an error: a device without FMS_URL — or, before it has enrolled,
+        # FMS_ENROLL_KEY — simply isn't in a fleet yet. Idle quietly instead of
+        # crash-looping under systemd. Once enrolled it signs with its own key.
+        logging.info("fleet agent idle — %s", "set FMS_URL to join the fleet" if not cfg.url else
+                     "no fleet enrollment key: on a Jetson run setup/install_fleet_agent.sh "
+                     "(it keeps the key root-only — never put it in jetson.env)")
         if args.check:
             return 2
         agent.stop.wait()
@@ -36,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         return _check(agent)
     try:
-        agent.run_forever()
+        agent.run_forever(exit_on_code_change=True)     # systemd restarts it on the new code
     except KeyboardInterrupt:
         pass
     return 0

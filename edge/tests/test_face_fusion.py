@@ -231,8 +231,11 @@ check("a person whose look found no face is not re-looked at once", tick() == []
 recs = [tr._features.get("CAM", i) for i in (1, 2, 3)]
 recs[0].face_looked -= settings.face_recheck_secs + 0.1
 check("...but again after face_recheck_secs", tick() == [1.0])
-recs[1].face_looks = ((e[0], 90.0, time.monotonic()),)
-recs[1].face_looked = time.monotonic()
+# One clock read for both, as TrackFeatureBuffer writes them: two reads differ by
+# a few ns on Linux, which reads as "the last look found no face".
+looked_at = time.monotonic()
+recs[1].face_looks = ((e[0], 90.0, looked_at),)
+recs[1].face_looked = looked_at
 check("someone showing a usable face keeps being looked at", tick() == [2.0])
 
 print()

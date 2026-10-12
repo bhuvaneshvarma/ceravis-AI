@@ -4,12 +4,15 @@ Rules it lives by:
   • No per-device setup. With no identity yet it ENROLLS by itself: it waits
     briefly for the edge app so an existing edge_id is adopted, then gets its
     permanent edge_id and its own key back. If the server later refuses its key
-    (an admin pressed Reset key), it simply enrolls again.
+    (an admin pressed Reset key), it enrolls again — which needs the fleet
+    enrollment key, so it tells the server whether it holds one.
   • The server sets the rhythm (`next_poll_after_secs`); the agent obeys.
   • First call is offset by a hash of the fingerprint, retries back off with
     jitter — thousands of devices booting together never arrive together.
   • Order results are kept until a heartbeat carrying them is accepted.
   • Any failure is logged once, on the transition, and the loop carries on.
+  • Under systemd it exits when its own code changes on disk (a `git pull`),
+    so the restart picks the new version up instead of the next reboot.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ import logging
 import random
 import threading
 import time
+from pathlib import Path
 
 import fms_protocol as protocol
 
@@ -31,6 +35,18 @@ ENROLL_GRACE_SECS = 600   # how long to wait for the edge app before enrolling w
 
 class Waiting(transport.Rejected):
     """Not an error — the agent is deliberately holding off (logged once)."""
+
+
+def _code_stamp() -> int:
+    """The newest modification time among the agent's own source files."""
+    newest = 0
+    for folder in (Path(__file__).parent, Path(protocol.__file__).parent):
+        for f in folder.glob("*.py"):
+            try:
+                newest = max(newest, f.stat().st_mtime_ns)
+            except OSError:                # replaced mid-update: the next look sees it
+                pass
+    return newest
 
 
 class Agent:
@@ -55,7 +71,7 @@ class Agent:
             return self._enroll(status)
         payload = {
             "protocol": protocol.VERSION,
-            "agent": collect.facts(self.rtt_ms, self.interval),
+            "agent": collect.facts(self.rtt_ms, self.interval, bool(self.cfg.enroll_key)),
             "status": status,
             "status_error": status_error,
             "results": self.results[:protocol.MAX_RESULTS],
@@ -74,6 +90,9 @@ class Agent:
         return 1.0 if self.results else self.interval
 
     def _enroll(self, status: dict | None) -> float:
+        if not self.cfg.enroll_key:
+            raise Waiting("this device must enroll but has no fleet enrollment key (FMS_ENROLL_KEY) "
+                          "— on a Jetson, run setup/install_fleet_agent.sh to give it one")
         if status is None and time.monotonic() - self._started < self.enroll_grace:
             raise Waiting("waiting for the edge app to answer, so its edge_id can be adopted")
         reported = (status or {}).get("edge_id") or ""
@@ -81,7 +100,7 @@ class Agent:
             reply = self._post(protocol.ENROLL_PATH, {
                 "protocol": protocol.VERSION, "fingerprint": self.fingerprint,
                 "edge_id": reported if isinstance(reported, str) else "",
-                "agent": collect.facts(self.rtt_ms, self.interval),
+                "agent": collect.facts(self.rtt_ms, self.interval, bool(self.cfg.enroll_key)),
             }, self.fingerprint, self.cfg.enroll_key)
         except transport.Rejected as exc:
             if exc.status == 409:
@@ -103,11 +122,16 @@ class Agent:
         return reply
 
     # ---- forever ----------------------------------------------------------
-    def run_forever(self) -> None:
+    def run_forever(self, exit_on_code_change: bool = False) -> None:
         wait = int(self.fingerprint, 16) % 30
         backoff, skewed = float(MIN_WAIT), False
+        code = _code_stamp()
         log.info("fleet agent started — reporting to %s", self.cfg.url)
         while not self.stop.wait(wait):
+            # Answers to orders go out first: a restart must not lose them.
+            if exit_on_code_change and not self.results and _code_stamp() != code:
+                log.info("fleet agent code changed on disk — exiting so it restarts on the new version")
+                return
             try:
                 wait = self.beat()
                 backoff, skewed = float(MIN_WAIT), False

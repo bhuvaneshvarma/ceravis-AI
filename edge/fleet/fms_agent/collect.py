@@ -39,7 +39,7 @@ def edge_status(url: str, timeout: float = 8.0) -> tuple[dict | None, str | None
         return None, "status endpoint returned invalid JSON"
 
 
-def facts(rtt_ms: float | None, interval: float) -> dict:
+def facts(rtt_ms: float | None, interval: float, can_enroll: bool) -> dict:
     l4t = _read("/etc/nv_tegra_release")
     return {
         "version": __version__,
@@ -53,6 +53,9 @@ def facts(rtt_ms: float | None, interval: float) -> dict:
         "python": platform.python_version(),
         "rtt_ms": rtt_ms,
         "interval_secs": interval,
+        # Holds the fleet enrollment key, so it can enroll again by itself after
+        # an admin's Reset key. The console warns before a reset when it cannot.
+        "can_enroll": can_enroll,
     }
 
 
