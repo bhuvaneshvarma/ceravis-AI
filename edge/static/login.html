@@ -192,6 +192,7 @@
 <script src="ceravis.js"></script>
 <script>
 let resendTimer = null;
+let lgView = 0;   // bumped on every screen change; a reply for an older screen is dropped
 
 function loginToast(msg) {
   document.querySelectorAll(".lg-toast").forEach(t => t.remove());
@@ -200,6 +201,15 @@ function loginToast(msg) {
   t.innerHTML = `<span>&#10003;</span><span>${msg}</span>`;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 2600);
+}
+
+function lgMsg(el, kind, text) {
+  el.textContent = "";
+  if (!text) return;
+  const s = document.createElement("span");
+  s.className = kind;
+  s.textContent = text;
+  el.appendChild(s);
 }
 
 function buildTitleAnim() {
@@ -242,14 +252,17 @@ function startInputCycle() {
 }
 
 function showOtpView(email) {
+  lgView++;
   document.getElementById("lg-email-view").hidden = true;
   document.getElementById("lg-otp-view").hidden = false;
   document.getElementById("lg-email-shown").value = email;
+  lgMsg(document.getElementById("lg-otp-msg"));
   const boxes = [...document.querySelectorAll("#lg-otp input")];
   boxes.forEach(b => { b.value = ""; b.classList.remove("filled"); });
   boxes[0].focus();
 }
 function showEmailView() {
+  lgView++;
   clearInterval(resendTimer);
   document.getElementById("lg-otp-view").hidden = true;
   document.getElementById("lg-email-view").hidden = false;
@@ -275,11 +288,15 @@ function startResend(secs) {
       box.innerHTML = `<a id="lg-resend-a">Resend security code</a>`;
       document.getElementById("lg-resend-a").onclick = async (e) => {
         e.preventDefault();
+        e.currentTarget.onclick = null;
+        box.textContent = "Sending…";
         const email = document.getElementById("lg-email-shown").value.trim();
+        const msg = document.getElementById("lg-otp-msg");
+        const view = lgView;
         const r = await requestOtp(email);
-        if (r && r.sent) { loginToast("OTP sent"); startResend(secs); }
-        else document.getElementById("lg-otp-msg").innerHTML =
-          `<span class="bad">${(r && r.reason) || "Couldn't resend the code."}</span>`;
+        if (view !== lgView) return;
+        if (r && r.sent === true) { lgMsg(msg); loginToast("OTP sent"); startResend(secs); }
+        else { lgMsg(msg, "bad", (r && r.reason) || "Couldn't resend the code."); tick(); }
       };
       return;
     }
@@ -294,15 +311,15 @@ document.getElementById("lg-continue").onclick = async () => {
   const email = document.getElementById("lg-email").value.trim();
   const msg = document.getElementById("lg-email-msg");
   const btn = document.getElementById("lg-continue");
-  if (!email) { msg.innerHTML = `<span class="bad">Enter your email to continue.</span>`; return; }
-  btn.disabled = true; msg.innerHTML = `<span class="muted">Sending code…</span>`;
+  if (!email) { lgMsg(msg, "bad", "Enter your email to continue."); return; }
+  btn.disabled = true; lgMsg(msg, "muted", "Sending code…");
   const r = await requestOtp(email);
   btn.disabled = false;
-  if (!r || r.sent === false) {
-    msg.innerHTML = `<span class="bad">${(r && r.reason) || "Couldn't send the code."}</span>`;
+  if (!r || r.sent !== true) {
+    lgMsg(msg, "bad", (r && r.reason) || "Couldn't send the code.");
     return;
   }
-  msg.textContent = "";
+  lgMsg(msg);
   showOtpView(email);
   loginToast("OTP sent");
   startResend(30);
@@ -322,6 +339,12 @@ document.getElementById("lg-edit").onclick = showEmailView;
       if (b.value && i < boxes.length - 1) boxes[i + 1].focus();
     });
     b.addEventListener("keydown", e => {
+      if (/^[0-9]$/.test(e.key) && b.value) {          // a full box takes the new digit
+        e.preventDefault();
+        b.value = e.key;
+        b.dispatchEvent(new Event("input"));
+        return;
+      }
       if (e.key === "Backspace" && !b.value && i > 0) boxes[i - 1].focus();
       if (e.key === "Enter") document.getElementById("lg-verify").click();
     });
@@ -330,34 +353,46 @@ document.getElementById("lg-edit").onclick = showEmailView;
       if (!d) return;
       e.preventDefault();
       boxes.forEach((x, k) => { x.value = d[k] || ""; mark(x); });
-      boxes[Math.min(d.length, boxes.length) - 1].focus();
+      boxes[Math.min(d.length, boxes.length - 1)].focus();
     });
   });
 })();
 
 document.getElementById("lg-verify").onclick = async () => {
   const email = document.getElementById("lg-email-shown").value.trim();
-  const otp = [...document.querySelectorAll("#lg-otp input")].map(b => b.value).join("");
+  const boxes = [...document.querySelectorAll("#lg-otp input")];
+  const otp = boxes.map(b => b.value).join("");
   const msg = document.getElementById("lg-otp-msg");
   const btn = document.getElementById("lg-verify");
-  btn.disabled = true; msg.innerHTML = `<span class="muted">Verifying…</span>`;
-  try {
-    const r = await api("/api/v1/account/verify",
-      { method: "POST", body: JSON.stringify({ email, otp }) });
-    if (!r.verified) {
-      msg.innerHTML = `<span class="bad">&#10007; ${r.reason || "Not verified"}</span>`;
-      btn.disabled = false; return;
-    }
-    cvStartSession(r.user);
-    clearInterval(resendTimer);
-    loginToast("Signed in");
-    // Fresh registration -> onboarding wizard; returning sign-in -> straight to
-    // the Live Wall (no userDetails re-fetch happened on the device).
-    location.replace(r.fresh ? "setup.html" : "live.html");
-  } catch (e) {
-    msg.innerHTML = `<span class="bad">&#10007; verification failed</span>`;
-    btn.disabled = false;
+  if (otp.length !== boxes.length || /\D/.test(otp)) {
+    lgMsg(msg, "bad", `Enter the ${boxes.length}-digit code from your email.`);
+    (boxes.find(b => !b.value) || boxes[0]).focus();
+    return;
   }
+  btn.disabled = true; lgMsg(msg, "muted", "Verifying…");
+  const view = lgView;
+  let r;
+  try {
+    r = await api("/api/v1/account/verify",
+      { method: "POST", body: JSON.stringify({ email, otp }) });
+  } catch (e) {
+    r = { verified: false, reason: (e && typeof e.reason === "string" && e.reason)
+      || (e instanceof TypeError ? "Couldn't reach the device. Check the connection and try again."
+                                 : "Verification failed. Please try again.") };
+  }
+  btn.disabled = false;
+  if (view !== lgView) return;
+  if (!r || r.verified !== true) {
+    lgMsg(msg, "bad", "✗ " + ((r && r.reason) || "Not verified"));
+    boxes[0].focus();
+    return;
+  }
+  cvStartSession(r.user);
+  clearInterval(resendTimer);
+  loginToast("Signed in");
+  // Fresh registration -> onboarding wizard; returning sign-in -> straight to
+  // the Live Wall (no userDetails re-fetch happened on the device).
+  location.replace(r.fresh ? "setup.html" : "live.html");
 };
 
 function initLogin() {
@@ -368,8 +403,8 @@ function initLogin() {
     if (a && a.user && a.user.email)
       document.getElementById("lg-email").value = a.user.email;
     if (a && a.configured === false)
-      document.getElementById("lg-email-msg").innerHTML =
-        `<span class="warn">CERAVIS server not configured on this device yet.</span>`;
+      lgMsg(document.getElementById("lg-email-msg"), "warn",
+        "CERAVIS server not configured on this device yet.");
   }).catch(() => {});
   document.getElementById("lg-email").focus();
 }

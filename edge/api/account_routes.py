@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
@@ -101,24 +102,38 @@ class RequestOtpRequest(BaseModel):
     email: str
 
 
+def _login_error(exc: CeravisApiError) -> str:
+    """The login screen's words for an app-server call that could not be made:
+    a plain retry message when the server is unreachable or broken (5xx), the
+    error itself otherwise (e.g. the server is not configured on this device)."""
+    if not is_configured() or (exc.status is not None and exc.status < 500):
+        return str(exc)
+    if exc.status is None:
+        return ("Couldn't reach the CERAVIS server. Check this device's internet "
+                "connection and try again.")
+    return "The CERAVIS server couldn't handle this right now. Please try again in a moment."
+
+
 @router.post("/request-otp")
 def request_otp(req: RequestOtpRequest):
     """Kick off the login one-time-code for a care recipient signing in on this
     edge device: POST the email to app.ceravishealth `/v1/ai/sendOtp`, which
     emails a 5-digit code. Returns {"sent": True} only when the server accepts it
-    (the account exists); {"sent": False, reason} otherwise, so the UI knows
-    whether to advance to the code screen. The full exchange lands in the wire log.
+    (the account exists); {"sent": False, reason} otherwise — the server's own
+    message when it gives one — so the UI knows whether to advance to the code
+    screen. The full exchange lands in the wire log.
     """
     email = (req.email or "").strip()
     if not email:
         return {"sent": False, "reason": "Email is required"}
     try:
-        ok = send_otp(email)
+        ok, reason = send_otp(email)
     except CeravisApiError as exc:
         logger.warning("sendOtp failed for %s: %s", email, exc)
-        return {"sent": False, "reason": str(exc)}
+        return {"sent": False, "reason": _login_error(exc)}
     if not ok:
-        return {"sent": False, "reason": "No CERAVIS account found for this email"}
+        logger.info("sendOtp refused for %s: %s", email, reason)
+        return {"sent": False, "reason": reason}
     logger.info("login OTP sent to %s", email)
     return {"sent": True, "email": email}
 
@@ -142,14 +157,19 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     email = (req.email or "").strip()
     if not email:
         return {"verified": False, "reason": "Email is required"}
-    # 1) The one-time code must check out before we fetch anything.
-    otp = (req.otp or "").strip()
+    # 1) The one-time code must check out before we fetch anything — and only
+    # a well-formed code is worth asking the server about.
+    otp = re.sub(r"\s+", "", req.otp or "")
+    if not re.fullmatch(r"[0-9]{5}", otp):
+        return {"verified": False, "reason": "Enter the 5-digit code from your email."}
     try:
-        if not verify_otp(email, otp):
-            return {"verified": False, "reason": "Invalid or expired code"}
+        ok, reason = verify_otp(email, otp)
     except CeravisApiError as exc:
         logger.warning("verifyOtp failed for %s: %s", email, exc)
-        return {"verified": False, "reason": str(exc)}
+        return {"verified": False, "reason": _login_error(exc)}
+    if not ok:
+        logger.info("login code not accepted for %s: %s", email, reason)
+        return {"verified": False, "reason": reason}
 
     # 2) RETURNING device — account.json already holds THIS recipient. A normal
     # sign-in (to add a camera / edit zones) must NOT re-fetch userDetails from
@@ -184,7 +204,7 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         user = get_user_details(email)
     except CeravisApiError as exc:
         logger.warning("account verify failed for %s: %s", email, exc)
-        return {"verified": False, "reason": str(exc)}
+        return {"verified": False, "reason": _login_error(exc)}
     if not user:
         return {"verified": False,
                 "reason": "No CERAVIS account found for this email"}
