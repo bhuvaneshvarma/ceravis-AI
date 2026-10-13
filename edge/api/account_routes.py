@@ -150,9 +150,10 @@ class VerifyRequest(BaseModel):
 def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTasks):
     """
     Gate the setup wizard. First check the login one-time code with the app
-    server (/v1/ai/verifyOtp); only a good code proceeds to look the email up
-    (/v1/ai/userDetails). If the account exists, persist it and return it so the
-    next screen can pre-fill. Both app-server hits are recorded in the wire log.
+    server (/v1/ai/verifyOtp). Its confirmation carries the account itself
+    (deviceToken = this device's edge_id); /v1/ai/userDetails is asked only when
+    it does not. Persist the account and return it so the next screen can
+    pre-fill. Every app-server hit is recorded in the wire log.
     """
     email = (req.email or "").strip()
     if not email:
@@ -163,7 +164,7 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     if not re.fullmatch(r"[0-9]{5}", otp):
         return {"verified": False, "reason": "Enter the 5-digit code from your email."}
     try:
-        ok, reason = verify_otp(email, otp)
+        ok, reason, verified = verify_otp(email, otp)
     except CeravisApiError as exc:
         logger.warning("verifyOtp failed for %s: %s", email, exc)
         return {"verified": False, "reason": _login_error(exc)}
@@ -171,15 +172,21 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         logger.info("login code not accepted for %s: %s", email, reason)
         return {"verified": False, "reason": reason}
 
-    # 2) RETURNING device — account.json already holds THIS recipient. A normal
-    # sign-in (to add a camera / edit zones) must NOT re-fetch userDetails from
-    # the app server every time; the local account is the source of truth. We
-    # only make sure the frp tunnel is still keyed to the stored edge_id, then
-    # let the operator straight into the app. `fresh:false` tells the login page
-    # to open the Live Wall (not the onboarding wizard).
+    # 2) RETURNING device — account.json already holds THIS recipient with the
+    # SAME edge_id the server just confirmed. A normal sign-in (to add a camera /
+    # edit zones) must NOT re-fetch userDetails every time; the local account is
+    # the source of truth. We only make sure the frp tunnel is still keyed to the
+    # stored edge_id, then let the operator straight into the app. `fresh:false`
+    # tells the login page to open the Live Wall (not the onboarding wizard).
+    # A DIFFERENT edge_id for the same recipient (e.g. the device moved to
+    # another app server) is not a returning login: it goes through step 3, so
+    # the new edge_id is saved and applied exactly like a new recipient's.
+    verified = verified or {}
+    server_edge_id = canonical_edge_id(verified.get("deviceToken") or verified.get("edgeId"))
     stored = account_config.get()
     if (stored.get("ceravisUserId")
-            and (stored.get("email") or "").strip().lower() == email.lower()):
+            and (stored.get("email") or "").strip().lower() == email.lower()
+            and server_edge_id in ("", account_config.get_edge_id())):
         edge_id = account_config.get_edge_id()
         provisioning, remote = False, None
         if edge_id:
@@ -198,10 +205,11 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
                 "edgeId": edge_id or None, "provisioning": provisioning,
                 "remote": remote}
 
-    # 3) FRESH registration (no local account yet, or a different email) — fetch
-    # the account from the app server and onboard via the wizard (`fresh:true`).
+    # 3) FRESH registration (no local account yet, a different email, or a new
+    # edge_id) — the account the server confirmed with the code, else fetched
+    # from userDetails, and onboard via the wizard (`fresh:true`).
     try:
-        user = get_user_details(email)
+        user = verified if verified.get("ceravisUserId") else get_user_details(email)
     except CeravisApiError as exc:
         logger.warning("account verify failed for %s: %s", email, exc)
         return {"verified": False, "reason": _login_error(exc)}

@@ -447,15 +447,17 @@ _OTP_REFUSED = {
 }
 
 
-def verify_otp(email: str, otp: str) -> tuple[bool, str | None]:
+def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     """
     POST /v1/ai/verifyOtp — check the login one-time code.
     Body: {"email": "...", "otp": "..."}. X-API-Key header as usual.
 
-    Fails CLOSED: returns (True, None) only for the server's one confirmation
-    (_otp_confirmed: HTTP 2xx, code 1, "OTP verified successfully"). Any other
-    reply gives (False, reason), the reason being the server's message exactly
-    as sent ("No OTP found. Please request OTP again", …).
+    Fails CLOSED: returns (True, None, account) only for the server's one
+    confirmation (_otp_confirmed: HTTP 2xx, code 1, "OTP verified successfully"),
+    `account` being the user it confirmed — its `data`: ceravisUserId,
+    deviceToken (this device's edge_id), names, role, tier — or None when the
+    reply carries none. Any other reply gives (False, reason, None), the reason
+    being the server's message exactly as sent ("No OTP found…", …).
     Raises CeravisApiError on config/transport/5xx errors. The full request +
     response is captured in the wire log, the code itself masked — that record
     shows the exact reply shape if a correct code is ever refused.
@@ -488,7 +490,9 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None]:
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
-    ok = 200 <= resp.status_code < 300 and _otp_confirmed(_json_or_none(resp))
+    body = _json_or_none(resp) if 200 <= resp.status_code < 300 else None
+    ok = _otp_confirmed(body)
+    account = body.get("data") if ok and isinstance(body.get("data"), dict) else None
     reason = None
     if not ok:
         message = _server_message(resp)
@@ -498,7 +502,7 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None]:
                       if resp.status_code < 300 else "Invalid or expired code"))
     call_log.record("verifyOtp", ok, label=email, error=reason,
                     status=resp.status_code, latency_ms=lat)
-    return ok, reason
+    return ok, reason, account
 
 
 def save_cameras(patient_user_id, cameras: list[dict]):

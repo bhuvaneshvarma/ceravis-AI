@@ -122,9 +122,13 @@ CASES = [
 CASES = [(l, st, OTP_OK if b == "__OK__" else b, a, w) for l, st, b, a, w in CASES]
 for label, status, body, accepted, why in CASES:
     answer(status, body)
-    ok, reason = ceravis_api.verify_otp("user@example.com", "12345")
+    ok, reason, account = ceravis_api.verify_otp("user@example.com", "12345")
     good = ok is accepted and (reason is None if accepted else bool(why) and why in (reason or ""))
-    check(f"{label:36} -> {'in ' if ok else 'out'} {reason!r}", good)
+    check(f"{label:36} -> {'in ' if ok else 'out'} {reason!r}", good and (ok or account is None))
+answer(200, OTP_OK)
+check("the confirmation hands back the account it confirmed (deviceToken = edge_id)",
+      (ceravis_api.verify_otp("user@example.com", "12345")[2] or {}).get("deviceToken")
+      == "DMFpAL9PDnuAngA2n3cJ3XKZ0XeaPQI_UjD6ZvLerLo")
 
 for label, exc in (("unreachable", requests.ConnectionError("refused")),):
     SESSION.reply = exc
@@ -162,6 +166,64 @@ answer(502, "<html>bad gateway</html>")
 r = account_routes.verify(Verify(email="user@example.com", otp="12345"), None, None)
 check("5xx -> plain retry message, no HTML",
       not r["verified"] and "try again" in r["reason"] and "<" not in r["reason"], str(r))
+
+
+# --------------------------------------------------------------------------
+print("\n2b. the confirmed account decides the edge_id: same -> returning, new -> updated")
+from types import SimpleNamespace                                 # noqa: E402
+from fastapi import BackgroundTasks                               # noqa: E402
+
+
+class _Account:                                    # account.json, kept in memory
+    def __init__(self, data):
+        self.data = dict(data)
+
+    def get(self):
+        return dict(self.data)
+
+    def get_edge_id(self):
+        return self.data.get("edgeId") or ""
+
+    def save(self, account):
+        self.data = dict(account)
+
+
+def _login(token):
+    """One sign-in whose verifyOtp confirmation carries `token` (None = no account)."""
+    data = None if token is None else {
+        "ceravisUserId": 5012, "deviceToken": token, "email": "user@example.com",
+        "firstName": "Arnold ", "lastName": "Benner", "role": "CARE_RECIPIENT", "tier": "TIER_2"}
+    answer(200, json.dumps({"code": 1, "data": data, "message": "OTP verified successfully"}))
+    tasks = BackgroundTasks()
+    r = account_routes.verify(Verify(email="user@example.com", otp="12345"),
+                              SimpleNamespace(headers={"host": "edge.test"}), tasks)
+    return r, [t.func.__name__ for t in tasks.tasks], [u.rsplit("/", 1)[-1] for u, _ in SESSION.calls]
+
+
+_real_account = account_routes.account_config
+STORED = {"ceravisUserId": 5012, "email": "user@example.com", "edgeId": "CAr5old"}
+account_routes.account_config = _Account(STORED)
+r, tasks, calls = _login("CAr5old")
+check("same recipient, SAME edge_id -> returning login, nothing re-applied",
+      r["verified"] and r["fresh"] is False and r["edgeId"] == "CAr5old"
+      and calls == ["verifyOtp"] and "_repoint_live_paths" not in tasks, f"{r.get('fresh')} {tasks} {calls}")
+account_routes.account_config = _Account(STORED)
+r, tasks, calls = _login("VzspNew")
+check("same recipient, NEW edge_id (moved server) -> saved and applied like a new recipient",
+      r["verified"] and r["fresh"] is True
+      and account_routes.account_config.get_edge_id() == "VzspNew"
+      and tasks == ["apply_edge_id_async", "_repoint_live_paths"], f"{r.get('fresh')} {tasks}")
+check("…from the account the code confirmed — no second userDetails call",
+      calls == ["verifyOtp"], str(calls))
+account_routes.account_config = _Account(STORED)
+r, tasks, calls = _login(None)
+check("a confirmation without an account keeps the returning login as before",
+      r["verified"] and r["fresh"] is False and r["edgeId"] == "CAr5old", str(r.get("fresh")))
+account_routes.account_config = _Account({})
+r, tasks, calls = _login(None)
+check("…and a new device without one falls back to userDetails",
+      calls == ["verifyOtp", "userDetails"], str(calls))
+account_routes.account_config = _real_account
 
 
 # --------------------------------------------------------------------------
