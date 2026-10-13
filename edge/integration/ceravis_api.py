@@ -241,14 +241,19 @@ _HTTP_PHRASES = {s.phrase.lower() for s in HTTPStatus}
 def _server_message(resp) -> str | None:
     """The human-readable reason an app-server reply gives, if any: the JSON
     `message` (or error/detail), else a short plain-text body. Never an HTML
-    page (those stay in the wire log) and never a bare HTTP phrase such as
-    Spring's default "Not Found", so the caller's own wording takes over."""
+    page or unreadable JSON (those stay in the wire log) and never a bare HTTP
+    phrase such as Spring's default "Not Found", so the caller's own wording
+    takes over."""
     body = _json_or_none(resp)
     if isinstance(body, dict):
         texts = [body.get(k) for k in ("message", "msg", "responseMessage", "error_description",
                                        "detail", "reason", "error")]
-    else:                                # a JSON string, or a non-JSON text body
-        texts = [body] if isinstance(body, str) else [resp.text] if body is None else []
+    elif isinstance(body, str):          # a JSON string
+        texts = [body]
+    elif body is None and not (resp.text or "").lstrip().startswith(("{", "[")):
+        texts = [resp.text]              # plain text, not broken JSON
+    else:
+        texts = []
     for text in texts:
         text = text.strip() if isinstance(text, str) else ""
         if text and not text.startswith("<") and text.lower() not in _HTTP_PHRASES:
@@ -256,30 +261,13 @@ def _server_message(resp) -> str | None:
     return None
 
 
-# A verifyOtp reply is judged by its STRUCTURE. Only one narrow, unambiguous
-# signal CONFIRMS a code — data:true (ApiResponse<Boolean>), a bare true, or an
-# OTP flag (otpVerified/otpValid) set true — because every looser "yes" (a
-# token, a generic `verified`, a status word, a message) can also appear in a
-# refusal. Refusal signals are read broadly: they can only refuse. The app
-# server may report a failure INSIDE an HTTP 200, and success:true or a 2xx
-# status only says the request was handled — never that the code is right.
+# Envelope readers. The app server answers with HTTP 200 and its own verdict
+# inside the body — {"code":1|0, "data":…, "message":…} — so a 2xx status
+# alone never says a call worked.
 _STATUS_OK = {"SUCCESS", "SUCCEEDED", "TRUE"}
 _STATUS_BAD = {"FAIL", "FAILED", "FAILURE", "ERROR", "INVALID", "REJECTED", "EXPIRED", "FALSE"}
-_OTP_CONFIRMS = {"otpverified", "isotpverified", "otpvalid", "isotpvalid"}
-_VERDICTS = _OTP_CONFIRMS | {"data", "verified", "isverified", "valid", "isvalid", "success",
-                             "issuccess", "issuccessful", "matched", "ismatched", "otpmatched",
-                             "authenticated", "isauthenticated"}        # set false = refused
-_ALARMS = {"expired", "isexpired", "otpexpired", "locked", "islocked", "blocked", "isblocked",
-           "attemptsexceeded", "failed", "haserror"}                     # set true = refused
-_TEXT_KEYS = {"message", "msg", "responsemessage", "errormessage", "detail", "reason",
-              "description", "title"}
-_NO_ERROR = {"", "0", "ok", "none", "null", "nil", "no error", "success", "false"}
 _FAILED_STATUS = re.compile(r"FAIL|INVALID|MISMATCH|EXPIRED|ERROR|DENIED|REJECT|LOCKED|BLOCKED|"
                             r"WRONG|UNVERIFIED|UNAUTHORI|NOT_?(?:VERIFIED|VALID|FOUND|MATCH)", re.I)
-_CALLS_CODE_WRONG = re.compile(
-    r"\b(?:invalid|incorrect|wrong|mismatch\w*|expired|unverified|unsuccessful|denied|rejected|"
-    r"blocked|locked|exceeded|already\s+used|fail\w*(?!\s+attempt)|"
-    r"not\s+(?:valid|verified|correct|match\w*)|does(?:n't|\s+not)\s+match)\b", re.I)
 
 
 def _key(name) -> str:
@@ -312,36 +300,6 @@ def _status_failed(value) -> bool:
             or (isinstance(value, str) and bool(_FAILED_STATUS.search(value))))
 
 
-def _has_error(value) -> bool:
-    if isinstance(value, (dict, list)):
-        return bool(value)
-    if isinstance(value, bool) or value is None:
-        return bool(value)
-    return str(value).strip().lower() not in _NO_ERROR
-
-
-def _refuses(value, depth: int = 0) -> bool:
-    """Any refusal anywhere in a reply: a verdict field set false, an alarm set
-    true (expired, locked, …), an error field, a failing status/code near the
-    top, or a message that calls the code wrong. Too deep to read = refused."""
-    if depth > 8:
-        return True
-    if isinstance(value, list):
-        return any(_refuses(v, depth + 1) for v in value)
-    if not isinstance(value, dict):
-        return False
-    for raw, item in value.items():
-        name = _key(raw)
-        if ((name in _VERDICTS and _flag(item) is False)
-                or (name in _ALARMS and _flag(item) is True)
-                or ("error" in name and _has_error(item))
-                or (depth <= 1 and name.endswith(("status", "code")) and _status_failed(item))
-                or (name in _TEXT_KEYS and isinstance(item, str) and _CALLS_CODE_WRONG.search(item))
-                or (isinstance(item, (dict, list)) and _refuses(item, depth + 1))):
-            return True
-    return False
-
-
 def _code_refused(top: dict) -> bool:
     """The app server's own envelope verdict: `code` 1 = done, 0 = refused —
     {"code":0,"data":null,"message":"User not found"} arrives as HTTP 200.
@@ -349,34 +307,19 @@ def _code_refused(top: dict) -> bool:
     return _flag(top.get("code")) is False
 
 
-def _otp_verdict(body) -> bool | None:
-    """Read a 2xx verifyOtp reply. True ONLY on data:true, a bare true, or an
-    OTP flag set true (top level or in data) — and no refusal anywhere in it.
-    False on a refusal; None when the reply does not say (a message never does)."""
-    if isinstance(body, bool):
-        return body
-    if not isinstance(body, dict):
-        return None
-    top = {_key(k): v for k, v in body.items()}
-    if _refuses(body) or _code_refused(top):
-        return False
-    inner = {_key(k): v for k, v in top["data"].items()} if isinstance(top.get("data"), dict) else {}
-    confirmed = top.get("data") is True or any(
-        top.get(k) is True or inner.get(k) is True for k in _OTP_CONFIRMS)
-    return True if confirmed else None
+# verifyOtp's contract: ONE reply means the code is right —
+#   HTTP 200 {"code":1, "data":{…the account…}, "message":"OTP verified successfully"}
+# Every refusal is also HTTP 200, with its own message ("No OTP found. Please
+# request OTP again", "Invalid OTP", …), and that message is shown as sent.
+_OTP_VERIFIED = "otp verified successfully"
 
 
-def _strict_json(text: str):
-    """The reply as JSON, or None — also None for duplicate keys, where a
-    parser would silently keep only one of a refusal and a confirmation."""
-    def unique(pairs):
-        if len({k for k, _ in pairs}) != len(pairs):
-            raise ValueError("duplicate key")
-        return dict(pairs)
-    try:
-        return json.loads(text, object_pairs_hook=unique)
-    except (ValueError, RecursionError):
-        return None
+def _otp_confirmed(body) -> bool:
+    """True only for the server's one confirmation: code 1 AND the message
+    "OTP verified successfully" (any case, a trailing full stop allowed)."""
+    return (isinstance(body, dict) and _flag(body.get("code")) is True
+            and isinstance(body.get("message"), str)
+            and body["message"].strip().rstrip(".!").casefold() == _OTP_VERIFIED)
 
 
 def _send_refused(body) -> bool:
@@ -393,7 +336,8 @@ def _send_refused(body) -> bool:
 
 
 # A refusal whose own message is only a generic "it worked" is explained instead.
-_GENERIC_OK = re.compile(r"^\W*(?:ok|done|success(?:ful(?:ly)?)?|otp sent(?: successfully)?)\W*$", re.I)
+_GENERIC_OK = re.compile(
+    r"^\W*(?:ok|done|success(?:ful(?:ly)?)?|otp (?:sent|verified)(?: successfully)?)\W*$", re.I)
 
 
 def get_user_details(email: str) -> dict | None:
@@ -508,10 +452,10 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None]:
     POST /v1/ai/verifyOtp — check the login one-time code.
     Body: {"email": "...", "otp": "..."}. X-API-Key header as usual.
 
-    Fails CLOSED: returns (True, None) only when a 2xx reply EXPLICITLY confirms
-    the code (_otp_verdict: data:true, or an otpVerified/otpValid flag; never a
-    message) and nothing in it refuses. Any other reply gives (False, reason)
-    with the server's own words in the reason.
+    Fails CLOSED: returns (True, None) only for the server's one confirmation
+    (_otp_confirmed: HTTP 2xx, code 1, "OTP verified successfully"). Any other
+    reply gives (False, reason), the reason being the server's message exactly
+    as sent ("No OTP found. Please request OTP again", …).
     Raises CeravisApiError on config/transport/5xx errors. The full request +
     response is captured in the wire log, the code itself masked — that record
     shows the exact reply shape if a correct code is ever refused.
@@ -544,20 +488,17 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None]:
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
-    verdict = _otp_verdict(_strict_json(resp.text or "")) if 200 <= resp.status_code < 300 else False
-    message = _server_message(resp)
+    ok = 200 <= resp.status_code < 300 and _otp_confirmed(_json_or_none(resp))
     reason = None
-    if verdict is None:
-        logger.warning("verifyOtp: HTTP %s reply does not confirm the code — "
-                       "treated as NOT verified: %s", resp.status_code, _brief(resp.text, 200))
-        said = f" (it said: “{message}”)" if message else ""
-        reason = f"The CERAVIS server did not confirm the code{said}. Please try again."
-    elif not verdict:
+    if not ok:
+        message = _server_message(resp)
         reason = ((message if message and not _GENERIC_OK.match(message) else None)
-                  or _OTP_REFUSED.get(resp.status_code, "Invalid or expired code"))
-    call_log.record("verifyOtp", verdict is True, label=email, error=reason,
+                  or _OTP_REFUSED.get(resp.status_code)
+                  or ("The CERAVIS server did not confirm the code. Please try again."
+                      if resp.status_code < 300 else "Invalid or expired code"))
+    call_log.record("verifyOtp", ok, label=email, error=reason,
                     status=resp.status_code, latency_ms=lat)
-    return verdict is True, reason
+    return ok, reason
 
 
 def save_cameras(patient_user_id, cameras: list[dict]):

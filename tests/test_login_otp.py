@@ -10,10 +10,9 @@ reason was replaced by "Invalid or expired code" (even for an API-key 401), and
 the code was written in clear text to the wire log.
 
 Checked, against a stand-in HTTP session (no network):
-  1. every reply shape: in ONLY on data:true, a bare true, or an OTP flag
-     (otpVerified/otpValid) set true — with no refusal anywhere in the reply;
-     a message, token or status word never confirms a code. Out otherwise,
-     with the server's own words;
+  1. in ONLY on the server's one confirmation — HTTP 200 {"code":1, …,
+     "message":"OTP verified successfully"}. Out on anything else, with the
+     server's message shown exactly as it sent it;
   2. /account/verify refuses a code that is not 5 digits WITHOUT asking the
      server, and turns "unreachable" / 5xx into a plain retry message;
   3. sendOtp: a refusal inside a 200 (code:0 "User not found", …) is
@@ -85,80 +84,42 @@ def answer(status: int, body: str = "") -> None:
 
 
 # --------------------------------------------------------------------------
-print("1. verify_otp: in ONLY on data:true or an OTP flag set true; any refusal wins")
+OTP_OK = '{"code":1,"data":{"ceravisUserId":130,"deviceToken":"DMFpAL9PDnuAngA2n3cJ3XKZ0XeaPQI_UjD6ZvLerLo","email":"user@example.com","role":"CARE_RECIPIENT","tier":"TIER_3"},"message":"OTP verified successfully"}'
+
+print("1. verify_otp: in ONLY on the server's confirmation; a refusal shows the server's message")
 CASES = [
     # (label, HTTP status, body, accepted?, reason must contain)
-    # -- the explicit confirmations: in --
-    ("200 {data:true}", 200, '{"status":200,"message":"OTP verified","data":true}', True, None),
-    ("200 bare true", 200, "true", True, None),
-    ("201 {data:true}", 201, '{"data":true}', True, None),
-    ("200 {otpVerified:true}", 200, '{"status":"SUCCESS","otpVerified":true}', True, None),
-    ("200 snake data.otp_valid:true", 200, '{"success":true,"data":{"otp_valid":true}}', True, None),
-    ("200 data.isOtpVerified + user", 200, '{"status":200,"data":{"isOtpVerified":true,"userId":7}}', True, None),
-    ("200 data:true, Spring error:'OK'", 200, '{"status":200,"error":"OK","data":true}', True, None),
-    ("200 data:true, 'Failed attempts reset'", 200, '{"data":true,"message":"OTP verified. Failed attempts reset."}', True, None),
-    # -- explicit refusals: out, with the server's own words --
-    ("200 {data:false} + message", 200, '{"status":200,"message":"Invalid OTP","data":false}', False, "Invalid OTP"),
-    ("200 envelope status:400", 200, '{"status":400,"message":"Invalid OTP","data":null}', False, "Invalid OTP"),
-    ("200 status:'FAILED'", 200, '{"status":"FAILED","message":"OTP does not match"}', False, "does not match"),
-    ("200 status:'NOT_FOUND'", 200, '{"status":"NOT_FOUND","message":"No OTP for this email"}', False, "No OTP"),
-    ("200 status:'400 BAD_REQUEST'", 200, '{"status":"400 BAD_REQUEST","message":"Bad OTP"}', False, "Bad OTP"),
-    ("200 code:'OTP_MISMATCH' + data:true", 200, '{"code":"OTP_MISMATCH","message":"2 attempts left","data":true}', False, "2 attempts left"),
-    ("200 responseCode:400 + otpVerified", 200, '{"responseCode":400,"responseMessage":"OTP expired","data":{"otpVerified":true}}', False, "OTP expired"),
-    ("200 otpStatus:'EXPIRED'", 200, '{"otpVerified":true,"otpStatus":"EXPIRED"}', False, "Invalid or expired"),
-    ("200 {success:false}", 200, '{"success":false,"message":"Wrong code"}', False, "Wrong code"),
-    # the CERAVIS app server's own envelope: code 1 = done, code 0 = refused
-    ("200 CERAVIS code:0 'No OTP found'", 200, '{"code":0,"data":null,"message":"No OTP found. Please request OTP again"}', False, "No OTP found"),
-    ("200 CERAVIS code:'0'", 200, '{"code":"0","data":true}', False, "Invalid or expired"),
-    ("200 'Success' + data:false", 200, '{"status":200,"message":"Success","data":false}', False, "Invalid or expired"),
-    ("200 {data:'false'}", 200, '{"status":200,"data":"false"}', False, "Invalid or expired"),
-    ("200 data.verified:false", 200, '{"status":200,"data":{"verified":false}}', False, "Invalid or expired"),
-    ("200 snake data.otp_verified:false", 200, '{"status":200,"data":{"otp_verified":false}}', False, "Invalid or expired"),
-    ("200 data.success:false", 200, '{"status":200,"message":"Success","data":{"success":false}}', False, "Invalid or expired"),
-    ("200 data.matched:false", 200, '{"success":true,"data":{"matched":false}}', False, "Invalid or expired"),
-    ("200 response.otpVerified:false", 200, '{"status":200,"response":{"otpVerified":false}}', False, "Invalid or expired"),
-    ("200 data:[{verified:false}]", 200, '{"status":"SUCCESS","data":[{"verified":false}]}', False, "Invalid or expired"),
-    ("200 data:true but verified:'no'", 200, '{"data":true,"verified":"no"}', False, "Invalid or expired"),
-    ("200 otpValid:true + expired:true", 200, '{"otpValid":true,"expired":true}', False, "Invalid or expired"),
-    ("200 data:true + error object", 200, '{"data":true,"error":{"code":"OTP_INVALID","message":"Invalid OTP"}}', False, "Invalid or expired"),
-    ("200 data:true + errors list", 200, '{"data":true,"errors":[{"message":"Invalid OTP"}]}', False, "Invalid or expired"),
-    ("200 {errors:['otp: invalid']}", 200, '{"status":200,"errors":["otp: invalid"]}', False, "Invalid or expired"),
-    ("200 data:true + 'Incorrect OTP'", 200, '{"data":true,"message":"Incorrect OTP"}', False, "Incorrect OTP"),
-    ("200 data:true + 'OTP has expired'", 200, '{"data":true,"message":"OTP has expired"}', False, "OTP has expired"),
-    ("200 otpVerified + 'OTP not valid'", 200, '{"data":{"otpVerified":true},"msg":"OTP not valid"}', False, "OTP not valid"),
-    ("200 status:200 + 'Invalid OTP'", 200, '{"status":200,"message":"Invalid OTP","data":null}', False, "Invalid OTP"),
-    ("200 duplicate keys data:false/true", 200, '{"data":false,"data":true}', False, "did not confirm"),
-    ("200 nested 10 deep + data:true", 200, '{"data":true,"a":' + '{"b":' * 10 + '{}' + '}' * 10 + '}', False, "Invalid or expired"),
-    # -- no confirmation: out ("did not confirm"), the server's words shown --
-    ("200 generic {verified:true}", 200, '{"verified":true,"message":"Email already verified"}', False, "Email already verified"),
-    ("200 status:'VERIFIED'", 200, '{"status":"VERIFIED","message":"OTP verified"}', False, "did not confirm"),
-    ("200 data.accessToken", 200, '{"success":true,"data":{"accessToken":"t"}}', False, "did not confirm"),
-    ("200 token 'Bearer null'", 200, '{"status":200,"message":"OTP check","data":{"token":"Bearer null"}}', False, "did not confirm"),
-    ("200 plain-text JWT", 200, "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln", False, "did not confirm"),
-    ("200 plain text 'error.otp.invalid'", 200, "error.otp.invalid", False, "did not confirm"),
-    ("200 'java.lang.IllegalStateException'", 200, "java.lang.IllegalStateException", False, "did not confirm"),
-    ("200 success:true + 'Invalid OTP'", 200, '{"success":true,"message":"Invalid OTP"}', False, "Invalid OTP"),
-    ("200 {code:200,msg:'Invalid OTP'}", 200, '{"code":200,"msg":"Invalid OTP"}', False, "Invalid OTP"),
-    ("200 data:'INVALID_OTP'", 200, '{"status":200,"data":"INVALID_OTP"}', False, "did not confirm"),
-    ("200 'OK, but the OTP has been used'", 200, '{"message":"OK, but the OTP has been used"}', False, "has been used"),
-    ("200 message-only 'OTP verified'", 200, '{"status":200,"message":"OTP verified successfully"}', False, "it said: “OTP verified successfully”"),
-    ("200 success:true only", 200, '{"success":true}', False, "did not confirm"),
-    ("200 data:NaN", 200, '{"status":200,"data":NaN}', False, "did not confirm"),
-    ("200 status:'\\u00b2' (no crash)", 200, '{"status":"\\u00b2","message":"x"}', False, "did not confirm"),
-    ("200 deeply nested JSON (no crash)", 200, "[" * 100000 + "]" * 100000, False, "did not confirm"),
+    # -- the ONE confirmation (the app server's real reply, 2026-10-13): in --
+    ("200 code:1 'OTP verified successfully'", 200, '__OK__', True, None),
+    ("200 same, no account in data", 200, '{"code":1,"data":null,"message":"OTP verified successfully"}', True, None),
+    ("200 code:'1', 'OTP Verified Successfully.'", 200, '{"code":"1","message":"OTP Verified Successfully."}', True, None),
+    # -- the server's refusals: out, its message shown exactly --
+    ("200 code:0 'No OTP found…'", 200, '{"code":0,"data":null,"message":"No OTP found. Please request OTP again"}', False, "No OTP found. Please request OTP again"),
+    ("200 code:0 'Invalid OTP'", 200, '{"code":0,"data":null,"message":"Invalid OTP"}', False, "Invalid OTP"),
+    ("200 code:0 'OTP expired'", 200, '{"code":0,"data":null,"message":"OTP expired"}', False, "OTP expired"),
+    # -- anything short of the confirmation: out --
+    ("200 code:0 + success words", 200, '{"code":0,"message":"OTP verified successfully"}', False, "did not confirm"),
+    ("200 code:1, other message", 200, '{"code":1,"message":"OTP sent"}', False, "did not confirm"),
+    ("200 code:1 + 'Invalid OTP'", 200, '{"code":1,"message":"Invalid OTP"}', False, "Invalid OTP"),
+    ("200 message only, no code", 200, '{"message":"OTP verified successfully"}', False, "did not confirm"),
+    ("200 'verified' inside a longer message", 200, '{"code":1,"message":"OTP verified successfully? No: expired"}', False, "No: expired"),
+    ("200 {data:true}", 200, '{"data":true}', False, "did not confirm"),
+    ("200 bare true", 200, "true", False, "did not confirm"),
+    ("200 {success:true}", 200, '{"success":true}', False, "did not confirm"),
+    ("200 plain text", 200, "OTP verified successfully", False, "did not confirm"),
     ("200 empty body", 200, "", False, "did not confirm"),
     ("204 no content", 204, "", False, "did not confirm"),
+    ("200 deeply nested JSON (no crash)", 200, "[" * 100000 + "]" * 100000, False, "did not confirm"),
     # -- not 2xx: out --
-    ("300 {data:true}", 300, '{"data":true}', False, "Invalid or expired"),
+    ("300 with the confirmation", 300, '__OK__', False, "Invalid or expired"),
     ("400 with message", 400, '{"message":"Invalid OTP"}', False, "Invalid OTP"),
     ("401 API key", 401, '{"message":"Invalid API key"}', False, "Invalid API key"),
     ("401 Spring default", 401, '{"status":401,"error":"Unauthorized"}', False, "refused this device"),
     ("404 Spring default", 404, '{"status":404,"error":"Not Found","path":"/x"}', False, "Invalid or expired"),
-    ("410 expired", 410, '{"message":"OTP has expired"}', False, "OTP has expired"),
-    ("429 with message", 429, '{"message":"Too many attempts"}', False, "Too many attempts"),
     ("429 no body", 429, "", False, "Wait a minute"),
     ("400 HTML page", 400, "<html><body>nope</body></html>", False, "Invalid or expired"),
 ]
+CASES = [(l, st, OTP_OK if b == "__OK__" else b, a, w) for l, st, b, a, w in CASES]
 for label, status, body, accepted, why in CASES:
     answer(status, body)
     ok, reason = ceravis_api.verify_otp("user@example.com", "12345")
