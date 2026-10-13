@@ -120,7 +120,9 @@
   .lg-toast { position: fixed; top: 22px; right: 22px; z-index: 300;
               background: #00c758; color: #fff; font-weight: 700; font-size: 13.5px;
               padding: 11px 18px; border-radius: 12px; box-shadow: 0 12px 34px rgba(0,199,88,.3);
-              display: flex; align-items: center; gap: 9px; animation: slideIn .2s ease; }
+              display: flex; align-items: center; gap: 9px; animation: slideIn .2s ease;
+              max-width: min(420px, calc(100vw - 44px)); }
+  .lg-toast.bad { background: var(--bad); box-shadow: 0 12px 34px rgba(251,44,54,.3); }
   @media (max-width: 760px) {
     .login-card { grid-template-columns: 1fr; max-width: 460px; }
     .login-brand { display: none; }
@@ -194,13 +196,26 @@
 let resendTimer = null;
 let lgView = 0;   // bumped on every screen change; a reply for an older screen is dropped
 
-function loginToast(msg) {
+// The corner pop: green for done, red ("bad") for a refusal. Built as text —
+// a refusal carries the server's own words, which must never render as HTML.
+function loginToast(msg, kind) {
   document.querySelectorAll(".lg-toast").forEach(t => t.remove());
   const t = document.createElement("div");
-  t.className = "lg-toast";
-  t.innerHTML = `<span>&#10003;</span><span>${msg}</span>`;
+  t.className = kind === "bad" ? "lg-toast bad" : "lg-toast";
+  t.setAttribute("role", kind === "bad" ? "alert" : "status");
+  for (const text of [kind === "bad" ? "✕" : "✓", msg]) {
+    const s = document.createElement("span");
+    s.textContent = text;
+    t.appendChild(s);
+  }
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
+  setTimeout(() => t.remove(), kind === "bad" ? 4000 : 2600);
+}
+
+// A refusal: the red pop, and the same words kept under the field.
+function lgFail(el, text) {
+  lgMsg(el, "bad", text);
+  loginToast(text, "bad");
 }
 
 function lgMsg(el, kind, text) {
@@ -296,7 +311,7 @@ function startResend(secs) {
         const r = await requestOtp(email);
         if (view !== lgView) return;
         if (r && r.sent === true) { lgMsg(msg); loginToast("OTP sent"); startResend(secs); }
-        else { lgMsg(msg, "bad", (r && r.reason) || "Couldn't resend the code."); tick(); }
+        else { lgFail(msg, (r && r.reason) || "Couldn't resend the code."); tick(); }
       };
       return;
     }
@@ -316,7 +331,8 @@ document.getElementById("lg-continue").onclick = async () => {
   const r = await requestOtp(email);
   btn.disabled = false;
   if (!r || r.sent !== true) {
-    lgMsg(msg, "bad", (r && r.reason) || "Couldn't send the code.");
+    lgFail(msg, (r && r.reason) || "Couldn't send the code.");
+    document.getElementById("lg-email").focus();
     return;
   }
   lgMsg(msg);
@@ -383,7 +399,7 @@ document.getElementById("lg-verify").onclick = async () => {
   btn.disabled = false;
   if (view !== lgView) return;
   if (!r || r.verified !== true) {
-    lgMsg(msg, "bad", "✗ " + ((r && r.reason) || "Not verified"));
+    lgFail(msg, (r && r.reason) || "Not verified");
     boxes[0].focus();
     return;
   }

@@ -16,7 +16,8 @@ Checked, against a stand-in HTTP session (no network):
      with the server's own words;
   2. /account/verify refuses a code that is not 5 digits WITHOUT asking the
      server, and turns "unreachable" / 5xx into a plain retry message;
-  3. sendOtp: a refusal inside a 200 is reported, not "OTP sent";
+  3. sendOtp: a refusal inside a 200 (code:0 "User not found", …) is
+     reported, not "OTP sent";
   4. the wire log never holds the code;
   5. login.html never renders a server reason as HTML.
 
@@ -106,6 +107,9 @@ CASES = [
     ("200 responseCode:400 + otpVerified", 200, '{"responseCode":400,"responseMessage":"OTP expired","data":{"otpVerified":true}}', False, "OTP expired"),
     ("200 otpStatus:'EXPIRED'", 200, '{"otpVerified":true,"otpStatus":"EXPIRED"}', False, "Invalid or expired"),
     ("200 {success:false}", 200, '{"success":false,"message":"Wrong code"}', False, "Wrong code"),
+    # the CERAVIS app server's own envelope: code 1 = done, code 0 = refused
+    ("200 CERAVIS code:0 'No OTP found'", 200, '{"code":0,"data":null,"message":"No OTP found. Please request OTP again"}', False, "No OTP found"),
+    ("200 CERAVIS code:'0'", 200, '{"code":"0","data":true}', False, "Invalid or expired"),
     ("200 'Success' + data:false", 200, '{"status":200,"message":"Success","data":false}', False, "Invalid or expired"),
     ("200 {data:'false'}", 200, '{"status":200,"data":"false"}', False, "Invalid or expired"),
     ("200 data.verified:false", 200, '{"status":200,"data":{"verified":false}}', False, "Invalid or expired"),
@@ -206,6 +210,8 @@ for label, status, body, sent, why in (
         ("200 envelope OK", 200, '{"status":200,"message":"OTP sent","data":null}', True, None),
         ("200 'expires in 5 minutes'", 200, '{"status":200,"message":"OTP sent. It expires in 5 minutes"}', True, None),
         ("200 data.verified:false", 200, '{"status":200,"message":"OTP sent","data":{"verified":false}}', True, None),
+        ("200 CERAVIS code:1 'OTP sent'", 200, '{"code":1,"data":{"email":"user@example.com","message":"2 More Send Otp Attempts!","userMemberId":"ME0056"},"message":"OTP sent"}', True, None),
+        ("200 CERAVIS code:0 'User not found'", 200, '{"code":0,"data":null,"message":"User not found"}', False, "User not found"),
         ("200 {success:false}", 200, '{"success":false,"message":"Account locked"}', False, "Account locked"),
         ("200 status:'FAILED'", 200, '{"status":"FAILED","message":"Could not send email"}', False, "Could not send email"),
         ("200 'Success' + data:false", 200, '{"status":200,"message":"Success","data":false}', False, "did not send the code"),
@@ -237,6 +243,9 @@ page = (ROOT / "edge/static/login.html").read_text(encoding="utf-8")
 html_with_reason = re.findall(r"innerHTML\s*=[^;]*reason", page)
 check("no innerHTML built from a reason", not html_with_reason, str(html_with_reason))
 check("Verify signs in only on verified === true", "r.verified !== true" in page)
+check("the corner pop is built as text, never HTML", "${msg}" not in page)
+check("a refused send stays on the email screen with the red pop",
+      re.search(r"r\.sent !== true\) \{\s*lgFail\(", page) is not None)
 
 
 print()

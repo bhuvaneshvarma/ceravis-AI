@@ -342,6 +342,13 @@ def _refuses(value, depth: int = 0) -> bool:
     return False
 
 
+def _code_refused(top: dict) -> bool:
+    """The app server's own envelope verdict: `code` 1 = done, 0 = refused —
+    {"code":0,"data":null,"message":"User not found"} arrives as HTTP 200.
+    An HTTP-style code (200, 400) is left to _status_failed."""
+    return _flag(top.get("code")) is False
+
+
 def _otp_verdict(body) -> bool | None:
     """Read a 2xx verifyOtp reply. True ONLY on data:true, a bare true, or an
     OTP flag set true (top level or in data) — and no refusal anywhere in it.
@@ -350,9 +357,9 @@ def _otp_verdict(body) -> bool | None:
         return body
     if not isinstance(body, dict):
         return None
-    if _refuses(body):
-        return False
     top = {_key(k): v for k, v in body.items()}
+    if _refuses(body) or _code_refused(top):
+        return False
     inner = {_key(k): v for k, v in top["data"].items()} if isinstance(top.get("data"), dict) else {}
     confirmed = top.get("data") is True or any(
         top.get(k) is True or inner.get(k) is True for k in _OTP_CONFIRMS)
@@ -373,15 +380,15 @@ def _strict_json(text: str):
 
 
 def _send_refused(body) -> bool:
-    """A 2xx sendOtp reply that says no code went out: success:false,
-    data:false or a failing status. Sending is not the gate — the code check
-    is — so anything else counts as sent."""
+    """A 2xx sendOtp reply that says no code went out: code:0 ("User not
+    found"), success:false, data:false or a failing status. Sending is not the
+    gate — the code check is — so anything else counts as sent."""
     if isinstance(body, bool):
         return not body
     if not isinstance(body, dict):
         return False
     top = {_key(k): v for k, v in body.items()}
-    return bool(_flag(top.get("success")) is False or top.get("data") is False
+    return bool(_code_refused(top) or _flag(top.get("success")) is False or top.get("data") is False
                 or any(_status_failed(v) for k, v in top.items() if k.endswith(("status", "code"))))
 
 
