@@ -19,7 +19,8 @@ recording-quality work, so it is asserted rather than assumed:
     past the retention window, so live footage is never touched.
 
 Pure filesystem + string assertions: no camera, no MediaMTX, no network — runs
-on the dev box as well as on the device.
+on the dev box as well as on the device. Section 6 checks an edge_id change
+(care-recipient switch) the same way: the old path dropped, ONE pull left.
 
     python tests/test_media_paths.py
 """
@@ -191,6 +192,71 @@ check("a stale tree from a previous edge_id is still reclaimed",
 shutil.rmtree(root, ignore_errors=True)
 mtx.edge_prefix = lambda: ""
 mtx.audio_transcode_active = _real_audio
+
+
+# --------------------------------------------------------------------------
+print("\n6. an edge_id change keeps ONE connection per camera and moves the AI reader")
+from types import SimpleNamespace                          # noqa: E402
+from api import account_routes as acct                     # noqa: E402
+
+dropped: list[str] = []
+_real_drop = mtx._drop_quietly
+mtx._drop_quietly = dropped.append
+mtx.drop_previous_live_path("LOUNGE", "oldedge999")
+mtx.drop_previous_live_path("LOUNGE", "")
+mtx._drop_quietly = _real_drop
+check("the PREVIOUS token's live path is the one dropped ('<old>/<cam>', or '<cam>')",
+      dropped == ["oldedge999/LOUNGE", "LOUNGE"])
+
+lounge = Camera(room_name="LOUNGE", rtsp_url="rtsp://u:p@10.42.0.250:554/stream1")
+living = Camera(room_name="LIVING ROOM", rtsp_url="rtsp://u:p@10.42.0.251:554/stream2",
+                ai_rtsp_url="rtsp://u:p@10.42.0.251:554/stream1")
+parked = Camera(room_name="KITCHEN", rtsp_url="rtsp://u:p@10.42.0.252:554/stream1")
+events: list[tuple[str, str]] = []
+
+
+class _Cameras:                                            # the stored cameras.json
+    def get_all(self):
+        return [lounge, living, parked]
+
+    def update(self, camera_id, _camera):
+        events.append(("store", camera_id))
+
+
+class _Readers:                                            # the running CameraManager
+    def get_status(self):
+        return {c.camera_id: SimpleNamespace(is_running=c is not parked)
+                for c in (lounge, living, parked)}
+
+    def restart_camera(self, camera_id):
+        events.append(("reader", camera_id))
+
+
+_saved = {n: getattr(acct, n) for n in ("CameraConfig", "media_backbone_up",
+                                        "drop_previous_live_path", "sync_camera", "webrtc_url")}
+acct.CameraConfig = _Cameras
+acct.media_backbone_up = lambda: True
+acct.drop_previous_live_path = lambda cid, old: events.append(("drop", f"{old}/{cid}"))
+acct.sync_camera = lambda c: events.append(("sync", c.camera_id))
+acct.webrtc_url = lambda cid, base: f"{base}/newedge/{cid}"
+acct._repoint_live_paths("https://edge.test", "oldedge999", _Readers())
+check("the old path goes BEFORE the new one is pulled, for every camera",
+      [e for e in events if e[0] in ("drop", "sync")] == [
+          ("drop", "oldedge999/LOUNGE"), ("sync", "LOUNGE"),
+          ("drop", "oldedge999/LIVING_ROOM"), ("sync", "LIVING_ROOM"),
+          ("drop", "oldedge999/KITCHEN"), ("sync", "KITCHEN")])
+check("every stored link is refreshed",
+      [cid for k, cid in events if k == "store"] == ["LOUNGE", "LIVING_ROOM", "KITCHEN"])
+check("only the RUNNING reader on the live path restarts (not '<cam>-ai', not a stopped one)",
+      [cid for k, cid in events if k == "reader"] == ["LOUNGE"])
+check("each restart comes after that camera's new path exists",
+      events.index(("reader", "LOUNGE")) > events.index(("sync", "LOUNGE")))
+events.clear()
+acct._repoint_live_paths("https://edge.test", "oldedge999", None)
+check("with no pipeline up, paths and links still move and nothing breaks",
+      ("sync", "LOUNGE") in events and not any(k == "reader" for k, _ in events))
+for n, v in _saved.items():
+    setattr(acct, n, v)
 
 
 # --------------------------------------------------------------------------
