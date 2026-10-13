@@ -22,9 +22,7 @@ from integration.ceravis_api import (
     verify_otp,
 )
 from livestream.mediamtx_client import is_up as media_backbone_up
-from livestream.mediamtx_client import (
-    drop_previous_live_path, stream_base, sync_camera, webrtc_url,
-)
+from livestream.mediamtx_client import stream_base, sync_camera, webrtc_url
 
 
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
@@ -40,32 +38,21 @@ def _stream_base(request: Request) -> str:
     return stream_base(request.headers.get("host") or "localhost")
 
 
-def _repoint_live_paths(base: str, previous_edge_id: str, cameras) -> None:
+def _repoint_live_paths(base: str) -> None:
     """After an edge_id change, bring the running device onto the new routing
-    token WITHOUT a full restart, per camera:
-      1. drop the live path under the PREVIOUS token — left in place it keeps a
-         second connection to the camera;
-      2. sync the live path under the new token ('<new_edge_id>/<ROOM>');
-      3. refresh the link stored in cameras.json, so the next cloud sync pushes
-         the current URL;
-      4. restart the running AI reader whose loopback URL carried the old token
-         (a camera with its own '<cam>-ai' path never changed, so it is left be).
-    `base` is the scheme://host live-link base and `cameras` the CameraManager
-    (None when the pipeline is not up). Best-effort — a failure here just means
-    a `systemctl restart ceravis` is needed to pick the change up."""
+    token WITHOUT a full restart: re-sync every camera's MediaMTX live path (now
+    '<new_edge_id>/<ROOM>') and refresh the link stored in cameras.json so the
+    next cloud sync pushes the current URL. `base` is the scheme://host live-link
+    base, precomputed by the caller. Best-effort — a failure here just means a
+    `systemctl restart ceravis` is needed to pick the change up."""
     import time
     time.sleep(1.5)                       # let the verify response flush first
-    running = cameras.get_status() if cameras is not None else {}
     for c in CameraConfig().get_all():
         try:
             if media_backbone_up():
-                drop_previous_live_path(c.camera_id, previous_edge_id)
                 sync_camera(c)
             c.webrtc_url = webrtc_url(c.camera_id, base)
             CameraConfig().update(c.camera_id, c)
-            status = running.get(c.camera_id)
-            if status is not None and status.is_running and not getattr(c, "ai_rtsp_url", ""):
-                cameras.restart_camera(c.camera_id)
         except Exception as exc:          # noqa: BLE001 — never fail provisioning
             logger.warning("repoint live path failed for %s: %s",
                            c.camera_id, exc)
@@ -258,7 +245,7 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         # through. Best-effort: the value is already saved, so a manual frpc setup
         # still works if the privileged helper isn't installed.
         from integration.edge_provision import (
-            apply_edge_id_async, provisioning_report,
+            apply_edge_id_async, helper_installed, provisioning_report,
         )
         background_tasks.add_task(apply_edge_id_async, edge_id)
         remote = provisioning_report(edge_id)
@@ -287,9 +274,7 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         if edge_id != prev_edge_id:
             # Compute the link base NOW (the Request is valid inside the handler);
             # the background task only needs the resulting scheme://host string.
-            background_tasks.add_task(
-                _repoint_live_paths, _stream_base(request), prev_edge_id,
-                getattr(request.app.state, "camera_manager", None))
+            background_tasks.add_task(_repoint_live_paths, _stream_base(request))
             logger.info("edge_id changed %r -> %r: MediaMTX repoint + link "
                         "refresh scheduled", prev_edge_id, edge_id)
     logger.info("account verified (fresh): user #%s (%s)",

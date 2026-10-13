@@ -384,15 +384,6 @@ def remove_live_path(camera_id: str) -> None:
     _remove_named_path(stream_path(camera_id))
 
 
-def drop_previous_live_path(camera_id: str, previous_edge_id: str) -> None:
-    """After an edge_id change, drop the live path the PREVIOUS token served
-    ('<old_edge_id>/<cam>', or '<cam>' when there was none). Left in place it
-    keeps pulling the camera, so the camera carries two connections until the
-    next restart."""
-    prefix = f"{previous_edge_id}/" if previous_edge_id else ""
-    _drop_quietly(f"{prefix}{path_name(camera_id)}")
-
-
 def set_record(path: str, on: bool) -> None:
     """Toggle disk recording for one MediaMTX path at runtime."""
     try:
