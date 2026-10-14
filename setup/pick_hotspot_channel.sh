@@ -3,8 +3,8 @@
 # themselves, never by scanning.
 #
 # Why no scan: on this radio (Realtek RTL8822CE, rtw88 driver) a scan while it
-# runs the hotspot (`iw ... scan ap-force`) can hang the WiFi driver and take
-# the device off the network. This script moves the hotspot to each candidate
+# runs the hotspot (`iw ... scan ap-force`) never returns — the command just
+# hangs (bench, 2026-10-14). This script moves the hotspot to each candidate
 # channel in turn, waits for every camera to rejoin and settle, pings them, and
 # keeps the channel where they answer with the least loss and delay.
 #
