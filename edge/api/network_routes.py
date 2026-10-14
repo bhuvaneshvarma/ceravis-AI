@@ -146,8 +146,11 @@ def hotspot_start(req: HotspotRequest):
     steps = [
         ["nmcli", "connection", "add", "type", "wifi", "ifname", device,
          "con-name", _CON, "autoconnect", "yes", "ssid", ssid],
+        # powersave 2 = OFF: an access point that dozes between beacons holds
+        # back every camera packet (200-1900 ms pings, streams stalling).
         ["nmcli", "connection", "modify", _CON,
          "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
+         "802-11-wireless.powersave", "2",
          "ipv4.method", "shared", "ipv6.method", "disabled",
          "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", req.password],
         ["nmcli", "connection", "up", _CON],

@@ -105,4 +105,27 @@ else
     echo "Polkit rule installed: $RULE (nmcli absent — cannot verify here)."
 fi
 
+# The WiFi radio is the cameras' access point and nothing else:
+#  * Bluetooth OFF. The chip's Bluetooth half shares the antenna and the
+#    2.4 GHz air with the hotspot, taking turns with it. CERAVIS never uses
+#    Bluetooth. rfkill turns the radio itself off (systemd keeps that across
+#    reboots); masking the service stops anything from starting it again.
+#  * Power saving OFF on an existing hotspot profile (new ones are created
+#    that way). It applies at the hotspot's next start or the next reboot.
+if command -v rfkill >/dev/null 2>&1 && rfkill list bluetooth 2>/dev/null | grep -q .; then
+    sudo systemctl disable --now bluetooth.service 2>/dev/null || true
+    sudo systemctl mask bluetooth.service >/dev/null 2>&1 || true
+    sudo rfkill block bluetooth
+    if rfkill list bluetooth | grep -q "Soft blocked: no"; then
+        echo "  WARNING: Bluetooth is still on (rfkill block did not take)." >&2
+    else
+        echo "  Bluetooth radio OFF and its service masked (the antenna is the hotspot's alone)."
+    fi
+fi
+if command -v nmcli >/dev/null 2>&1 \
+        && nmcli -t -f NAME connection show 2>/dev/null | grep -qx "ceravis-hotspot"; then
+    sudo -u "$SVC_USER" nmcli connection modify ceravis-hotspot 802-11-wireless.powersave 2 \
+        && echo "  Hotspot power saving OFF (applies at the hotspot's next start / reboot)."
+fi
+
 echo "Configure it at: http://<jetson-ip>:8000/ui/hotspot.html"

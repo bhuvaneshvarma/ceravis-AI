@@ -196,6 +196,19 @@ elif [ -f /etc/polkit-1/rules.d/50-ceravis-network.rules ] \
 else
     warn "hotspot not enabled (cameras must use the house WiFi)" "bash setup/install_hotspot.sh"
 fi
+# The camera radio must never doze or share its antenna (see install_hotspot.sh).
+if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "ceravis-hotspot"; then
+    if [ "$(nmcli -g 802-11-wireless.powersave connection show ceravis-hotspot 2>/dev/null)" = "disable" ]; then
+        ok "hotspot power saving off"
+    else
+        warn "hotspot power saving is not off - camera streams will lag" "bash setup/install_hotspot.sh"
+    fi
+fi
+if rfkill list bluetooth 2>/dev/null | grep -q "Soft blocked: no"; then
+    warn "Bluetooth is on - it shares the antenna with the camera hotspot" "bash setup/install_hotspot.sh"
+else
+    ok "Bluetooth off (antenna is the hotspot's alone)"
+fi
 
 # ---- summary -------------------------------------------------------
 echo "======================================================="
