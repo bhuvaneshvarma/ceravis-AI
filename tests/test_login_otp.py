@@ -196,7 +196,8 @@ def _login(token):
     answer(200, json.dumps({"code": 1, "data": data, "message": "OTP verified successfully"}))
     tasks = BackgroundTasks()
     r = account_routes.verify(Verify(email="user@example.com", otp="12345"),
-                              SimpleNamespace(headers={"host": "edge.test"}), tasks)
+                              SimpleNamespace(headers={"host": "edge.test"},
+                                              app=SimpleNamespace(state=SimpleNamespace())), tasks)
     return r, [t.func.__name__ for t in tasks.tasks], [u.rsplit("/", 1)[-1] for u, _ in SESSION.calls]
 
 
@@ -204,15 +205,19 @@ _real_account = account_routes.account_config
 STORED = {"ceravisUserId": 5012, "email": "user@example.com", "edgeId": "CAr5old"}
 account_routes.account_config = _Account(STORED)
 r, tasks, calls = _login("CAr5old")
-check("same recipient, SAME edge_id -> returning login, nothing re-applied",
+check("same recipient, SAME edge_id -> returning login, nothing re-applied, no restart",
       r["verified"] and r["fresh"] is False and r["edgeId"] == "CAr5old"
-      and calls == ["verifyOtp"] and "_repoint_live_paths" not in tasks, f"{r.get('fresh')} {tasks} {calls}")
+      and calls == ["verifyOtp"] and tasks == [], f"{r.get('fresh')} {tasks} {calls}")
 account_routes.account_config = _Account(STORED)
 r, tasks, calls = _login("VzspNew")
-check("same recipient, NEW edge_id (moved server) -> saved and applied like a new recipient",
-      r["verified"] and r["fresh"] is True
+check("same recipient, NEW edge_id (moved server) -> saved, applied, then the service restarts",
+      r["verified"] and r["fresh"] is True and r["restarting"] is True
       and account_routes.account_config.get_edge_id() == "VzspNew"
-      and tasks == ["apply_edge_id_async", "_repoint_live_paths"], f"{r.get('fresh')} {tasks}")
+      and tasks == ["apply_edge_id_async", "_repoint_live_paths", "_restart_after_switch"],
+      f"{r.get('fresh')} {tasks}")
+check("…and the reply carries this process's boot time for the page to wait on",
+      r.get("bootedAt") == account_routes._BOOTED_AT
+      and account_routes.get_account()["bootedAt"] == account_routes._BOOTED_AT)
 check("…from the account the code confirmed — no second userDetails call",
       calls == ["verifyOtp"], str(calls))
 account_routes.account_config = _Account(STORED)
@@ -223,7 +228,23 @@ account_routes.account_config = _Account({})
 r, tasks, calls = _login(None)
 check("…and a new device without one falls back to userDetails",
       calls == ["verifyOtp", "userDetails"], str(calls))
+account_routes.account_config = _Account({"ceravisUserId": 4000, "email": "other@example.com",
+                                           "edgeId": "VzspNew"})
+r, tasks, calls = _login("VzspNew")
+check("a DIFFERENT recipient on the same edge_id still restarts (galleries, alerts follow)",
+      r["fresh"] is True and r["restarting"] is True and tasks[-1] == "_restart_after_switch", str(tasks))
 account_routes.account_config = _real_account
+
+from maintenance import refresh as _refresh                       # noqa: E402
+_signalled: list[bool] = []
+_real_restart, _refresh.restart_service = _refresh.restart_service, lambda: _signalled.append(True) or True
+account_routes._restart_after_switch()
+_refresh.restart_service = _real_restart
+check("the restart goes through the nightly refresh's own clean self-restart", _signalled == [True])
+page = (ROOT / "edge/static/login.html").read_text(encoding="utf-8")
+check("the login page waits for the NEW process, then opens the new edge_id address",
+      "waitForRestart(prefix, r.bootedAt)" in page and "a.bootedAt !== bootedAt" in page
+      and "`${prefix}/ui/${next}`" in page)
 
 
 # --------------------------------------------------------------------------

@@ -408,8 +408,33 @@ document.getElementById("lg-verify").onclick = async () => {
   loginToast("Signed in");
   // Fresh registration -> onboarding wizard; returning sign-in -> straight to
   // the Live Wall (no userDetails re-fetch happened on the device).
-  location.replace(r.fresh ? "setup.html" : "live.html");
+  const next = r.fresh ? "setup.html" : "live.html";
+  if (r.restarting) {
+    // A care-recipient switch: the device restarts itself so everything runs on
+    // the new recipient. Through the fleet tunnel the address is the edge_id, so
+    // wait on — and go to — the new one.
+    const prefix = window.CERAVIS_PREFIX && r.edgeId ? "/" + r.edgeId : "";
+    btn.disabled = true;
+    lgMsg(msg, "muted", "Applying the new care recipient — the device restarts (about 30 s)…");
+    await waitForRestart(prefix, r.bootedAt);
+    location.replace(prefix ? `${prefix}/ui/${next}` : next);
+    return;
+  }
+  location.replace(next);
 };
+
+// Poll until the API answers from a NEW process (bootedAt moved on); after two
+// minutes go anyway, so a slow restart never strands the page.
+async function waitForRestart(prefix, bootedAt) {
+  const until = Date.now() + 120000;
+  while (Date.now() < until) {
+    await new Promise(res => setTimeout(res, 2000));
+    try {
+      const a = await (await fetch(`${prefix}/api/v1/account`, { cache: "no-store" })).json();
+      if (a && a.bootedAt && a.bootedAt !== bootedAt) return;
+    } catch (_) { /* restarting, or the tunnel is re-keying — keep waiting */ }
+  }
+}
 
 function initLogin() {
   if (cvSessionValid()) { location.replace("live.html"); return; }

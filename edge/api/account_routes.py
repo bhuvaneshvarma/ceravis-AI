@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
@@ -30,6 +31,8 @@ from livestream.mediamtx_client import (
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
 account_config = AccountConfig()
 logger = logging.getLogger("account")
+# When this process started: a page that waits out a restart polls until it changes.
+_BOOTED_AT = time.time()
 
 
 def _stream_base(request: Request) -> str:
@@ -53,7 +56,6 @@ def _repoint_live_paths(base: str, previous_edge_id: str, cameras) -> None:
     `base` is the scheme://host live-link base and `cameras` the CameraManager
     (None when the pipeline is not up). Best-effort — a failure here just means
     a `systemctl restart ceravis` is needed to pick the change up."""
-    import time
     time.sleep(1.5)                       # let the verify response flush first
     running = cameras.get_status() if cameras is not None else {}
     for c in CameraConfig().get_all():
@@ -70,6 +72,23 @@ def _repoint_live_paths(base: str, previous_edge_id: str, cameras) -> None:
             logger.warning("repoint live path failed for %s: %s",
                            c.camera_id, exc)
     logger.info("live paths repointed to the new edge_id")
+
+
+def _restart_after_switch() -> None:
+    """A care-recipient switch changes who the whole device works for: the
+    edge_id, the recipient's galleries, every live path and cloud link. The
+    steps queued before this one (frpc, live paths) apply in place first; then
+    the service restarts cleanly through the nightly refresh's own mechanism, so
+    every component starts again on the new recipient at once, not at the next
+    manual or overnight restart. Not under systemd (dev box): logged, and the
+    in-place steps stand on their own."""
+    from maintenance.refresh import restart_service
+    time.sleep(1.0)
+    logger.warning("care-recipient switch applied — restarting the service so "
+                   "everything runs on the new recipient")
+    if not restart_service():
+        logger.warning("service restart NOT signalled (not running under systemd); "
+                       "the in-place updates stand")
 
 
 def _cloud_camera(c, base: str) -> dict:
@@ -300,11 +319,19 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
                 getattr(request.app.state, "camera_manager", None))
             logger.info("edge_id changed %r -> %r: MediaMTX repoint + link "
                         "refresh scheduled", prev_edge_id, edge_id)
-    logger.info("account verified (fresh): user #%s (%s)",
-                account["ceravisUserId"], account["email"])
+    # A different recipient or edge_id: restart once the steps above have run
+    # (BackgroundTasks run in order), so nothing keeps the previous identity.
+    restarting = (edge_id != prev_edge_id
+                  or stored.get("ceravisUserId") != account["ceravisUserId"])
+    if restarting:
+        background_tasks.add_task(_restart_after_switch)
+    logger.info("account verified (fresh): user #%s (%s)%s",
+                account["ceravisUserId"], account["email"],
+                " — service restart scheduled" if restarting else "")
     return {"verified": True, "user": account, "fresh": True,
             "edgeId": edge_id or None,
-            "provisioning": provisioning, "remote": remote}
+            "provisioning": provisioning, "remote": remote,
+            "restarting": restarting, "bootedAt": _BOOTED_AT}
 
 
 @router.post("/sync-cameras")
@@ -397,4 +424,5 @@ def get_account():
         "edge_id": effective_edge_id(),
         "configured": is_configured(),
         "remote": provisioning_report(),
+        "bootedAt": _BOOTED_AT,
     }
