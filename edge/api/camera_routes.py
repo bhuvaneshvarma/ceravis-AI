@@ -121,8 +121,8 @@ def _enrich_device_info(camera: Camera) -> None:
 
 
 def _set_links(request: Request, camera: Camera) -> None:
-    """Compute + store the camera's public live link so cameras.json and the
-    app-server sync share ONE canonical value. webrtc_url points at the MediaMTX
+    """Compute + store the camera's public live link so cameras.json holds ONE
+    canonical value (it stays on the device). webrtc_url points at the MediaMTX
     WebRTC player page under the fleet domain: <base>/<edge_id>/<ROOM>/. hls_url
     is reserved (left empty for now)."""
     base = mediamtx_client.stream_base(request.headers.get("host") or "localhost")

@@ -70,12 +70,22 @@ print("\n1. saveCamera: the wire contract is exactly the agreed 16 keys")
 fn = next(n for n in ast.walk(ast.parse(
               (EDGE / "api" / "account_routes.py").read_text(encoding="utf-8")))
           if isinstance(n, ast.FunctionDef) and n.name == "_cloud_camera")
-emitted = [k.value for k in
-           next(n for n in ast.walk(fn) if isinstance(n, ast.Return)).value.keys]
+ret = next(n for n in ast.walk(fn) if isinstance(n, ast.Return)).value
+emitted = [k.value for k in ret.keys]
 check("every contract key is sent", not set(CONTRACT) - set(emitted))
 check("nothing extra is sent", not set(emitted) - set(CONTRACT))
 check("no duplicate keys", len(emitted) == len(set(emitted)))
 check("recordRtspUrl is still in the payload", "recordRtspUrl" in emitted)
+
+# Only identity + capabilities carry a value. Everything else is device-only —
+# LAN addresses (the cloud can't reach them; CloudFront's WAF blocks a body with
+# an IP-address URL), ONVIF credentials, the edge_id-bearing live link — and must
+# go out as the literal "", so no future edit can leak a value into the payload.
+SHARED = {"device", "model", "supplier", "room", "ptzSupported", "isEnabled"}
+values = dict(zip(emitted, ret.values))
+filled = [k for k, v in values.items()
+          if not (isinstance(v, ast.Constant) and v.value == "")]
+check(f"only identity + capabilities carry a value {filled}", set(filled) == SHARED)
 
 # --------------------------------------------------------------------------
 print("\n2. cameras.json: one shape, whatever a record looked like before")
@@ -99,11 +109,11 @@ check("the real stream is untouched by any of it",
 print("\n4. nothing in the pipeline reads it any more")
 hits = []
 for path in EDGE.rglob("*.py"):
-    if path.name in ("cameras.py", "account_routes.py") or "__pycache__" in str(path):
+    if path.name == "cameras.py" or "__pycache__" in str(path):
         continue
     if "record_rtsp_url" in path.read_text(encoding="utf-8"):
         hits.append(path.name)
-check(f"no consumer outside the schema + cloud payload {hits or ''}", not hits)
+check(f"no consumer outside the schema {hits or ''}", not hits)
 
 # --------------------------------------------------------------------------
 print()
@@ -117,7 +127,6 @@ from configuration.camera_config import CameraConfig                # noqa: E402
 
 # `device` used to carry the ONVIF manufacturer — "tp-link" on every camera in
 # the house, so the cloud could not tell two of them apart.
-ret = next(n for n in ast.walk(fn) if isinstance(n, ast.Return)).value
 device_expr = dict(zip([k.value for k in ret.keys],
                        [ast.unparse(v) for v in ret.values]))["device"]
 check(f"`device` sends the stable label, not the make ({device_expr})",

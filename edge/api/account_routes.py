@@ -7,12 +7,10 @@ import time
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
-from config.settings import settings
 from configuration.account_config import (
     AccountConfig, canonical_edge_id, effective_edge_id,
 )
 from configuration.camera_config import CameraConfig
-from integration import call_log
 from integration.ceravis_api import (
     CeravisApiError,
     get_user_details,
@@ -91,13 +89,15 @@ def _restart_after_switch() -> None:
                        "the in-place updates stand")
 
 
-def _cloud_camera(c, base: str) -> dict:
-    """One camera in the app-server saveCamera shape (camelCase) — the FULL
-    cameras.json record, so the cloud mirrors the device exactly. `url` and
-    `webrtcUrl` are ALWAYS computed fresh from the current edge_id (never the
-    stored copy, which goes stale the moment the edge_id changes); `room` is
-    normalized to the server CameraName enum (KITCHEN, LIVING_ROOM, …)."""
-    link = webrtc_url(c.camera_id, base)
+def _cloud_camera(c) -> dict:
+    """One camera in the app-server saveCamera shape (camelCase). Every contract
+    key is sent, but only the camera's identity and capabilities carry a value:
+    device, model, supplier, room, ptzSupported, isEnabled. The rest never leave
+    the device and go out empty (the backend made them optional): the stream and
+    ONVIF addresses are LAN-only, so the cloud cannot use them and the CloudFront
+    WAF rejects a body carrying an IP-address URL; the ONVIF credentials are
+    secrets; the live link carries the edge_id. `room` is normalized to the
+    server CameraName enum (KITCHEN, LIVING_ROOM, …)."""
     return {
         # `device` is this camera's STABLE UNIQUE identity on the device —
         # CAM_01, CAM_02, ... — allocated once by CameraConfig and never reused.
@@ -113,20 +113,13 @@ def _cloud_camera(c, base: str) -> dict:
         "model": c.model or "",                # ONVIF model
         "supplier": c.serial or "",            # ONVIF serial number
         "room": room_to_enum(c.room_name),     # -> server CameraName enum
-        "url": link,
-        "rtspUrl": c.rtsp_url,
-        # Reserved: the contract keeps the key, and it is always empty because
-        # the main stream above is what gets recorded (no second stream exists).
-        "recordRtspUrl": c.record_rtsp_url or "",
-        "hlsUrl": c.hls_url or "",
-        "onvifXaddr": c.onvif_xaddr or "",
-        "onvifUsername": c.onvif_username or "",
-        "onvifPassword": c.onvif_password or "",
-        "onvifProfileToken": c.onvif_profile_token or "",
-        "onvifPtzToken": c.onvif_ptz_token or "",
         "ptzSupported": bool(c.ptz_supported),
         "isEnabled": bool(c.is_enabled),
-        "webrtcUrl": link,
+        # Device-only — always sent empty (see the docstring).
+        "url": "", "webrtcUrl": "", "hlsUrl": "",
+        "rtspUrl": "", "recordRtspUrl": "",
+        "onvifXaddr": "", "onvifUsername": "", "onvifPassword": "",
+        "onvifProfileToken": "", "onvifPtzToken": "",
     }
 
 
@@ -335,14 +328,13 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
 
 
 @router.post("/sync-cameras")
-def sync_cameras(request: Request, camera_id: str | None = None):
+def sync_cameras(camera_id: str | None = None):
     """
     Push registered camera(s) to the app server for the verified patient:
-    PUT /v1/ai/saveCamera with patientUserId + the full per-camera record
-    (device, model, supplier, room, url, rtspUrl, recordRtspUrl, hlsUrl,
-    onvif*, ptzSupported, isEnabled, webrtcUrl — see _cloud_camera). `url`/
-    `webrtcUrl` = the camera's WebRTC HTTPS live link (MediaMTX); the cloud
-    mirrors exactly what cameras.json holds on the device.
+    PUT /v1/ai/saveCamera with patientUserId + one record per camera carrying
+    its identity and capabilities only (device, model, supplier, room,
+    ptzSupported, isEnabled); addresses, credentials and the live link stay on
+    the device — see _cloud_camera.
 
     `camera_id` (optional) pushes ONLY that one camera — used when a single new
     camera is added on cameras.html, so the server isn't re-sent cameras it
@@ -361,37 +353,9 @@ def sync_cameras(request: Request, camera_id: str | None = None):
     if not cams:
         return {"synced": False, "reason": "No cameras registered yet"}
 
-    base = _stream_base(request)
-    # Fleet links route on the /<edge_id> path prefix; with no routing token the
-    # pushed URLs have no prefix and frp can't route them to this house. Resolve
-    # the token the ONE canonical way (account.json first, jetson.env fallback) —
-    # reading settings.edge_id here fired this warning on EVERY fleet sync after a
-    # verify, because the verified token lands in account.json, never jetson.env.
-    if settings.device_stream_base.strip() and not effective_edge_id():
-        logger.warning("sync-cameras: DEVICE_STREAM_BASE set but no edge_id — "
-                       "fleet live links need the /<edge_id> prefix to route; "
-                       "verify the account (or set EDGE_ID) and re-sync")
-        call_log.record(
-            "event", False,
-            label="Live links pushed without an edge_id — fleet routing will fail",
-            error="verify the CERAVIS account so the device receives its "
-                  "deviceToken (or set EDGE_ID in jetson.env), then re-sync cameras")
-    cameras = [_cloud_camera(c, base) for c in cams]
+    cameras = [_cloud_camera(c) for c in cams]
     logger.info("sync-cameras: pushing %d camera(s) for user #%s: %s",
-                len(cameras), pid, [(c["room"], c["url"]) for c in cameras])
-
-    # The links point at MediaMTX — if it isn't running they are dead on
-    # arrival. Sync anyway (the server needs the cameras registered), but say
-    # so loudly here AND on the monitor's sync console.
-    backbone = media_backbone_up()
-    if not backbone:
-        logger.warning("sync-cameras: media backbone DOWN — pushed live links "
-                       "will be dead until MediaMTX runs on this device")
-        call_log.record(
-            "event", False,
-            label="Camera live links pushed while the media backbone is DOWN",
-            error="links dead until MediaMTX runs — bash setup/"
-                  "install_mediamtx.sh + restart ceravis, then re-sync cameras")
+                len(cameras), pid, [(c["device"], c["room"]) for c in cameras])
 
     try:
         result = save_cameras(pid, cameras)
@@ -399,7 +363,7 @@ def sync_cameras(request: Request, camera_id: str | None = None):
         logger.warning("saveCamera failed (user #%s): %s", pid, exc)
         return {"synced": False, "reason": str(exc), "count": len(cameras)}
     logger.info("saveCamera: %d camera(s) sent for user #%s", len(cameras), pid)
-    return {"synced": True, "count": len(cameras), "media_backbone": backbone,
+    return {"synced": True, "count": len(cameras),
             "patientUserId": pid, "cameras": cameras, "server": result}
 
 

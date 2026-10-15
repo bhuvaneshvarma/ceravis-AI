@@ -515,9 +515,10 @@ def save_cameras(patient_user_id, cameras: list[dict]):
                          recordRtspUrl, hlsUrl, onvifXaddr, onvifUsername,
                          onvifPassword, onvifProfileToken, onvifPtzToken,
                          ptzSupported, isEnabled, webrtcUrl }, ... ] }
-    Each camera dict is the full cameras.json record in the server's camelCase
-    shape (built by account_routes._cloud_camera) — the SAME details we persist
-    on the edge, so the cloud mirrors the device exactly. Returns the server's
+    Each camera dict carries every contract key in the server's camelCase shape
+    (built by account_routes._cloud_camera), with only device, model, supplier,
+    room, ptzSupported and isEnabled filled — addresses, credentials and the
+    live link stay on the device and go out empty. Returns the server's
     response payload; raises CeravisApiError on failure.
     """
     if not is_configured():

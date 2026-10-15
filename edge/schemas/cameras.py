@@ -90,8 +90,8 @@ class Camera(BaseModel):
 
     is_enabled: bool = True
 
-    # Public live links, computed on save and stored so the app server, the UI
-    # and cameras.json all read ONE canonical value. webrtc_url = MediaMTX's
+    # Public live links, computed on save and stored so the UI and cameras.json
+    # read ONE canonical value (never sent to the app server). webrtc_url = MediaMTX's
     # WebRTC player page (https://<domain>/<edge_id>/<ROOM>/). hls_url reserved
     # (empty for now).
     webrtc_url: str = ""
