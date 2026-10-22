@@ -40,7 +40,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import secrets
 import subprocess
 import threading
@@ -48,6 +47,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from common import clock
+from common.atomic import write_json_atomic
 from config.settings import settings
 from integration import call_log
 
@@ -78,14 +78,7 @@ def _read_auth() -> dict:
 
 
 def _write_auth(data: dict) -> None:
-    _DATA.mkdir(parents=True, exist_ok=True)
-    tmp = _AUTH_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, _AUTH_FILE)
-    try:
-        os.chmod(_AUTH_FILE, 0o600)          # hash file is not world-readable
-    except OSError:
-        pass                                  # best-effort (e.g. non-POSIX dev box)
+    write_json_atomic(_AUTH_FILE, data, mode=0o600)   # the hash is not world-readable
 
 
 def _derive(password: str, salt: bytes, iterations: int) -> bytes:
@@ -363,12 +356,9 @@ def scheduled_decision(now_local: datetime | None = None,
 
 def _write_marker(reason: str, actor: str) -> None:
     try:
-        _DATA.mkdir(parents=True, exist_ok=True)
-        tmp = _MARKER_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({
+        write_json_atomic(_MARKER_FILE, {
             "at": clock.now_iso(), "reason": reason, "actor": actor,
-        }, indent=2))
-        os.replace(tmp, _MARKER_FILE)
+        })
     except Exception:
         logger.exception("reboot: could not write the marker")
 

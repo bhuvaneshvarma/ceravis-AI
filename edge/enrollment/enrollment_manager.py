@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
-import os
 import time
 from collections import Counter
 from datetime import datetime
@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from common.atomic import write_atomic
 from config.settings import resolve_path, settings
 from common import clock
 from ingestion.illumination import Modality
@@ -307,10 +308,9 @@ class EnrollmentManager:
         vec_name, label_name = _ADAPTIVE[modality]
         body = self.create_recipient_folder(recipient_id) / "body"
         body.mkdir(parents=True, exist_ok=True)
-        tmp = body / f"{vec_name}.tmp"
-        with open(tmp, "wb") as fh:               # atomic save (temp + replace)
-            np.save(fh, adaptive.astype(np.float32))
-        os.replace(tmp, body / vec_name)
+        buf = io.BytesIO()
+        np.save(buf, adaptive.astype(np.float32))
+        write_atomic(body / vec_name, buf.getvalue())
         (body / label_name).write_text(json.dumps(labels))
         return True
 

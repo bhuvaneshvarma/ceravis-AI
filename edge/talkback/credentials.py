@@ -28,11 +28,11 @@ the same treatment of the reboot password).
 import hashlib
 import json
 import logging
-import os
 import threading
 from dataclasses import dataclass
 
 from common.clock import now_iso
+from common.atomic import write_json_atomic
 from config.settings import settings
 
 from . import guard
@@ -79,14 +79,7 @@ def _read() -> dict:
 
 
 def _write(data: dict) -> None:
-    _DATA.mkdir(parents=True, exist_ok=True)
-    tmp = _FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, _FILE)                     # atomic: never a half-written secret
-    try:
-        os.chmod(_FILE, 0o600)
-    except OSError:
-        pass                                    # best-effort (non-POSIX dev box)
+    write_json_atomic(_FILE, data, mode=0o600)   # never a half-written secret
 
 
 def _entry(password: str, source: str) -> dict:

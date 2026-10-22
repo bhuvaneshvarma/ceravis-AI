@@ -35,11 +35,11 @@ fingerprint of its hash, enough to notice that it CHANGED.
 import hashlib
 import json
 import logging
-import os
 import threading
 import time
 
 from common.clock import local_tz
+from common.atomic import write_json_atomic
 from config.settings import settings
 from datetime import datetime
 
@@ -73,14 +73,7 @@ def _read() -> dict:
 
 
 def _write(data: dict) -> None:
-    _DATA.mkdir(parents=True, exist_ok=True)
-    tmp = _FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, _FILE)
-    try:
-        os.chmod(_FILE, 0o600)
-    except OSError:
-        pass
+    write_json_atomic(_FILE, data, mode=0o600)
 
 
 def _pause_for(refusals: int) -> float:
