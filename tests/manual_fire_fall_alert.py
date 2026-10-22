@@ -3,6 +3,10 @@
 Manual end-to-end test — fire ONE simulated FALL incident NOW, against the real
 cloud, exactly the way the pipeline would.
 
+⚠ NOT an automated test: it sends a REAL fall alert that reaches the carers'
+phones. That is why its name does not start with test_ — no test runner picks
+it up. Run it only on purpose, on a bench device with a test account.
+
 It exercises the same integration path a real fall takes, so you can confirm the
 alert, the still and the incident clip all land in the app / S3 without waiting
 for an actual fall:
@@ -30,9 +34,9 @@ PRECONDITIONS (on the edge):
 
 Run from the repo root, on the device:
     export CERAVIS_API_KEY=$(sudo sed -n 's/^CERAVIS_API_KEY=//p' /etc/ceravis/secrets.env)
-    python tests/test_fall_incident.py                 # first enabled camera
-    python tests/test_fall_incident.py KITCHEN         # a specific room / label
-    python tests/test_fall_incident.py KITCHEN --no-clip   # alert + still only
+    python tests/manual_fire_fall_alert.py                 # first enabled camera
+    python tests/manual_fire_fall_alert.py KITCHEN         # a specific room / label
+    python tests/manual_fire_fall_alert.py KITCHEN --no-clip   # alert + still only
 """
 from __future__ import annotations
 
