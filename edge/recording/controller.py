@@ -99,9 +99,13 @@ class RecordingController:
 
     # ---- runtime enable/disable (monitor button) ---------------------
     def _load_enabled(self) -> bool:
+        if not self._mode_file.exists():
+            return bool(settings.record_enabled)
         try:
             return bool(json.loads(self._mode_file.read_text())["enabled"])
         except Exception:
+            logger.warning("unreadable %s — recording uses the default", self._mode_file,
+                           exc_info=True)
             return bool(settings.record_enabled)
 
     def is_enabled(self) -> bool:

@@ -163,6 +163,7 @@ class FaceIdentity:
             v = np.asarray(self._rec.infer(np.ascontiguousarray(x))[0],
                            np.float32).ravel()
         except Exception:
+            logger.debug("face embedding failed", exc_info=True)
             return None
         n = float(np.linalg.norm(v))
         return v / n if n > 0 else None

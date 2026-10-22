@@ -71,9 +71,13 @@ _lock = threading.Lock()
 # =====================================================================
 
 def _read_auth() -> dict:
+    if not _AUTH_FILE.exists():
+        return {}
     try:
         return json.loads(_AUTH_FILE.read_text())
     except Exception:
+        logger.warning("unreadable %s — the manual reboot stays locked", _AUTH_FILE,
+                       exc_info=True)
         return {}
 
 

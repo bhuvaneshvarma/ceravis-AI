@@ -162,7 +162,7 @@ async def lifespan(app: FastAPI):
         await hub.stop()
         await lines.stop()
     except Exception:
-        pass
+        logger.warning("talk-back did not stop cleanly", exc_info=True)
     pipeline.stop()
     if refresh["requested"]:
         logger.info("CERAVIS edge refreshed — systemd starts it again now")
@@ -306,8 +306,8 @@ async def _log_inbound_calls(request, call_next):
                             latency_ms=(time.perf_counter() - t0) * 1000,
                             label=f"{request.method} {request.url.path}",
                             request=req, response=resp)
-        except Exception:
-            pass
+        except Exception:                 # the log must never break a response
+            logger.debug("inbound call log failed", exc_info=True)
     return response
 
 

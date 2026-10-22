@@ -136,6 +136,7 @@ class EnrollmentManager:
             try:
                 return json.loads(path.read_text())
             except Exception:
+                logger.warning("unreadable %s — treated as empty", path, exc_info=True)
                 return {}
         return {}
 
@@ -270,6 +271,7 @@ class EnrollmentManager:
             try:
                 return list(json.loads(f.read_text()))
             except Exception:
+                logger.warning("unreadable %s — treated as empty", f, exc_info=True)
                 return []
         return []
 
@@ -364,6 +366,7 @@ class EnrollmentManager:
             try:
                 out = [str(x) for x in json.loads(f.read_text())]
             except Exception:
+                logger.warning("unreadable %s — treated as empty", f, exc_info=True)
                 out = []
         if len(out) < n:
             out += [""] * (n - len(out))
@@ -411,5 +414,5 @@ class EnrollmentManager:
             try:
                 return json.loads(path.read_text())
             except Exception:
-                pass
+                logger.warning("unreadable %s — status reset", path, exc_info=True)
         return {"state": "none", "photos": 0, "embeddings": 0, "message": ""}
