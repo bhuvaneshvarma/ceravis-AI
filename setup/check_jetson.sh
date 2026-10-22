@@ -153,6 +153,16 @@ fi
 if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis-fleet-agent.service'; then
     [ "$(systemctl is-active ceravis-fleet-agent 2>/dev/null)" = "active" ]         && ok "ceravis-fleet-agent.service active"         || warn "fleet agent installed but not running" "journalctl -u ceravis-fleet-agent -n 30"
     [ -e /var/lib/ceravis-fleet-agent/identity.json ]         && ok "enrolled with the Fleet Management Server"         || warn "not enrolled with the fleet yet" "journalctl -u ceravis-fleet-agent -n 20 says why"
+    # Kept after enrolling: re-enrolling (after a Reset key) needs it. A unit from
+    # before enroll.env never loads it — the upgrade that brings this file runs
+    # the old upgrade.sh. Whether it is the RIGHT key, the fleet console shows.
+    if ! grep -q 'enroll.env' /etc/systemd/system/ceravis-fleet-agent.service 2>/dev/null; then
+        warn "fleet agent unit predates the enrollment-key file" "bash setup/upgrade.sh once more (or: bash setup/install_fleet_agent.sh)"
+    elif sudo -n test -s /etc/ceravis-fleet-agent/enroll.env 2>/dev/null; then
+        ok "fleet enrollment key in place (root-only enroll.env)"
+    elif sudo -n true 2>/dev/null; then
+        warn "no fleet enrollment key - after a Reset key this device can't re-enroll" "FMS_ENROLL_KEY=<key> bash setup/install_fleet_agent.sh"
+    fi
 else
     warn "fleet agent not installed" "bash setup/install_fleet_agent.sh"
 fi

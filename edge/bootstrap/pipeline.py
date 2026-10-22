@@ -261,6 +261,16 @@ class Pipeline:
         outbox = None
         outbox_sender = None
         cloud_alert_publisher = None
+        # The app-server key comes from /etc/ceravis/secrets.env. Without it
+        # every upload just waits in the queue, so say it once, loudly, here
+        # (and /system/status keeps saying it).
+        try:
+            from integration.ceravis_api import api_key_problem
+            key_problem = api_key_problem()
+            if key_problem:
+                logger.error("Cloud: %s", key_problem)
+        except Exception:
+            logger.exception("app-server API key check failed")
         try:
             from integration.outbox_sender import OutboxSender
             outbox = OutboxStore(sqlite_store)

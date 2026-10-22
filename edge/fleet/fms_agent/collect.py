@@ -18,6 +18,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import fms_protocol as protocol
+
 from . import __version__
 
 
@@ -39,7 +41,7 @@ def edge_status(url: str, timeout: float = 8.0) -> tuple[dict | None, str | None
         return None, "status endpoint returned invalid JSON"
 
 
-def facts(rtt_ms: float | None, interval: float, can_enroll: bool) -> dict:
+def facts(rtt_ms: float | None, interval: float, enroll_key: str) -> dict:
     l4t = _read("/etc/nv_tegra_release")
     return {
         "version": __version__,
@@ -53,9 +55,12 @@ def facts(rtt_ms: float | None, interval: float, can_enroll: bool) -> dict:
         "python": platform.python_version(),
         "rtt_ms": rtt_ms,
         "interval_secs": interval,
-        # Holds the fleet enrollment key, so it can enroll again by itself after
-        # an admin's Reset key. The console warns before a reset when it cannot.
-        "can_enroll": can_enroll,
+        # WHICH fleet enrollment key it holds — a short id, never the key. The
+        # server checks it against its own: only that key lets the device enroll
+        # again by itself after an admin's Reset key. can_enroll is what 0.2.1
+        # agents reported instead (holds some key); kept for servers that read it.
+        "enroll_key_id": protocol.enroll_key_id(enroll_key),
+        "can_enroll": bool(enroll_key),
     }
 
 

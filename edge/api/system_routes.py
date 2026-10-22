@@ -270,10 +270,12 @@ def _tunnel_status() -> dict:
 def _cloud_status(outbox=None) -> dict:
     try:
         from integration.call_log import recent
-        from integration.ceravis_api import is_configured
+        from integration.ceravis_api import api_key_problem, is_configured
         calls = recent(50)
         return {
             "configured": is_configured(),
+            # No key, or still the old public one — None when the key is fine.
+            "api_key_problem": api_key_problem(),
             "recent_calls": len(calls),
             "recent_errors": sum(1 for c in calls if not c.get("ok", True)),
             "last_call": calls[0] if calls else None,
@@ -343,6 +345,10 @@ def system_status(request: Request):
         problems.append("AI chain off — no enrolled embeddings, so tracking, "
                         "fall and no-motion detection are not running")
     cloud = _cloud_status(getattr(st, "outbox", None))
+    # Before the upload symptoms below: a missing key is their cause, and with
+    # the old built-in key nothing fails YET — only this line says so.
+    if cloud.get("api_key_problem"):
+        problems.append(cloud["api_key_problem"])
     queue = cloud.get("outbox") or {}
     stuck = queue.get("oldest_pending_age_secs") or 0
     # A brief blip drains itself and is not worth reporting; an upload that has

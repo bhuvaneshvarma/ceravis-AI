@@ -8,8 +8,9 @@
 # enrollment key (the same for every device, but a SECRET) from the root-only
 # /etc/ceravis-fleet-agent/enroll.env this script writes. It enrolls itself on
 # first start (adopting this device's current edge_id, or receiving a new one)
-# and keeps its identity in /var/lib/ceravis-fleet-agent; from then on it needs
-# only its own key.
+# and keeps its identity in /var/lib/ceravis-fleet-agent. From then on it checks
+# in with its own key — but keep the enrollment key: enrolling again, after an
+# admin's Reset key or into a rebuilt FMS, needs it.
 #
 # Run:  bash setup/install_fleet_agent.sh      (asks for the key once; idempotent)
 #       FMS_ENROLL_KEY=<key> bash setup/install_fleet_agent.sh   (unattended, or to

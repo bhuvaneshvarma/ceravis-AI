@@ -9,7 +9,8 @@ Rules it lives by:
   • The server sets the rhythm (`next_poll_after_secs`); the agent obeys.
   • First call is offset by a hash of the fingerprint, retries back off with
     jitter — thousands of devices booting together never arrive together.
-  • Order results are kept until a heartbeat carrying them is accepted.
+  • Order results are kept until a heartbeat carrying them is accepted — as
+    many per heartbeat as fit the server's size limit, the rest on the next.
   • Any failure is logged once, on the transition, and the loop carries on.
   • Under systemd it exits when its own code changes on disk (a `git pull`),
     so the restart picks the new version up instead of the next reboot.
@@ -17,6 +18,7 @@ Rules it lives by:
 from __future__ import annotations
 
 import logging
+import math
 import random
 import threading
 import time
@@ -49,6 +51,23 @@ def _code_stamp() -> int:
     return newest
 
 
+def _size(value) -> int:
+    return len(transport.encode(value))
+
+
+def _shorten(result: dict, room: int) -> dict:
+    """The same answer with only as much of the END of its output — the newest
+    log lines — as fits in `room` bytes of request body."""
+    tail = result.get("output") or ""
+    while True:
+        shorter = {**result, "output": "…(earlier output trimmed to fit a check-in)\n" + tail}
+        excess = _size(shorter) - room
+        if excess <= 0 or not tail:
+            return shorter
+        per_char = _size(tail) / len(tail)    # JSON escaping makes some characters cost more
+        tail = tail[math.ceil(excess / per_char):]
+
+
 class Agent:
     def __init__(self, cfg: Config, enroll_grace: float = ENROLL_GRACE_SECS) -> None:
         self.cfg = cfg
@@ -71,11 +90,12 @@ class Agent:
             return self._enroll(status)
         payload = {
             "protocol": protocol.VERSION,
-            "agent": collect.facts(self.rtt_ms, self.interval, bool(self.cfg.enroll_key)),
+            "agent": collect.facts(self.rtt_ms, self.interval, self.cfg.enroll_key),
             "status": status,
             "status_error": status_error,
-            "results": self.results[:protocol.MAX_RESULTS],
+            "results": [],
         }
+        payload["results"] = carried = self._carry(payload)
         try:
             reply = self._post(protocol.HEARTBEAT_PATH, payload,
                                self.identity["edge_id"], self.identity["secret"])
@@ -83,11 +103,27 @@ class Agent:
             if exc.status == 401:        # key reset by an admin (or unknown here): enroll afresh
                 return self._enroll(status)
             raise
-        self.results = self.results[protocol.MAX_RESULTS:]    # delivered — drop them
+        del self.results[:len(carried)]                       # delivered — drop them
         self.interval = min(max(float(reply.get("next_poll_after_secs", 60)), MIN_WAIT), MAX_WAIT)
         self.results += [commands.run(order) for order in reply.get("commands") or []]
         # Report results straight away instead of making the admin wait a cycle.
         return 1.0 if self.results else self.interval
+
+    def _carry(self, payload: dict) -> list[dict]:
+        """The answers this heartbeat takes along: oldest first, as many as fit the
+        server's body limit beside the rest of `payload` — the others go on the
+        next beats. One that cannot fit even on its own is cut down to its newest
+        output: sent whole, it would be refused (413) with every check-in, forever."""
+        room = protocol.MAX_BODY_BYTES - len(transport.encode(payload))
+        carried: list[dict] = []
+        for result in self.results[:protocol.MAX_RESULTS]:
+            if not carried and _size(result) > room:
+                result = self.results[0] = _shorten(result, room)
+            room -= _size(result) + (1 if carried else 0)      # "," between list items
+            if room < 0:
+                break
+            carried.append(result)
+        return carried
 
     def _enroll(self, status: dict | None) -> float:
         if not self.cfg.enroll_key:
@@ -100,7 +136,7 @@ class Agent:
             reply = self._post(protocol.ENROLL_PATH, {
                 "protocol": protocol.VERSION, "fingerprint": self.fingerprint,
                 "edge_id": reported if isinstance(reported, str) else "",
-                "agent": collect.facts(self.rtt_ms, self.interval, bool(self.cfg.enroll_key)),
+                "agent": collect.facts(self.rtt_ms, self.interval, self.cfg.enroll_key),
             }, self.fingerprint, self.cfg.enroll_key)
         except transport.Rejected as exc:
             if exc.status == 409:

@@ -1,8 +1,9 @@
 """Agent settings, read from the environment. On a Jetson, systemd loads FMS_URL
 from the edge's own edge/infra/env/jetson.env and the secret FMS_ENROLL_KEY from
 the root-only /etc/ceravis-fleet-agent/enroll.env — both the same for every
-device, so a device needs no per-device configuration at all. The enrollment key
-is needed only until the device has enrolled; then it signs with its own key."""
+device, so a device needs no per-device configuration at all. Once enrolled it
+signs with its own key, but it keeps the enrollment key: enrolling again — after
+an admin's Reset key, or into a rebuilt FMS — needs it."""
 from __future__ import annotations
 
 import os
