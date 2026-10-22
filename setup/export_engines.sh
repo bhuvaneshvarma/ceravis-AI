@@ -26,7 +26,8 @@ if [ ! -x "$VENV/bin/python" ]; then
     echo "== CPU-only torch (small; inference never uses torch) =="
     "$VENV/bin/pip" install torch torchvision \
         --index-url https://download.pytorch.org/whl/cpu
-    "$VENV/bin/pip" install ultralytics onnx onnxslim
+    # pydantic-settings: export_models.py reads the app's own settings for paths
+    "$VENV/bin/pip" install ultralytics onnx onnxslim pydantic-settings
 fi
 
 # Load model paths/weights config so the script and the app agree.

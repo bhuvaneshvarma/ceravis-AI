@@ -57,11 +57,15 @@ class TensorRTEngine:
       - Pinned host buffers (faster H2D / D2H)
       - Pre-allocated output reshape views
       - Reusable for YOLO, Pose, OSNet ReID
+      - Batches: an engine built with a dynamic batch dimension runs up to
+        `max_batch` samples in one call (`infer` with a leading batch axis);
+        buffers are sized for that batch once. A fixed-batch engine — or
+        max_batch=1, the default — behaves exactly as a one-sample engine.
     """
 
     _TRT_LOGGER = None
 
-    def __init__(self, engine_path: str) -> None:
+    def __init__(self, engine_path: str, max_batch: int = 1) -> None:
         if not _TRT_AVAILABLE:
             raise RuntimeError(
                 "TensorRT/PyCUDA not available. "
@@ -91,6 +95,9 @@ class TensorRTEngine:
         self._shapes: list[tuple[int, ...]] = []
         self._dtypes: list[type] = []
         self._bindings: list[int] = []
+        self._requested_batch = max(1, int(max_batch))
+        self._max_batch = 1          # what this engine really takes (set below)
+        self._dynamic_batch = False
 
         # Deserialize, create the execution context, the stream and all device
         # buffers under an active CUDA context. push/pop keeps construction
@@ -123,16 +130,28 @@ class TensorRTEngine:
 
     # ---- alloc -------------------------------------------------------
     def _allocate_buffers(self) -> None:
-        # Pass 1 — resolve dynamic input dims (-1) to batch 1: we always
-        # infer one sample at a time (e.g. dynamic-batch ReID engines).
+        # Pass 1 — resolve dynamic input dims. A dynamic BATCH dim (dim 0) is
+        # sized for the largest batch both we asked for and the engine profile
+        # allows; any other dynamic dim, and the batch of a one-sample setup,
+        # resolve to 1 as before. Buffers are allocated at that size once.
         for idx in range(self._engine.num_io_tensors):
             name = self._engine.get_tensor_name(idx)
             if self._engine.get_tensor_mode(name) != trt.TensorIOMode.INPUT:
                 continue
             shape = tuple(self._engine.get_tensor_shape(name))
-            if any(d < 0 for d in shape):
-                self._context.set_input_shape(
-                    name, tuple(1 if d < 0 else d for d in shape))
+            if not any(d < 0 for d in shape):
+                continue
+            batch = 1
+            if shape[0] < 0 and self._use_v3 and self._requested_batch > 1:
+                try:
+                    profile_max = int(self._engine.get_tensor_profile_shape(name, 0)[2][0])
+                except Exception:
+                    profile_max = 1
+                batch = max(1, min(self._requested_batch, profile_max))
+            self._dynamic_batch = shape[0] < 0 and self._use_v3
+            self._max_batch = batch
+            self._context.set_input_shape(
+                name, (batch,) + tuple(1 if d < 0 else d for d in shape[1:]))
 
         # Pass 2 — allocate pinned host + device buffers.
         for idx in range(self._engine.num_io_tensors):
@@ -152,7 +171,9 @@ class TensorRTEngine:
             self._host_buffers.append(host)
             self._device_buffers.append(dev)
             self._bindings.append(int(dev))
-            self._shapes.append(shape)
+            # The ONE-sample shape, as callers have always seen it (input_shape,
+            # output_shapes); a batch scales dim 0.
+            self._shapes.append((1,) + shape[1:] if self._max_batch > 1 else shape)
             self._dtypes.append(dtype)
 
             if self._engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
@@ -164,24 +185,39 @@ class TensorRTEngine:
                 self._context.set_tensor_address(name, int(dev))
 
     # ---- inference ---------------------------------------------------
+    @property
+    def max_batch(self) -> int:
+        """How many samples one `infer` call may carry (1 = one at a time)."""
+        return self._max_batch
+
     def infer(self, input_tensor: np.ndarray) -> list[np.ndarray]:
         """
-        Run one inference pass. Returns list of output arrays
-        (views into pinned host buffers — caller must copy if storing).
+        Run one inference pass over `input_tensor` — one sample, or up to
+        `max_batch` stacked on the first axis. Returns the output arrays
+        (copies), each with that same leading batch size.
         """
         if not self._input_indices:
             raise RuntimeError("No input bindings")
+        in_idx = self._input_indices[0]
+        per_sample = int(np.prod(self._shapes[in_idx][1:]))
+        n = max(1, input_tensor.size // max(1, per_sample))
+        if n > self._max_batch:
+            raise ValueError(f"batch {n} exceeds this engine's max_batch {self._max_batch}")
 
         # Make the shared primary context current on THIS thread for the whole
         # transfer/execute/sync cycle, then restore the previous stack on exit.
         self._cuda_ctx.push()
         try:
-            in_idx = self._input_indices[0]
-            np.copyto(self._host_buffers[in_idx], input_tensor.ravel())
+            if self._dynamic_batch:
+                self._context.set_input_shape(
+                    self._names[in_idx], (n,) + self._shapes[in_idx][1:])
+            count = input_tensor.size
+            host_in = self._host_buffers[in_idx]
+            np.copyto(host_in[:count], input_tensor.ravel())
 
             cuda.memcpy_htod_async(
                 self._device_buffers[in_idx],
-                self._host_buffers[in_idx],
+                host_in[:count],
                 self._stream,
             )
 
@@ -195,9 +231,15 @@ class TensorRTEngine:
                     stream_handle=self._stream.handle,
                 )
 
+            out_shapes = []
             for out_idx in self._output_indices:
+                shape = self._shapes[out_idx]
+                if self._dynamic_batch:
+                    shape = tuple(self._context.get_tensor_shape(self._names[out_idx]))
+                out_shapes.append(shape)
+                cnt = int(np.prod(shape))
                 cuda.memcpy_dtoh_async(
-                    self._host_buffers[out_idx],
+                    self._host_buffers[out_idx][:cnt],
                     self._device_buffers[out_idx],
                     self._stream,
                 )
@@ -205,12 +247,9 @@ class TensorRTEngine:
             self._stream.synchronize()
 
             outputs: list[np.ndarray] = []
-            for out_idx in self._output_indices:
-                outputs.append(
-                    self._host_buffers[out_idx]
-                    .reshape(self._shapes[out_idx])
-                    .copy()
-                )
+            for out_idx, shape in zip(self._output_indices, out_shapes):
+                cnt = int(np.prod(shape))
+                outputs.append(self._host_buffers[out_idx][:cnt].reshape(shape).copy())
             return outputs
         finally:
             self._cuda_ctx.pop()

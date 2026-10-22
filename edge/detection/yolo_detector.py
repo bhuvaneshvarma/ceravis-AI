@@ -34,25 +34,44 @@ class YOLODetector:
 
     PERSON_CLASS_ID = 0
 
-    def __init__(self) -> None:
+    def __init__(self, max_batch: int | None = None) -> None:
         self._size = settings.detection_input_size
         self._thr = settings.detection_confidence_threshold
-        self._engine = TensorRTEngine(settings.detection_model_path)
+        self._engine = TensorRTEngine(
+            settings.detection_model_path,
+            max_batch=settings.detection_max_batch if max_batch is None else max_batch)
         self._layout: str | None = None
         self._score_col: int | None = None
         self._logged = False
-        logger.info("YOLODetector initialized (input=%d, conf>=%.2f)",
-                    self._size, self._thr)
+        logger.info("YOLODetector initialized (input=%d, conf>=%.2f, batch<=%d)",
+                    self._size, self._thr, self.max_batch)
+
+    @property
+    def max_batch(self) -> int:
+        """Frames one call can take — 1 for a one-frame engine."""
+        return self._engine.max_batch
 
     # ---- public ------------------------------------------------------
     def detect(self, frame, camera_id, frame_id, timestamp) -> DetectionResult:
-        canvas, r, dw, dh = letterbox(frame, self._size)
-        outputs = self._engine.infer(to_blob(canvas))
-        dets = self._postprocess(outputs, camera_id, frame_id, timestamp, r, dw, dh)
-        fh, fw = frame.shape[:2]
-        return DetectionResult(camera_id=camera_id, frame_id=frame_id,
-                               timestamp=timestamp, detections=dets,
-                               frame_w=int(fw), frame_h=int(fh))
+        return self.detect_batch([(frame, camera_id, frame_id, timestamp)])[0]
+
+    def detect_batch(self, items) -> list[DetectionResult]:
+        """Detect on several frames in one GPU call. `items` is a list of
+        (frame, camera_id, frame_id, timestamp), at most `max_batch` long;
+        returns one DetectionResult per item, in the same order."""
+        prepared = [letterbox(frame, self._size) for frame, *_ in items]
+        blob = np.concatenate([to_blob(canvas) for canvas, *_ in prepared], axis=0)
+        outputs = self._engine.infer(blob)
+        results = []
+        for i, ((frame, camera_id, frame_id, timestamp), (_, r, dw, dh)) in \
+                enumerate(zip(items, prepared)):
+            sample = [out[i:i + 1] for out in outputs]
+            dets = self._postprocess(sample, camera_id, frame_id, timestamp, r, dw, dh)
+            fh, fw = frame.shape[:2]
+            results.append(DetectionResult(camera_id=camera_id, frame_id=frame_id,
+                                           timestamp=timestamp, detections=dets,
+                                           frame_w=int(fw), frame_h=int(fh)))
+        return results
 
     # ---- postprocess -------------------------------------------------
     def _postprocess(self, outputs, camera_id, frame_id, timestamp,

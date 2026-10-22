@@ -2,6 +2,8 @@
 """
 Prove detection is paced by ACTIVITY: full rate where a person is, idle rate
 where the room is empty — and an empty room wakes the moment someone enters.
+Cameras due at the same moment share one GPU call (batching), and a failed
+batch falls back to one call per camera.
 
 2026-09-23 (15W, AI off): detection ran every camera at full rate around the
 clock and alone asked for 0.73 s of GPU per second; with pose on top the GPU was
@@ -49,6 +51,16 @@ class Frames:
 
 
 class Detector:
+    max_batch = 4
+    calls = 0           # GPU calls (one per batch)
+    fail_batches = False
+
+    def detect_batch(self, items):
+        Detector.calls += 1
+        if Detector.fail_batches and len(items) > 1:
+            raise RuntimeError("batch failed")
+        return [self.detect(*it) for it in items]
+
     def detect(self, frame, camera_id, frame_id, timestamp):
         runs[camera_id] += 1
         dets = [NS(bbox=NS(x1=0, y1=0, x2=10, y2=20))] if PEOPLE[camera_id] else []
@@ -104,6 +116,28 @@ runs["BEDROOM"] = 0
 run_for(10.0)
 check(f"then idle again: {runs['BEDROOM'] / 10:.1f} fps",
       1.5 <= runs["BEDROOM"] / 10 <= 2.5)
+
+print("\n4. cameras due together share one GPU call")
+PEOPLE["BEDROOM"] = PEOPLE["KITCHEN"] = True
+run_for(5.0)                       # both busy: both at full rate, due together
+runs["KITCHEN"] = runs["BEDROOM"] = 0
+Detector.calls = 0
+run_for(10.0)
+frames = runs["KITCHEN"] + runs["BEDROOM"]
+check(f"{frames} frames in {Detector.calls} GPU calls (batched)",
+      frames >= 180 and Detector.calls <= frames * 0.6)
+Detector.max_batch = 1
+runs["KITCHEN"] = runs["BEDROOM"] = 0
+Detector.calls = 0
+run_for(5.0)
+check("a one-frame engine: one call per frame",
+      Detector.calls == runs["KITCHEN"] + runs["BEDROOM"])
+Detector.max_batch, Detector.fail_batches = 4, True
+r._batching = True
+runs["KITCHEN"] = runs["BEDROOM"] = 0
+run_for(5.0)
+check(f"a failed batch still detects every camera ({runs})",
+      runs["KITCHEN"] / 5 >= 9.0 and runs["BEDROOM"] / 5 >= 9.0)
 
 print()
 if FAILURES:

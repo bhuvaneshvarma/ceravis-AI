@@ -310,6 +310,11 @@ class Settings(BaseSettings):
     # recording see no difference. Measured 2026-09-23 (15W, AI off): detection
     # alone asked for 0.73 s of GPU per second at full rate on both cameras.
     detection_fps: float = 10.0
+    # Cameras due at the same moment are detected in ONE GPU call, up to this
+    # many frames. Needs an engine built with a dynamic batch (setup/
+    # export_models.py builds new ones that way); an older one-frame engine is
+    # simply used one frame at a time.
+    detection_max_batch: int = 4
     detection_idle_fps: float = 2.0
     detection_active_hold_secs: float = 10.0
 

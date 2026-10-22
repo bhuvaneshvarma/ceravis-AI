@@ -106,7 +106,7 @@ class EnrollmentWorker:
         if self._detector is None:
             try:
                 from detection.yolo_detector import YOLODetector
-                self._detector = YOLODetector()
+                self._detector = YOLODetector(max_batch=1)   # one photo at a time
             except Exception:
                 logger.warning("enroll: detector unavailable — enrolling on "
                                "whole images (crops not tightened)")

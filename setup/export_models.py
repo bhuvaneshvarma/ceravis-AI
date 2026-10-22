@@ -33,6 +33,23 @@ def _env(key: str, default: str) -> str:
     return v or default
 
 
+def _settings():
+    """The app's own settings — so the engines land exactly where the app loads
+    them from (MODELS_DIR included). None inside a bare export venv without
+    pydantic-settings: the environment variables are used then, as before."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "edge"))
+    try:
+        from config.settings import settings
+        return settings
+    except Exception:
+        return None
+
+
+def _cfg(name: str, default: str) -> str:
+    s = _settings()
+    return str(getattr(s, name)) if s is not None else _env(name.upper(), default)
+
+
 def _have(path: Path) -> bool:
     return path.exists() and path.stat().st_size > 0
 
@@ -46,8 +63,11 @@ def _trtexec() -> str | None:
 
 
 # ---------------------------------------------------------------- stage 1
-def export_onnx(weights: str, onnx_path: Path, imgsz: int) -> bool:
-    """Export YOLO weights to ONNX on CPU. Returns True if ONNX is present."""
+def export_onnx(weights: str, onnx_path: Path, imgsz: int,
+                dynamic: bool = False) -> bool:
+    """Export YOLO weights to ONNX on CPU. Returns True if ONNX is present.
+    dynamic=True gives the ONNX a dynamic batch, so its engine can detect on
+    several cameras' frames in one call (detection/detection_runner.py)."""
     if _have(onnx_path):
         return True
     try:
@@ -57,11 +77,19 @@ def export_onnx(weights: str, onnx_path: Path, imgsz: int) -> bool:
               "run setup/export_engines.sh once to create the ONNX")
         return False
 
-    print(f"[onnx] {weights} -> {onnx_path}  (imgsz={imgsz}, cpu)")
+    print(f"[onnx] {weights} -> {onnx_path}  (imgsz={imgsz}, cpu, "
+          f"{'dynamic batch' if dynamic else 'batch 1'})")
     # YOLO26 exports its end-to-end (NMS-free) head by default — output is
     # final detections [x1,y1,x2,y2,conf,cls], which is exactly what
     # yolo_detector.py / yolo_pose.py parse. Let ultralytics pick the opset.
-    out = YOLO(weights).export(format="onnx", imgsz=imgsz, device="cpu")
+    try:
+        out = YOLO(weights).export(format="onnx", imgsz=imgsz, device="cpu",
+                                   dynamic=dynamic)
+    except Exception as exc:
+        if not dynamic:
+            raise
+        print(f"[onnx] dynamic export failed ({exc}) — exporting batch 1")
+        out = YOLO(weights).export(format="onnx", imgsz=imgsz, device="cpu")
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     Path(out).replace(onnx_path)
     return True
@@ -93,6 +121,12 @@ def build_engine(onnx_path: Path, engine_path: Path,
     ] + (extra_args or [])
     print(f"[trtexec] {onnx_path.name} -> {engine_path.name}  (FP16, ~3-8 min)")
     rc = subprocess.run(cmd).returncode
+    shapes = [a for a in (extra_args or []) if a.startswith("--") and "Shapes=" in a]
+    if rc != 0 and shapes:
+        # An ONNX exported with a fixed batch rejects explicit shapes: build it
+        # as the one-frame engine it is.
+        print("[trtexec] retrying without batch shapes (fixed-batch ONNX)")
+        rc = subprocess.run([a for a in cmd if a not in shapes]).returncode
     if rc == 0 and _have(engine_path):
         print(f"[ok] {engine_path}")
     else:
@@ -109,9 +143,9 @@ def export_reid(engine_path: Path) -> None:
         print(f"[skip] {engine_path.name} already built")
         return
 
-    onnx_path = Path(_env("REID_ONNX_PATH", str(engine_path.with_suffix(".onnx"))))
+    onnx_path = Path(_cfg("reid_onnx_path", str(engine_path.with_suffix(".onnx"))))
     if not _have(onnx_path):
-        url = _env("REID_ONNX_URL", "")
+        url = _cfg("reid_onnx_url", "")
         if not url:
             print("[skip] no ReID ONNX — run setup/export_reid.sh to create "
                   f"{onnx_path} (ReID stays disabled until then)")
@@ -120,8 +154,8 @@ def export_reid(engine_path: Path) -> None:
         onnx_path.parent.mkdir(parents=True, exist_ok=True)
         urlretrieve(url, onnx_path)
 
-    h = _env("REID_INPUT_HEIGHT", "256")
-    w = _env("REID_INPUT_WIDTH", "128")
+    h = _cfg("reid_input_height", "256")
+    w = _cfg("reid_input_width", "128")
     build_engine(onnx_path, engine_path, extra_args=[
         f"--minShapes=input:1x3x{h}x{w}",
         f"--optShapes=input:1x3x{h}x{w}",
@@ -169,11 +203,9 @@ def fetch_face_models() -> None:
     fetched once, pinned to an exact upstream revision and checked by SHA-256;
     the AuraFace engine is then built here. The URLs and hashes live in
     edge/config/settings.py, the one place they are defined."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "edge"))
-    try:
-        from config.settings import settings
-    except Exception as exc:
-        print(f"[skip] face models: settings unavailable ({exc})")
+    settings = _settings()
+    if settings is None:
+        print("[skip] face models: settings unavailable")
         return
     if not settings.face_enabled:
         print("[skip] face identity disabled")
@@ -195,22 +227,30 @@ def main() -> int:
     # shared-memory Orin Nano ("no CUDA-capable device is detected").
     onnx_only = "--onnx-only" in sys.argv
 
-    det_w = _env("DETECTION_WEIGHTS", "yolo26m.pt")
-    pose_w = _env("POSE_WEIGHTS", "yolo26m-pose.pt")
-    det_engine = Path(_env("DETECTION_MODEL_PATH", "models/detection/yolo26m.engine"))
-    pose_engine = Path(_env("POSE_MODEL_PATH", "models/pose/yolo26m-pose.engine"))
-    reid_engine = Path(_env("REID_MODEL_PATH", "models/reid/reid.engine"))
+    det_w = _cfg("detection_weights", "yolo26m.pt")
+    pose_w = _cfg("pose_weights", "yolo26m-pose.pt")
+    det_engine = Path(_cfg("detection_model_path", "models/detection/yolo26m.engine"))
+    pose_engine = Path(_cfg("pose_model_path", "models/pose/yolo26m-pose.engine"))
+    reid_engine = Path(_cfg("reid_model_path", "models/reid/reid.engine"))
 
+    det_size = int(_cfg("detection_input_size", "640"))
+    det_batch = max(1, int(_cfg("detection_max_batch", "4")))
     det_ready = export_onnx(det_w, det_engine.with_suffix(".onnx"),
-                            imgsz=int(_env("DETECTION_INPUT_SIZE", "640")))
+                            imgsz=det_size, dynamic=det_batch > 1)
     pose_ready = export_onnx(pose_w, pose_engine.with_suffix(".onnx"),
-                             imgsz=int(_env("POSE_INPUT_SIZE", "640")))
+                             imgsz=int(_cfg("pose_input_size", "640")))
     if onnx_only:
         print("[done] ONNX pass complete — engines build in the next pass")
         return 0
 
     if det_ready:
-        build_engine(det_engine.with_suffix(".onnx"), det_engine)
+        # Ultralytics names the input "images"; batch 1..N at the fixed size.
+        shape = f"3x{det_size}x{det_size}"
+        build_engine(det_engine.with_suffix(".onnx"), det_engine, extra_args=[
+            f"--minShapes=images:1x{shape}",
+            f"--optShapes=images:{det_batch}x{shape}",
+            f"--maxShapes=images:{det_batch}x{shape}",
+        ] if det_batch > 1 else None)
     if pose_ready:
         build_engine(pose_engine.with_suffix(".onnx"), pose_engine)
 

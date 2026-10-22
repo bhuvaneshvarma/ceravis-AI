@@ -15,6 +15,9 @@ from common import clock
 
 logger = logging.getLogger("detection")
 
+# How early a camera may join a batch that is going to the GPU anyway.
+_COALESCE_SECS = 0.05
+
 
 class DetectionRunner:
     """
@@ -25,6 +28,8 @@ class DetectionRunner:
         view (or was within detection_active_hold_secs), at detection_idle_fps
         while its room is empty
       - Skip cameras whose frame_id hasn't changed (no duplicate inference)
+      - Cameras due at the same moment share ONE GPU call (up to the engine's
+        batch size) — fewer launches and copies than one call per camera
       - Record latency for the metrics dashboard
     """
 
@@ -58,6 +63,7 @@ class DetectionRunner:
         self._last_seen_frame: dict[str, int] = {}
         self._next_due: dict[str, float] = {}      # camera -> monotonic due time
         self._last_person: dict[str, float] = {}   # camera -> monotonic last person
+        self._batching = True                      # off after a batch fails once
 
     # ---- properties --------------------------------------------------
     @property
@@ -127,38 +133,68 @@ class DetectionRunner:
         # target-only, ReID verifying only the locked track, and an EMPTY camera
         # being checked at the idle rate.
         now = time.monotonic()
+        size = max(1, self._detector.max_batch) if self._batching else 1
+        # With room in the batch, a camera that is due within a few tens of ms
+        # rides along now instead of costing its own GPU call a moment later;
+        # from then on they are rescheduled together and stay in step. The
+        # window is capped so an empty room's slow rate is barely touched.
+        early = min(_COALESCE_SECS, 0.5 / max(0.1, settings.detection_fps)) if size > 1 else 0.0
+        due = []
         for camera_id, fd in frames.items():
             if now < self._next_due.get(camera_id, 0.0):
                 continue
             if self._last_seen_frame.get(camera_id) == fd.frame_id:
                 continue
-            self._last_seen_frame[camera_id] = fd.frame_id
-            try:
-                t = time.perf_counter()
-                result = self._detector.detect(
-                    frame=fd.image,
-                    camera_id=fd.camera_id,
-                    frame_id=fd.frame_id,
-                    timestamp=fd.timestamp,
-                )
-                latency = time.perf_counter() - t
-                if self._metrics:
-                    self._metrics.record(latency)
-                result = self._drop_excluded(result)
-                self._detection_buffer.update(result)
-                self._frames_processed += 1
-                self._detections_generated += len(result.detections)
-                self._last_inference_time = clock.now()
-                done = time.monotonic()
-                if result.detections:
-                    self._last_person[camera_id] = done
-                self._next_due[camera_id] = done + self._interval(camera_id, done)
-            except Exception:
-                logger.exception("Detection failed camera=%s", camera_id)
+            due.append(fd)
+        if due and early:
+            due += [fd for camera_id, fd in frames.items()
+                    if fd not in due
+                    and 0 < self._next_due.get(camera_id, 0.0) - now <= early
+                    and self._last_seen_frame.get(camera_id) != fd.frame_id]
+        for fd in due:
+            self._last_seen_frame[fd.camera_id] = fd.frame_id
+        for start in range(0, len(due), size):
+            self._detect_group(due[start:start + size])
         now = time.monotonic()
         due = min((self._next_due.get(c, now) for c in frames), default=now)
         # Never busy-spin on a camera whose next frame has not arrived yet.
         return min(0.1, max(0.01, due - now))
+
+    def _detect_group(self, group) -> None:
+        """One GPU call for these frames; each result is then handled exactly as
+        a single detection always was. A failed batch falls back to one call
+        per camera, so one bad frame cannot blind the others."""
+        try:
+            t = time.perf_counter()
+            results = self._detector.detect_batch(
+                [(fd.image, fd.camera_id, fd.frame_id, fd.timestamp) for fd in group])
+            per_frame = (time.perf_counter() - t) / len(group)
+        except Exception:
+            if len(group) == 1:
+                logger.exception("Detection failed camera=%s", group[0].camera_id)
+                self._schedule(group[0].camera_id, False)
+                return
+            logger.exception("Batched detection failed — detecting one camera at a "
+                             "time from now on")
+            self._batching = False
+            for fd in group:
+                self._detect_group([fd])
+            return
+        for fd, result in zip(group, results):
+            if self._metrics:
+                self._metrics.record(per_frame)
+            result = self._drop_excluded(result)
+            self._detection_buffer.update(result)
+            self._frames_processed += 1
+            self._detections_generated += len(result.detections)
+            self._last_inference_time = clock.now()
+            self._schedule(fd.camera_id, bool(result.detections))
+
+    def _schedule(self, camera_id: str, person: bool) -> None:
+        done = time.monotonic()
+        if person:
+            self._last_person[camera_id] = done
+        self._next_due[camera_id] = done + self._interval(camera_id, done)
 
     def _drop_excluded(self, result):
         """Remove person boxes whose FOOT point falls in a drawn ignore zone —
