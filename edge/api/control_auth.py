@@ -8,7 +8,7 @@ control endpoint parses and authenticates identically.
 
 Every control request carries this device's `edgeId`, and we verify it MATCHES
 the edge_id provisioned for this device — the `deviceToken` from the userDetails
-response, saved to account.json + jetson.env and also used for the live-link
+response, saved to account.json and also used for the live-link
 first segment and the frp routing `locations`. Only the app server that
 provisioned the device knows that value, so the match IS the authentication.
 

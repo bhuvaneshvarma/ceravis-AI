@@ -13,7 +13,7 @@ of the tcpmux proxy), verifies the config, and restarts frpc.
 
 Everything here is BEST-EFFORT: any failure (no sudo, helper not installed, dev
 box) is logged and swallowed, never raised — the edge_id is already saved to
-account.json + jetson.env, so onboarding never fails and a manual frpc setup
+account.json, so onboarding never fails and a manual frpc setup
 (`bash cloud/install_frpc.sh`) stays possible.
 """
 
