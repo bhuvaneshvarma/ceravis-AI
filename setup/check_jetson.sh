@@ -182,7 +182,7 @@ if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis-fleet-agent.service
     # before enroll.env never loads it — the upgrade that brings this file runs
     # the old upgrade.sh. Whether it is the RIGHT key, the fleet console shows.
     if ! grep -q 'enroll.env' /etc/systemd/system/ceravis-fleet-agent.service 2>/dev/null; then
-        warn "fleet agent unit predates the enrollment-key file" "bash setup/upgrade.sh once more (or: bash setup/install_fleet_agent.sh)"
+        warn "fleet agent unit predates the enrollment-key file" "bash setup/install_fleet_agent.sh"
     elif sudo -n test -s /etc/ceravis-fleet-agent/enroll.env 2>/dev/null; then
         ok "fleet enrollment key in place (root-only enroll.env)"
     elif sudo -n true 2>/dev/null; then
