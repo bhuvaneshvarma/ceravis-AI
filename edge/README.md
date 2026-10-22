@@ -53,9 +53,9 @@ edge/
 │                 and live view are untouched.
 │
 └─ shared infrastructure
-    config/         settings (env-driven, infra/env/jetson.env)
+    config/         settings (env-driven, infra/env/jetson.env) + the JSON-backed
+                    stores (cameras/zones/account)
     schemas/        domain models (Camera, Zone, Recipient, Event)
-    config/         Settings + the JSON-backed stores (cameras/zones/account)
     api/            FastAPI routers (account = cloud proxy, cameras, recordings,
                     system, discovery, network, zones, events, ai, metrics)
     integration/    CERAVIS app-server client + call log
