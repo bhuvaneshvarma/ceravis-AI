@@ -75,8 +75,8 @@ check("data/ paths follow DATA_DIR", Path(s.sqlite_path) == X / "ceravis.db"
 check("models/ paths follow MODELS_DIR",
       Path(s.detection_model_path) == M / "detection" / "yolo26m.engine")
 d = settings_mod.Settings(_env_file=None)
-check("by default data lives in edge/data",
-      Path(d.data_dir) == settings_mod.APP_DIR / "data")
+check("by default data lives in edge/data (or DATA_DIR when set)",
+      Path(d.data_dir) == settings_mod.resolve_path(os.environ.get("DATA_DIR", "data")))
 here = os.getcwd()
 os.chdir(tempfile.gettempdir())
 try:

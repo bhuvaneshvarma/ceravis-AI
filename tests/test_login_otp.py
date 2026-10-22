@@ -202,6 +202,10 @@ def _login(token):
 
 
 _real_account = account_routes.account_config
+# get_account answers in full to this device itself (api/auth).
+from starlette.requests import Request as _Request                    # noqa: E402
+_LOCAL = _Request({"type": "http", "client": ("127.0.0.1", 1), "headers": []})
+
 STORED = {"ceravisUserId": 5012, "email": "user@example.com", "edgeId": "CAr5old"}
 account_routes.account_config = _Account(STORED)
 r, tasks, calls = _login("CAr5old")
@@ -217,7 +221,7 @@ check("same recipient, NEW edge_id (moved server) -> saved, applied, then the se
       f"{r.get('fresh')} {tasks}")
 check("…and the reply carries this process's boot time for the page to wait on",
       r.get("bootedAt") == account_routes._BOOTED_AT
-      and account_routes.get_account()["bootedAt"] == account_routes._BOOTED_AT)
+      and account_routes.get_account(_LOCAL)["bootedAt"] == account_routes._BOOTED_AT)
 check("…from the account the code confirmed — no second userDetails call",
       calls == ["verifyOtp"], str(calls))
 account_routes.account_config = _Account(STORED)

@@ -436,8 +436,18 @@ async function waitForRestart(prefix, bootedAt) {
   }
 }
 
-function initLogin() {
-  if (cvSessionValid()) { location.replace("live.html"); return; }
+async function initLogin() {
+  // The server knows whether this browser is signed in; the local note may be
+  // stale (an idle sign-out, a sign-out on another tab).
+  try {
+    const s = await (await fetch("/api/v1/session", { cache: "no-store" })).json();
+    if (s && s.signedIn && cvSessionValid()) { location.replace("live.html"); return; }
+  } catch (_) {}
+  try { localStorage.removeItem(CV_SESSION_KEY); } catch (_) {}
+  let why = "";
+  try { why = sessionStorage.getItem("cv-signout-reason") || "";
+        sessionStorage.removeItem("cv-signout-reason"); } catch (_) {}
+  if (why) lgMsg(document.getElementById("lg-email-msg"), "warn", why);
   buildTitleAnim();
   startInputCycle();
   api("/api/v1/account").then(a => {

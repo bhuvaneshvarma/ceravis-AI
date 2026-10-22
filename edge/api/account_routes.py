@@ -368,15 +368,23 @@ def sync_cameras(camera_id: str | None = None):
 
 
 @router.get("")
-def get_account():
+def get_account(request: Request):
     """Return the stored verified account (so the wizard can resume) plus
     whether the app-server integration is configured on this device.
 
     `edge_id` is the CANONICAL routing token — the same value the edge serves
     its MediaMTX paths under and frp routes on. LAN-served UI pages read it to
     build a camera's live-stream path; through the tunnel they already know it
-    (it is the URL prefix) and never ask."""
+    (it is the URL prefix) and never ask.
+
+    Not signed in: only whether an account exists, whether the server is set up
+    and when the service started (the sign-in page waits on that across a
+    restart) — never the account's email, details or edge_id."""
     acct = account_config.get()
+    from api.auth import signed_in
+    if not signed_in(request):
+        return {"verified": bool(acct.get("ceravisUserId")), "user": None,
+                "configured": is_configured(), "bootedAt": _BOOTED_AT}
     # `remote` is the SAME provisioning summary the verify response carries, read
     # live from frpc.toml — so after the background apply runs, the wizard's
     # reconnect poll can confirm the tunnel is REALLY keyed (remote.keyed) rather

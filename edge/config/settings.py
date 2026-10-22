@@ -48,6 +48,22 @@ class Settings(BaseSettings):
     is_production: bool = False
     log_level: str = "INFO"
 
+    # ---- Web sign-in (api/auth) -------------------------------------
+    # A browser is signed out after this many minutes without a click or key
+    # press; 0 = never (the dev branch, so testing is not interrupted).
+    ui_session_idle_minutes: int = 15
+    # FastAPI's /docs and /openapi.json list every endpoint — off unless asked.
+    api_docs_enabled: bool = False
+    # Other web origins allowed to call this API from a browser (comma list).
+    # Empty = the app server's and the fleet domain's origins only. The device's
+    # own pages are same-origin and need nothing here.
+    cors_allow_origins: str = ""
+
+    # ---- Board health (monitoring/system_monitor) ---------------------
+    # Warn when the hottest sensor (junction, CPU or GPU) reaches this. The
+    # Orin slows itself near 99 °C; the warning comes early enough to act.
+    thermal_warn_c: float = 85.0
+
     # ---- Ingestion (RTSP) -------------------------------------------
     # This is the AI's frame path and nothing else's — no viewer is ever served
     # from it (live video comes straight off MediaMTX over WebRTC), so every

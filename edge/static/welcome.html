@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<script src="fleet-prefix.js"></script>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CERAVIS — Device setup status</title>
+<link rel="stylesheet" href="ceravis.css" />
+<style>
+  /* First-run screen: shown at the device's address until a care account has
+     signed in once (api/setup_routes), then never again. */
+  body { background: var(--bg); }
+  .wl { max-width: 760px; margin: 0 auto; padding: 28px 16px 48px; }
+  .wl-head { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .wl-head img { height: 34px; }
+  .wl-head h1 { font-size: 21px; margin: 0; color: var(--navy); }
+  .wl-head .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .wl-banner { display: flex; align-items: center; gap: 14px; padding: 16px 18px;
+               border-radius: var(--radius); margin-bottom: 16px; background: var(--panel);
+               box-shadow: var(--shadow-sm); border: 1px solid var(--line); }
+  .wl-banner .big { font-size: 15px; font-weight: 700; color: var(--navy); }
+  .wl-banner .small { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .wl-banner .dot { width: 14px; height: 14px; border-radius: 50%; flex: none;
+                    background: var(--warn); box-shadow: 0 0 0 5px rgba(217,138,36,.15); }
+  .wl-banner.ready .dot { background: var(--ok); box-shadow: 0 0 0 5px rgba(0,181,81,.14); }
+  .wl-banner .spacer { flex: 1; }
+  .wl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 680px) { .wl-grid { grid-template-columns: 1fr; } }
+  .wl-check { display: flex; gap: 10px; align-items: flex-start; padding: 8px 2px;
+              border-bottom: 1px solid var(--line-soft); font-size: 13.5px; }
+  .wl-check:last-child { border-bottom: 0; }
+  .wl-check .ic { width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid;
+                  place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .ic.ok { background: var(--ok); } .ic.bad { background: var(--bad); }
+  .ic.warn { background: var(--warn); } .ic.wait { background: var(--faint); }
+  .wl-check .lbl { color: var(--text); }
+  .wl-check .det { color: var(--faint); font-size: 12px; margin-top: 1px; word-break: break-word; }
+  .wl-check .tag { margin-left: auto; font-size: 10.5px; color: var(--faint);
+                   text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; font-size: 13px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; color: var(--navy); word-break: break-all; }
+  .kv code { font-size: 12.5px; background: var(--panel-2); padding: 1px 6px; border-radius: 6px; }
+  .wl-foot { color: var(--faint); font-size: 12px; margin-top: 18px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wl">
+  <div class="wl-head">
+    <img src="ceravis-logo.png" alt="Ceravis Health" />
+    <div>
+      <h1>Device setup status</h1>
+      <div class="sub" id="wl-device">Checking this device…</div>
+    </div>
+  </div>
+
+  <div class="wl-banner" id="wl-banner">
+    <span class="dot"></span>
+    <div>
+      <div class="big" id="wl-title">Checking…</div>
+      <div class="small" id="wl-sub">Every part of the CERAVIS software is being checked.</div>
+    </div>
+    <span class="spacer"></span>
+    <button class="btn btn-primary" id="wl-go" disabled>Continue to sign in</button>
+  </div>
+
+  <div class="wl-grid">
+    <div class="card">
+      <h2>Readiness</h2>
+      <div id="wl-checks"><div class="faint">Loading…</div></div>
+    </div>
+    <div class="card">
+      <h2>How to reach this device</h2>
+      <dl class="kv" id="wl-access"></dl>
+      <h2 style="margin-top:18px">Camera hotspot</h2>
+      <dl class="kv" id="wl-hotspot"></dl>
+    </div>
+  </div>
+
+  <div class="wl-foot">This screen is shown only until the device has been set up —
+    after the first sign-in, this address opens the CERAVIS console.</div>
+</div>
+
+<script>
+const LEVEL = { required: "Required", recommended: "Recommended" };
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function row(c) {
+  const kind = c.ok === true ? "ok" : c.ok == null ? "wait" : c.level === "required" ? "bad" : "warn";
+  const mark = { ok: "&#10003;", bad: "&#10007;", warn: "!", wait: "?" }[kind];
+  return `<div class="wl-check"><span class="ic ${kind}">${mark}</span>
+    <div><div class="lbl">${esc(c.label)}</div>${c.detail ? `<div class="det">${esc(c.detail)}</div>` : ""}</div>
+    <span class="tag">${LEVEL[c.level] || ""}</span></div>`;
+}
+
+function kv(pairs) {
+  return pairs.filter(p => p[1]).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+}
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch("/api/v1/setup/state", { cache: "no-store" })).json(); }
+  catch (_) { document.getElementById("wl-title").textContent = "Can't reach the device service — retrying…"; return; }
+  if (s.commissioned && !s.checks) { location.replace("live.html"); return; }
+
+  const d = s.device || {};
+  document.getElementById("wl-device").textContent =
+    `${d.name || ""} · CERAVIS ${d.version || ""}`;
+  document.getElementById("wl-checks").innerHTML = (s.checks || []).map(row).join("");
+
+  const failed = (s.checks || []).filter(c => c.level === "required" && c.ok !== true);
+  const banner = document.getElementById("wl-banner");
+  banner.classList.toggle("ready", !!s.ready);
+  document.getElementById("wl-title").textContent = s.ready
+    ? "This device is ready" : `Not ready yet — ${failed.length} required item${failed.length === 1 ? "" : "s"} to fix`;
+  document.getElementById("wl-sub").textContent = s.ready
+    ? "Sign in with the care account's email to finish the setup."
+    : "This page updates by itself. Items still starting up turn green within a minute or two.";
+  document.getElementById("wl-go").disabled = !s.ready;
+
+  const a = s.access || {};
+  document.getElementById("wl-access").innerHTML = kv([
+    ["Home network", (a.lan || []).map(u => `<code>${esc(u)}</code>`).join("<br>")],
+    ["Local name", a.local_name ? `<code>${esc(a.local_name)}</code>` : ""],
+    ["Via hotspot", a.hotspot ? `<code>${esc(a.hotspot)}</code>` : ""],
+  ]);
+  const h = s.hotspot || {};
+  document.getElementById("wl-hotspot").innerHTML = kv([
+    ["Network name", h.ssid ? `<code>${esc(h.ssid)}</code>` : "not set up yet"],
+    ["Password", h.password ? `<code>${esc(h.password)}</code>` : ""],
+    ["State", h.active ? "on" : "off"],
+  ]);
+}
+
+document.getElementById("wl-go").onclick = () => location.assign("login.html");
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

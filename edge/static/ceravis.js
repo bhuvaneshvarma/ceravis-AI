@@ -83,8 +83,13 @@ function cvConfirm(message, opts = {}) {
   });
 }
 
+/* Sign-in. The SERVER decides (api/auth): the session is an HttpOnly cookie it
+   sets at sign-in, and any 401 sends the browser back to login.html
+   (fleet-prefix.js). The localStorage note below only lets a page redirect
+   without waiting for the first API answer. When the device has an idle limit
+   (UI_SESSION_IDLE_MINUTES), the header shows the time left: a click or key
+   press starts it over; reading pages and polling do not. */
 const CV_SESSION_KEY = "cv-session";
-const CV_IDLE_MS = 15 * 60 * 1000;
 
 function cvSessionValid() {
   try {
@@ -100,29 +105,56 @@ function cvStartSession(user) {
   } catch (_) {}
   cvArmIdle();
 }
-function cvBumpSession() {
-  if (!cvSessionValid()) return;
-  try {
-    const s = JSON.parse(localStorage.getItem(CV_SESSION_KEY) || "{}");
-    s.ts = Date.now();
-    localStorage.setItem(CV_SESSION_KEY, JSON.stringify(s));
-  } catch (_) {}
-}
-function cvSignOut() {
+async function cvSignOut(reason) {
+  try { await fetch("/api/v1/session", { method: "DELETE" }); } catch (_) {}
   try { localStorage.removeItem(CV_SESSION_KEY); } catch (_) {}
-  location.replace("setup.html");
+  if (reason) try { sessionStorage.setItem("cv-signout-reason", reason); } catch (_) {}
+  location.replace("login.html");
 }
 
 function cvRequireAuth() {
   if (cvSessionValid()) { cvArmIdle(); return true; }
-  location.replace("setup.html");
+  location.replace("login.html");
   return false;
 }
+
 let _cvIdleArmed = false;
 function cvArmIdle() {
-
   if (_cvIdleArmed) return;
   _cvIdleArmed = true;
+  fetch("/api/v1/session", { cache: "no-store" }).then(r => r.json()).then(s => {
+    if (!s || !s.signedIn || !(s.idleMinutes > 0)) return;     // no idle limit
+    const idleMs = s.idleMinutes * 60000;
+    let deadline = Date.now() + (s.remainingSecs != null ? s.remainingSecs * 1000 : idleMs);
+    let lastPing = 0, warned = false;
+    const onActivity = () => {
+      deadline = Date.now() + idleMs;
+      warned = false;
+      if (Date.now() - lastPing > 60000) {           // tell the server, at most 1/min
+        lastPing = Date.now();
+        fetch("/api/v1/session/activity", { method: "POST" }).catch(() => {});
+      }
+    };
+    ["pointerdown", "keydown", "touchstart", "wheel"].forEach(ev =>
+      window.addEventListener(ev, onActivity, { passive: true }));
+    onActivity();                                      // opening a page is activity
+    const tick = () => {
+      const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      const el = document.getElementById("cv-session");
+      if (el) {
+        el.hidden = false;
+        el.textContent = `Auto sign-out ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+        el.classList.toggle("warn", left <= 60);
+      }
+      if (left <= 60 && !warned) {
+        warned = true;
+        toast("You'll be signed out in a minute — click anywhere to stay signed in.", "warn", 6000);
+      }
+      if (left <= 0) { cvSignOut("Signed out after " + s.idleMinutes + " minutes without activity."); return; }
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }).catch(() => {});
 }
 
 const CERAVIS_LOGO = `<img class="logo-img" src="ceravis-logo.png" alt="Ceravis Health" />`;
@@ -179,6 +211,7 @@ function renderNav(active) {
     </button>
     <div class="app-eyebrow">Edge Console</div>
     <div class="spacer"></div>
+    <span class="session-timer" id="cv-session" hidden></span>
     <span class="dev-pill"><span class="dev-dot"></span>Edge device</span>
     <span class="clock" id="cv-clock"></span>`;
 

@@ -59,8 +59,15 @@ def code_version() -> dict:
 
 
 @router.get("/")
-def root():
-    return RedirectResponse("/ui/live.html")
+def root(request: Request):
+    """A device not yet set up opens on its first-run status screen; once a care
+    account has signed in, on the live wall (which asks for sign-in itself).
+    Through the tunnel the page keeps the /<edge_id> prefix."""
+    from api.control_auth import FLEET_EDGE_KEY
+    from api.setup_routes import commissioned
+    page = "live.html" if commissioned() else "welcome.html"
+    eid = request.scope.get(FLEET_EDGE_KEY)
+    return RedirectResponse(f"/{eid}/ui/{page}" if eid else f"/ui/{page}")
 
 
 @router.get("/health")
@@ -333,6 +340,9 @@ def system_status(request: Request):
         problems.append(f"recordings disk {storage.get('disk_used_pct')}% full")
     if time_info.get("ntp_synchronized") is False:
         problems.append("system clock is not NTP-synced")
+    monitor = getattr(st, "system_monitor", None)
+    if monitor is not None:
+        problems.extend(monitor.problems())
     # The whole chain below detection (tracking, ReID, pose, falls, no-motion)
     # is gated on an enrolled gallery. It can be empty on purpose — removing the
     # recipient's embeddings is how the AI is switched off today — but either way

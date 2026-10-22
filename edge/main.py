@@ -28,6 +28,8 @@ from config.settings import APP_DIR, settings
 from bootstrap.pipeline import Pipeline
 from maintenance import reboot
 
+from api.auth import SessionGate, router as session_router
+from api.setup_routes import router as setup_router
 from api.account_routes import router as account_router
 from api.camera_routes import router as camera_router
 from api.zone_routes import router as zone_router
@@ -170,13 +172,30 @@ async def lifespan(app: FastAPI):
         os._exit(REFRESH_EXIT_CODE)
 
 
-app = FastAPI(title="CERAVIS Edge API", version=settings.app_version, lifespan=lifespan)
+_docs = settings.api_docs_enabled
+app = FastAPI(title="CERAVIS Edge API", version=settings.app_version, lifespan=lifespan,
+              docs_url="/docs" if _docs else None, redoc_url=None,
+              openapi_url="/openapi.json" if _docs else None)
 
-# Allow external frontends (a separate web/mobile app on another origin) to call
-# this edge API over the LAN. The device serves only on the private network;
-# allow-all keeps cross-origin clients (and the built-in UI) working config-free.
+
+def _cors_origins() -> list[str]:
+    """The web origins that may call this API from a browser: the app server's
+    and the fleet domain's (or CORS_ALLOW_ORIGINS). Never "*" — any page the
+    household opens could otherwise script calls to this device. The device's
+    own pages are same-origin and need no entry."""
+    from urllib.parse import urlsplit
+    if settings.cors_allow_origins.strip():
+        return [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+    out = []
+    for url in (settings.ceravis_api_base_url, settings.device_stream_base):
+        u = urlsplit(url.strip())
+        if u.scheme and u.netloc:
+            out.append(f"{u.scheme}://{u.netloc}")
+    return out
+
+
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=False,
+    CORSMiddleware, allow_origins=_cors_origins(), allow_credentials=False,
     allow_methods=["*"], allow_headers=["*"],
     # Custom response headers a browser/webview caller must be able to READ
     # cross-origin — the snapshot's real instant + source (native apps ignore
@@ -311,12 +330,16 @@ async def _log_inbound_calls(request, call_next):
     return response
 
 
+# Who may call /api — inside the prefix strip, so it sees the real route and
+# whether the request came through the tunnel (api/auth).
+app.add_middleware(SessionGate)
 # Added LAST so it wraps everything — the per-edge prefix must be stripped (for
 # http AND websocket) before any routing or the other middleware run.
 app.add_middleware(_FleetEdgePrefix)
 
 
-for _router in (account_router, camera_router, zone_router, recipient_router,
+for _router in (session_router, setup_router,
+                account_router, camera_router, zone_router, recipient_router,
                 metrics_router, event_router, ai_router, recording_router,
                 discovery_router, network_router, system_router,
                 talkback_router):
