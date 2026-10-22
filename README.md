@@ -63,10 +63,8 @@ setup/
   tune_os.sh        No desktop, power mode, fan, held NVIDIA packages, logs
   make_release.sh   Build the release bundle (and the USB stick) on the PC
   lib.sh            The layout + the one way to install units / sudoers
-  setup.sh          DEVELOPMENT: set up a git clone in place
   install_*.sh, export_*.sh, check_jetson.sh   the steps both use
-tests/            python tests/run_all.py — every test, each in its own data folder
-cloud/            The frp tunnel client (+ the cloud server files, dev branch)
+cloud/            The frp tunnel client
 ```
 
 ## Install a device (production)
@@ -97,4 +95,5 @@ Logs:        journalctl -u ceravis -f
 sudo bash /opt/ceravis/current/setup/update.sh ceravis-edge-<version>.tar.gz
 sudo bash /opt/ceravis/current/setup/update.sh --rollback      # back one version
 ```
-A development clone (setup/setup.sh) updates with `bash setup/upgrade.sh`.
+This is the PRODUCTION branch (prod_ceravis1.1). Development, tests, the test
+pages and the cloud-server files live on dev_ceravis1.1.
