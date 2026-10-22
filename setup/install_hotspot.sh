@@ -25,14 +25,16 @@ set -euo pipefail
 # then grant root — leaving the UNPRIVILEGED service user (the one that
 # actually runs the API) still unable to drive NetworkManager. The hotspot page
 # then fails silently, which is the worst way for a permission bug to present.
-SVC_USER="${SUDO_USER:-$USER}"
+# shellcheck source=setup/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+SVC_USER="$CERAVIS_USER"          # the account ceravis.service runs as (setup/lib.sh)
 JS_RULE=/etc/polkit-1/rules.d/50-ceravis-network.rules
 PKLA_RULE=/etc/polkit-1/localauthority/50-local.d/50-ceravis-network.pkla
 
 if [ "$SVC_USER" = "root" ]; then
     echo "REFUSED: could not resolve a non-root service user." >&2
     echo "  Run as the service user:  bash setup/install_hotspot.sh" >&2
-    echo "  or pin it:                SUDO_USER=ceravis bash setup/install_hotspot.sh" >&2
+    echo "  or pin it:                CERAVIS_USER=ceravis bash setup/install_hotspot.sh" >&2
     exit 1
 fi
 

@@ -6,3 +6,28 @@
 *.service text eol=lf
 *.yml     text eol=lf
 *.yaml    text eol=lf
+VERSION   text eol=lf
+*.timer   text eol=lf
+*.toml    text eol=lf
+*.example text eol=lf
+
+# ---- Left out of every release bundle (git archive, setup/make_release.sh) ----
+# Development, test and cloud-server files: they never run on a customer device.
+/tests/                          export-ignore
+/.claude/                        export-ignore
+/docs/                           export-ignore
+/.github/                        export-ignore
+/edge/static/ui-testing/         export-ignore
+/setup/diagnose_reboot.sh        export-ignore
+/setup/upgrade.sh                export-ignore
+/setup/setup.sh                  export-ignore
+/setup/make_release.sh           export-ignore
+/cloud/frps.toml                 export-ignore
+/cloud/install_frps.sh           export-ignore
+/cloud/install_caddy.sh          export-ignore
+/cloud/Caddyfile.example         export-ignore
+/cloud/fleet_ssh_proxy.py        export-ignore
+/cloud/systemd/frps.service      export-ignore
+/cloud/systemd/caddy.service     export-ignore
+/cloud/README.md                 export-ignore
+/setup/usb/                      export-ignore

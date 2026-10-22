@@ -85,3 +85,6 @@ Thumbs.db
 # Local ONVIF capability dumps (tools/onvif_dump) — camera-specific, may contain
 # usernames/network details; a review artifact, never committed.
 camerainfo/
+
+# Release bundles built by setup/make_release.sh
+dist/

@@ -1,0 +1,19 @@
+# CERAVIS first boot — this device's own identity (setup/firstboot.sh).
+# Runs once (the marker file), before the CERAVIS services and before sshd, on
+# the master after install and on every device copied from a sealed image.
+# Installed by setup/install.sh, which substitutes the real paths.
+[Unit]
+Description=CERAVIS first boot (device name, hotspot, keys)
+After=local-fs.target NetworkManager.service
+Wants=NetworkManager.service
+Before=ceravis.service frpc.service ceravis-fleet-agent.service ssh.service
+ConditionPathExists=!/etc/ceravis/.firstboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /home/ceravis/ceravis2/setup/firstboot.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -2,17 +2,30 @@
 # Install the CERAVIS app-server API key: the X-API-Key header on EVERY call the
 # edge makes to the app server (sign-in, cameras, alerts, snapshots, status).
 # It is the same for every device, but a SECRET — and this repository is public
-# — so it is never in the repo: it lives in the root-only /etc/ceravis/secrets.env
-# this script writes, which ceravis.service loads (systemd reads it as root and
-# puts the key in the app's environment). setup.sh and upgrade.sh run this for
-# you; the key takes effect when ceravis restarts, which they also do.
+# — so it is never in the repo. It lives in a root-only file this script writes:
+#
+#   development  /etc/ceravis/secrets.env (CERAVIS_API_KEY=…), which systemd
+#                reads as root into the app's environment
+#   production   /etc/ceravis/credstore/ceravis_api_key (the key alone), which
+#                systemd hands the app as a credential — never an environment
+#                variable (setup/lib.sh, CERAVIS_CREDSTORE)
+#
+# setup.sh / install.sh / upgrade.sh run this for you; the key takes effect when
+# ceravis restarts, which they also do.
 #
 # Run:  bash setup/install_api_key.sh      (asks for the key once; idempotent)
 #       CERAVIS_API_KEY=<key> bash setup/install_api_key.sh   (unattended, or to
 #       REPLACE a stored key — e.g. after the key is rotated on the app server)
 set -euo pipefail
 
-KEY_FILE=/etc/ceravis/secrets.env
+# shellcheck source=setup/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
+if [ -n "$CERAVIS_CREDSTORE" ]; then
+    KEY_FILE="$CERAVIS_CREDSTORE/ceravis_api_key"; FORMAT='%s'
+else
+    KEY_FILE=/etc/ceravis/secrets.env; FORMAT='CERAVIS_API_KEY=%s\n'
+fi
 
 # The key: given once, kept across re-runs. On disk only root can read it.
 KEY="${CERAVIS_API_KEY:-}"
@@ -27,7 +40,8 @@ if [ -n "$KEY" ]; then
     sudo install -d -m 700 -o root -g root "$(dirname "$KEY_FILE")"
     # Written aside and moved into place: a fresh 600 file every time, never a
     # half-written one, whatever mode an older copy had.
-    printf 'CERAVIS_API_KEY=%s\n' "$KEY" \
+    # shellcheck disable=SC2059
+    printf "$FORMAT" "$KEY" \
         | sudo sh -c "umask 077 && cat > '$KEY_FILE.new' && mv -f '$KEY_FILE.new' '$KEY_FILE'"
     echo "API key saved to $KEY_FILE (root only)."
 elif sudo test -s "$KEY_FILE"; then

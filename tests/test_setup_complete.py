@@ -57,14 +57,16 @@ for _label, script in REQUIRED:
 
 
 print("\n3. the tunnel installer wires the privileged edge_id helper")
-# Without this, account verification writes EDGE_ID to jetson.env but can never
-# push it into frpc.toml — the device is provisioned and still unreachable.
+# Without this, account verification saves the edge_id but can never push it
+# into frpc.toml — the device is provisioned and still unreachable.
 frpc = ROOT / "cloud" / "install_frpc.sh"
 check("cloud/install_frpc.sh exists", frpc.exists())
 if frpc.exists():
     f = io.open(frpc, encoding="utf-8").read()
     check("installs ceravis-apply-edge-id", "ceravis-apply-edge-id" in f)
-    check("grants it a NOPASSWD sudoers rule", "NOPASSWD" in f and "sudoers.d" in f)
+    # The drop-in is written by setup/lib.sh install_sudoers (visudo-checked).
+    check("grants it a NOPASSWD sudoers rule",
+          "NOPASSWD" in f and ("sudoers.d" in f or "install_sudoers ceravis-frpc" in f))
 
 
 print("\n4. setup is re-runnable (idempotence is claimed AND implemented)")

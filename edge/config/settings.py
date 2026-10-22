@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -1155,6 +1156,12 @@ class Settings(BaseSettings):
         # hand-edited config that `git pull` never collides with.
         env_file=str(APP_DIR / "infra" / "env" / "jetson.env"),
         env_file_encoding="utf-8",
+        # Secrets as systemd credentials (production): systemd copies each root-
+        # only file from /etc/ceravis/credstore into a private folder only this
+        # service can read and names it in $CREDENTIALS_DIRECTORY; a file there
+        # named like a setting (ceravis_api_key) sets it. Never an environment
+        # variable, so no child process (MediaMTX, ffmpeg) inherits it.
+        secrets_dir=os.environ.get("CREDENTIALS_DIRECTORY") or None,
         case_sensitive=False,
         extra="ignore",
     )

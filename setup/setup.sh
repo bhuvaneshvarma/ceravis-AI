@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================
-# CERAVIS — ONE-COMMAND SETUP for the Jetson Orin Nano
+# CERAVIS — DEVELOPMENT SETUP for the Jetson Orin Nano (a git clone)
 # =============================================================
-# Takes a bare device to a running, fleet-connected edge unit:
+# Production devices are installed with setup/install.sh (a release bundle in
+# /opt/ceravis, its own service account). This sets up a git clone IN PLACE for
+# development — code and data stay in the clone:
 #
 #   [1/6] deps        — apt + pip stack, MediaMTX, hotspot
 #   [2/6] engines     — YOLO26m detect+pose AND the ReID engine -> FP16 TRT
@@ -20,6 +22,8 @@ set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPTS_DIR")"
+# shellcheck source=setup/lib.sh
+. "$SCRIPTS_DIR/lib.sh"
 
 stage() { echo; echo "============ [$1] $2 ============"; }
 skip()  { echo "  [skip] $1"; }
@@ -42,12 +46,10 @@ bash "$SCRIPTS_DIR/export_reid.sh"
 # Installs frpc AND the locked-down apply-edge-id helper. That helper is what
 # lets the device push its own edge_id into frpc.toml at account verification;
 # without it the tunnel never learns the token and every live link stays dead.
+# Config: cloud/frpc.toml if you made one, else FRP_SERVER_ADDR + FRP_TOKEN,
+# else the template — the tunnel then stays off until a server is set.
 stage "3/6" "fleet tunnel (frpc)"
-if [ -f "$REPO_DIR/cloud/install_frpc.sh" ]; then
-    bash "$REPO_DIR/cloud/install_frpc.sh"
-else
-    skip "cloud/install_frpc.sh not present — LAN-only device"
-fi
+bash "$REPO_DIR/cloud/install_frpc.sh"
 
 # ---- [4/6] services ---------------------------------------------------
 stage "4/6" "systemd services"
@@ -68,8 +70,8 @@ sudo systemctl restart ceravis
 # Skipped without prompting on a non-interactive run (CI, remote provisioning),
 # so setup never hangs waiting for a terminal that isn't there.
 stage "5/6" "manual-reboot password"
-if sudo -n test -f "$REPO_DIR/edge/data/reboot_auth.json" 2>/dev/null \
-   || [ -f "$REPO_DIR/edge/data/reboot_auth.json" ]; then
+if sudo -n test -f "$(data_dir)/reboot_auth.json" 2>/dev/null \
+   || [ -f "$(data_dir)/reboot_auth.json" ]; then
     skip "already set (re-run setup/set_reboot_password.py to change it)"
 elif [ -t 0 ]; then
     python3 "$SCRIPTS_DIR/set_reboot_password.py" || \

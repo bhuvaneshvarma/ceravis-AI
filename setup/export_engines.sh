@@ -13,8 +13,9 @@
 set -euo pipefail
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SETUP_DIR")"
-EDGE_DIR="$REPO_DIR/edge"
+# shellcheck source=setup/lib.sh
+. "$SETUP_DIR/lib.sh"      # EDGE_DIR, CERAVIS_PYTHON, and DATA_DIR/MODELS_DIR for the app
+export_layout
 VENV="${VENV:-/tmp/ceravis-export-venv}"
 
 cd "$EDGE_DIR"
@@ -42,7 +43,7 @@ echo "== pass 1/2: ONNX export (venv, CPU torch) =="
 echo "== pass 2/2: TensorRT engine build (fresh torch-free process) =="
 # Separate process so torch's ~2 GB is released before trtexec runs —
 # on the shared-memory Orin Nano that headroom is what lets CUDA init.
-python3 "$SETUP_DIR/export_models.py"
+"$CERAVIS_PYTHON" "$SETUP_DIR/export_models.py"
 
 echo
-echo "Engines in $EDGE_DIR/models/. Optional cleanup: rm -rf $VENV"
+echo "Engines in $(models_dir)/. Optional cleanup: rm -rf $VENV"

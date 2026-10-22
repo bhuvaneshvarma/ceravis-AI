@@ -14,8 +14,11 @@ bad()  { echo "  [FAIL] $1"; [ -n "$2" ] && echo "         fix:  $2"; FAIL=$((FA
 warn() { echo "  [WARN] $1"; [ -n "$2" ] && echo "         note: $2"; WARN=$((WARN+1)); }
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SETUP_DIR")"
-EDGE_DIR="$REPO_DIR/edge"
+# shellcheck source=setup/lib.sh
+. "$SETUP_DIR/lib.sh"      # EDGE_DIR, the service's python, data + models folders
+export_layout
+PY="$CERAVIS_PYTHON"
+cd "$EDGE_DIR"
 
 echo "================ CERAVIS Jetson doctor ================"
 
@@ -45,7 +48,7 @@ fi
 
 # ---- 3. TensorRT ------------------------------------------------
 echo "-- tensorrt"
-TRT_VER="$(python3 -c 'import tensorrt; print(tensorrt.__version__)' 2>/dev/null)"
+TRT_VER="$("$PY" -c 'import tensorrt; print(tensorrt.__version__)' 2>/dev/null)"
 if [ -n "$TRT_VER" ]; then
     case "$TRT_VER" in
         10.*) ok "TensorRT python $TRT_VER (TRT10 — app uses execute_async_v3)" ;;
@@ -65,7 +68,7 @@ fi
 
 # ---- 4. OpenCV + numpy ------------------------------------------
 echo "-- opencv / numpy"
-CV="$(python3 - 2>/dev/null <<'PY'
+CV="$("$PY" - 2>/dev/null <<'PY'
 import cv2
 gst = "GStreamer:                   YES" in cv2.getBuildInformation()
 print(cv2.__version__, "gst" if gst else "nogst")
@@ -83,7 +86,7 @@ else
     bad "python3 cannot import cv2" \
         "pip3 install --user 'numpy<2' && sudo apt install -y python3-opencv"
 fi
-NP="$(python3 -c 'import numpy; print(numpy.__version__)' 2>/dev/null)"
+NP="$("$PY" -c 'import numpy; print(numpy.__version__)' 2>/dev/null)"
 [ -n "$NP" ] && ok "numpy $NP" || bad "numpy missing" "sudo apt install -y python3-numpy"
 
 # ---- 5. GStreamer elements --------------------------------------
@@ -103,7 +106,7 @@ fi
 echo "-- python runtime deps (pip)"
 for mod in fastapi uvicorn pydantic pydantic_settings websockets \
            requests faiss scipy pycuda; do
-    if python3 -c "import $mod" 2>/dev/null; then
+    if "$PY" -c "import $mod" 2>/dev/null; then
         ok "$mod"
     else
         case "$mod" in
@@ -117,10 +120,11 @@ done
 
 # ---- 7. Models ----------------------------------------------------
 echo "-- models"
+MODELS="$(models_dir)"
 for m in detection/yolo26m pose/yolo26m-pose; do
-    if [ -s "$EDGE_DIR/models/$m.engine" ]; then
-        ok "$m.engine ($(du -h "$EDGE_DIR/models/$m.engine" | cut -f1))"
-    elif [ -s "$EDGE_DIR/models/$m.onnx" ]; then
+    if [ -s "$MODELS/$m.engine" ]; then
+        ok "$m.engine ($(du -h "$MODELS/$m.engine" | cut -f1))"
+    elif [ -s "$MODELS/$m.onnx" ]; then
         warn "$m.onnx present but engine not built" "python3 setup/export_models.py"
     else
         warn "$m not exported yet" "bash setup/export_engines.sh"
@@ -140,6 +144,27 @@ if command -v nvpmodel >/dev/null 2>&1; then
     MODE="$(sudo -n nvpmodel -q 2>/dev/null | head -1 || nvpmodel -q 2>/dev/null | head -1)"
     [ -n "$MODE" ] && ok "power mode: $MODE" || warn "couldn't query nvpmodel" "sudo nvpmodel -q"
 fi
+# Board health: the hottest thermal zone, and over-current events since boot.
+HOT=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)
+if [ -n "${HOT:-}" ]; then
+    HOT_C=$((HOT / 1000))
+    if [ "$HOT_C" -ge 85 ]; then warn "hottest sensor ${HOT_C} °C" "check the fan and airflow, or lower the power mode"
+    else ok "hottest sensor ${HOT_C} °C"; fi
+fi
+OC=$(cat /sys/class/hwmon/hwmon*/oc*_event_cnt 2>/dev/null | awk '{s+=$1} END {print s+0}')
+if [ "${OC:-0}" -gt 0 ]; then
+    warn "$OC over-current events since boot" "the board slowed itself: check the 19 V adapter, or use the 25W mode"
+else
+    ok "no over-current events since boot"
+fi
+TARGET="$(systemctl get-default 2>/dev/null)"
+[ "$TARGET" = "multi-user.target" ] && ok "boots without the desktop (more memory for the AI)" \
+    || warn "boots into the desktop ($TARGET)" "sudo systemctl set-default multi-user.target"
+HELD=$(apt-mark showhold 2>/dev/null | grep -c '^nvidia-l4t-core$' || true)
+[ "${HELD:-0}" -ge 1 ] && ok "NVIDIA packages held (an apt upgrade cannot break the AI engines)" \
+    || warn "NVIDIA packages not held" "sudo bash setup/tune_os.sh"
+NAME="$(device_name 2>/dev/null)"
+[ -n "$NAME" ] && ok "device name $NAME (hostname $(hostname))"
 
 # ---- 9. Service ----------------------------------------------------
 echo "-- service"
@@ -178,7 +203,7 @@ if systemctl list-unit-files 2>/dev/null | grep -q "^frpc.service"; then
     fi
     # A tunnel that lost its edge_id routing looks healthy from here right up
     # until every live link is dead, so check what the config actually carries.
-    EID="$(grep -m1 '^EDGE_ID=' edge/infra/env/jetson.env 2>/dev/null | cut -d= -f2-)"
+    EID="$("$PY" -c 'from config.account_config import effective_edge_id; print(effective_edge_id())' 2>/dev/null)"
     if [ -n "${EID:-}" ]; then
         if sudo -n grep -q "\"/$EID\"" /etc/frp/frpc.toml 2>/dev/null; then
             ok "frpc routes /$EID"

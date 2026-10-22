@@ -5,37 +5,20 @@
 # Run once:  bash setup/install_reboot_timer.sh
 set -euo pipefail
 
-SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SETUP_DIR")"
-UNIT_DIR="$REPO_DIR/edge/infra/systemd"
-SVC_USER="${SUDO_USER:-$USER}"
+# shellcheck source=setup/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
+# Same account and interpreter as ceravis.service (setup/lib.sh): the service runs
+# scheduled_reboot.py, which imports the app's own Python packages — run as
+# anyone else, the import fails and the reboot never happens.
 for unit in ceravis-reboot.service ceravis-reboot.timer; do
-    # Substitute BOTH the repo path AND the service user. The user matters: the
-    # service runs scheduled_reboot.py, which imports the app's pip --user deps
-    # (pydantic_settings, …) that live under this account — so it MUST run as this
-    # user, not root, or the import fails and the reboot never happens. Mirrors
-    # install_service.sh so both units run as the same account.
-    sed -e "s|/home/ceravis/ceravis2|$REPO_DIR|g" \
-        -e "s|^User=.*|User=$SVC_USER|" \
-        "$UNIT_DIR/$unit" | sudo tee "/etc/systemd/system/$unit" >/dev/null
+    install_unit "$EDGE_DIR/infra/systemd/$unit"
 done
 
 # The API runs as the service account, so the MANUAL reboot needs exactly one
-# NOPASSWD command — not blanket sudo. visudo -cf validates before install: a
-# malformed sudoers file locks everyone out of sudo, so it is never written
-# straight into place.
-SUDOERS=/etc/sudoers.d/ceravis-reboot
-TMP="$(mktemp)"
-printf '%s ALL=(root) NOPASSWD: /bin/systemctl reboot\n' "$SVC_USER" > "$TMP"
-if sudo visudo -cf "$TMP" >/dev/null; then
-    sudo install -m 0440 -o root -g root "$TMP" "$SUDOERS"
-    echo "sudoers rule installed for '$SVC_USER' ($SUDOERS)"
-else
-    echo "REFUSED: generated sudoers rule failed validation — not installed." >&2
-    rm -f "$TMP"; exit 1
-fi
-rm -f "$TMP"
+# NOPASSWD command — not blanket sudo.
+install_sudoers ceravis-reboot "$CERAVIS_USER ALL=(root) NOPASSWD: /bin/systemctl reboot"
+echo "sudoers rule installed for '$CERAVIS_USER' (/etc/sudoers.d/ceravis-reboot)"
 
 # RTC-less board hygiene. Without a battery-backed clock the Jetson boots at
 # 1970 until NTP corrects it, and a wall-clock timer then fires at the wrong

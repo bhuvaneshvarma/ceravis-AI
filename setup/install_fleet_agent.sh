@@ -17,9 +17,8 @@
 #       REPLACE a stored key — e.g. after the key is rotated on the FMS)
 set -euo pipefail
 
-SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SETUP_DIR")"
-UNIT_SRC="$REPO_DIR/edge/infra/systemd/ceravis-fleet-agent.service"
+# shellcheck source=setup/lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 KEY_FILE=/etc/ceravis-fleet-agent/enroll.env
 
 # The enrollment key: given once, kept across re-runs. On disk only root can read
@@ -43,20 +42,15 @@ else
     echo "      cannot re-enroll after a Reset key; a new one idles. Re-run this with the key."
 fi
 
-sed -e "s|/home/ceravis/ceravis2|$REPO_DIR|g" \
-    -e "s|^User=.*|User=$USER|" \
-    "$UNIT_SRC" | sudo tee /etc/systemd/system/ceravis-fleet-agent.service >/dev/null
+install_unit "$EDGE_DIR/infra/systemd/ceravis-fleet-agent.service"
 
 # The ONLY things run as root on an admin's order: restarting these two
 # services. Must match RESTARTABLE_UNITS in edge/fleet/fms_protocol.
-printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart ceravis.service, /usr/bin/systemctl restart frpc.service\n' "$USER" \
-    | sudo tee /etc/sudoers.d/ceravis-fleet >/dev/null
-sudo chmod 0440 /etc/sudoers.d/ceravis-fleet
-sudo visudo -cf /etc/sudoers.d/ceravis-fleet >/dev/null \
-    || { echo "WARNING: sudoers rule invalid — removing it"; sudo rm -f /etc/sudoers.d/ceravis-fleet; }
+install_sudoers ceravis-fleet "$CERAVIS_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart ceravis.service, /usr/bin/systemctl restart frpc.service" \
+    || echo "WARNING: fleet restart orders will not work on this device"
 
 # The console's "logs" order reads the journal of ceravis / frpc / the agent.
-sudo usermod -a -G systemd-journal "$USER"
+sudo usermod -a -G systemd-journal "$CERAVIS_USER"
 
 sudo systemctl daemon-reload
 sudo systemctl enable ceravis-fleet-agent >/dev/null

@@ -10,8 +10,9 @@
 set -euo pipefail
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SETUP_DIR")"
-EDGE_DIR="$REPO_DIR/edge"
+# shellcheck source=setup/lib.sh
+. "$SETUP_DIR/lib.sh"      # EDGE_DIR, CERAVIS_PYTHON, and DATA_DIR/MODELS_DIR for the app
+export_layout
 VENV="${VENV:-/tmp/ceravis-export-venv}"
 
 cd "$EDGE_DIR"
@@ -20,7 +21,9 @@ set -a
 . "$EDGE_DIR/infra/env/jetson.env"
 set +a
 
-ONNX="${REID_ONNX_PATH:-models/reid/reid.onnx}"
+# Where the app looks for it (MODELS_DIR in production) — the settings say.
+ONNX="$("$CERAVIS_PYTHON" -c 'from config.settings import settings; print(settings.reid_onnx_path)' 2>/dev/null \
+       || echo "${REID_ONNX_PATH:-models/reid/reid.onnx}")"
 MODEL="${REID_MODEL_NAME:-osnet_x1_0}"
 H="${REID_INPUT_HEIGHT:-256}"; W="${REID_INPUT_WIDTH:-128}"
 
@@ -66,7 +69,7 @@ print("ONNX written:", out)
 PY
 
 echo "== building TensorRT engine (trtexec, torch-free) =="
-python3 "$SETUP_DIR/export_models.py"
+"$CERAVIS_PYTHON" "$SETUP_DIR/export_models.py"
 
 echo
 echo "ReID engine built. Restart the service:  sudo systemctl restart ceravis"

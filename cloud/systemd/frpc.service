@@ -4,6 +4,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Start only once the config is real: a device that has no cloud server set yet,
+# or no care account yet (its routes still say /EDGE_ID), stays off instead of
+# registering placeholder routes that every other unclaimed device would also
+# claim. ceravis-apply-edge-id starts it the moment the account is verified.
+ExecCondition=/bin/sh -c "! grep -Ev '^[[:space:]]*#' /etc/frp/frpc.toml | grep -Eq 'EC2_PUBLIC_IP_OR_DOMAIN|CHANGE_ME_TO_A|/EDGE_ID'"
 ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml
 Restart=always
 RestartSec=5
