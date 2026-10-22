@@ -26,8 +26,8 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from config.settings import settings
-from configuration.camera_config import CameraConfig
+from config.settings import resolve_path, settings
+from config.camera_config import CameraConfig
 from detection.detection_buffer import DetectionBuffer
 from livestream import mediamtx_client
 from common import clock
@@ -37,8 +37,6 @@ from livestream.mediamtx_client import (
 
 
 logger = logging.getLogger("media")
-
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # a detection result older than this is stale — its camera counts as empty
 _FRESH_SECS = 3.0
@@ -54,8 +52,7 @@ _BACKBONE_RECHECK_SECS = 5.0
 
 
 def _record_root() -> Path:
-    root = Path(settings.record_dir)
-    return root if root.is_absolute() else (_EDGE_ROOT / root)
+    return resolve_path(settings.record_dir)
 
 
 class RecordingController:
@@ -97,9 +94,7 @@ class RecordingController:
         # Runtime ON/OFF (monitor button) — persisted so a deliberate "stop
         # filling the disk" choice survives restarts. Default from the env.
         self._lock = threading.Lock()
-        base = settings.data_path
-        base = base if base.is_absolute() else (_EDGE_ROOT / base)
-        self._mode_file = base / "recording_mode.json"
+        self._mode_file = resolve_path(settings.data_dir) / "recording_mode.json"
         self._enabled = self._load_enabled()
 
     # ---- runtime enable/disable (monitor button) ---------------------

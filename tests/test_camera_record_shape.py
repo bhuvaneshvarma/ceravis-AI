@@ -123,7 +123,7 @@ import json                                                        # noqa: E402
 import shutil                                                      # noqa: E402
 import tempfile                                                    # noqa: E402
 
-from configuration.camera_config import CameraConfig                # noqa: E402
+from config.camera_config import CameraConfig                # noqa: E402
 
 # `device` used to carry the ONVIF manufacturer — "tp-link" on every camera in
 # the house, so the cloud could not tell two of them apart.
@@ -132,11 +132,13 @@ device_expr = dict(zip([k.value for k in ret.keys],
 check(f"`device` sends the stable label, not the make ({device_expr})",
       "device_label" in device_expr and "manufacturer" not in device_expr)
 
-# ConfigStore writes ./data — run the storage checks inside a throwaway cwd so
+# ConfigStore writes into settings.data_dir — point it at a throwaway folder so
 # a real edge/data/cameras.json is never touched.
-_cwd = os.getcwd()
+from config.settings import settings                                # noqa: E402
+
+_data_dir = settings.data_dir
 _tmp = tempfile.mkdtemp(prefix="ceravis-device-labels-")
-os.chdir(_tmp)
+settings.data_dir = _tmp
 try:
     cfg = CameraConfig()
     cfg.add(Camera(**LOUNGE))
@@ -161,7 +163,7 @@ try:
 
     # A hand-edited file: lower case, a duplicate and a blank. Repairs allocate
     # ABOVE the high-water mark so nobody adopts another camera's identity.
-    Path("data/cameras.json").write_text(json.dumps([
+    (Path(_tmp) / "cameras.json").write_text(json.dumps([
         {**LOUNGE, "device_label": "cam_02"},                    # wrong case
         {**LIVING, "device_label": "CAM_02"},                    # duplicate
         {**LOUNGE, "room_name": "HALL", "device_label": ""},     # missing
@@ -175,7 +177,7 @@ try:
     check("the migration is idempotent — a second run writes nothing",
           CameraConfig().ensure_device_labels() == 0)
 finally:
-    os.chdir(_cwd)
+    settings.data_dir = _data_dir
     shutil.rmtree(_tmp, ignore_errors=True)
 
 check("the label is never empty on the wire (camera_id is the fallback)",

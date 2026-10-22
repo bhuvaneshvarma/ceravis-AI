@@ -23,7 +23,7 @@ from datetime import datetime
 from common import clock
 from common.zone_resolver import ZoneResolver
 from config.settings import settings
-from configuration.camera_config import CameraConfig
+from config.camera_config import CameraConfig
 from rules.rule_context import RuleContext
 from schemas.event import Event
 

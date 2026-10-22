@@ -17,11 +17,10 @@ it documents, so it can be deleted wholesale with no other change.
 
 import logging
 import time
-from datetime import datetime
 from pathlib import Path
 
 from common import clock
-from config.settings import settings
+from config.settings import resolve_path, settings
 
 try:
     import cv2
@@ -33,14 +32,11 @@ except ImportError:                                  # pragma: no cover
 
 logger = logging.getLogger("media")
 
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 _SWEEP_EVERY_SECS = 600.0                             # housekeeping cadence
 
 
 def _proof_root() -> Path:
-    base = settings.data_path
-    base = base if base.is_absolute() else (_EDGE_ROOT / base)
-    return base / "recordings_proof"
+    return resolve_path(settings.data_dir) / "recordings_proof"
 
 
 class ProofWriter:

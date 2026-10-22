@@ -448,7 +448,7 @@ class EnrollmentWorker:
         thread, so it never blocks or fails enrollment — a transport error is
         logged and dropped. The whole (K×dim) matrix is sent, not a summary."""
         try:
-            from configuration.account_config import patient_user_id
+            from config.account_config import patient_user_id
             from integration.ceravis_api import (is_configured,
                                                  upload_embedding_file)
             if not is_configured():

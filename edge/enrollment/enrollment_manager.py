@@ -10,17 +10,12 @@ from pathlib import Path
 
 import numpy as np
 
-from config.settings import settings
+from config.settings import resolve_path, settings
 from common import clock
 from ingestion.illumination import Modality
 
 
 logger = logging.getLogger("enrollment")
-
-# edge/ project root (this file is edge/enrollment/enrollment_manager.py).
-# Used to anchor a relative data_dir so recipient media/embeddings live in the
-# same place regardless of the process working directory.
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # The gallery's stores, per modality: (vectors file, aligned labels file).
 # Colour is the original pair — embeddings.npy is the file the cloud keeps
@@ -78,10 +73,7 @@ class EnrollmentManager:
     SUBDIRS = ("photos", "videos", "face", "body")
 
     def __init__(self) -> None:
-        data_root = settings.data_path
-        if not data_root.is_absolute():
-            data_root = _EDGE_ROOT / data_root
-        self.base_path = data_root / "recipients"
+        self.base_path = resolve_path(settings.data_dir) / "recipients"
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     # ---- folders -----------------------------------------------------

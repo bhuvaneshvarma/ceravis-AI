@@ -106,7 +106,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.camera:
-        from configuration.camera_config import CameraConfig
+        from config.camera_config import CameraConfig
         cam = CameraConfig().get_by_id(args.camera)
         if cam is None:
             print(f"no such camera: {args.camera}")

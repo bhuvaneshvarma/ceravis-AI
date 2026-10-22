@@ -104,7 +104,7 @@ def tunnel_status(edge_id: str | None = None) -> dict:
     afterwards, both exit 0 and leave every live link dead. So read the file
     back and compare.
     """
-    from configuration.account_config import effective_edge_id
+    from config.account_config import effective_edge_id
     want = (edge_id or effective_edge_id() or "").strip()
     out = {"edge_id": want or None, "config": _FRPC_CONF,
            "installed": _helper_present(), "readable": False,

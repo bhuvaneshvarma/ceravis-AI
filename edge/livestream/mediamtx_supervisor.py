@@ -34,8 +34,8 @@ from pathlib import Path
 
 from common.net import lan_ip
 from common.rtsp import normalize_rtsp_url
-from config.settings import settings
-from configuration.camera_config import CameraConfig
+from config.settings import resolve_path, settings
+from config.camera_config import CameraConfig
 from integration import call_log
 from livestream.mediamtx_client import (
     aac_republish_cmd, audio_transcode_active, is_up, path_name,
@@ -50,12 +50,7 @@ logger = logging.getLogger("media")
 # still the SAME outage — a flapping backbone cannot flood the console.
 _STABLE_SECS = 30.0
 
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _abs(p: str | Path) -> Path:
-    p = Path(p)
-    return p if p.is_absolute() else (_EDGE_ROOT / p)
+_abs = resolve_path
 
 
 def log_path() -> Path:

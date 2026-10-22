@@ -47,8 +47,8 @@ import uuid
 from urllib.parse import quote, urlparse
 
 from config.settings import settings
-from configuration.account_config import effective_edge_id
-from configuration.camera_config import CameraConfig
+from config.account_config import effective_edge_id
+from config.camera_config import CameraConfig
 from talkback import audit, credentials, guard
 from talkback.advice import refused_lines
 from talkback.lines import camera_host

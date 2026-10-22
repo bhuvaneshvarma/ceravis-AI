@@ -59,7 +59,7 @@ _ITERATIONS = 260_000
 _SALT_BYTES = 16
 _MIN_PASSWORD_LEN = 8
 
-_DATA = Path(__file__).resolve().parents[1] / "data"
+_DATA = settings.data_path        # anchored by settings — follows DATA_DIR
 _AUTH_FILE = _DATA / "reboot_auth.json"
 _MARKER_FILE = _DATA / "last_reboot.json"
 

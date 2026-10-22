@@ -335,7 +335,7 @@ class IlluminationMonitor:
                 time.sleep(1.0)
 
     def _poll_onvif(self) -> None:
-        from configuration.camera_config import CameraConfig
+        from config.camera_config import CameraConfig
         from onvif.client import OnvifCamera
         from onvif.soap import OnvifError
         now = time.monotonic()

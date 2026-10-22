@@ -12,15 +12,14 @@ import shutil
 import subprocess
 import time
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from common import clock, event_snapshots
-from config.settings import settings
-from configuration.account_config import account_recipient, effective_edge_id
-from configuration.camera_config import CameraConfig
+from config.settings import APP_DIR, resolve_path, settings
+from config.account_config import account_recipient, effective_edge_id
+from config.camera_config import CameraConfig
 from ingestion import illumination
 from ingestion.camera_status import codec_warning, substream_warning
 from integration import call_log
@@ -29,13 +28,12 @@ from maintenance import reboot
 
 router = APIRouter()
 
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _git_head() -> dict:
     def git(*args: str) -> str:
         try:
-            return subprocess.run(["git", "-C", str(_EDGE_ROOT), *args], capture_output=True,
+            return subprocess.run(["git", "-C", str(APP_DIR), *args], capture_output=True,
                                   text=True, timeout=2).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             return ""
@@ -161,8 +159,7 @@ def _storage_status() -> dict:
 
 
 def _measure_storage() -> dict:
-    rec = Path(settings.record_dir)
-    rec = rec if rec.is_absolute() else (_EDGE_ROOT / rec)
+    rec = resolve_path(settings.record_dir)
     out = {"path": str(rec), "retention_hours": settings.record_retention_hours}
     probe = rec
     while not probe.exists() and probe != probe.parent:

@@ -31,7 +31,7 @@ from pathlib import Path
 EDGE = Path(__file__).resolve().parents[1] / "edge"
 sys.path.insert(0, str(EDGE))
 
-from configuration import account_config                 # noqa: E402
+from config import account_config                 # noqa: E402
 
 FAILURES: list[str] = []
 EDGE_ID = "E1"

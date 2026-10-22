@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 
 import numpy as np
+
+from config.settings import resolve_path
 
 # TensorRT and PyCUDA are provided by JetPack — not pip installable.
 # We import lazily so dev (laptop) can still load other modules.
@@ -27,13 +28,6 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger("detection")
-
-# The edge/ project root (this file is edge/detection/trt_engine.py). Engine
-# paths in config are relative to it, so resolving against this root makes the
-# loader independent of the process working directory — the same path works
-# under systemd (cwd=edge), a shell launched from the repo root, an IDE, or a
-# standalone test script.
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # Process-wide CUDA primary context, created once and shared by every engine
 # on every thread. Unlike a context made with Device.make_context(), the
@@ -79,10 +73,8 @@ class TensorRTEngine:
             or trt.Logger(trt.Logger.WARNING)
         )
 
-        engine = Path(engine_path)
-        if not engine.is_absolute():
-            engine = _EDGE_ROOT / engine
-        self._engine_path = engine
+        # Relative engine paths anchor at edge/, whatever the working folder.
+        self._engine_path = resolve_path(engine_path)
         if not self._engine_path.exists():
             raise FileNotFoundError(
                 f"TensorRT engine not found: {self._engine_path}. "

@@ -38,7 +38,7 @@ from typing import Awaitable, Callable
 
 from common.clock import now_iso
 from config.settings import settings
-from configuration.camera_config import CameraConfig
+from config.camera_config import CameraConfig
 
 from . import audit, credentials
 from .lines import camera_host, code_for, lines

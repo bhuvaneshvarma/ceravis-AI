@@ -36,7 +36,7 @@ SERVICE_UNIT = "ceravis"
 
 def restart_cameras() -> list[str]:
     """Reboot each ONVIF camera in turn; one report line per camera."""
-    from configuration.camera_config import CameraConfig
+    from config.camera_config import CameraConfig
     from livestream.mediamtx_client import source_state, stream_path
     from onvif.client import OnvifCamera
 

@@ -23,13 +23,12 @@ import logging
 import threading
 from pathlib import Path
 
-from config.settings import settings
+from config.settings import resolve_path, settings
 from common import clock
 
 
 logger = logging.getLogger("integration")
 
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 _LOCK = threading.Lock()
 
 _MAX_BYTES = 1024 * 1024     # rotate past this…
@@ -66,9 +65,7 @@ def quiet_retries(on: bool) -> None:
 
 
 def _file() -> Path:
-    base = settings.data_path
-    base = base if base.is_absolute() else (_EDGE_ROOT / base)
-    return base / "cloud_calls.jsonl"
+    return resolve_path(settings.data_dir) / "cloud_calls.jsonl"
 
 
 def find_link(payload) -> str | None:

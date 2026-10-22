@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from configuration.config_store import ConfigStore
+from config.config_store import ConfigStore
 
 logger = logging.getLogger("account")
 

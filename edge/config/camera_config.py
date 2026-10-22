@@ -1,7 +1,7 @@
 import re
 
 from schemas.cameras import Camera, FILE_EXCLUDE, room_id
-from configuration.config_store import ConfigStore
+from config.config_store import ConfigStore
 
 
 def _id_of(raw: dict) -> str:

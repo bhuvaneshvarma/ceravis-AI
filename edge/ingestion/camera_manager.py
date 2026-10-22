@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from configuration.camera_config import CameraConfig
+from config.camera_config import CameraConfig
 
 from ingestion.camera_status import (
     CameraHealthState,

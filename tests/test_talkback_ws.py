@@ -56,7 +56,7 @@ except ImportError as exc:                           # pragma: no cover
 
 from api import control_auth                         # noqa: E402
 from api import talkback_routes as routes             # noqa: E402
-from configuration import account_config              # noqa: E402
+from config import account_config              # noqa: E402
 from config.settings import settings                  # noqa: E402
 from talkback import audit, credentials, guard        # noqa: E402
 from talkback import lines as lines_mod               # noqa: E402

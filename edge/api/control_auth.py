@@ -19,7 +19,7 @@ authenticates identically — see [[ceravis-one-mechanism-principle]].
 
 from fastapi import HTTPException
 
-from configuration.account_config import effective_edge_id
+from config.account_config import effective_edge_id
 
 
 def field(body: dict, *keys, default=None):

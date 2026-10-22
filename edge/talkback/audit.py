@@ -29,13 +29,13 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
 
 from common.clock import now_iso
+from config.settings import settings
 
 logger = logging.getLogger("talkback.audit")
 
-_DATA = Path(__file__).resolve().parents[1] / "data"
+_DATA = settings.data_path        # anchored by settings — follows DATA_DIR
 PATH = _DATA / "talkback_log.jsonl"
 _MAX_BYTES = 5 * 1024 * 1024
 _lock = threading.Lock()

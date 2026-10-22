@@ -43,19 +43,17 @@ import re
 import shutil
 import threading
 import time
-from pathlib import Path
 from urllib.parse import quote
 
 import requests
 
 from common.rtsp import normalize_rtsp_url, observe_stream
-from config.settings import settings
+from config.settings import resolve_path, settings
 
 
 logger = logging.getLogger("media")
 
 _TIMEOUT = 3.0
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class MediaMTXError(Exception):
@@ -79,7 +77,7 @@ def edge_prefix() -> str:
     account_config.canonical_edge_id) — it is used verbatim here so the segment
     frp routes on and the segment MediaMTX serves are byte-identical to the
     backend's deviceToken. No second transform: see [[ceravis-devicetoken-verbatim]]."""
-    from configuration.account_config import effective_edge_id
+    from config.account_config import effective_edge_id
     eid = effective_edge_id()
     return f"{eid}/" if eid else ""
 
@@ -207,8 +205,7 @@ def tls_enabled() -> bool:
     MediaMTX actually serves."""
     if settings.device_stream_base.strip():
         return False
-    cert_dir = Path(settings.mediamtx_cert_dir)
-    cert_dir = cert_dir if cert_dir.is_absolute() else (_EDGE_ROOT / cert_dir)
+    cert_dir = resolve_path(settings.mediamtx_cert_dir)
     return (cert_dir / "server.crt").is_file() and (cert_dir / "server.key").is_file()
 
 

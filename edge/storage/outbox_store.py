@@ -67,13 +67,11 @@ from pathlib import Path
 from typing import Callable
 
 from common import clock
-from config.settings import settings
+from config.settings import resolve_path, settings
 from storage.sqlite_store import SqliteStore
 
 
 logger = logging.getLogger("outbox")
-
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # ONE priority scale, read from both ends, so urgency means the same thing
 # everywhere:
@@ -195,9 +193,7 @@ class OutboxStore:
     # ---- paths -------------------------------------------------------
     @staticmethod
     def _spool_dir() -> Path:
-        base = settings.data_path
-        base = base if base.is_absolute() else (_EDGE_ROOT / base)
-        spool = base / "outbox"
+        spool = resolve_path(settings.data_dir) / "outbox"
         spool.mkdir(parents=True, exist_ok=True)
         return spool
 

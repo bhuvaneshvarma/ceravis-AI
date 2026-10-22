@@ -13,8 +13,8 @@ from api import ptz_control
 from api.control_auth import canon, check_edge_id, field
 from common import clock
 from common.rtsp import normalize_rtsp_url
-from configuration.account_config import effective_edge_id
-from configuration.camera_config import CameraConfig
+from config.account_config import effective_edge_id
+from config.camera_config import CameraConfig
 from ingestion.camera_manager import CameraManager
 from integration import call_log
 from livestream import mediamtx_client
@@ -315,7 +315,7 @@ def _cloud_forget_camera(cam) -> None:
     if not cam:
         return
     try:
-        from configuration.account_config import AccountConfig
+        from config.account_config import AccountConfig
         from integration.ceravis_api import (
             delete_camera as cloud_delete, is_configured, room_to_enum,
         )

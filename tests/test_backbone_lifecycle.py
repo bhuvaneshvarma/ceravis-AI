@@ -41,7 +41,7 @@ sys.path.insert(0, str(EDGE))
 os.chdir(EDGE)
 
 from livestream import mediamtx_supervisor as sup     # noqa: E402
-from configuration.config_store import ConfigStore    # noqa: E402
+from config.config_store import ConfigStore    # noqa: E402
 
 FAILURES: list[str] = []
 

@@ -29,8 +29,8 @@ from datetime import datetime
 from alerts.alert_format import describe
 from common.event_snapshots import snapshot_file
 from config.settings import settings
-from configuration.account_config import AccountConfig
-from configuration.camera_config import CameraConfig
+from config.account_config import AccountConfig
+from config.camera_config import CameraConfig
 from events.event_bus import EventBus
 from integration import call_log
 from integration.ceravis_api import is_configured, room_to_enum

@@ -7,10 +7,10 @@ import time
 from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
-from configuration.account_config import (
+from config.account_config import (
     AccountConfig, canonical_edge_id, effective_edge_id,
 )
-from configuration.camera_config import CameraConfig
+from config.camera_config import CameraConfig
 from integration.ceravis_api import (
     CeravisApiError,
     get_user_details,

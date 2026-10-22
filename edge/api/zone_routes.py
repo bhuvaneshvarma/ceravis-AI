@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from configuration.zone_config import ZoneConfig
+from config.zone_config import ZoneConfig
 from schemas.zone import Zone
 
 
@@ -67,7 +67,7 @@ def finalize_zones():
     to the app server as zones_<ceravisUserId>.json — fileCategory ZONING. Called
     exactly once, when the wizard leaves the zoning step (Continue), so per-camera
     saves stay local and only a single zones file is ever written to the cloud."""
-    from configuration.account_config import patient_user_id
+    from config.account_config import patient_user_id
     from integration.ceravis_api import (CeravisApiError, is_configured,
                                           delete_patient_zoning_file,
                                           upload_embedding_file)

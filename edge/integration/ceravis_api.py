@@ -24,11 +24,10 @@ import re
 import threading
 import time
 from http import HTTPStatus
-from pathlib import Path
 
 import requests
 
-from config.settings import settings
+from config.settings import resolve_path, settings
 from integration import call_log
 from common import clock
 
@@ -69,8 +68,6 @@ def _timeout() -> tuple[float, float]:
     whatever is queued behind it."""
     read = float(settings.ceravis_api_timeout_secs)
     return (min(3.05, read), read)
-
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------------------
 # Wire log — the single, full-fidelity record of every app-server hit.
@@ -131,8 +128,7 @@ def _wire(endpoint: str, method: str, url: str, request, *,
             except Exception:
                 logger.exception("on_reachable hook failed")
     try:
-        base = settings.data_path
-        base = base if base.is_absolute() else (_EDGE_ROOT / base)
+        base = resolve_path(settings.data_dir)
         base.mkdir(parents=True, exist_ok=True)
         record = {
             "ts": clock.now_iso(),

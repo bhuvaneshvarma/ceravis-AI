@@ -3,8 +3,34 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
+
+
+# The edge/ app folder (this file is edge/config/settings.py).
+APP_DIR = Path(__file__).resolve().parents[1]
+
+# The settings that hold a file or folder location; _anchor makes each absolute.
+_PATH_FIELDS = (
+    "mediamtx_cert_dir", "record_dir", "sqlite_path", "events_dir",
+    "detection_model_path", "pose_model_path", "reid_model_path", "reid_onnx_path",
+    "face_detector_path", "face_recognizer_onnx_path", "face_recognizer_path",
+)
+
+
+def _version() -> str:
+    try:
+        return (APP_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+def resolve_path(path: str | Path) -> Path:
+    """An absolute path: as given if absolute, else under the edge/ app folder.
+    The one place a relative location is anchored."""
+    p = Path(path)
+    return p if p.is_absolute() else APP_DIR / p
 
 
 class Settings(BaseSettings):
@@ -15,7 +41,9 @@ class Settings(BaseSettings):
 
     # ---- Application -------------------------------------------------
     app_name: str = "CERAVIS"
-    app_version: str = "0.1.0"
+    # The release version — edge/VERSION, the one place it is written (the
+    # release bundle, the status page and the heartbeat all read it).
+    app_version: str = _version()
     environment: str = "development"
     is_production: bool = False
     log_level: str = "INFO"
@@ -1081,7 +1109,20 @@ class Settings(BaseSettings):
     motion_confirm_m: int = 2
     motion_confirm_n: int = 3
 
-    device_id: str = "edge-0001"
+    # This device's name everywhere it is shown or filed (status pages, event and
+    # proof folders): "ceravis-<code>", derived from the Jetson's own serial by
+    # common/device_identity — unique per device and the same across re-flashes.
+    # Set DEVICE_ID only to override it.
+    device_id: str = ""
+
+    # ---- Paths -------------------------------------------------------
+    # Every file location resolves to ONE absolute path here, so nothing depends
+    # on the folder the process was started from. A relative value is anchored:
+    # "data/…" under data_dir, "models/…" under models_dir, anything else under
+    # the edge/ app folder. data_dir and models_dir themselves are relative to
+    # edge/ unless absolute — the production layout sets DATA_DIR=/var/lib/ceravis
+    # and MODELS_DIR=/var/lib/ceravis/models in the systemd unit.
+    models_dir: str = "models"
 
     model_config = SettingsConfigDict(
         # Resolve relative to the repo, not the process cwd, so the env file
@@ -1091,12 +1132,29 @@ class Settings(BaseSettings):
         # the edge_id lives in data/account.json (gitignored, and what
         # effective_edge_id() reads first), so this file stays a pure,
         # hand-edited config that `git pull` never collides with.
-        env_file=str(
-            Path(__file__).resolve().parents[1] / "infra" / "env" / "jetson.env"),
+        env_file=str(APP_DIR / "infra" / "env" / "jetson.env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _anchor(self) -> "Settings":
+        data = resolve_path(self.data_dir)
+        models = resolve_path(self.models_dir)
+        self.data_dir, self.models_dir = str(data), str(models)
+        roots = {"data": data, "models": models}
+        for name in _PATH_FIELDS:
+            value = getattr(self, name)
+            if not value or Path(value).is_absolute():
+                continue
+            head, _, rest = value.replace("\\", "/").partition("/")
+            setattr(self, name, str(roots[head] / rest if head in roots and rest
+                                    else resolve_path(value)))
+        if not self.device_id:
+            from common.device_identity import identity
+            self.device_id = identity().name
+        return self
 
     @property
     def data_path(self) -> Path:

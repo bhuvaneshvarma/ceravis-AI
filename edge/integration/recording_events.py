@@ -33,7 +33,7 @@ import logging
 import queue
 import threading
 
-from configuration.account_config import effective_edge_id
+from config.account_config import effective_edge_id
 from integration.ceravis_api import CeravisApiError, is_configured, send_recording_event
 
 

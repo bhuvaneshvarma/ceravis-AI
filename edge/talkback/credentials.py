@@ -31,15 +31,15 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 
 from common.clock import now_iso
+from config.settings import settings
 
 from . import guard
 
 logger = logging.getLogger("talkback.credentials")
 
-_DATA = Path(__file__).resolve().parents[1] / "data"
+_DATA = settings.data_path        # anchored by settings — follows DATA_DIR
 _FILE = _DATA / "talkback.json"
 _lock = threading.Lock()
 

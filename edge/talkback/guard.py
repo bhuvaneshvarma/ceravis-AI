@@ -38,16 +38,16 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
 
 from common.clock import local_tz
+from config.settings import settings
 from datetime import datetime
 
 from .protocol import TalkbackError
 
 logger = logging.getLogger("talkback.guard")
 
-_DATA = Path(__file__).resolve().parents[1] / "data"
+_DATA = settings.data_path        # anchored by settings — follows DATA_DIR
 _FILE = _DATA / "talkback_guard.json"
 _lock = threading.Lock()
 

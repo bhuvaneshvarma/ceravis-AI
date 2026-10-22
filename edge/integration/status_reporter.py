@@ -52,8 +52,8 @@ import threading
 
 from common import clock
 from config.settings import settings
-from configuration.account_config import effective_edge_id, patient_user_id
-from configuration.camera_config import CameraConfig
+from config.account_config import effective_edge_id, patient_user_id
+from config.camera_config import CameraConfig
 from integration import call_log
 from integration.ceravis_api import room_to_enum, send_status
 from livestream.mediamtx_client import path_info

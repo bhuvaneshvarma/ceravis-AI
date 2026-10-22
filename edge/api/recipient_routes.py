@@ -8,7 +8,7 @@ import requests
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from configuration.account_config import account_recipient
+from config.account_config import account_recipient
 from enrollment.enrollment_manager import EnrollmentManager
 from integration.ceravis_api import CeravisApiError, get_patient_postures
 
@@ -42,7 +42,7 @@ def _media_payload(recipient_id: str) -> dict:
 
 # ---- the one recipient (= the verified account holder) ---------------
 # There is no recipients.json: the care recipient IS the account (see
-# configuration.account_config.account_recipient). These endpoints keep the
+# config.account_config.account_recipient). These endpoints keep the
 # same shape the wizard already consumes — a single-element list.
 @router.get("")
 def list_recipients():

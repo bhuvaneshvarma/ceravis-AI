@@ -10,14 +10,11 @@ path swap.
 
 from pathlib import Path
 
-from config.settings import settings
-
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
+from config.settings import resolve_path, settings
 
 
 def events_root() -> Path:
-    edir = Path(settings.events_dir)
-    return edir if edir.is_absolute() else (_EDGE_ROOT / edir)
+    return resolve_path(settings.events_dir)
 
 
 def snapshot_file(rel_path: str) -> Path | None:

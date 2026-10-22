@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from config.settings import settings
-from configuration.zone_config import ZoneConfig
+from config.zone_config import ZoneConfig
 
 
 logger = logging.getLogger("rules")

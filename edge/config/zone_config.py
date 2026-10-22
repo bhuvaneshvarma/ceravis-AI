@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from configuration.config_store import ConfigStore
+from config.config_store import ConfigStore
 from schemas.zone import Zone
 
 

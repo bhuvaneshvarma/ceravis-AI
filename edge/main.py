@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config.settings import settings
+from config.settings import APP_DIR, settings
 from bootstrap.pipeline import Pipeline
 from maintenance import reboot
 
@@ -79,7 +79,7 @@ def _apply_edge_id_on_boot() -> None:
     integration.edge_provision — install it with `bash cloud/install_frpc.sh`)."""
     def _run():
         try:
-            from configuration.account_config import effective_edge_id
+            from config.account_config import effective_edge_id
             from integration.edge_provision import apply_edge_id_verified
             eid = effective_edge_id()
             if eid:
@@ -99,7 +99,7 @@ def _ensure_camera_labels_on_boot() -> None:
     empty `device` to the cloud until each one is re-saved by hand. Best-effort:
     a storage problem here must never stop the API coming up."""
     try:
-        from configuration.camera_config import CameraConfig
+        from config.camera_config import CameraConfig
         changed = CameraConfig().ensure_device_labels()
         if changed:
             logger.info("boot: assigned device labels to %d camera(s)", changed)
@@ -242,7 +242,7 @@ class _FleetEdgePrefix:
                                     (b"content-length", b"0")]})
             await send({"type": "http.response.body", "body": b""})
             return
-        from configuration.account_config import effective_edge_id
+        from config.account_config import effective_edge_id
         eid = effective_edge_id()
         if eid:
             prefix = "/" + eid
@@ -323,4 +323,4 @@ for _router in (account_router, camera_router, zone_router, recipient_router,
     app.include_router(_router)
 
 # Static UI (dashboard, cameras, zones) served same-origin.
-app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
+app.mount("/ui", StaticFiles(directory=str(APP_DIR / "static"), html=True), name="ui")

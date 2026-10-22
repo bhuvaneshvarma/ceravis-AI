@@ -58,12 +58,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from common import clock
-from config.settings import settings
+from config.settings import resolve_path, settings
 
 
 logger = logging.getLogger("media")
-
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 
 # MediaMTX recordPath template: %Y-%m-%d_%H-%M-%S-%f
 _STEM = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})-(\d{6})$")
@@ -103,8 +101,7 @@ class Segment:
 
 
 def record_root() -> Path:
-    p = Path(settings.record_dir)
-    return p if p.is_absolute() else (_EDGE_ROOT / p)
+    return resolve_path(settings.record_dir)
 
 
 def is_segment_name(name: str) -> bool:

@@ -1,15 +1,17 @@
 import json
 import os
-from pathlib import Path
+
+from config.settings import settings
 
 
 class ConfigStore:
 
     def __init__(self):
 
-        self.base_path = Path("data")
+        self.base_path = settings.data_path
 
         self.base_path.mkdir(
+            parents=True,
             exist_ok=True
         )
 

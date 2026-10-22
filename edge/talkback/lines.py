@@ -36,7 +36,7 @@ from urllib.parse import urlparse
 
 from common.clock import now_iso
 from config.settings import settings
-from configuration.camera_config import CameraConfig
+from config.camera_config import CameraConfig
 
 from . import credentials, guard
 from .advice import REFUSED_SHORT

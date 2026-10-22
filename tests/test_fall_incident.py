@@ -49,8 +49,8 @@ from alerts.alert_format import describe
 from common import clock
 from common.rtsp import grab_one_frame
 from config.settings import settings
-from configuration.account_config import AccountConfig
-from configuration.camera_config import CameraConfig
+from config.account_config import AccountConfig
+from config.camera_config import CameraConfig
 from integration.ceravis_api import (
     CeravisApiError, alert_id_of, api_key_problem, is_configured, room_to_enum,
     save_alert, save_snapshot,

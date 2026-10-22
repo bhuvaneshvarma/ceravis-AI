@@ -19,18 +19,16 @@ runs exactly as before.
 """
 
 import logging
-from pathlib import Path
 
 import cv2
 import numpy as np
 
 from common.crops import crop_person
-from config.settings import settings
+from config.settings import resolve_path, settings
 
 
 logger = logging.getLogger("reid")
 
-_EDGE_ROOT = Path(__file__).resolve().parents[1]
 FACE_DIM = 512
 # The ArcFace 112x112 template the 5 landmarks are aligned to (eyes, nose, mouth
 # corners, in YuNet's order). Checked on the bench: embeddings from this
@@ -43,9 +41,7 @@ _LIVE_MAX_PX = 640     # YuNet input bound for live regions (CPU cost)
 _PHOTO_MAX_PX = 1280   # enrollment photos: a 2560 px frame keeps a ~45 px face
 
 
-def _path(p: str) -> Path:
-    q = Path(p)
-    return q if q.is_absolute() else _EDGE_ROOT / q
+_path = resolve_path
 
 
 def yaw_ratio(face: np.ndarray) -> float:

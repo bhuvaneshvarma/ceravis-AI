@@ -48,7 +48,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from api.control_auth import check_edge_id
 from common import clock
 from config.settings import settings
-from configuration.camera_config import CameraConfig
+from config.camera_config import CameraConfig
 from recording import index as recording_index
 from recording import snapshot as recording_snapshot
 from recording.snapshot import SnapshotError

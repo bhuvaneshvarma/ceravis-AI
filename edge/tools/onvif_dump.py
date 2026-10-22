@@ -203,7 +203,7 @@ def _pretty(elem: ElementTree.Element) -> str:
 
 def _camera_creds(label: str) -> tuple[str, str, str]:
     """Resolve xaddr + ONVIF user/pass from cameras.json for a registered label."""
-    from configuration.camera_config import CameraConfig
+    from config.camera_config import CameraConfig
     cam = CameraConfig().get_by_label(label)
     if cam is None:
         sys.exit(f"no registered camera matches {label!r}")

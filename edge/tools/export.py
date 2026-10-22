@@ -44,7 +44,7 @@ from pathlib import Path
 
 from common import clock
 from config.settings import settings
-from configuration.camera_config import CameraConfig
+from config.camera_config import CameraConfig
 from livestream.mediamtx_client import record_path_name
 from recording import index as ri
 
