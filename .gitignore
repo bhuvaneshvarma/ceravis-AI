@@ -88,3 +88,6 @@ camerainfo/
 
 # Release bundles built by setup/make_release.sh
 dist/
+
+# Claude Code session settings and rules: kept on each machine, never in the repo
+.claude/

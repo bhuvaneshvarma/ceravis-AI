@@ -14,7 +14,6 @@ VERSION   text eol=lf
 # ---- Left out of every release bundle (git archive, setup/make_release.sh) ----
 # Development, test and cloud-server files: they never run on a customer device.
 /tests/                          export-ignore
-/.claude/                        export-ignore
 /docs/                           export-ignore
 /.github/                        export-ignore
 /edge/static/ui-testing/         export-ignore
