@@ -2,8 +2,8 @@
 The app-server API key: where it comes from, and what the edge says without it.
 
 The key (X-API-Key on every app-server call) is a secret in the root-only
-/etc/ceravis/secrets.env, which ceravis.service loads into the environment. A
-device without it must not fail silently: /api/v1/system/status lists why, and
+/etc/ceravis/credstore/ceravis_api_key, which systemd hands ceravis.service as a
+credential (the app reads it from $CREDENTIALS_DIRECTORY). A device without it must not fail silently: /api/v1/system/status lists why, and
 so does a device still on the old key that was published in this repo.
 
 Nothing here calls the app server.
@@ -13,6 +13,7 @@ Run:  PYTHONPATH=edge python tests/test_api_key.py
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,13 +38,11 @@ prev_key, prev_url = settings.ceravis_api_key, settings.ceravis_api_base_url
 settings.ceravis_api_base_url = "https://app.example.test/ch"
 
 
-print("\n1. the key comes from the environment systemd builds from secrets.env")
-os.environ["CERAVIS_API_KEY"] = "sk-test-from-secrets-env"
-try:
-    fresh = Settings()
-finally:
-    del os.environ["CERAVIS_API_KEY"]
-check("CERAVIS_API_KEY in the environment wins over the default",
+print("\n1. the key comes from the systemd credential")
+creds = Path(tempfile.mkdtemp(prefix="ceravis-creds-"))
+(creds / "ceravis_api_key").write_text("sk-test-from-secrets-env")
+fresh = Settings(_secrets_dir=str(creds))
+check("the credential file named ceravis_api_key sets the key",
       fresh.ceravis_api_key == "sk-test-from-secrets-env", fresh.ceravis_api_key[:8])
 
 
@@ -107,16 +106,16 @@ if system_routes is not None:
 print("\n4. the secret never sits in a tracked config file")
 unit = (ROOT / "edge/infra/systemd/ceravis.service").read_text(encoding="utf-8")
 env_files = re.findall(r"^EnvironmentFile=(.+)$", unit, re.M)
-check("ceravis.service loads /etc/ceravis/secrets.env (optional, '-' on the path)",
-      "-/etc/ceravis/secrets.env" in env_files, str(env_files))
-check("...after jetson.env, so the secret wins",
-      len(env_files) >= 2 and env_files[-1] == "-/etc/ceravis/secrets.env")
+check("ceravis.service loads no secrets file into the environment",
+      not any("secrets" in e for e in env_files), str(env_files))
 jetson = (ROOT / "edge/infra/env/jetson.env").read_text(encoding="utf-8")
 check("jetson.env holds no CERAVIS_API_KEY line, live or commented",
       not re.search(r"^\s*#?\s*CERAVIS_API_KEY\s*=", jetson, re.M))
 installer = (ROOT / "setup/install_api_key.sh").read_text(encoding="utf-8")
-check("the installer writes the file the unit loads",
-      "KEY_FILE=/etc/ceravis/secrets.env" in installer)
+check("the installer writes the credential the unit loads",
+      'KEY_FILE="$CERAVIS_CREDSTORE/ceravis_api_key"' in installer)
+check("...and moves a key an older setup kept in secrets.env",
+      "LEGACY=/etc/ceravis/secrets.env" in installer)
 for script in ("setup.sh", "upgrade.sh"):
     text = (ROOT / "setup" / script).read_text(encoding="utf-8")
     at = text.find("install_api_key.sh")

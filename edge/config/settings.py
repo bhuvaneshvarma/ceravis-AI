@@ -4,7 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
@@ -32,6 +32,25 @@ def resolve_path(path: str | Path) -> Path:
     The one place a relative location is anchored."""
     p = Path(path)
     return p if p.is_absolute() else APP_DIR / p
+
+
+def layout_value(key: str, default: str) -> str:
+    """One value from the device's layout file, /etc/ceravis/layout.env — the
+    ONE description of where this install keeps its data and engines, written
+    by the installer and read by every setup script too (setup/lib.sh). It is
+    how a tool run by hand (set_reboot_password.py, tools/*) finds the same
+    folders as the service. Read as KEY=value data; absent or empty = default.
+    CERAVIS_LAYOUT_FILE points elsewhere (tests)."""
+    path = Path(os.environ.get("CERAVIS_LAYOUT_FILE") or "/etc/ceravis/layout.env")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return default
+    for line in lines:
+        name, sep, value = line.partition("=")
+        if sep and name.strip() == key:
+            return value.strip().strip('"') or default
+    return default
 
 
 class Settings(BaseSettings):
@@ -889,7 +908,9 @@ class Settings(BaseSettings):
                                     "table,counter,desk,dresser,stove")
 
     # ---- Storage ---------------------------------------------------
-    data_dir: str = "data"
+    # DATA_DIR when set (the service unit sets it), else the layout file's
+    # (layout_value), else edge/data.
+    data_dir: str = Field(default_factory=lambda: layout_value("CERAVIS_DATA_DIR", "data"))
     sqlite_path: str = "data/ceravis.db"
 
     # ---- Events / alerts -------------------------------------------
@@ -935,7 +956,7 @@ class Settings(BaseSettings):
     # the API key. Leave base_url empty to run the device standalone.
     ceravis_api_base_url: str = "https://app.ceravishealth.in/ch"
     # API key sent as the "X-API-Key" header on EVERY app-server call. A secret:
-    # CERAVIS_API_KEY comes from the root-only /etc/ceravis/secrets.env
+    # It comes from the root-only credential /etc/ceravis/credstore/ceravis_api_key
     # (setup/install_api_key.sh), never from this public repo. The value below is
     # the OLD key, public because it is written here, and the app server will
     # revoke it: it is only the fallback for devices that do not have the file
@@ -1143,8 +1164,8 @@ class Settings(BaseSettings):
     # "data/…" under data_dir, "models/…" under models_dir, anything else under
     # the edge/ app folder. data_dir and models_dir themselves are relative to
     # edge/ unless absolute — the production layout sets DATA_DIR=/var/lib/ceravis
-    # and MODELS_DIR=/var/lib/ceravis/models in the systemd unit.
-    models_dir: str = "models"
+    # and MODELS_DIR=<release>/models, in the systemd unit and the layout file.
+    models_dir: str = Field(default_factory=lambda: layout_value("CERAVIS_MODELS_DIR", "models"))
 
     model_config = SettingsConfigDict(
         # Resolve relative to the repo, not the process cwd, so the env file

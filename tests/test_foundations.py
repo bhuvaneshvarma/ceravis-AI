@@ -92,6 +92,37 @@ check("an absolute path is kept as given",
 check("device_id defaults to the device name",
       d.device_id == device_identity.identity().name)
 
+# The device's layout file (/etc/ceravis/layout.env) — what a tool run by hand
+# reads to find the service's folders; DATA_DIR / MODELS_DIR still win.
+lay = base / "ceravis-layout-test.env"
+LD, LM = base / "lay-data", base / "lay-models"
+lay.write_text(f'# written by the installer\nCERAVIS_ROOT=/opt/ceravis/current\n'
+               f'CERAVIS_DATA_DIR={LD}\nCERAVIS_MODELS_DIR="{LM}"\n', encoding="utf-8")
+saved = {k: os.environ.pop(k, None) for k in ("DATA_DIR", "MODELS_DIR", "CERAVIS_LAYOUT_FILE")}
+try:
+    os.environ["CERAVIS_LAYOUT_FILE"] = str(lay)
+    s = settings_mod.Settings(_env_file=None)
+    check("no DATA_DIR: data and models follow the layout file",
+          Path(s.data_dir) == LD and Path(s.models_dir) == LM
+          and Path(s.sqlite_path) == LD / "ceravis.db", f"{s.data_dir} {s.models_dir}")
+    os.environ["DATA_DIR"] = str(X)
+    check("DATA_DIR set (the service unit): it wins",
+          Path(settings_mod.Settings(_env_file=None).data_dir) == X)
+    del os.environ["DATA_DIR"]
+    lay.write_text("CERAVIS_DATA_DIR=\nCERAVIS_MODELS_DIR=\n", encoding="utf-8")
+    s = settings_mod.Settings(_env_file=None)
+    check("an empty value (a development clone) -> edge/data, edge/models",
+          Path(s.data_dir) == settings_mod.APP_DIR / "data"
+          and Path(s.models_dir) == settings_mod.APP_DIR / "models")
+    os.environ["CERAVIS_LAYOUT_FILE"] = str(base / "no-such-layout.env")
+    check("no layout file -> edge/data",
+          Path(settings_mod.Settings(_env_file=None).data_dir) == settings_mod.APP_DIR / "data")
+finally:
+    os.environ.pop("CERAVIS_LAYOUT_FILE", None)
+    os.environ.pop("DATA_DIR", None)
+    os.environ.update({k: v for k, v in saved.items() if v is not None})
+    lay.unlink(missing_ok=True)
+
 
 print("\n3. atomic writes")
 tmp = Path(tempfile.mkdtemp(prefix="ceravis-atomic-"))

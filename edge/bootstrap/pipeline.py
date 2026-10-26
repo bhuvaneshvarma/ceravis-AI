@@ -261,7 +261,8 @@ class Pipeline:
         outbox = None
         outbox_sender = None
         cloud_alert_publisher = None
-        # The app-server key comes from /etc/ceravis/secrets.env. Without it
+        # The app-server key is a systemd credential (setup/install_api_key.sh).
+        # Without it
         # every upload just waits in the queue, so say it once, loudly, here
         # (and /system/status keeps saying it).
         try:

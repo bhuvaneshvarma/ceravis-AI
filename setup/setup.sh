@@ -24,6 +24,10 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPTS_DIR")"
 # shellcheck source=setup/lib.sh
 . "$SCRIPTS_DIR/lib.sh"
+# This clone becomes the device's layout (/etc/ceravis/layout.env): every
+# script and the app's settings read the same file from now on.
+write_layout
+export_layout
 
 stage() { echo; echo "============ [$1] $2 ============"; }
 skip()  { echo "  [skip] $1"; }
@@ -54,7 +58,7 @@ bash "$REPO_DIR/cloud/install_frpc.sh"
 # ---- [4/6] services ---------------------------------------------------
 stage "4/6" "systemd services"
 # The app-server API key first, so the service's first start already has it: asks
-# once (a secret, kept root-only in /etc/ceravis/secrets.env) — or pass
+# once (a secret, kept root-only in /etc/ceravis/credstore) — or pass
 # CERAVIS_API_KEY=<key>.
 bash "$SCRIPTS_DIR/install_api_key.sh"
 bash "$SCRIPTS_DIR/install_service.sh"

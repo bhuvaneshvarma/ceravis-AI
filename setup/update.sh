@@ -109,8 +109,7 @@ mv "$TOP" "$NEW"
 log "staged $NEW_VERSION (running: $OLD_VERSION)"
 
 # ---- 4. build: software + engines --------------------------------------------------------
-# shellcheck disable=SC1091
-set -a; . /etc/ceravis/layout.env; set +a
+# The layout file (lib.sh) with the new release's own folders in front.
 export CERAVIS_ROOT="$NEW" CERAVIS_PYTHON="$NEW/venv/bin/python" CERAVIS_MODELS_DIR="$NEW/models"
 # shellcheck source=setup/lib.sh
 . "$NEW/setup/lib.sh"
@@ -147,9 +146,9 @@ fi
 log "built"
 
 # ---- 5. switch -----------------------------------------------------------------------------
-# Units follow the switching path; re-written so a changed template applies.
-set -a; . /etc/ceravis/layout.env; set +a
-export CERAVIS_MODELS_DIR CERAVIS_ROOT CERAVIS_PYTHON
+# Units follow the switching path (the layout file's own values); re-written so
+# a changed template applies.
+unset "${LAYOUT_KEYS[@]}"
 . "$NEW/setup/lib.sh"
 for u in ceravis.service ceravis-reboot.service ceravis-reboot.timer \
          ceravis-fleet-agent.service ceravis-firstboot.service; do

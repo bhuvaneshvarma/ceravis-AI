@@ -105,7 +105,8 @@ for g in video render systemd-journal; do
     getent group "$g" >/dev/null && usermod -a -G "$g" "$SVC"
 done
 install -d -m 0750 -o "$SVC" -g "$SVC" "$DATA"
-install -d -m 0700 -o root -g root /etc/ceravis "$CRED"
+install -d -m 0755 -o root -g root /etc/ceravis      # layout.env (no secret)
+install -d -m 0700 -o root -g root "$CRED"           # the secrets
 install -d -m 0755 "$APP" "$APP/releases"
 
 # ---- [4/9] release ------------------------------------------------------------
@@ -126,16 +127,11 @@ if [ -d "$SRC/models-src" ]; then
 fi
 chown -R root:root "$REL/edge" "$REL/setup" "$REL/cloud"
 
-cat > /etc/ceravis/layout.env <<EOF
-# Written by setup/install.sh — the production layout (setup/lib.sh).
-CERAVIS_ROOT=$APP/current
-CERAVIS_USER=$SVC
-CERAVIS_PYTHON=$APP/current/venv/bin/python
-CERAVIS_DATA_DIR=$DATA
-CERAVIS_MODELS_DIR=$APP/current/models
-CERAVIS_CREDSTORE=$CRED
-EOF
-chmod 0644 /etc/ceravis/layout.env
+# The device's ONE layout file (setup/lib.sh reads it in every script, the app's
+# settings too): the services and every later script use /opt/ceravis/current.
+CERAVIS_ROOT="$APP/current" CERAVIS_USER="$SVC" CERAVIS_PYTHON="$APP/current/venv/bin/python" \
+CERAVIS_DATA_DIR="$DATA" CERAVIS_MODELS_DIR="$APP/current/models" CERAVIS_CREDSTORE="$CRED" \
+    bash -c '. "$1/setup/lib.sh" && write_layout' _ "$REL"
 
 # Build everything against the NEW release folder; the services are pointed at
 # /opt/ceravis/current, which is switched to it below.
@@ -173,9 +169,9 @@ bash "$REL/cloud/install_frpc.sh"
 # Switch to this release now that it is complete.
 ln -sfn "$REL" "$APP/current.new" && mv -T "$APP/current.new" "$APP/current"
 echo "  $APP/current -> $REL"
-# From here on, units are written for the switching path, not the release path.
-# shellcheck disable=SC1091
-set -a; . /etc/ceravis/layout.env; set +a
+# From here on, units are written for the switching path, not the release path:
+# the layout file's values (lib.sh reads it once nothing overrides it).
+unset "${LAYOUT_KEYS[@]}"
 . "$APP/current/setup/lib.sh"
 export_layout
 

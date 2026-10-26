@@ -75,7 +75,9 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
     def publish(upgrade: str) -> None:
         write(dev / "setup" / "upgrade.sh", upgrade)
         for name in called:
-            write(dev / "setup" / name, f'#!/usr/bin/env bash\necho "ran {name}"\n')
+            # lib.sh is sourced, not run: its stand-in defines what upgrade.sh calls.
+            extra = 'write_layout() { echo "ran write_layout"; }\n' if name == "lib.sh" else ""
+            write(dev / "setup" / name, f'#!/usr/bin/env bash\necho "ran {name}"\n{extra}')
         write(dev / "edge" / "README", "edge\n")
         git("add", "-A", cwd=dev)
         git("commit", "-qm", "upgrade", cwd=dev)

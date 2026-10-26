@@ -18,12 +18,12 @@ WorkingDirectory=/home/ceravis/ceravis2/edge
 # depend on this line either way: config/settings.py loads the same file directly
 # through pydantic and falls back to the defaults when it is absent.
 EnvironmentFile=-/home/ceravis/ceravis2/edge/infra/env/jetson.env
-# Secrets (CERAVIS_API_KEY, the app server's X-API-Key) — never in the public repo.
-# setup/install_api_key.sh writes this root-only file; systemd reads it as root
-# and puts the key in the app's environment, where it wins over jetson.env. When
+# Secrets (the app server's X-API-Key) are never in the repo or the environment:
+# setup/install_api_key.sh keeps each in a root-only file in
+# /etc/ceravis/credstore, and setup/lib.sh adds a LoadCredential= line for it
+# here — systemd hands it to this service alone ($CREDENTIALS_DIRECTORY). When
 # it is missing the service still starts, and /api/v1/system/status says why the
 # app server will refuse it.
-EnvironmentFile=-/etc/ceravis/secrets.env
 # Rebuild engines if missing (skips instantly when already built). Runs from the
 # WorkingDirectory (edge) so model paths resolve; "-" prefix: a failure here must
 # not block the API from starting.

@@ -27,6 +27,11 @@ if [ -z "${CERAVIS_UPGRADE_PULLED:-}" ]; then
     CERAVIS_UPGRADE_PULLED=1 exec bash "$SETUP_DIR/upgrade.sh" "$@"
 fi
 
+# The device's layout file — a clone set up before it existed gets it now.
+# shellcheck source=setup/lib.sh
+. "$SETUP_DIR/lib.sh"
+write_layout
+
 echo "== [2/6] purge FastReid leftovers + stale caches =="
 rm -f models/reid/fastreid* models/reid/*fast* 2>/dev/null || true
 rm -rf /tmp/ceravis-export-venv          # rebuilt clean for OSNet below
@@ -42,10 +47,10 @@ echo "== [4/6] build OSNet ReID engine =="
 bash "$SETUP_DIR/export_reid.sh"
 
 echo "== [5/6] restart service + fleet agent =="
-# The app-server API key lives in the root-only /etc/ceravis/secrets.env, not in
-# the public repo: asked for once (a stored key is kept), then the unit is
-# re-installed so the /etc copy loads that file — both before the restart that
-# has to pick it up.
+# The app-server API key lives in the root-only /etc/ceravis/credstore, not in
+# the public repo: asked for once (a stored key is kept, an older secrets.env
+# key is moved there), then the unit is re-installed so it hands the key over —
+# both before the restart that has to pick it up.
 bash "$SETUP_DIR/install_api_key.sh"
 bash "$SETUP_DIR/install_service.sh"
 sudo systemctl restart ceravis

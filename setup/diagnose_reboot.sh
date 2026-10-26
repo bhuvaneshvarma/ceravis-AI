@@ -20,9 +20,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$HERE")"
-EDGE_DIR="$REPO_DIR/edge"
-SVC_USER="${SUDO_USER:-$USER}"
+# shellcheck source=setup/lib.sh
+. "$HERE/lib.sh"            # EDGE_DIR, CERAVIS_USER, CERAVIS_PYTHON from the layout
+REPO_DIR="$CERAVIS_ROOT"
+SVC_USER="$CERAVIS_USER"
 
 line() { printf '\n========== %s ==========\n' "$1"; }
 
@@ -59,7 +60,7 @@ fi
 
 line "7. DECISION NOW — what would tonight's run do at this moment?"
 if command -v python3 >/dev/null 2>&1; then
-    ( cd "$EDGE_DIR" && python3 tools/scheduled_reboot.py --explain 2>&1 ) \
+    ( cd "$EDGE_DIR" && "$CERAVIS_PYTHON" tools/scheduled_reboot.py --explain 2>&1 ) \
         | grep -vE "SQLite store" || true
 else
     echo "(no python3 on PATH)"

@@ -19,11 +19,8 @@
 # =============================================================
 set -uo pipefail
 
-LAYOUT=/etc/ceravis/layout.env
-# shellcheck disable=SC1090
-[ -f "$LAYOUT" ] && . "$LAYOUT"
 # shellcheck source=setup/lib.sh
-. "${CERAVIS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/setup/lib.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"     # reads /etc/ceravis/layout.env
 export_layout
 MARKER=/etc/ceravis/.firstboot-done
 

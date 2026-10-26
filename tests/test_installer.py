@@ -3,9 +3,11 @@ The installer's building blocks, run for real in bash (sudo stubbed, nothing
 on the system touched):
 
 1. every setup script parses (bash -n)
-2. install_unit writes the development unit as before, and the production one
-   with the service account, the virtualenv, DATA_DIR/MODELS_DIR and the API
-   key as a systemd credential (no secrets EnvironmentFile)
+2. install_unit writes the development unit and the production one (service
+   account, virtualenv, DATA_DIR/MODELS_DIR); both get the API key as a systemd
+   credential, only once it exists, and no secrets EnvironmentFile
+2b. the ONE layout file (/etc/ceravis/layout.env): write_layout writes it,
+   every script reads it back as data, the environment wins over it
 3. frpc starts only on a real config — the ExecCondition taken from the unit
    file itself: template, server-but-no-account -> off; claimed -> on
 4. frpc_set_user adds then replaces the device prefix, and refuses a bad name;
@@ -42,9 +44,13 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 def sh(script: str, env: dict | None = None) -> subprocess.CompletedProcess:
     stub = 'sudo() { if [ "$1" = tee ]; then cat > "$OUT/$(basename "$2")"; ' \
-           'elif [ "$1" = test ]; then shift; test "$@"; else "$@"; fi; }\n'
+           'elif [ "$1" = test ]; then shift; test "$@"; ' \
+           'elif [ "$1" = install ]; then shift; ' \
+           'install $(printf "%s\\n" "$@" | grep -vE "^-[og]$|^root$"); else "$@"; fi; }\n'
+    base = {k: v for k, v in os.environ.items() if not k.startswith("CERAVIS_")}
     return subprocess.run([BASH, "-c", stub + script], cwd=ROOT, capture_output=True,
-                          text=True, env={**os.environ, **(env or {})})
+                          text=True, env={**base, "CERAVIS_LAYOUT_FILE": "/nonexistent",
+                                          **(env or {})})
 
 
 def posix(p: Path) -> str:
@@ -70,9 +76,20 @@ cred = out / "cred"
 cred.mkdir()
 (cred / "ceravis_api_key").write_text("k")
 r = sh("source setup/lib.sh; install_unit edge/infra/systemd/ceravis.service",
-       {"OUT": posix(out), "USER": "ceravis", "SUDO_USER": ""})
+       {"OUT": posix(out), "USER": "ceravis", "SUDO_USER": "", "CERAVIS_CREDSTORE": posix(cred)})
 dev = (out / "ceravis.service").read_text() if (out / "ceravis.service").exists() else ""
-check("development unit written", "User=ceravis" in dev and "secrets.env" in dev, r.stderr[-200:])
+check("development unit written", "User=ceravis" in dev
+      and "ExecStart=/usr/bin/python3 -m uvicorn" in dev, r.stderr[-200:])
+check("development: the API key as a credential too, no secrets env file",
+      "LoadCredential=ceravis_api_key:" in dev and "secrets.env" not in dev)
+check("development: data and engines stay in the clone",
+      "Environment=DATA_DIR" not in dev and "Environment=MODELS_DIR" not in dev)
+empty = out / "empty-cred"
+empty.mkdir()
+sh("source setup/lib.sh; install_unit edge/infra/systemd/ceravis.service",
+   {"OUT": posix(out), "USER": "ceravis", "SUDO_USER": "", "CERAVIS_CREDSTORE": posix(empty)})
+check("no key yet -> no credential line (systemd would refuse a missing file)",
+      not re.search(r"^LoadCredential=", (out / "ceravis.service").read_text(), re.M))
 (out / "ceravis.service").unlink(missing_ok=True)
 prod_env = {"OUT": posix(out), "CERAVIS_ROOT": "/opt/ceravis/current",
             "CERAVIS_USER": "ceravis-svc",
@@ -91,6 +108,35 @@ check("production: data and models folders set",
 check("production: API key as a credential, no secrets env file",
       "LoadCredential=ceravis_api_key:" in prod and "secrets.env" not in prod)
 check("production: no development path left", "/home/ceravis/ceravis2" not in prod)
+
+print("\n2b. one layout file for every script")
+layout = out / "layout.env"
+probe = 'source setup/lib.sh; echo "$CERAVIS_ROOT|$CERAVIS_USER|$CERAVIS_PYTHON|$(data_dir)|$(models_dir)|$CERAVIS_CREDSTORE"'
+lay_env = {"OUT": posix(out), "CERAVIS_LAYOUT_FILE": posix(layout)}
+r = sh("source setup/lib.sh; write_layout", {**lay_env, **{k: v for k, v in prod_env.items()
+                                                          if k != "OUT"}})
+check("write_layout writes the file", layout.exists(), r.stderr[-200:])
+want = "|".join(prod_env[k] for k in ("CERAVIS_ROOT", "CERAVIS_USER", "CERAVIS_PYTHON",
+                                      "CERAVIS_DATA_DIR", "CERAVIS_MODELS_DIR",
+                                      "CERAVIS_CREDSTORE"))
+got = sh(probe, lay_env).stdout.strip()
+check("a script run later reads the production layout from it", got == want, got)
+got = sh(probe, {**lay_env, "CERAVIS_ROOT": "/opt/ceravis/releases/9.9.9"}).stdout.strip()
+check("a value in the environment wins (an installer staging a new release)",
+      got.startswith("/opt/ceravis/releases/9.9.9|ceravis-svc|"), got)
+layout.write_bytes(b"CERAVIS_USER=ceravis-svc\r\nCERAVIS_DATA_DIR=/var/lib/ceravis")
+got = sh(probe, lay_env).stdout.strip().split("|")
+check("CRLF and a last line without a newline are read",
+      got[1] == "ceravis-svc" and got[3] == "/var/lib/ceravis", "|".join(got))
+layout.write_text("CERAVIS_USER=x; rm -rf /tmp/never\nPATH=/evil\n")
+got = sh('source setup/lib.sh; echo "$CERAVIS_USER|$PATH"', lay_env).stdout.strip()
+check("read as data: nothing executed, other keys ignored",
+      got.startswith("x; rm -rf /tmp/never|") and "/evil" not in got, got)
+got = sh(probe, {"OUT": posix(out)}).stdout.strip().split("|")
+check("no layout file -> the development clone",
+      got[0].lower().endswith("/ceravis2") and got[3] == got[0] + "/edge/data"
+      and got[4] == got[0] + "/edge/models" and got[5] == "/etc/ceravis/credstore",
+      "|".join(got))
 
 print("\n3. the tunnel starts only on a real config")
 unit = (ROOT / "cloud/systemd/frpc.service").read_text()

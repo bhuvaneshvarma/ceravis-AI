@@ -203,8 +203,8 @@ def is_configured() -> bool:
 def api_key_problem() -> str | None:
     """Why the app server refuses (or soon will refuse) this device's calls for
     want of its key, or None. The key is a secret in a root-only file that
-    ceravis.service hands the app (/etc/ceravis/secrets.env in development, the
-    /etc/ceravis/credstore credential in production); without it the device
+    ceravis.service hands the app as a credential (/etc/ceravis/credstore, on
+    a development clone and a production release alike); without it the device
     still runs and keeps every upload queued, so nothing fails on its own — this
     is what makes the gap loud: logged at boot (bootstrap.pipeline) and listed
     in /api/v1/system/status problems."""

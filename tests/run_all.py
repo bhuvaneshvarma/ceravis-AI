@@ -35,7 +35,10 @@ def main(words: list[str]) -> int:
     t_all = time.monotonic()
     for path in tests:
         data = tempfile.mkdtemp(prefix="ceravis-test-data-")
+        # No device layout file either (/etc/ceravis/layout.env on a device):
+        # every test sees the same edge/ defaults wherever it runs.
         env = {**os.environ, "PYTHONPATH": str(ROOT / "edge"), "DATA_DIR": data,
+               "CERAVIS_LAYOUT_FILE": os.devnull,
                "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
         t = time.monotonic()
         try:
