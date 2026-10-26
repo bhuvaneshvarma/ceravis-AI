@@ -41,6 +41,10 @@
   .kv dt { color: var(--muted); } .kv dd { margin: 0; color: var(--navy); word-break: break-all; }
   .kv code { font-size: 12.5px; background: var(--panel-2); padding: 1px 6px; border-radius: 6px; }
   .wl-foot { color: var(--faint); font-size: 12px; margin-top: 18px; text-align: center; }
+  .wl-net { margin-bottom: 16px; border-left: 4px solid var(--warn); }
+  .wl-net h2 { margin-top: 0; }
+  .wl-net p, .wl-net li { font-size: 13.5px; color: var(--text); line-height: 1.55; }
+  .wl-net ol { margin: 8px 0 8px 18px; padding: 0; }
 </style>
 </head>
 <body>
@@ -61,6 +65,20 @@
     </div>
     <span class="spacer"></span>
     <button class="btn btn-primary" id="wl-go" disabled>Continue to sign in</button>
+  </div>
+
+  <div class="card wl-net" id="wl-net" hidden>
+    <h2>Connect the internet by cable</h2>
+    <p id="wl-net-why"></p>
+    <ol>
+      <li>Take a network (Ethernet) cable.</li>
+      <li>Plug one end into a free LAN port of the home router — usually numbered 1–4,
+          not the one marked WAN or Internet.</li>
+      <li>Plug the other end into the Ethernet port of this device.</li>
+    </ol>
+    <p class="faint">Nothing to set up: the router gives the device its address by itself,
+      and this check turns green within a few seconds. The device's Wi-Fi stays the
+      cameras' own hotspot, which is why the internet comes by cable.</p>
   </div>
 
   <div class="wl-grid">
@@ -110,6 +128,10 @@ async function refresh() {
   document.getElementById("wl-device").textContent =
     `${d.name || ""} · CERAVIS ${d.version || ""}`;
   document.getElementById("wl-checks").innerHTML = (s.checks || []).map(row).join("");
+
+  const net = (s.checks || []).find(c => c.id === "internet");
+  document.getElementById("wl-net").hidden = !net || net.ok === true;
+  if (net) document.getElementById("wl-net-why").textContent = net.detail || "";
 
   const failed = (s.checks || []).filter(c => c.level === "required" && c.ok !== true);
   const banner = document.getElementById("wl-banner");

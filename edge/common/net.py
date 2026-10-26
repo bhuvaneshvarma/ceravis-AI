@@ -6,6 +6,7 @@ subnets do I own".
     lan_ip()               -> the default-route source IP (startup banner, tests)
     local_ipv4s()          -> EVERY non-loopback IPv4 the host owns (all NICs)
     local_ipv4_networks()  -> the subnet(s) the host sits on, for a targeted sweep
+    wired_uplink()         -> the Ethernet cable to the router: plugged? address?
 
 ONVIF discovery is the demanding consumer: the probe must go out every interface
 (the camera is often on a different NIC than the default route), and when the
@@ -16,8 +17,52 @@ interface picture, so it lives here — stdlib only, no netifaces/psutil.
 import ipaddress
 import logging
 import socket
+from dataclasses import dataclass
+from pathlib import Path
 
 logger = logging.getLogger("net")
+
+# Interfaces that look like Ethernet but are not a cable to the router: the
+# Jetson's USB-C device-mode network and its bridge, containers, VPNs.
+_NOT_UPLINK = ("usb", "rndis", "l4tbr", "docker", "veth", "br-", "virbr", "tun", "tap")
+
+
+@dataclass(frozen=True)
+class WiredUplink:
+    """The device's Ethernet port: `cable` None = not knowable here (not Linux)."""
+    cable: bool | None
+    iface: str = ""
+    ip: str | None = None
+
+
+def wired_uplink(sys_net: Path = Path("/sys/class/net")) -> WiredUplink:
+    """Is an Ethernet cable plugged in, and did the router give it an address
+    (DHCP)? The internet reaches this device by cable: its Wi-Fi radio runs the
+    camera hotspot. Read from the kernel (/sys/class/net), no tools needed."""
+    if not sys_net.is_dir():
+        return WiredUplink(None)
+    addrs = {name: socket.inet_ntoa(raw[20:24])
+             for name, raw in _linux_ioctl(0x8915).items()}          # SIOCGIFADDR
+    found = WiredUplink(False)
+    for d in sorted(sys_net.iterdir()):
+        name = d.name
+        try:
+            physical_ether = ((d / "type").read_text().strip() == "1"
+                              and (d / "device").exists() and not (d / "wireless").exists())
+        except OSError:
+            continue
+        if not physical_ether or name.startswith(_NOT_UPLINK):
+            continue
+        try:
+            plugged = (d / "carrier").read_text().strip() == "1"
+        except OSError:                                  # interface down: no carrier
+            plugged = False
+        port = WiredUplink(plugged, name, addrs.get(name) if plugged else None)
+        if port.ip:
+            return port
+        if plugged or not found.iface:
+            found = port
+    return found
 
 
 def lan_ip() -> str | None:

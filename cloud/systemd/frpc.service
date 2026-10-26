@@ -12,6 +12,9 @@ ExecCondition=/bin/sh -c "! grep -Ev '^[[:space:]]*#' /etc/frp/frpc.toml | grep 
 ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml
 Restart=always
 RestartSec=5
+# Remote access is how a device is reached when something is wrong: kept above
+# ordinary processes when memory runs out (the care pipeline stays above it).
+OOMScoreAdjust=-300
 # Separate from ceravis.service on purpose: disabling this alone turns remote
 # access off and leaves the AI pipeline running.
 User=ceravis

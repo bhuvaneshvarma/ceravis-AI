@@ -40,6 +40,12 @@ class YOLODetector:
         self._engine = TensorRTEngine(
             settings.detection_model_path,
             max_batch=settings.detection_max_batch if max_batch is None else max_batch)
+        # The engine was built for one input size; it, not the setting, decides.
+        built = int(self._engine.input_shape[-1])
+        if built != self._size:
+            logger.warning("detection engine is built for %d px, DETECTION_INPUT_SIZE "
+                           "says %d — using %d", built, self._size, built)
+            self._size = built
         self._layout: str | None = None
         self._score_col: int | None = None
         self._logged = False

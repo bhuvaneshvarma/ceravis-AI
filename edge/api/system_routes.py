@@ -8,6 +8,7 @@ a phone — plays the camera's compressed stream straight from MediaMTX over
 WebRTC. Kept here so main.py is just app wiring.
 """
 
+import json
 import shutil
 import subprocess
 import time
@@ -31,6 +32,16 @@ router = APIRouter()
 
 
 def _git_head() -> dict:
+    """The commit this code is: git's HEAD in a development clone; in a
+    production release (no .git) its manifest.json, read without a process."""
+    root = APP_DIR.parent
+    if not (root / ".git").exists():
+        try:
+            m = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            return {"commit": str(m.get("commit", "")), "branch": str(m.get("branch", ""))}
+        except (OSError, ValueError):
+            return {"commit": "", "branch": ""}
+
     def git(*args: str) -> str:
         try:
             return subprocess.run(["git", "-C", str(APP_DIR), *args], capture_output=True,
@@ -127,16 +138,29 @@ def _time_status() -> dict:
     # timedatectl for two properties at once and take the first line as the flag,
     # but `--value` prints them in systemd's own order (Timezone first), so a
     # synced clock read as NOT synced (status DEGRADED) and the timezone as "yes".
-    info = {"local": clock.now_iso(), "timezone": str(clock.local_tz()),
+    return {"local": clock.now_iso(), "timezone": _timezone(),
             "ntp_synchronized": reboot.clock_synchronized()}
+
+
+_tz_cache: tuple[float, str] | None = None
+
+
+def _timezone() -> str:
+    """The system timezone's name (Asia/Kolkata), asked of timedatectl at most
+    once a minute — it changes only when someone sets it, and status is polled."""
+    global _tz_cache
+    if _tz_cache is not None and time.monotonic() - _tz_cache[0] < 60:
+        return _tz_cache[1]
+    tz = str(clock.local_tz())                  # not systemd (dev box): the abbreviation
     try:
         out = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
                              capture_output=True, text=True, timeout=3)
         if out.returncode == 0 and out.stdout.strip():
-            info["timezone"] = out.stdout.strip()
+            tz = out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        pass                                    # not systemd (dev box) — keep tz abbr
-    return info
+        pass
+    _tz_cache = (time.monotonic(), tz)
+    return tz
 
 
 # Both footprints below are measured by walking the disk, and this endpoint is
@@ -340,6 +364,10 @@ def system_status(request: Request):
         problems.append(f"recordings disk {storage.get('disk_used_pct')}% full")
     if time_info.get("ntp_synchronized") is False:
         problems.append("system clock is not NTP-synced")
+    from api.setup_routes import internet_problem
+    no_internet = internet_problem()
+    if no_internet:
+        problems.append(no_internet)
     monitor = getattr(st, "system_monitor", None)
     if monitor is not None:
         problems.extend(monitor.problems())

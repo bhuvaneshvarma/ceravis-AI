@@ -28,8 +28,9 @@ CHANNELS="${CHANNELS:-1 6 11}"   # the three 2.4 GHz channels that do not overla
 SETTLE="${SETTLE:-120}"          # seconds the cameras get to settle before measuring
 REJOIN="${REJOIN:-120}"          # seconds to wait for every camera to answer again
 PINGS="${PINGS:-60}"             # pings per camera per channel, 0.5 s apart
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CAMERAS_JSON="$ROOT/edge/data/cameras.json"
+# shellcheck source=setup/lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"     # the data folder, from the layout
+CAMERAS_JSON="$(data_dir)/cameras.json"
 
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 die() { say "STOP: $*"; exit 1; }

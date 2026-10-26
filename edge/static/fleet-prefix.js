@@ -25,9 +25,16 @@
   var m = location.pathname.match(/^(\/[^/]+)\/ui(?:\/|$)/);
   var PREFIX = (m && m[1]) || "";
   window.CERAVIS_PREFIX = PREFIX;
-  // The server is the authority on sign-in (api/auth): when it answers 401 the
-  // browser's own note is stale — drop it and go to the sign-in page.
+  // The server is the authority on sign-in (api/auth): when its sign-in gate
+  // answers 401 {signin: true} the browser's own note is stale — drop it and go
+  // to the sign-in page. Any other 401 (a wrong reboot password, a cloud check)
+  // is the page's own business and signs nobody out.
   var signInPage = /(?:login|welcome)\.html$/.test(location.pathname);
+
+  function signedOut(r) {
+    return r.clone().json().then(function (b) { return !!(b && b.signin === true); },
+                                 function () { return false; });
+  }
 
   function needs(p) {
     return p === "/api" || p.indexOf("/api/") === 0;
@@ -39,11 +46,14 @@
       input = PREFIX + input;
     }
     return _fetch(input, init).then(function (r) {
-      if (r.status === 401 && !signInPage) {
-        try { localStorage.removeItem("cv-session"); } catch (e) {}
-        location.replace("login.html");
-      }
-      return r;
+      if (r.status !== 401 || signInPage) return r;
+      return signedOut(r).then(function (out) {
+        if (out) {
+          try { localStorage.removeItem("cv-session"); } catch (e) {}
+          location.replace("login.html");
+        }
+        return r;
+      });
     });
   };
 })();

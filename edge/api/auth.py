@@ -26,9 +26,10 @@ change at all.
 
 Sessions: a random 256-bit token in an HttpOnly, SameSite=Strict cookie, stored
 only as its SHA-256 (data/ui_sessions.json, 0600), surviving the service restart
-a care-recipient switch performs. UI_SESSION_IDLE_MINUTES signs a browser out
-after that long without a click or key press (0 = never); polling pages do not
-count as activity.
+a care-recipient switch performs. After UI_SESSION_IDLE_MINUTES without an
+action on the page (a click, key, touch, scroll or mouse move — polling and a
+playing video are not actions), the page asks "Are you still watching?" for
+PROMPT_SECS; no answer signs the browser out (0 = never asks).
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ from fastapi.responses import JSONResponse
 
 from api.control_auth import FLEET_EDGE_KEY
 from common.atomic import write_json_atomic
+from common.local_key import HEADER as LOCAL_KEY_HEADER, local_key
 from config.settings import settings
 
 logger = logging.getLogger("auth")
@@ -52,6 +54,17 @@ logger = logging.getLogger("auth")
 COOKIE = "ceravis_session"
 _MAX_AGE_SECS = 30 * 86400          # hard ceiling on any session, idle limit or not
 _SAVE_EVERY_SECS = 60.0             # activity bumps are written at most this often
+# The idle limit as the page and this server share it: the page asks for
+# PROMPT_SECS once the limit is reached, and reports actions at most every
+# REPORT_SECS — so the server itself refuses a session only after the limit
+# plus both, never underneath an open question.
+PROMPT_SECS = 15
+REPORT_SECS = 30
+
+
+def _idle_secs() -> float:
+    """No action for this long = the page asks; 0 = never."""
+    return max(0.0, float(settings.ui_session_idle_minutes) * 60.0)
 
 _PUBLIC = [
     ("GET", r"/api/v1/session"), ("POST", r"/api/v1/session/activity"),
@@ -69,7 +82,11 @@ _CLOUD = [
     ("*", r"/api/v1/talkback/(cameras|log|health|credential|check)"),
     ("*", r"/api/v1/talkback/[^/]+/(credential|test|stream)"),
 ]
+# What a loopback caller WITHOUT the local key may still read: the health
+# surface the fleet agent forwards (edge/fleet) — read-only, nothing else.
+_LOCAL_READ = [("GET", r"/api/v1/system/status")]
 _PUBLIC_RE = [(m, re.compile(p + r"/?")) for m, p in _PUBLIC]
+_LOCAL_READ_RE = [(m, re.compile(p + r"/?")) for m, p in _LOCAL_READ]
 _CLOUD_RE = [(m, re.compile(p + r"/?")) for m, p in _CLOUD]
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -116,9 +133,9 @@ class SessionStore:
             logger.warning("could not save sessions", exc_info=True)
 
     def _expired(self, s: dict, now: float) -> bool:
-        idle = float(settings.ui_session_idle_minutes) * 60.0
+        idle = _idle_secs()
         return (now - s["created"] > _MAX_AGE_SECS
-                or (idle > 0 and now - s["active"] > idle))
+                or (idle > 0 and now - s["active"] > idle + PROMPT_SECS + REPORT_SECS))
 
     def issue(self, email: str = "") -> str:
         token = secrets.token_urlsafe(32)
@@ -177,8 +194,8 @@ sessions = SessionStore()
 
 
 def remaining_secs(s: dict) -> int | None:
-    """Seconds until the idle limit signs this session out (None = no limit)."""
-    idle = float(settings.ui_session_idle_minutes) * 60.0
+    """Seconds until the page asks "still watching?" (None = no limit)."""
+    idle = _idle_secs()
     if idle <= 0:
         return None
     return max(0, int(s["active"] + idle - time.time()))
@@ -202,13 +219,23 @@ def _header(scope: dict, key: bytes) -> bytes | None:
     return None
 
 
-def is_local(scope: dict) -> bool:
-    """This device calling itself — never a request that came in through the
+def _loopback(scope: dict) -> bool:
+    """A request from this device itself — never one that came in through the
     tunnel (frpc also connects from loopback, but tunnel requests carry the
     /<edge_id> prefix and the cloud proxy's X-Forwarded-For)."""
     client = (scope.get("client") or ("", 0))[0]
     return (client in _LOOPBACK and FLEET_EDGE_KEY not in scope
             and _header(scope, b"x-forwarded-for") is None)
+
+
+def is_local(scope: dict) -> bool:
+    """This device calling itself WITH the device's local key (common/
+    local_key) — our own tools and scripts. Reaching 127.0.0.1 alone proves
+    nothing (any process on the box can, and so can a browser opened on the
+    device), so without the key a loopback caller signs in like anyone else;
+    only the read-only health surface (_LOCAL_READ) is open to it."""
+    return _loopback(scope) and local_key.matches(
+        _header(scope, LOCAL_KEY_HEADER.lower().encode("latin-1")))
 
 
 def session_of(request: Request) -> dict | None:
@@ -228,8 +255,11 @@ def _cookie_header(scope: dict, token: str, max_age: int) -> bytes:
     if fleet:
         from config.account_config import effective_edge_id
         path = f"/{effective_edge_id() or scope[FLEET_EDGE_KEY]}/"
+    # Secure wherever the page itself is: the tunnel (the fleet domain's HTTPS)
+    # and the LAN listener's HTTPS (serve.py) — never sent over plain HTTP then.
+    secure = fleet or scope.get("scheme") in ("https", "wss")
     parts = [f"{COOKIE}={token}", f"Path={path}", f"Max-Age={max_age}",
-             "HttpOnly", "SameSite=Strict"] + (["Secure"] if fleet else [])
+             "HttpOnly", "SameSite=Strict"] + (["Secure"] if secure else [])
     return "; ".join(parts).encode("latin-1")
 
 
@@ -247,6 +277,7 @@ class SessionGate:
         method = scope.get("method", "GET") if scope["type"] == "http" else "GET"
         allowed = (method == "OPTIONS"
                    or is_local(scope)
+                   or (_loopback(scope) and _matches(_LOCAL_READ_RE, method, path))
                    or _matches(_PUBLIC_RE, method, path)
                    or _matches(_CLOUD_RE, method, path)
                    or sessions.check(_cookie(scope)) is not None)
@@ -308,6 +339,7 @@ router = APIRouter(prefix="/api/v1/session", tags=["session"])
 def _state(s: dict | None, local: bool) -> dict:
     return {"signedIn": bool(s) or local,
             "idleMinutes": settings.ui_session_idle_minutes,
+            "promptSecs": PROMPT_SECS, "reportSecs": REPORT_SECS,
             "remainingSecs": remaining_secs(s) if s else None}
 
 
@@ -318,7 +350,8 @@ def session_state(request: Request) -> dict:
 
 @router.post("/activity")
 def session_activity(request: Request) -> dict:
-    """The browser saw a click or key press — the idle clock starts over."""
+    """The page saw an action, or "still watching?" was answered — the idle
+    clock starts over."""
     return _state(sessions.touch(_cookie(request.scope)), is_local(request.scope))
 
 

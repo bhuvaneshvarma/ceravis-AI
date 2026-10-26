@@ -37,6 +37,8 @@ CPUQuota=10%
 MemoryMax=128M
 TasksMax=32
 Nice=10
+# Reporting comes after caring: the kernel frees memory here before the pipeline.
+OOMScoreAdjust=500
 
 # Hardening. (No NoNewPrivileges: the two allow-listed restarts go through sudo.)
 ProtectSystem=full

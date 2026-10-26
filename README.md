@@ -61,7 +61,8 @@ setup/
   firstboot.sh      This device's own identity (name, hotspot, keys) — once
   seal.sh           Clean a master before copying its disk (golden image)
   tune_os.sh        No desktop, power mode, fan, held NVIDIA packages, logs
-  make_release.sh   Build the release bundle (and the USB stick) on the PC
+  make_release.sh   Build the release folder dist/CERAVIS on the PC (or a USB stick)
+  send_to_device.sh Send it to a device over the network and install — no monitor
   lib.sh            The layout + the one way to install units / sudoers
   install_*.sh, export_*.sh, check_jetson.sh   the steps both use
 cloud/            The frp tunnel client
@@ -69,23 +70,28 @@ cloud/            The frp tunnel client
 
 ## Install a device (production)
 
-The device needs JetPack 6 (SDK Manager) and an internet connection.
+The device needs JetPack 6 (SDK Manager) and an Ethernet cable to the router.
+The keys live on the PC only, in `~/.ceravis/ceravis-secrets.env` (filled in
+once) and `~/.ceravis/authorized_keys` (developers' SSH public keys).
 
 ```bash
-bash setup/make_release.sh --usb E:/      # on the PC: build the bundle + USB stick
-sudo bash /media/$USER/<stick>/CERAVIS/install-from-usb.sh   # on the device
+bash setup/make_release.sh                          # on the PC: dist/CERAVIS
+bash setup/send_to_device.sh ceravis@<device-ip>    # copy + install, no monitor
+#   or: bash setup/make_release.sh --usb E:/  and on the device
+#       sudo bash /media/$USER/<stick>/CERAVIS/install.sh
 ```
 
-or, with the bundle already on the device: `sudo bash install.sh`. Then open
-`http://<device-ip>:8000` — the first screen shows every readiness check and the
-camera hotspot; when it says READY, sign in with the care account's email.
+The install runs as a background service on the device (a dropped connection
+does not stop it; `--follow` shows it again). Then open `https://<device-ip>:8443`
+— the first screen shows every readiness check and the camera hotspot; when it
+says READY, sign in with the care account's email.
 
 ## Use
 ```
-First run:   http://<device-ip>:8000            (readiness, then sign in)
-Live wall:   http://<device-ip>:8000/ui/live.html
-Through the hotspot:  http://10.42.0.1:8000
-Health:      http://<device-ip>:8000/health
+First run:   https://<device-ip>:8443           (readiness, then sign in)
+Live wall:   https://<device-ip>:8443/ui/live.html
+Through the hotspot:  https://10.42.0.1:8443
+Health:      curl http://127.0.0.1:8000/health   (on the device)
 Doctor:      sudo bash /opt/ceravis/current/setup/check_jetson.sh
 Logs:        journalctl -u ceravis -f
 ```

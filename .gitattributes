@@ -21,6 +21,7 @@ VERSION   text eol=lf
 /setup/upgrade.sh                export-ignore
 /setup/setup.sh                  export-ignore
 /setup/make_release.sh           export-ignore
+/setup/send_to_device.sh         export-ignore
 /cloud/frps.toml                 export-ignore
 /cloud/install_frps.sh           export-ignore
 /cloud/install_caddy.sh          export-ignore

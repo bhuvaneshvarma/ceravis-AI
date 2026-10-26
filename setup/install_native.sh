@@ -26,27 +26,37 @@ CERAVIS_VENV="${CERAVIS_VENV:-}"
 WHEELHOUSE="${CERAVIS_WHEELHOUSE:-}"      # keeps the compiled pycuda wheel (production)
 
 echo "== [1/4] apt packages (most are already present on JetPack) =="
+# plugins-base/good: rtspsrc + depayloaders; plugins-bad: h264parse/h265parse;
+# libav: avdec_* software-decode fallback. (plugins-ugly is encoders — not needed.)
+# python3-scipy comes from apt (prebuilt for aarch64, built against the system
+# numpy 1.x) — avoids the pip "No module named scipy" failure and any numpy-2
+# ABI clash. The BoT-SORT tracker uses scipy.optimize.linear_sum_assignment.
+APT_PKGS=(python3-pip python3-venv python3-dev build-essential
+          python3-numpy python3-scipy
+          gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          gstreamer1.0-plugins-bad gstreamer1.0-libav)
+# OpenCV: JetPack 6.1+ already ships NVIDIA's own build (4.8, GStreamer on).
+# Ubuntu's python3-opencv (4.5.4) next to it is a SECOND cv2 that can win the
+# import — so it is added only when no usable cv2 (with GStreamer) is there.
+python3 -c "import cv2, sys; sys.exit('GStreamer:                   YES' not in cv2.getBuildInformation())" \
+    2>/dev/null || APT_PKGS+=(python3-opencv)
+# TensorRT python bindings + trtexec (may be absent if SDK Manager's
+# "Jetson SDK Components" were skipped during flashing).
+python3 -c "import tensorrt" 2>/dev/null || APT_PKGS+=(python3-libnvinfer)
+[ -x /usr/src/tensorrt/bin/trtexec ] || command -v trtexec >/dev/null 2>&1 \
+    || APT_PKGS+=(libnvinfer-bin)
+MISSING=()
+for p in "${APT_PKGS[@]}"; do
+    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" || MISSING+=("$p")
+done
 if [ -n "${CERAVIS_SKIP_APT:-}" ]; then
     echo "   skipped (an update: the system packages are already in place)"
+elif [ "${#MISSING[@]}" -eq 0 ]; then
+    echo "   all present — nothing to install (no internet needed)"
 else
+    echo "   installing: ${MISSING[*]}"
     sudo apt-get update
-    # plugins-base/good: rtspsrc + depayloaders; plugins-bad: h264parse/h265parse;
-    # libav: avdec_* software-decode fallback. (plugins-ugly is encoders — not needed.)
-    # python3-scipy comes from apt (prebuilt for aarch64, built against the system
-    # numpy 1.x) — avoids the pip "No module named scipy" failure and any numpy-2
-    # ABI clash. The BoT-SORT tracker uses scipy.optimize.linear_sum_assignment.
-    sudo apt-get install -y --no-install-recommends \
-        python3-pip python3-venv python3-dev build-essential \
-        python3-numpy python3-opencv python3-scipy \
-        gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-        gstreamer1.0-plugins-bad gstreamer1.0-libav
-
-    # TensorRT python bindings + trtexec (may be absent if SDK Manager's
-    # "Jetson SDK Components" were skipped during flashing).
-    python3 -c "import tensorrt" 2>/dev/null \
-        || sudo apt-get install -y python3-libnvinfer
-    [ -x /usr/src/tensorrt/bin/trtexec ] || command -v trtexec >/dev/null 2>&1 \
-        || sudo apt-get install -y libnvinfer-bin
+    sudo apt-get install -y --no-install-recommends "${MISSING[@]}"
 fi
 
 if [ -n "$CERAVIS_VENV" ]; then
