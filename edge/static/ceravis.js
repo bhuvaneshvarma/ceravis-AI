@@ -84,11 +84,13 @@ function cvConfirm(message, opts = {}) {
 }
 
 /* Sign-in. The SERVER decides (api/auth): the session is an HttpOnly cookie it
-   sets at sign-in, and any 401 sends the browser back to login.html
+   sets at sign-in, and its sign-in 401 sends the browser back to login.html
    (fleet-prefix.js). The localStorage note below only lets a page redirect
    without waiting for the first API answer. When the device has an idle limit
-   (UI_SESSION_IDLE_MINUTES), the header shows the time left: a click or key
-   press starts it over; reading pages and polling do not. */
+   (UI_SESSION_IDLE_MINUTES), the header shows the time left. A click, key,
+   touch, scroll or mouse move on ANY open CERAVIS tab starts it over; polling
+   and a playing video do not. When it runs out, "Are you still watching?" asks
+   for promptSecs (15 s): Continue keeps the session, no answer signs out. */
 const CV_SESSION_KEY = "cv-session";
 
 function cvSessionValid() {
@@ -118,6 +120,38 @@ function cvRequireAuth() {
   return false;
 }
 
+/* "Are you still watching?" — resolves true on Continue, false on Sign out or
+   when `secs` run out. close(true) answers it from outside (another tab). */
+function cvStillWatching(secs) {
+  let close;
+  const answer = new Promise(resolve => {
+    document.querySelectorAll(".cv-dialog-scrim").forEach(d => d.remove());
+    const scrim = document.createElement("div");
+    scrim.className = "cv-dialog-scrim";
+    scrim.innerHTML = `
+      <div class="cv-dialog" role="alertdialog" aria-modal="true">
+        <div class="cv-dialog-title">Are you still watching?</div>
+        <div class="cv-dialog-msg"></div>
+        <div class="cv-dialog-actions">
+          <button class="btn btn-ghost" data-cv="out">Sign out</button>
+          <button class="btn btn-primary" data-cv="ok">Continue</button>
+        </div>
+      </div>`;
+    const msg = scrim.querySelector(".cv-dialog-msg");
+    let left = secs, timer = null;
+    const show = () => { msg.textContent =
+      `No activity for a while. You will be signed out in ${left} second${left === 1 ? "" : "s"}.`; };
+    close = (v) => { clearInterval(timer); scrim.remove(); resolve(v); };
+    scrim.querySelector('[data-cv="ok"]').onclick = () => close(true);
+    scrim.querySelector('[data-cv="out"]').onclick = () => close(false);
+    show();
+    document.body.appendChild(scrim);
+    scrim.querySelector('[data-cv="ok"]').focus();
+    timer = setInterval(() => { left -= 1; if (left <= 0) close(false); else show(); }, 1000);
+  });
+  return { answer, close: (v) => close(v) };
+}
+
 let _cvIdleArmed = false;
 function cvArmIdle() {
   if (_cvIdleArmed) return;
@@ -125,32 +159,50 @@ function cvArmIdle() {
   fetch("/api/v1/session", { cache: "no-store" }).then(r => r.json()).then(s => {
     if (!s || !s.signedIn || !(s.idleMinutes > 0)) return;     // no idle limit
     const idleMs = s.idleMinutes * 60000;
-    let deadline = Date.now() + (s.remainingSecs != null ? s.remainingSecs * 1000 : idleMs);
-    let lastPing = 0, warned = false;
-    const onActivity = () => {
-      deadline = Date.now() + idleMs;
-      warned = false;
-      if (Date.now() - lastPing > 60000) {           // tell the server, at most 1/min
-        lastPing = Date.now();
-        fetch("/api/v1/session/activity", { method: "POST" }).catch(() => {});
-      }
+    const reportMs = (s.reportSecs || 30) * 1000;
+    const SHARED = "cv-last-action";                   // every tab's latest action
+    const shared = () => { try { return +localStorage.getItem(SHARED) || 0; } catch (_) { return 0; } };
+    let lastAction = Date.now(), lastReport = 0, lastShared = 0, asking = null;
+    const report = () => {
+      lastReport = Date.now();
+      fetch("/api/v1/session/activity", { method: "POST" }).catch(() => {});
     };
-    ["pointerdown", "keydown", "touchstart", "wheel"].forEach(ev =>
+    const onActivity = () => {
+      if (asking) return;                // the open question is answered by its buttons only
+      lastAction = Date.now();
+      if (lastAction - lastShared > 1000) {            // other tabs learn it, 1/s at most
+        lastShared = lastAction;
+        try { localStorage.setItem(SHARED, String(lastAction)); } catch (_) {}
+      }
+      if (lastAction - lastReport > reportMs) report();
+    };
+    ["pointerdown", "pointermove", "keydown", "touchstart", "wheel"].forEach(ev =>
       window.addEventListener(ev, onActivity, { passive: true }));
     onActivity();                                      // opening a page is activity
     const tick = () => {
-      const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      const last = Math.max(lastAction, shared());
+      if (asking && last > asking.since) {             // answered in another tab
+        asking.close(true);
+      } else if (!asking && Date.now() - last >= idleMs) {
+        const q = cvStillWatching(s.promptSecs || 15);
+        asking = { since: last, close: q.close };
+        q.answer.then(stay => {
+          asking = null;
+          if (!stay) {
+            cvSignOut(`Signed out after ${s.idleMinutes} minutes without activity.`);
+            return;
+          }
+          lastReport = lastShared = 0;                 // Continue: tell the server now
+          onActivity();
+        });
+      }
+      const left = Math.max(0, Math.round((last + idleMs - Date.now()) / 1000));
       const el = document.getElementById("cv-session");
       if (el) {
         el.hidden = false;
         el.textContent = `Auto sign-out ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
         el.classList.toggle("warn", left <= 60);
       }
-      if (left <= 60 && !warned) {
-        warned = true;
-        toast("You'll be signed out in a minute — click anywhere to stay signed in.", "warn", 6000);
-      }
-      if (left <= 0) { cvSignOut("Signed out after " + s.idleMinutes + " minutes without activity."); return; }
       setTimeout(tick, 1000);
     };
     tick();

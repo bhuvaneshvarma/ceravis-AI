@@ -26,9 +26,10 @@ change at all.
 
 Sessions: a random 256-bit token in an HttpOnly, SameSite=Strict cookie, stored
 only as its SHA-256 (data/ui_sessions.json, 0600), surviving the service restart
-a care-recipient switch performs. UI_SESSION_IDLE_MINUTES signs a browser out
-after that long without a click or key press (0 = never); polling pages do not
-count as activity.
+a care-recipient switch performs. After UI_SESSION_IDLE_MINUTES without an
+action on the page (a click, key, touch, scroll or mouse move — polling and a
+playing video are not actions), the page asks "Are you still watching?" for
+PROMPT_SECS; no answer signs the browser out (0 = never asks).
 """
 from __future__ import annotations
 
@@ -52,6 +53,17 @@ logger = logging.getLogger("auth")
 COOKIE = "ceravis_session"
 _MAX_AGE_SECS = 30 * 86400          # hard ceiling on any session, idle limit or not
 _SAVE_EVERY_SECS = 60.0             # activity bumps are written at most this often
+# The idle limit as the page and this server share it: the page asks for
+# PROMPT_SECS once the limit is reached, and reports actions at most every
+# REPORT_SECS — so the server itself refuses a session only after the limit
+# plus both, never underneath an open question.
+PROMPT_SECS = 15
+REPORT_SECS = 30
+
+
+def _idle_secs() -> float:
+    """No action for this long = the page asks; 0 = never."""
+    return max(0.0, float(settings.ui_session_idle_minutes) * 60.0)
 
 _PUBLIC = [
     ("GET", r"/api/v1/session"), ("POST", r"/api/v1/session/activity"),
@@ -116,9 +128,9 @@ class SessionStore:
             logger.warning("could not save sessions", exc_info=True)
 
     def _expired(self, s: dict, now: float) -> bool:
-        idle = float(settings.ui_session_idle_minutes) * 60.0
+        idle = _idle_secs()
         return (now - s["created"] > _MAX_AGE_SECS
-                or (idle > 0 and now - s["active"] > idle))
+                or (idle > 0 and now - s["active"] > idle + PROMPT_SECS + REPORT_SECS))
 
     def issue(self, email: str = "") -> str:
         token = secrets.token_urlsafe(32)
@@ -177,8 +189,8 @@ sessions = SessionStore()
 
 
 def remaining_secs(s: dict) -> int | None:
-    """Seconds until the idle limit signs this session out (None = no limit)."""
-    idle = float(settings.ui_session_idle_minutes) * 60.0
+    """Seconds until the page asks "still watching?" (None = no limit)."""
+    idle = _idle_secs()
     if idle <= 0:
         return None
     return max(0, int(s["active"] + idle - time.time()))
@@ -308,6 +320,7 @@ router = APIRouter(prefix="/api/v1/session", tags=["session"])
 def _state(s: dict | None, local: bool) -> dict:
     return {"signedIn": bool(s) or local,
             "idleMinutes": settings.ui_session_idle_minutes,
+            "promptSecs": PROMPT_SECS, "reportSecs": REPORT_SECS,
             "remainingSecs": remaining_secs(s) if s else None}
 
 
@@ -318,7 +331,8 @@ def session_state(request: Request) -> dict:
 
 @router.post("/activity")
 def session_activity(request: Request) -> dict:
-    """The browser saw a click or key press — the idle clock starts over."""
+    """The page saw an action, or "still watching?" was answered — the idle
+    clock starts over."""
     return _state(sessions.touch(_cookie(request.scope)), is_local(request.scope))
 
 

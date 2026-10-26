@@ -149,8 +149,17 @@ check("polling does not extend it",
       auth.sessions._sessions[digest]["active"] < time.time() - 45)
 auth.sessions.touch(tok)                                    # a click
 check("a user action does", auth.sessions._sessions[digest]["active"] > time.time() - 2)
-auth.sessions._sessions[digest]["active"] = time.time() - 61
-check("idle past the limit -> 401", call("/api/v1/cameras", cookie=tok)[0] == 401)
+grace = auth.PROMPT_SECS + auth.REPORT_SECS
+auth.sessions._sessions[digest]["active"] = time.time() - 60 - grace + 5
+check("past the limit but inside the 'still watching?' window -> still signed in",
+      call("/api/v1/cameras", cookie=tok)[0] == 200)
+check("…and the page is told it is time to ask",
+      auth.remaining_secs(auth.sessions._sessions[digest]) == 0)
+st = auth._state(auth.sessions._sessions[digest], False)
+check("the page learns the question's length and the report interval",
+      st["promptSecs"] == 15 and st["reportSecs"] == 30 and st["idleMinutes"] == 1)
+auth.sessions._sessions[digest]["active"] = time.time() - 60 - grace - 1
+check("no answer either -> 401", call("/api/v1/cameras", cookie=tok)[0] == 401)
 settings.ui_session_idle_minutes = 0
 st, h, _ = call("/api/v1/account/verify", "POST", answer={"verified": True})
 tok2 = token_of(h["set-cookie"])
