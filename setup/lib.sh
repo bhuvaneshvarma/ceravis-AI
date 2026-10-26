@@ -105,6 +105,20 @@ install_unit() {
     | sudo tee "/etc/systemd/system/$name" >/dev/null
 }
 
+# A production release's code is not readable by anyone who logs in: root owns
+# it, the service's group may read and run it, everyone else sees nothing (the
+# developers read it with sudo). The engines stay the service's own — its
+# start-up self-heal may build a missing one.   lock_release <release dir>
+lock_release() {
+    local grp
+    grp="$(id -gn "$CERAVIS_USER")"
+    sudo chown -R "root:$grp" "$1"
+    sudo chmod -R u=rwX,g=rX,o= "$1"
+    if [ -d "$1/models" ]; then sudo chown -R "$CERAVIS_USER:$grp" "$1/models"; fi
+    sudo chown "root:$grp" "$(dirname "$1")"
+    sudo chmod 0750 "$(dirname "$1")"
+}
+
 # Install a sudoers drop-in only if visudo accepts it — a malformed file locks
 # everyone out of sudo.   install_sudoers <name> <rule line>
 install_sudoers() {

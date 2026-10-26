@@ -7,6 +7,8 @@ The model pipeline (setup/export_models.py): one catalogue, two stages.
    a wrong file at the real path
 3. an engine is built from its ONNX with trtexec, skipped when built or when
    the ONNX is missing, and retried without batch shapes for a fixed-batch ONNX
+3b. engines carry a fingerprint: another release's engine is reused only when
+   ONNX, TensorRT and board are the same; a TensorRT change rebuilds it
 4. the leftover .pt weights are removed once the ONNX exist — and nothing else
 
 No torch, no TensorRT: trtexec is a stand-in. Runs anywhere.
@@ -16,6 +18,7 @@ Run:  PYTHONPATH=edge python tests/test_export_models.py
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -103,6 +106,48 @@ try:
     det.build_engine()
     check("a fixed-batch ONNX: retried without shapes",
           det.engine.exists() and not any("Shapes=" in c for c in calls[-1]))
+    fixed_batch["on"] = False
+
+    print("\n3b. fingerprints: reuse only what is provably the same")
+    trt = {"v": "10.3.0"}
+    real_ver, real_board = em._tensorrt_version, em._board
+    em._tensorrt_version, em._board = (lambda: trt["v"]), (lambda: "nvidia,p3768-0000+p3767-0005")
+    try:
+        det.engine.unlink()
+        det.build_engine()
+        fp = json.loads(em._fingerprint_path(det.engine).read_text())
+        check("a build records its fingerprint",
+              fp["tensorrt"] == "10.3.0" and fp["onnx_sha256"] == hashlib.sha256(b"onnx").hexdigest())
+        # the next release on this device: same ONNX bytes, the running models as the source
+        old_models, new_models = MODELS, Path(tempfile.mkdtemp(prefix="ceravis-newrel-"))
+        os.environ["MODELS_DIR"] = str(new_models)
+        new = {m.name: m for m in em.catalog()}["detection"]
+        new.onnx.parent.mkdir(parents=True, exist_ok=True)
+        new.onnx.write_bytes(b"onnx")
+        n = len(calls)
+        new.build_engine(old_models)
+        check("same ONNX, TensorRT, board -> reused, not rebuilt",
+              new.engine.exists() and len(calls) == n)
+        new.engine.unlink()
+        new.onnx.write_bytes(b"onnx-v2")                        # a changed model
+        new.build_engine(old_models)
+        check("a changed ONNX -> built, the old engine NOT taken", len(calls) == n + 1)
+        trt["v"] = "10.7.0"                                    # JetPack upgraded TensorRT
+        n = len(calls)
+        new.build_engine()
+        check("TensorRT changed -> the stale engine is rebuilt", len(calls) == n + 1)
+        n = len(calls)
+        new.build_engine()
+        check("…and once rebuilt it is kept (no rebuild at every start)", len(calls) == n)
+        legacy = new.engine.with_name("legacy.engine")
+        legacy.write_bytes(b"e")
+        m = em.Model("legacy", new.onnx, legacy)
+        n = len(calls)
+        m.build_engine()
+        check("an engine from before fingerprints is trusted as built", len(calls) == n)
+        os.environ["MODELS_DIR"] = str(old_models)
+    finally:
+        em._tensorrt_version, em._board = real_ver, real_board
 finally:
     em.subprocess.run, em._trtexec = real_run, real_trtexec
 

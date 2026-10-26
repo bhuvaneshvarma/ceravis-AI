@@ -8,8 +8,9 @@
 #   3. stage     unpack into /opt/ceravis/releases/<version> — the running
 #                release is not touched
 #   4. build     its own virtualenv (the cached pycuda wheel makes this quick)
-#                and its AI engines: copied from the running release when they
-#                come from the same ONNX, built only when a model changed
+#                and its AI engines, for this device: the running release's
+#                engine is taken only when its fingerprint proves it identical
+#                (same ONNX, same TensorRT, same board), else it is built
 #   5. switch    /opt/ceravis/current -> the new release, restart the services
 #   6. check     the API answers /health and the media server is up, within
 #                CHECK_SECS (default 240)
@@ -31,6 +32,9 @@ CHECK_SECS="${CHECK_SECS:-240}"
 KEEP="${KEEP:-3}"
 [ "$(id -u)" = 0 ] || { echo "run as root: sudo bash $0 …" >&2; exit 1; }
 [ -f /etc/ceravis/layout.env ] || { echo "not a production install (no /etc/ceravis/layout.env)" >&2; exit 1; }
+# One install or update at a time (the same lock as setup/install.sh).
+exec 9>/run/ceravis-install.lock
+flock -n 9 || { echo "another CERAVIS install or update is running" >&2; exit 1; }
 
 SOURCE=""; SHA=""; ROLLBACK=0
 while [ $# -gt 0 ]; do
@@ -119,23 +123,19 @@ build() {
         bash "$NEW/setup/install_native.sh" >"$WORK/build.log" 2>&1 || return 1
     "$NEW/venv/bin/python" -m compileall -q "$NEW/edge" >/dev/null 2>&1 || true
     install -d -m 0755 -o "$CERAVIS_USER" -g "$CERAVIS_USER" "$NEW/models"
-    [ -d "$NEW/models-src" ] && cp -a "$NEW/models-src/." "$NEW/models/"
-    # An engine is reused when its ONNX is byte-identical to the running one's.
-    (cd "$CURRENT/models" 2>/dev/null && find . -name '*.engine') | while IFS= read -r eng; do
-        local onnx="${eng%.engine}.onnx"
-        if [ ! -e "$NEW/models/$onnx" ] && [ -e "$CURRENT/models/$onnx" ]; then
-            install -D -m 0644 "$CURRENT/models/$onnx" "$NEW/models/$onnx"
-        fi
-        if cmp -s "$CURRENT/models/$onnx" "$NEW/models/$onnx"; then
-            cp -al "$CURRENT/models/$eng" "$NEW/models/$eng" 2>/dev/null \
-                || cp -a "$CURRENT/models/$eng" "$NEW/models/$eng"
-        fi
+    # The ONNX models come with the bundle; one it lacks is taken from the
+    # running release — an ONNX only, never an engine.
+    if [ -d "$NEW/models-src" ]; then
+        cp -a "$NEW/models-src/." "$NEW/models/" && rm -rf "$NEW/models-src"
+    fi
+    (cd "$CURRENT/models" 2>/dev/null && find . -type f -name '*.onnx') | while IFS= read -r f; do
+        [ -e "$NEW/models/$f" ] || install -D -m 0644 "$CURRENT/models/$f" "$NEW/models/$f"
     done
-    # Face/other assets the running release fetched (no engine of their own).
-    cp -an "$CURRENT/models/." "$NEW/models/" 2>/dev/null || true
-    "$NEW/venv/bin/python" "$NEW/setup/export_models.py" >>"$WORK/build.log" 2>&1 || return 1
-    chown -R "$CERAVIS_USER:$CERAVIS_USER" "$NEW/models"
-    chown -R root:root "$NEW/edge" "$NEW/setup" "$NEW/cloud"
+    # Engines are built for this device; the running release's engine is taken
+    # only when its fingerprint proves it identical (same ONNX, TensorRT, board).
+    "$NEW/venv/bin/python" "$NEW/setup/export_models.py" --reuse-from "$CURRENT/models" \
+        >>"$WORK/build.log" 2>&1 || return 1
+    lock_release "$NEW"
 }
 if ! build; then
     mv "$NEW" "$NEW.failed"

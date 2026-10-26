@@ -12,7 +12,15 @@ The AI models, in two stages — both idempotent (finished work is skipped):
 
   2. engines (default)    ONNX -> FP16 TensorRT engine with JetPack's own
      trtexec (/usr/src/tensorrt/bin/trtexec, no Python deps). Engines are
-     GPU-specific, so they are ALWAYS built on the device itself, never copied.
+     specific to the GPU and the TensorRT that built them, so they are built
+     on the device itself and never copied from another one. Each engine gets
+     a fingerprint (<engine>.json: its ONNX's SHA-256, the TensorRT version,
+     the board, the build shapes):
+       * --reuse-from DIR (update.sh: the running release's models) takes an
+         engine from DIR only when its fingerprint matches exactly — the same
+         ONNX on the same TensorRT on this same board — else it is built;
+       * an engine whose fingerprint no longer matches this device (TensorRT
+         changed with a JetPack update) is rebuilt, never loaded stale.
 
 Where each file goes comes from the app's own settings (MODELS_DIR included),
 so the engines land exactly where the app loads them from.
@@ -20,7 +28,9 @@ so the engines land exactly where the app loads them from.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -79,6 +89,25 @@ def _trtexec() -> str | None:
 ONNX_OPSET = 17
 
 
+def _tensorrt_version() -> str | None:
+    try:
+        import tensorrt
+        return str(tensorrt.__version__)
+    except Exception:
+        return None
+
+
+def _board() -> str:
+    try:
+        return Path("/proc/device-tree/compatible").read_bytes().replace(b"\0", b" ").decode().strip()
+    except OSError:
+        return ""
+
+
+def _fingerprint_path(engine: Path) -> Path:
+    return engine.with_name(engine.name + ".json")
+
+
 class Model:
     """One AI model: its ONNX file (stage 1) and, when it runs on TensorRT, the
     engine built from it on the device (stage 2). Subclasses say how the ONNX
@@ -100,16 +129,75 @@ class Model:
         raise NotImplementedError
 
     # ---- stage 2 ----------------------------------------------------
-    def build_engine(self) -> None:
-        """ONNX -> FP16 TensorRT engine via JetPack's trtexec."""
+    # What makes two engines the same; the ONNX's size and time only spare
+    # hashing it again at every start.
+    IDENTITY = ("onnx_sha256", "tensorrt", "board", "shapes")
+
+    def fingerprint(self, known: dict | None = None) -> dict | None:
+        """What an engine built here, now, from this ONNX would be; None when it
+        cannot be known (no TensorRT here, no ONNX)."""
+        trt = _tensorrt_version()
+        if trt is None or not _have(self.onnx):
+            return None
+        st = self.onnx.stat()
+        unchanged = bool(known) and (known.get("onnx_size"), known.get("onnx_mtime_ns")) \
+            == (st.st_size, st.st_mtime_ns)
+        return {"onnx_sha256": known["onnx_sha256"] if unchanged else _sha256(self.onnx),
+                "onnx_size": st.st_size, "onnx_mtime_ns": st.st_mtime_ns,
+                "tensorrt": trt, "board": _board(), "shapes": self.shapes or []}
+
+    @classmethod
+    def _same(cls, a: dict | None, b: dict | None) -> bool:
+        return bool(a) and bool(b) and all(a.get(k) == b.get(k) for k in cls.IDENTITY)
+
+    @staticmethod
+    def _recorded(engine: Path) -> dict | None:
+        try:
+            return json.loads(_fingerprint_path(engine).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def build_engine(self, reuse_from: Path | None = None) -> None:
+        """ONNX -> FP16 TensorRT engine via JetPack's trtexec — or, with
+        reuse_from, that folder's engine when its fingerprint matches exactly."""
         if self.engine is None:
-            return
-        if _have(self.engine):
-            print(f"[skip] {self.engine.name} already built")
             return
         if not _have(self.onnx):
             print(f"[skip] {self.engine.name}: missing {self.onnx}")
             return
+        have = self._recorded(self.engine) if _have(self.engine) else None
+        want = self.fingerprint(have)
+        if _have(self.engine):
+            # An engine from before fingerprints (none recorded) is trusted as built.
+            if want is None or have is None or self._same(have, want):
+                print(f"[skip] {self.engine.name} already built")
+                return
+            print(f"[stale] {self.engine.name} was built for TensorRT {have.get('tensorrt')} "
+                  "or another ONNX — building it again")
+            self.engine.unlink()
+        if reuse_from is not None and want is not None and self._reuse(reuse_from, want):
+            return
+        self._build()
+        if want is not None and _have(self.engine):
+            _fingerprint_path(self.engine).write_text(json.dumps(want, indent=2),
+                                                      encoding="utf-8")
+
+    def _reuse(self, folder: Path, want: dict) -> bool:
+        """Take the same engine from another release on THIS device — only when
+        its fingerprint proves it identical; then it is copied, never moved."""
+        try:
+            old = folder / self.engine.relative_to(_models_dir())
+        except ValueError:
+            return False
+        if not _have(old) or not self._same(self._recorded(old), want):
+            return False
+        self.engine.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(old, self.engine)
+        _fingerprint_path(self.engine).write_text(json.dumps(want, indent=2), encoding="utf-8")
+        print(f"[reuse] {self.engine.name}: identical ONNX, TensorRT and board")
+        return True
+
+    def _build(self) -> None:
         trtexec = _trtexec()
         if trtexec is None:
             print("[error] trtexec not found — is the JetPack TensorRT "
@@ -298,12 +386,17 @@ def remove_leftover_weights(edge: Path | None = None) -> None:
             print(f"[clean] removed {stale} (only the ONNX export needed it)")
 
 
-def main() -> int:
-    # --onnx-only: stage 1 alone (needs the export tools). The engine builds
-    # then happen in a separate, torch-free process — keeping ~2 GB of RAM free
-    # for trtexec, which otherwise can fail CUDA init on the shared-memory Orin
-    # Nano ("no CUDA-capable device is detected").
-    onnx_only = "--onnx-only" in sys.argv
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    # Stage 1 alone (needs the export tools). The engine builds then happen in a
+    # separate, torch-free process — keeping ~2 GB of RAM free for trtexec,
+    # which otherwise can fail CUDA init on the shared-memory Orin Nano ("no
+    # CUDA-capable device is detected").
+    ap.add_argument("--onnx-only", action="store_true", help="stage 1: the ONNX models only")
+    ap.add_argument("--reuse-from", type=Path, metavar="DIR",
+                    help="take an engine from DIR only when its fingerprint matches exactly")
+    args = ap.parse_args(argv)
+    onnx_only = args.onnx_only
     models = catalog()
     ready = [m.ensure_onnx() for m in models]
     if all(ready):
@@ -314,7 +407,7 @@ def main() -> int:
               f" in {_models_dir()}")
         return 1 if missing else 0
     for m in models:
-        m.build_engine()
+        m.build_engine(args.reuse_from)
     return 0
 
 
