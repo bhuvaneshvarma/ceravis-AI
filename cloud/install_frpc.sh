@@ -65,7 +65,10 @@ else
     echo "config: template only — the tunnel stays OFF until a server and token are set"
     echo "        (re-run with FRP_SERVER_ADDR=<addr> FRP_TOKEN=<token>, or edit $CONF)"
 fi
-sudo chmod 0644 "$CONF"
+# It holds the tunnel token: root writes it, the service's group may only read
+# it (integration/edge_provision checks the routes), nobody else.
+sudo chown "root:$(id -gn "$CERAVIS_USER")" "$CONF"
+sudo chmod 0640 "$CONF"
 NAME="$(device_name)"
 frpc_set_user "$CONF" "$NAME"
 echo "proxies prefixed with this device's name: $NAME"

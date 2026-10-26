@@ -91,7 +91,11 @@ if command -v frpc >/dev/null 2>&1; then
         echo "generated config failed 'frpc verify' — aborting" >&2; exit 5; }
 fi
 
-install -m 0644 "$TMP" "$FRPC"
+# The token stays private: readable by the group the file already had (the
+# service's — set by install_frpc.sh), by nobody else.
+GROUP="$(stat -c %g "$FRPC")"
+install -m 0640 "$TMP" "$FRPC"
+chgrp "$GROUP" "$FRPC"
 # First setup on a fresh edge device vs. a re-key on a running one: if frpc is
 # already active, restart it onto the new config; if it's installed but stopped
 # (or was never started — the initial verify on a new device), enable + start it
