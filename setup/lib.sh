@@ -158,5 +158,16 @@ frpc_reset_routes() {
         "$1"
 }
 
+# The first Python that really runs (on a Windows PC `python3` can be a stub
+# that only opens the Store).   host_python
+host_python() {
+    local p
+    for p in python3 python; do
+        "$p" -c "import sys" >/dev/null 2>&1 && { echo "$p"; return 0; }
+    done
+    echo "no working python3 on PATH" >&2
+    return 1
+}
+
 # This device's name (ceravis-<code>) from the app's own identity module.
 device_name() { (cd "$EDGE_DIR" && "$CERAVIS_PYTHON" -m common.device_identity name); }

@@ -47,9 +47,16 @@ fi
 
 # ---- config -----------------------------------------------------------
 sudo mkdir -p /etc/frp
+same_server() {
+    sudo grep -qF "serverAddr = \"$FRP_SERVER_ADDR\"" "$CONF" 2>/dev/null \
+        && sudo grep -qF "auth.token = \"$FRP_TOKEN\"" "$CONF" 2>/dev/null
+}
 if [ -f "$HERE/frpc.toml" ]; then
     sudo cp "$HERE/frpc.toml" "$CONF"
     echo "config: cloud/frpc.toml"
+elif [ -n "${FRP_SERVER_ADDR:-}" ] && [ -n "${FRP_TOKEN:-}" ] && same_server; then
+    # A re-run with the same server keeps the routes the app keyed to its edge_id.
+    echo "config: keeping $CONF (same server and token)"
 elif [ -n "${FRP_SERVER_ADDR:-}" ] && [ -n "${FRP_TOKEN:-}" ]; then
     case "$FRP_SERVER_ADDR$FRP_TOKEN" in
         *[!A-Za-z0-9._:~+/=-]*) echo "refusing: unexpected characters in FRP_SERVER_ADDR/FRP_TOKEN" >&2; exit 2 ;;

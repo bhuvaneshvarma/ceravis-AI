@@ -7,12 +7,14 @@
 #
 #   customer   account (edge_id, care recipient), sign-in sessions, cameras,
 #              zones, enrollment photos and galleries, events, recordings,
-#              upload queue, talk-back credentials, reboot password
+#              upload queue, talk-back credentials
 #   device     machine-id, SSH host keys, TLS certificate, hotspot, saved
 #              Wi-Fi networks, fleet identity, tunnel routes and prefix
 #   traces     logs, shell histories, temporary files, DHCP leases
 #
-# Kept: the installed software, the AI engines, the cloud server settings.
+# Kept: the installed software, the AI engines, the cloud server settings, the
+# operator's manual-reboot password and the developers' SSH access (keys +
+# the key-and-password rule) — the same on every device of the fleet.
 # The admin account's password is EXPIRED: the first person to log in to a copy
 # must set a new one, so no two devices share it.
 #
@@ -52,7 +54,7 @@ systemctl stop ceravis frpc ceravis-fleet-agent ceravis-reboot.timer 2>/dev/null
 
 say "customer and runtime data"
 for f in account.json ui_sessions.json hotspot.json cameras.json zones.json \
-         reboot_auth.json last_reboot.json recording_mode.json \
+         last_reboot.json recording_mode.json local.key \
          talkback.json talkback_guard.json talkback_log.jsonl talkback_log.jsonl.1 \
          cloud_calls.jsonl ceravis_api_wire.jsonl mediamtx.yml mediamtx.log; do
     rm -f "$DATA/$f"

@@ -25,10 +25,7 @@ export_layout
 ONNX_ONLY=0
 [ "${1:-}" = "--onnx-only" ] && ONNX_ONLY=1
 VENV="${VENV:-/tmp/ceravis-export-venv}"
-# The first interpreter that really runs (on Windows `python3` can be a stub).
-HOST_PYTHON=""
-for p in python3 python; do "$p" -c "import sys" >/dev/null 2>&1 && { HOST_PYTHON="$p"; break; }; done
-[ -n "$HOST_PYTHON" ] || { echo "no working python3 on PATH" >&2; exit 1; }
+HOST_PYTHON="$(host_python)"
 vpy() { if [ -x "$VENV/bin/python" ]; then "$VENV/bin/python" "$@"; else "$VENV/Scripts/python.exe" "$@"; fi; }
 
 cd "$EDGE_DIR"

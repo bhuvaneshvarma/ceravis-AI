@@ -13,8 +13,12 @@ on the system touched):
 4. frpc_set_user adds then replaces the device prefix, and refuses a bad name;
    the edge_id helper keeps it; frpc_reset_routes (seal) puts every route and
    the prefix back to placeholders but keeps the shared fleet domain
-5. a release bundle holds the committed code, the installer and a manifest
+5. a release is ONE folder (installer, bundle, fingerprint, README — never a
+   secret); the bundle holds the committed code, the installer and a manifest
    whose hashes match — and none of the dev/test/cloud-server files
+6. install.sh reads the secrets file as data: spaces, quotes, CRLF, a last line
+   without a newline; nothing executed, unknown keys ignored
+7. install_frpc.sh keeps a keyed tunnel config when server and token are the same
 
 Needs bash and git (Git Bash on Windows). Run:  python tests/test_installer.py
 """
@@ -189,18 +193,28 @@ check("seal: routes back to /EDGE_ID, prefix back to DEVICE_NAME",
 check("seal: the shared fleet domain is kept",
       'customDomains = ["edgeai.ceravishealth.in"]' in txt)
 
-print("\n5. a release bundle")
+print("\n5. a release folder")
 if shutil.which("git"):
-    dist = ROOT / "dist"
-    keep = dist.exists()
-    r = subprocess.run([BASH, posix(ROOT / "setup/make_release.sh"), "--allow-dirty"],
-                       cwd=ROOT, capture_output=True, text=True)
+    dist, pc = out / "dist", out / "pc"
+    pc.mkdir()
+    (pc / "ceravis-secrets.env").write_text("CERAVIS_API_KEY=never-in-the-folder\n")
+    r = subprocess.run([BASH, posix(ROOT / "setup/make_release.sh"), "--allow-dirty",
+                        "--no-models", "--no-vendor"], cwd=ROOT, capture_output=True, text=True,
+                       env={**os.environ, "CERAVIS_DIST": posix(dist), "CERAVIS_PC_DIR": posix(pc)})
     version = (ROOT / "edge/VERSION").read_text().strip()
-    bundle = dist / f"ceravis-edge-{version}.tar.gz"
-    check("built", r.returncode == 0 and bundle.exists(), (r.stderr or r.stdout)[-200:])
+    folder = dist / "CERAVIS"
+    bundle = folder / f"ceravis-edge-{version}.tar.gz"
+    check("built into ONE folder", r.returncode == 0 and bundle.exists(),
+          (r.stderr or r.stdout)[-200:])
+    check("the folder: its installer, the release, its fingerprint, the README — nothing else",
+          sorted(p.name for p in folder.iterdir()) == sorted(
+              ["install.sh", "README.txt", bundle.name, bundle.name + ".sha256"]),
+          str(sorted(p.name for p in folder.iterdir())) if folder.exists() else "")
+    check("no second copy of the release anywhere in dist/",
+          [p for p in dist.rglob("*.tar.gz")] == [bundle])
     if bundle.exists():
         digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
-        sha_file = (dist / f"{bundle.name}.sha256").read_text().split()[0]
+        sha_file = (folder / f"{bundle.name}.sha256").read_text().split()[0]
         check("its .sha256 matches", digest == sha_file)
         with tarfile.open(bundle) as tf:
             names = tf.getnames()
@@ -215,17 +229,44 @@ if shutil.which("git"):
         rel = {n[len(top):] for n in names if n.startswith(top)}
         check("the one command is there", "install.sh" in rel and "setup/install.sh" in rel)
         for gone in ("tests/", "edge/static/ui-testing/", "cloud/frps.toml", ".claude/",
-                     "setup/upgrade.sh", "setup/make_release.sh", "setup/usb/"):
+                     "setup/upgrade.sh", "setup/make_release.sh", "setup/send_to_device.sh",
+                     "setup/usb/"):
             check(f"left out: {gone}", not any(p == gone.rstrip("/") or p.startswith(gone)
                                               for p in rel))
         check("no secrets file inside", not any("secrets.env" in p and "example" not in p
                                                 for p in rel))
-        bundle.unlink()
-        (dist / f"{bundle.name}.sha256").unlink(missing_ok=True)
-        if not keep:
-            shutil.rmtree(dist, ignore_errors=True)
 else:
     print("  (git not available — bundle checks skipped)")
+
+print("\n6. the secrets file is read as data")
+src = (ROOT / "setup/install.sh").read_text(encoding="utf-8")
+fn = re.search(r"^SECRET_KEYS=.*?^read_secrets\(\) \{.*?^\}\n", src, re.S | re.M).group(0)
+sec = out / "s.env"
+sec.write_bytes(b'# comment\r\nCERAVIS_API_KEY = "k1"\r\nFRP_TOKEN=\'t 2\'\n'
+                b'FRP_SERVER_ADDR=1.2.3.4   \nNOT_A_KEY=x\n'
+                b'REBOOT_PASSWORD=p$(touch never)w\nFMS_ENROLL_KEY=last-line-no-newline')
+r = sh(fn + f'read_secrets "{posix(sec)}"; echo "$CERAVIS_API_KEY|$FRP_TOKEN|$FRP_SERVER_ADDR|'
+       '${NOT_A_KEY:-}|$REBOOT_PASSWORD|$FMS_ENROLL_KEY"')
+got = r.stdout.strip().split("|")
+check("spaces around '=', quotes and CRLF handled", got[:3] == ["k1", "t 2", "1.2.3.4"], r.stdout)
+check("only the known keys are taken", len(got) > 3 and got[3] == "")
+check("nothing in a value is executed", len(got) > 4 and got[4] == "p$(touch never)w"
+      and not (ROOT / "never").exists())
+check("the last line without a newline is read (the frp key is never lost)",
+      len(got) > 5 and got[5] == "last-line-no-newline")
+
+print("\n7. the tunnel config survives a re-run with the same server")
+frpc = (ROOT / "cloud/install_frpc.sh").read_text(encoding="utf-8")
+fn = re.search(r"^same_server\(\) \{.*?^\}\n", frpc, re.S | re.M).group(0)
+keyed = out / "frpc-keyed.toml"
+keyed.write_text((ROOT / "cloud/frpc.toml.example").read_text()
+                 .replace("EC2_PUBLIC_IP_OR_DOMAIN", "1.2.3.4")
+                 .replace("CHANGE_ME_TO_A_LONG_RANDOM_SECRET", "tok"))
+probe = fn + f'CONF="{posix(keyed)}"; same_server && echo same || echo other'
+check("same server and token -> kept",
+      sh(probe, {"FRP_SERVER_ADDR": "1.2.3.4", "FRP_TOKEN": "tok"}).stdout.strip() == "same")
+check("a new token -> rebuilt",
+      sh(probe, {"FRP_SERVER_ADDR": "1.2.3.4", "FRP_TOKEN": "new"}).stdout.strip() == "other")
 
 shutil.rmtree(out, ignore_errors=True)
 print()

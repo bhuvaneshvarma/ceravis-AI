@@ -395,9 +395,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--onnx-only", action="store_true", help="stage 1: the ONNX models only")
     ap.add_argument("--reuse-from", type=Path, metavar="DIR",
                     help="take an engine from DIR only when its fingerprint matches exactly")
+    ap.add_argument("--list", action="store_true",
+                    help="print each model's ONNX path under MODELS_DIR (missing ones marked)")
     args = ap.parse_args(argv)
     onnx_only = args.onnx_only
     models = catalog()
+    if args.list:
+        for m in models:
+            rel = m.onnx.relative_to(_models_dir()).as_posix()
+            print(rel if _have(m.onnx) else f"missing {rel}")
+        return 0
     ready = [m.ensure_onnx() for m in models]
     if all(ready):
         remove_leftover_weights()
