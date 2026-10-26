@@ -117,12 +117,12 @@ class EnrollmentWorker:
                 self._reid_error = None
             except FileNotFoundError:
                 self._reid_error = ("ReID engine not built — run "
-                                    "setup/export_reid.sh, then re-enroll")
+                                    "setup/export_engines.sh, then re-enroll")
                 logger.warning("enroll: %s", self._reid_error)
             except Exception as exc:
                 # Engine file exists but failed to load (corrupt, TRT version
                 # mismatch, dim mismatch, …). Surface the REAL reason with a
-                # full traceback instead of misdirecting to export_reid.sh.
+                # full traceback instead of misdirecting to export_engines.sh.
                 self._reid_error = f"ReID engine failed to load: {exc}"
                 logger.exception("enroll: ReID engine load failed")
         return self._extractor is not None
@@ -166,7 +166,7 @@ class EnrollmentWorker:
         crops, labels = self._collect_crops(recipient_id)
         if not reid_ready:
             reason = self._reid_error or (
-                "media stored; run setup/export_reid.sh to build the ReID "
+                "media stored; run setup/export_engines.sh to build the ReID "
                 "engine, then re-enroll to generate embeddings")
             self._mgr.set_status(recipient_id, state="pending_reid",
                                  photos=len(crops), embeddings=0, message=reason)

@@ -38,8 +38,7 @@ print("\n1. every bring-up stage is invoked")
 REQUIRED = [
     ("runtime deps",        "install_native.sh"),
     ("media backbone",      "install_mediamtx.sh"),
-    ("detect + pose TRT",   "export_engines.sh"),
-    ("ReID TRT engine",     "export_reid.sh"),
+    ("every TRT engine",    "export_engines.sh"),
     ("fleet tunnel + helper", "install_frpc.sh"),
     ("app service",         "install_service.sh"),
     ("nightly reboot timer", "install_reboot_timer.sh"),

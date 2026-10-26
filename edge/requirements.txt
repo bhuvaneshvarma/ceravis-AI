@@ -15,7 +15,8 @@
 #
 # NOT runtime deps at all:
 #   torch / torchvision / ultralytics — used once for ONNX export inside a
-#   disposable venv (scripts/export_engines.sh). Inference is pure TensorRT.
+#   disposable venv (setup/export_engines.sh — on the PC for a release
+#   bundle). Inference is pure TensorRT.
 #
 # Freeze after a working install:  pip3 freeze --user > requirements.lock
 # ============================================================

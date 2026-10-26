@@ -43,8 +43,8 @@ echo "  cleaned."
 echo "== [3/6] dependencies (scipy/matplotlib via apt fixes 'No module scipy') =="
 bash "$SETUP_DIR/install_native.sh"
 
-echo "== [4/6] build OSNet ReID engine =="
-bash "$SETUP_DIR/export_reid.sh"
+echo "== [4/6] AI models (any ONNX or engine still missing) =="
+bash "$SETUP_DIR/export_engines.sh"
 
 echo "== [5/6] restart service + fleet agent =="
 # The app-server API key lives in the root-only /etc/ceravis/credstore, not in

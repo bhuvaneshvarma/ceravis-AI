@@ -42,9 +42,8 @@ bash "$SCRIPTS_DIR/install_hotspot.sh"
 # Both model families, not just detection: without the ReID engine the device
 # tracks but never IDENTIFIES anyone, and the whole AI layer stays gated —
 # silently, because appearance-off is only an INFO line at startup.
-stage "2/6" "TensorRT engines (YOLO26m detect + pose, ReID)"
+stage "2/6" "TensorRT engines (YOLO26m detect + pose, ReID, face)"
 bash "$SCRIPTS_DIR/export_engines.sh"
-bash "$SCRIPTS_DIR/export_reid.sh"
 
 # ---- [3/6] fleet tunnel ----------------------------------------------
 # Installs frpc AND the locked-down apply-edge-id helper. That helper is what

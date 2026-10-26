@@ -150,12 +150,15 @@ CERAVIS_VENV="$REL/venv" CERAVIS_WHEELHOUSE="$APP/wheels" bash "$REL/setup/insta
 # ---- [6/9] AI models ---------------------------------------------------------------
 stage "6/9" "AI models (TensorRT engines for this GPU)"
 bash "$REL/setup/install_mediamtx.sh"
-need_onnx() { [ ! -s "$REL/models/$1" ]; }
-if need_onnx detection/yolo26m.onnx || need_onnx pose/yolo26m-pose.onnx; then
-    echo "  detection/pose ONNX not in the release — exporting on this device (needs internet)"
-    bash "$REL/setup/export_engines.sh"
+# The release carries every ONNX (made on the PC by setup/make_release.sh); only
+# the engines are built here. A release without them exports them on this
+# device first (needs internet and a throwaway torch venv).
+if "$REL/venv/bin/python" "$REL/setup/export_models.py" --onnx-only >/dev/null 2>&1; then
+    echo "  every ONNX model came with the release"
+else
+    echo "  ONNX models missing from the release — exporting on this device (needs internet)"
+    bash "$REL/setup/export_engines.sh" --onnx-only
 fi
-need_onnx reid/reid.onnx && bash "$REL/setup/export_reid.sh"
 "$REL/venv/bin/python" "$REL/setup/export_models.py"
 chown -R "$SVC:$SVC" "$REL/models"
 rm -rf /tmp/ceravis-export-venv

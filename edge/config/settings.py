@@ -363,9 +363,9 @@ class Settings(BaseSettings):
 
     # ---- ReID (OSNet by default; FastReid supported) ----------------
     # OSNet x1_0 is light + accurate — ideal for the Orin Nano. Build its
-    # engine with setup/export_reid.sh. FastReid BoT_R50 works too: drop its
+    # ONNX and engine with setup/export_models.py. FastReid BoT_R50 works too: drop its
     # ONNX at reid_onnx_path and set reid_embedding_dim=2048.
-    reid_model_name: str = "osnet_x1_0"      # torchreid model for export_reid.sh
+    reid_model_name: str = "osnet_x1_0"      # torchreid model (setup/export_models.py)
     reid_model_path: str = "models/reid/reid.engine"
     reid_onnx_path: str = "models/reid/reid.onnx"
     reid_onnx_url: str = ""                   # optional: download a prebuilt ONNX
