@@ -24,10 +24,16 @@ EnvironmentFile=-/home/ceravis/ceravis2/edge/infra/env/jetson.env
 # here — systemd hands it to this service alone ($CREDENTIALS_DIRECTORY). When
 # it is missing the service still starts, and /api/v1/system/status says why the
 # app server will refuse it.
-# Rebuild engines if missing (skips instantly when already built). Runs from the
-# WorkingDirectory (edge) so model paths resolve; "-" prefix: a failure here must
-# not block the API from starting.
-ExecStartPre=-/usr/bin/python3 /home/ceravis/ceravis2/setup/export_models.py
+# Rebuild engines if missing (--quick: exits at once when all are built). Runs
+# from the WorkingDirectory (edge) so model paths resolve; "-" prefix: a failure
+# here must not block the API from starting.
+ExecStartPre=-/usr/bin/python3 /home/ceravis/ceravis2/setup/export_models.py --quick
+# This is the care pipeline: under contention (the night's OS updates, an
+# update's engine build) it gets twice the CPU and disk share of anything else,
+# and it is the LAST process the kernel kills when memory runs out.
+CPUWeight=200
+IOWeight=200
+OOMScoreAdjust=-800
 # The web server (edge/serve.py): http :8000 for this device and the tunnel,
 # https :8443 for the LAN with this device's own certificate.
 ExecStart=/usr/bin/python3 -m serve

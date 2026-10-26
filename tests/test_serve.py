@@ -83,6 +83,12 @@ def req(client, path="/ui/live.html", headers=(), kind="http", qs=b""):
             "headers": [(b"host", b"192.168.0.50:8000"), *headers], "scheme": "http"}
 
 
+print("\n0. the process starts with the math libraries capped")
+import os                                                    # noqa: E402
+check("one worker thread per math library, set before numpy can load",
+      os.environ.get("OMP_NUM_THREADS") == "1" and os.environ.get("OPENBLAS_NUM_THREADS") == "1"
+      and os.environ.get("OMP_WAIT_POLICY") == "PASSIVE" and "numpy" not in sys.modules)
+
 print("\n1. the redirect rule")
 up = {"v": True}
 w = serve.LanToHttps(app, 8443, lambda: up["v"])
@@ -154,8 +160,8 @@ else:
     loop = asyncio.new_event_loop()
     t = threading.Thread(target=lambda: loop.run_until_complete(server.run()), daemon=True)
     t.start()
-    deadline = time.time() + 15
-    while time.time() < deadline and not server.https_up():
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and not server.https_up():
         time.sleep(0.1)
     check("both listeners up", server.https_up())
     check("plain HTTP from this device -> served",

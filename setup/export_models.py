@@ -397,6 +397,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="take an engine from DIR only when its fingerprint matches exactly")
     ap.add_argument("--list", action="store_true",
                     help="print each model's ONNX path under MODELS_DIR (missing ones marked)")
+    # The service's start-up self-heal: when every engine is there, nothing else
+    # is checked (no TensorRT import — seconds off every start). Install and
+    # update run the full check, fingerprints included.
+    ap.add_argument("--quick", action="store_true",
+                    help="exit at once when every engine exists")
     args = ap.parse_args(argv)
     onnx_only = args.onnx_only
     models = catalog()
@@ -404,6 +409,8 @@ def main(argv: list[str] | None = None) -> int:
         for m in models:
             rel = m.onnx.relative_to(_models_dir()).as_posix()
             print(rel if _have(m.onnx) else f"missing {rel}")
+        return 0
+    if args.quick and all(_have(m.engine) for m in models if m.engine is not None):
         return 0
     ready = [m.ensure_onnx() for m in models]
     if all(ready):

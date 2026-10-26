@@ -151,6 +151,25 @@ try:
 finally:
     em.subprocess.run, em._trtexec = real_run, real_trtexec
 
+print("\n3c. the service's start-up check is quick")
+
+
+def no_trt():
+    raise AssertionError("TensorRT imported on the quick path")
+
+
+real_ver = em._tensorrt_version
+em._tensorrt_version = no_trt
+try:
+    for m in em.catalog():
+        if m.engine is not None:
+            m.engine.parent.mkdir(parents=True, exist_ok=True)
+            m.engine.write_bytes(b"e")
+    check("every engine there -> done at once, TensorRT never loaded",
+          em.main(["--quick"]) == 0)
+finally:
+    em._tensorrt_version = real_ver
+
 print("\n4. leftover weights")
 edge = Path(tempfile.mkdtemp(prefix="ceravis-edge-"))
 for name in ("yolo26m.pt", "yolo26m-pose.pt", "keep.pt", "main.py"):

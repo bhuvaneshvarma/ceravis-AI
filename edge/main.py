@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-import os
+from common.process_env import cap_math_threads
 
-# Math-library worker pools: ONE thread each, set before anything imports numpy,
-# faiss or scipy. Each bundled OpenBLAS (pip numpy, faiss-cpu, apt scipy) and each
-# OpenMP runtime otherwise sizes itself to every core and BUSY-WAITS between the
-# tiny matrix jobs that tracking / ReID / FAISS issue dozens of times a second.
-# Measured on the bench (2026-09-23): 5 spinning pool threads ≈ 2.9 of the 6
-# cores, for work that takes microseconds. Our concurrency comes from our own
-# runner threads, not from splitting a 100-vector search across cores.
-# setdefault: the unit/env can still override one for an experiment.
-for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-             "GOTO_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-    os.environ.setdefault(_var, "1")
-os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")   # never spin an idle pool
+cap_math_threads()      # before anything imports numpy (common/process_env)
 
+import os               # noqa: E402
 import logging
 import signal
 import time

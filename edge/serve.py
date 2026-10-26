@@ -20,7 +20,11 @@ Run (ceravis.service does):  python -m serve
 """
 from __future__ import annotations
 
-import asyncio
+from common.process_env import cap_math_threads
+
+cap_math_threads()      # before anything imports numpy (common/process_env)
+
+import asyncio          # noqa: E402
 import contextlib
 import inspect
 import logging
