@@ -115,6 +115,9 @@ check("loopback with a wrong key -> 401",
            headers=[(KEY[0][0], b"x" * 43)])[0] == 401)
 check("loopback without the key may still READ the health surface (the fleet agent)",
       call("/api/v1/system/status", client="127.0.0.1")[0] == 200)
+check("…and the pipeline metrics (measuring on the device)",
+      call("/api/v1/metrics", client="127.0.0.1")[0] == 200
+      and call("/api/v1/metrics/pipelines", client="127.0.0.1")[0] == 200)
 check("…read only", call("/api/v1/system/status", "POST", client="127.0.0.1")[0] == 401)
 check("the LAN never gets that read", call("/api/v1/system/status")[0] == 401)
 check("loopback THROUGH the tunnel (/<edge_id> prefix) -> 401, key or not",
