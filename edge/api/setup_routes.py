@@ -28,7 +28,7 @@ from api.auth import signed_in
 from api.control_auth import FLEET_EDGE_KEY
 from common import hotspot
 from common.device_identity import identity
-from common.net import local_ipv4s
+from common.net import local_ipv4s, wired_uplink
 from config.account_config import patient_user_id
 from config.settings import settings
 
@@ -60,6 +60,30 @@ def _reachable() -> bool:
     return ok
 
 
+def internet_problem() -> str | None:
+    """Why the device has no internet — in words for the person at the device —
+    or None. The internet comes by Ethernet cable: the Wi-Fi radio runs the
+    camera hotspot, so the device cannot also join the home Wi-Fi. A cable from
+    any LAN port of the home router is all it takes: the router gives the device
+    its address by itself (DHCP), nothing to configure. The one owner of this
+    verdict: the first-run screen and the status problems both use it."""
+    if _reachable():
+        return None
+    host = urlsplit(settings.ceravis_api_base_url).hostname or "the app server"
+    port = wired_uplink()
+    if port.cable is False:
+        return ("No internet: connect an Ethernet cable from the home router to this "
+                "device. Its Wi-Fi runs the camera hotspot, so the internet comes by cable.")
+    if port.cable and not port.ip:
+        return ("Ethernet cable connected, but the router gave this device no address — "
+                "plug the cable into a LAN port of the router (not WAN) and check the "
+                "router hands out addresses (DHCP).")
+    if port.cable:
+        return (f"Connected to the router ({port.ip}), but {host} cannot be reached — "
+                "check the router's own internet connection.")
+    return f"{host} cannot be reached — check this device's internet connection."
+
+
 def _unit_active(unit: str) -> bool | None:
     try:
         out = subprocess.run(["systemctl", "is-active", unit], capture_output=True,
@@ -73,7 +97,7 @@ def _check(cid: str, label: str, ok: bool | None, level: str, detail: str = "") 
     return {"id": cid, "label": label, "ok": ok, "level": level, "detail": detail}
 
 
-def _checks(request: Request) -> list[dict]:
+def _checks(request: Request, hs_ssid: str, hs_on: bool) -> list[dict]:
     from integration.ceravis_api import api_key_problem, is_configured
     from integration.edge_provision import helper_installed
     from livestream.mediamtx_client import is_up
@@ -92,8 +116,8 @@ def _checks(request: Request) -> list[dict]:
     except OSError:
         pass
     key_problem = api_key_problem() if is_configured() else "app server not configured"
-    hs_ssid = hotspot.configured_ssid()
-    hs_on = hotspot.is_active() if hs_ssid else False
+    no_internet = internet_problem()
+    port = wired_uplink()
     mon = getattr(st, "system_monitor", None)
     heat = mon.problems() if mon is not None and hasattr(mon, "problems") else []
     fleet = _unit_active("ceravis-fleet-agent")
@@ -109,14 +133,15 @@ def _checks(request: Request) -> list[dict]:
                getattr(st, "camera_manager", None) is not None, "required"),
         _check("disk", "Enough free storage", free_gb is not None and free_gb >= _MIN_FREE_GB,
                "required", f"{free_gb:.0f} GB free" if free_gb is not None else ""),
-        _check("internet", "Internet connection", _reachable(), "required",
-               urlsplit(settings.ceravis_api_base_url).hostname or ""),
+        _check("internet", "Internet (Ethernet cable to the router)", no_internet is None,
+               "required", no_internet or (f"{port.iface} {port.ip}" if port.ip else "")),
         _check("app_key", "App server key installed", key_problem is None, "required",
                key_problem or ""),
         _check("clock", "Clock synchronised", clock_synchronized(), "recommended"),
         _check("tunnel", "Remote access tunnel installed", helper_installed(),
                "recommended"),
-        _check("hotspot", "Camera hotspot on", hs_on, "recommended", hs_ssid),
+        # The cameras join the device's own hotspot — without it they have no network.
+        _check("hotspot", "Camera hotspot on", hs_on, "required", hs_ssid),
         _check("fleet", "Fleet agent running", fleet, "recommended"),
         _check("temperature", "Temperature and power normal", not heat, "recommended",
                "; ".join(heat)),
@@ -129,24 +154,32 @@ def setup_state(request: Request) -> dict:
     if done and not signed_in(request):
         return {"commissioned": True}
     ident = identity()
-    checks = _checks(request)
+    hs_ssid = hotspot.configured_ssid()                  # asked once per answer
+    hs_on = hotspot.is_active() if hs_ssid else False
+    checks = _checks(request, hs_ssid, hs_on)
     ready = all(c["ok"] for c in checks if c["level"] == "required")
-    port = 8000
-    lan = [f"http://{ip}:{port}" for ip in local_ipv4s() if ip != hotspot.ADDRESS]
+    # The LAN is served on HTTPS when the device has its certificate (serve.py).
+    from serve import HTTP_PORT, HTTPS_PORT, certificate
+    scheme, port = ("https", HTTPS_PORT) if certificate() else ("http", HTTP_PORT)
+
+    def base(host: str) -> str:
+        return f"{scheme}://{host}:{port}"
+
     out = {
         "commissioned": done,
         "ready": ready,
         "device": {"name": ident.name, "code": ident.code, "source": ident.source,
                    "version": settings.app_version},
         "checks": checks,
-        "access": {"lan": lan, "local_name": f"http://{ident.name}.local:{port}",
-                   "hotspot": f"http://{hotspot.ADDRESS}:{port}"},
-        "hotspot": {"ssid": hotspot.configured_ssid(), "active": hotspot.is_active()},
+        "access": {"lan": [base(ip) for ip in local_ipv4s() if ip != hotspot.ADDRESS],
+                   "local_name": base(f"{ident.name}.local"),
+                   "hotspot": base(hotspot.ADDRESS)},
+        "hotspot": {"ssid": hs_ssid, "active": hs_on},
     }
     # The password is for the person standing at the device: shown only before
     # setup is complete and never through the tunnel.
     if not done and FLEET_EDGE_KEY not in request.scope:
         saved = hotspot.saved_credentials()
-        if saved.get("ssid") and saved.get("ssid") == out["hotspot"]["ssid"]:
+        if saved.get("ssid") and saved.get("ssid") == hs_ssid:
             out["hotspot"]["password"] = saved.get("password", "")
     return out

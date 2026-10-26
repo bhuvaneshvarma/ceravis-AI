@@ -340,6 +340,10 @@ def system_status(request: Request):
         problems.append(f"recordings disk {storage.get('disk_used_pct')}% full")
     if time_info.get("ntp_synchronized") is False:
         problems.append("system clock is not NTP-synced")
+    from api.setup_routes import internet_problem
+    no_internet = internet_problem()
+    if no_internet:
+        problems.append(no_internet)
     monitor = getattr(st, "system_monitor", None)
     if monitor is not None:
         problems.extend(monitor.problems())
