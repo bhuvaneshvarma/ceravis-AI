@@ -189,7 +189,7 @@ function cvArmIdle() {
         q.answer.then(stay => {
           asking = null;
           if (!stay) {
-            cvSignOut(`Signed out after ${s.idleMinutes} minutes without activity.`);
+            cvSignOut(`Signed out after ${s.idleMinutes} minute${s.idleMinutes === 1 ? "" : "s"} without activity.`);
             return;
           }
           lastReport = lastShared = 0;                 // Continue: tell the server now

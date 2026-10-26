@@ -36,15 +36,16 @@ from monitoring.system_monitor import SystemMonitor
 logger = logging.getLogger("ceravis")
 
 
-def lan_urls(port: int = 8000) -> list[str]:
-    """Best-effort LAN addresses the API is reachable on, for logging."""
+def lan_urls() -> list[str]:
+    """Best-effort LAN addresses the console is reachable on, for logging."""
     from common.net import lan_ip
+    from serve import lan_url
     urls = []
     ip = lan_ip()
     if ip:
-        urls.append(f"http://{ip}:{port}")
+        urls.append(lan_url(ip))
     try:
-        urls.append(f"http://{socket.gethostname()}.local:{port}")
+        urls.append(lan_url(f"{socket.gethostname()}.local"))
     except Exception:
         pass
     return urls

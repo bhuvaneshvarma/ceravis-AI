@@ -158,13 +158,7 @@ def setup_state(request: Request) -> dict:
     hs_on = hotspot.is_active() if hs_ssid else False
     checks = _checks(request, hs_ssid, hs_on)
     ready = all(c["ok"] for c in checks if c["level"] == "required")
-    # The LAN is served on HTTPS when the device has its certificate (serve.py).
-    from serve import HTTP_PORT, HTTPS_PORT, certificate
-    scheme, port = ("https", HTTPS_PORT) if certificate() else ("http", HTTP_PORT)
-
-    def base(host: str) -> str:
-        return f"{scheme}://{host}:{port}"
-
+    from serve import lan_url as base      # HTTPS when the device has its certificate
     out = {
         "commissioned": done,
         "ready": ready,

@@ -109,6 +109,12 @@ def certificate() -> tuple[Path, Path] | None:
     return (crt, key) if crt.is_file() and key.is_file() else None
 
 
+def lan_url(host: str) -> str:
+    """The address a browser on the LAN opens for `host` — the one place it is
+    written: HTTPS when this device has its certificate, else plain HTTP."""
+    return f"https://{host}:{HTTPS_PORT}" if certificate() else f"http://{host}:{HTTP_PORT}"
+
+
 async def _listen(server: uvicorn.Server) -> None:
     """The HTTPS listener, never fatal: a port in use or an unreadable
     certificate stops only it (uvicorn would exit the process) — the LAN is
