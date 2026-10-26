@@ -33,6 +33,12 @@
 #                   ~/.ceravis/wheels. With models-src/ and vendor/ this makes
 #                   the install need NO internet (only the first sign-in, the
 #                   cloud and remote access do)
+#   debs/           the system packages the device's JetPack lacks, from the
+#                   list the device itself printed into ~/.ceravis/debs.txt:
+#                     sudo apt-get install --print-uris -qq --no-install-recommends \
+#                         gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg > debs.txt
+#                   each file downloaded once into ~/.ceravis/debs and checked
+#                   against the size and checksum in that list
 #
 # Options:
 #   --models DIR     take the ONNX from DIR (default ~/.ceravis/models; any
@@ -40,6 +46,8 @@
 #   --no-models      leave the models out (the device then exports them itself)
 #   --no-vendor      leave the binaries out (the device downloads them)
 #   --no-wheels      leave the Python packages out (the device downloads them)
+#   --debs FILE      the device's package list (default ~/.ceravis/debs.txt, if there)
+#   --no-debs        leave the system packages out (the device downloads them)
 #   --usb DIR        also copy the folder, with the secrets and keys, to DIR/CERAVIS
 #   --allow-dirty    build even with uncommitted changes (they are NOT included)
 #
@@ -50,15 +58,18 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PC="${CERAVIS_PC_DIR:-$HOME/.ceravis}"
 MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; WHEELS=1; USB=""; DIRTY_OK=0
+DEBS_LIST="$PC/debs.txt"
 while [ $# -gt 0 ]; do
     case "$1" in
         --models) MODELS="$2"; shift 2 ;;
         --no-models) WITH_MODELS=0; shift ;;
         --no-vendor) VENDOR=0; shift ;;
         --no-wheels) WHEELS=0; shift ;;
+        --debs) DEBS_LIST="$2"; shift 2 ;;
+        --no-debs) DEBS_LIST=""; shift ;;
         --usb) USB="$2"; shift 2 ;;
         --allow-dirty) DIRTY_OK=1; shift ;;
-        -h|--help) sed -n '2,47p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,56p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
     esac
 done
@@ -165,6 +176,36 @@ if [ "$WHEELS" = 1 ]; then
     fi
     mkdir -p "$STAGE/wheels" && cp "$CACHE"/* "$STAGE/wheels/"
     echo "   wheels $(ls "$STAGE/wheels" | grep -c -v requirements.lock) Python packages for the device ($(du -sh "$STAGE/wheels" | cut -f1))"
+fi
+
+# The device's missing system packages: each line of its list is
+#   'URL' FILE SIZE MD5Sum:<hex> | SHA256:<hex> | SHA512:<hex>
+# (the checksums come from the device's own signed package index).
+if [ -n "$DEBS_LIST" ] && [ -s "$DEBS_LIST" ]; then
+    deb_ok() {      # <file> <size> <type:hex>
+        local sum
+        [ -s "$1" ] && [ "$(wc -c < "$1" | tr -d ' ')" = "$2" ] || return 1
+        case "${3%%:*}" in
+            MD5Sum) sum="$(md5sum "$1")" ;; SHA256) sum="$(sha256sum "$1")" ;;
+            SHA512) sum="$(sha512sum "$1")" ;; *) return 1 ;;
+        esac
+        [ "${sum%% *}" = "${3#*:}" ]
+    }
+    mkdir -p "$PC/debs" "$STAGE/debs"
+    n=0
+    while read -r url file size sum; do
+        url="${url//\'/}"
+        [ -n "$file" ] || continue
+        if ! deb_ok "$PC/debs/$file" "$size" "$sum"; then
+            curl -fsSL --retry 3 -o "$PC/debs/$file" "$url"
+            deb_ok "$PC/debs/$file" "$size" "$sum" \
+                || { echo "package $file does not match the device's checksum — not used" >&2; exit 1; }
+        fi
+        cp "$PC/debs/$file" "$STAGE/debs/"
+        n=$((n + 1))
+    done < <(tr -d '\r' < "$DEBS_LIST")
+    cp "$DEBS_LIST" "$STAGE/debs/debs.txt"
+    echo "   debs   $n system package files for the device ($(du -sh "$STAGE/debs" | cut -f1))"
 fi
 
 # manifest.json: what this is, and the fingerprint of every file in it.

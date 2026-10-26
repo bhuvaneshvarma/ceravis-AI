@@ -199,9 +199,23 @@ if shutil.which("git"):
     dist, pc = out / "dist", out / "pc"
     pc.mkdir()
     (pc / "ceravis-secrets.env").write_text("CERAVIS_API_KEY=never-in-the-folder\n")
-    r = subprocess.run([BASH, posix(ROOT / "setup/make_release.sh"), "--allow-dirty",
-                        "--no-models", "--no-vendor", "--no-wheels"], cwd=ROOT, capture_output=True, text=True,
-                       env={**os.environ, "CERAVIS_DIST": posix(dist), "CERAVIS_PC_DIR": posix(pc)})
+    # The device's package list, as `apt-get install --print-uris` writes it.
+    repo = out / "aptrepo"
+    repo.mkdir()
+    pkg = repo / "gstreamer1.0-plugins-bad_1.0_arm64.deb"
+    pkg.write_bytes(b"a system package")
+    md5 = hashlib.md5(pkg.read_bytes()).hexdigest()
+    debs = pc / "debs.txt"
+    debs.write_text(f"'{pkg.resolve().as_uri()}' {pkg.name} {pkg.stat().st_size} MD5Sum:{md5}\r\n")
+
+    def release(*extra):
+        return subprocess.run([BASH, posix(ROOT / "setup/make_release.sh"), "--allow-dirty",
+                               "--no-models", "--no-vendor", "--no-wheels", *extra], cwd=ROOT,
+                              capture_output=True, text=True,
+                              env={**os.environ, "CERAVIS_DIST": posix(dist),
+                                   "CERAVIS_PC_DIR": posix(pc)})
+
+    r = release()
     version = (ROOT / "edge/VERSION").read_text().strip()
     folder = dist / "CERAVIS"
     bundle = folder / f"ceravis-edge-{version}.tar.gz"
@@ -236,6 +250,14 @@ if shutil.which("git"):
                                               for p in rel))
         check("no secrets file inside", not any("secrets.env" in p and "example" not in p
                                                 for p in rel))
+        check("the device's missing system packages ride along (debs/, with their list)",
+              {"debs/" + pkg.name, "debs/debs.txt"} <= rel, str(sorted(p for p in rel
+                                                                   if p.startswith("debs"))))
+    pkg.write_bytes(b"a CHANGED package")                       # not what the device listed
+    shutil.rmtree(pc / "debs", ignore_errors=True)
+    bad = release()
+    check("a package that does not match the device's checksum stops the build",
+          bad.returncode != 0 and "checksum" in bad.stderr, bad.stderr[-160:])
 else:
     print("  (git not available — bundle checks skipped)")
 

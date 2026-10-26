@@ -259,7 +259,7 @@ else
     # Code only: a re-run keeps the release's virtualenv and built engines; the
     # ONNX models go straight into models/ below.
     tar -C "$SRC" --exclude=./.git --exclude=./dist --exclude=./venv --exclude=./models \
-        --exclude=./models-src --exclude=./wheels -cf - . | tar -C "$REL" -xf -
+        --exclude=./models-src --exclude=./wheels --exclude=./debs -cf - . | tar -C "$REL" -xf -
 fi
 install -d -m 0755 -o "$SVC" -g "$SVC" "$REL/models"
 if [ -d "$SRC/models-src" ]; then
@@ -287,10 +287,12 @@ export_layout
 # ---- [5/9] software -------------------------------------------------------------
 stage "5/9" "software (virtualenv)"
 # A release built on the PC carries every Python package for this device in
-# wheels/ — installed from there, no internet (setup/install_native.sh).
-WHEELS=""
+# wheels/ and the system packages its JetPack lacks in debs/ — installed from
+# there, no internet (setup/install_native.sh).
+WHEELS=""; DEBS=""
 [ -d "$SRC/wheels" ] && WHEELS="$SRC/wheels"
-CERAVIS_VENV="$REL/venv" CERAVIS_WHEELHOUSE="$APP/wheels" CERAVIS_WHEELS="$WHEELS" \
+[ -d "$SRC/debs" ] && DEBS="$SRC/debs"
+CERAVIS_VENV="$REL/venv" CERAVIS_WHEELHOUSE="$APP/wheels" CERAVIS_WHEELS="$WHEELS" CERAVIS_DEBS="$DEBS" \
     bash "$REL/setup/install_native.sh"
 "$REL/venv/bin/python" -m compileall -q "$REL/edge" >/dev/null 2>&1 || true
 

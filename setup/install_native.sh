@@ -36,15 +36,17 @@ PIP_SRC=()
 [ -n "$WHEELS" ] && [ -d "$WHEELS" ] && PIP_SRC=(--no-index --find-links "$WHEELS")
 
 echo "== [1/4] apt packages (most are already present on JetPack) =="
-# plugins-base/good: rtspsrc + depayloaders; plugins-bad: h264parse/h265parse;
-# libav: avdec_* software-decode fallback. (plugins-ugly is encoders — not needed.)
+# plugins-base/good: rtspsrc + depayloaders; plugins-bad: h264parse/h265parse
+# (every camera's frames reach the AI through them); libav: avdec_* software-
+# decode fallback. (plugins-ugly is encoders — not needed.) ffmpeg: audio in the
+# recordings, fall-incident clips, snapshots from the recordings, ffprobe.
 # python3-scipy comes from apt (prebuilt for aarch64, built against the system
 # numpy 1.x) — avoids the pip "No module named scipy" failure and any numpy-2
 # ABI clash. The BoT-SORT tracker uses scipy.optimize.linear_sum_assignment.
 APT_PKGS=(python3-pip python3-venv python3-dev build-essential
           python3-numpy python3-scipy
           gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-          gstreamer1.0-plugins-bad gstreamer1.0-libav)
+          gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg)
 # OpenCV: JetPack 6.1+ already ships NVIDIA's own build (4.8, GStreamer on).
 # Ubuntu's python3-opencv (4.5.4) next to it is a SECOND cv2 that can win the
 # import — so it is added only when no usable cv2 (with GStreamer) is there.
@@ -55,17 +57,30 @@ python3 -c "import cv2, sys; sys.exit('GStreamer:                   YES' not in 
 python3 -c "import tensorrt" 2>/dev/null || APT_PKGS+=(python3-libnvinfer)
 [ -x /usr/src/tensorrt/bin/trtexec ] || command -v trtexec >/dev/null 2>&1 \
     || APT_PKGS+=(libnvinfer-bin)
-MISSING=()
-for p in "${APT_PKGS[@]}"; do
-    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" || MISSING+=("$p")
-done
-# With the release's own packages, pip / venv / numpy / scipy come from them.
-if [ ${#PIP_SRC[@]} -gt 0 ] && [ ${#MISSING[@]} -gt 0 ]; then
-    STILL=()
-    for p in "${MISSING[@]}"; do
-        case "$p" in python3-pip|python3-venv|python3-numpy|python3-scipy) ;; *) STILL+=("$p") ;; esac
+# The packages still missing, into MISSING. With the release's own Python
+# packages, pip / venv / numpy / scipy come from them instead.
+find_missing() {
+    local p
+    MISSING=()
+    for p in "${APT_PKGS[@]}"; do
+        dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" && continue
+        if [ ${#PIP_SRC[@]} -gt 0 ]; then
+            case "$p" in python3-pip|python3-venv|python3-numpy|python3-scipy) continue ;; esac
+        fi
+        MISSING+=("$p")
     done
-    MISSING=(${STILL[@]+"${STILL[@]}"})
+}
+find_missing
+# A release built on the PC carries the system packages this JetPack lacks
+# (debs/, listed by the device itself and checked against its fingerprints):
+# installed from there first, with no download at all.
+DEBS="${CERAVIS_DEBS:-}"
+if [ -z "${CERAVIS_SKIP_APT:-}" ] && [ "${#MISSING[@]}" -gt 0 ] && [ -n "$DEBS" ] \
+        && ls "$DEBS"/*.deb >/dev/null 2>&1; then
+    echo "   from the release: $(ls "$DEBS"/*.deb | wc -l) system package files (offline)"
+    sudo apt-get install -y --no-download --no-install-recommends "$DEBS"/*.deb \
+        || echo "   (the release's package files did not install — see above)"
+    find_missing
 fi
 if [ -n "${CERAVIS_SKIP_APT:-}" ]; then
     echo "   skipped (an update: the system packages are already in place)"
