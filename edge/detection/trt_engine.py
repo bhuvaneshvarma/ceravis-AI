@@ -129,11 +129,29 @@ class TensorRTEngine:
         )
 
     # ---- alloc -------------------------------------------------------
+    def _resolve_input_shape(self, name: str, shape: tuple[int, ...]) -> tuple[int, ...]:
+        """The concrete shape a dynamic input runs at, read from the engine's
+        own optimisation profile — never guessed. Every dynamic dimension takes
+        the profile's 'opt' value: an ultralytics dynamic export leaves height
+        and width open too, and the engine is built for exactly one size there.
+        A dynamic BATCH (dim 0) is the largest batch both we asked for and the
+        profile allows (one at a time on the legacy v2 API)."""
+        try:
+            low, opt, high = (tuple(int(d) for d in s)
+                              for s in self._engine.get_tensor_profile_shape(name, 0))
+        except Exception as exc:
+            raise RuntimeError(
+                f"{self._engine_path.name}: input '{name}' has dynamic dimensions "
+                f"{shape} but no readable optimisation profile ({exc})") from exc
+        dims = [opt[i] if d < 0 else d for i, d in enumerate(shape)]
+        if shape[0] < 0:
+            want = self._requested_batch if self._use_v3 else 1
+            dims[0] = max(low[0], min(want, high[0]))
+        return tuple(dims)
+
     def _allocate_buffers(self) -> None:
-        # Pass 1 — resolve dynamic input dims. A dynamic BATCH dim (dim 0) is
-        # sized for the largest batch both we asked for and the engine profile
-        # allows; any other dynamic dim, and the batch of a one-sample setup,
-        # resolve to 1 as before. Buffers are allocated at that size once.
+        # Pass 1 — resolve dynamic input dims from the engine's profile
+        # (_resolve_input_shape). Buffers are allocated at that size once.
         for idx in range(self._engine.num_io_tensors):
             name = self._engine.get_tensor_name(idx)
             if self._engine.get_tensor_mode(name) != trt.TensorIOMode.INPUT:
@@ -141,25 +159,21 @@ class TensorRTEngine:
             shape = tuple(self._engine.get_tensor_shape(name))
             if not any(d < 0 for d in shape):
                 continue
-            batch = 1
-            if shape[0] < 0 and self._use_v3 and self._requested_batch > 1:
-                try:
-                    profile_max = int(self._engine.get_tensor_profile_shape(name, 0)[2][0])
-                except Exception:
-                    profile_max = 1
-                batch = max(1, min(self._requested_batch, profile_max))
+            resolved = self._resolve_input_shape(name, shape)
             self._dynamic_batch = shape[0] < 0 and self._use_v3
-            self._max_batch = batch
-            self._context.set_input_shape(
-                name, (batch,) + tuple(1 if d < 0 else d for d in shape[1:]))
+            self._max_batch = resolved[0] if shape[0] < 0 else 1
+            self._context.set_input_shape(name, resolved)
 
         # Pass 2 — allocate pinned host + device buffers.
         for idx in range(self._engine.num_io_tensors):
             name = self._engine.get_tensor_name(idx)
-            # Context shapes are resolved after set_input_shape above.
+            # Context shapes are resolved after set_input_shape above; one still
+            # open here would size a buffer wrongly, so it is an error.
             shape = tuple(self._context.get_tensor_shape(name))
             if any(d < 0 for d in shape):
-                shape = tuple(1 if d < 0 else d for d in shape)
+                raise RuntimeError(
+                    f"{self._engine_path.name}: tensor '{name}' shape {shape} "
+                    "is unresolved after setting the input shapes")
             dtype = trt.nptype(self._engine.get_tensor_dtype(name))
             size = int(np.prod(shape))
 
