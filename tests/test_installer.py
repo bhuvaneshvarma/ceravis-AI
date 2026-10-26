@@ -137,8 +137,9 @@ got = sh('source setup/lib.sh; echo "$CERAVIS_USER|$PATH"', lay_env).stdout.stri
 check("read as data: nothing executed, other keys ignored",
       got.startswith("x; rm -rf /tmp/never|") and "/evil" not in got, got)
 got = sh(probe, {"OUT": posix(out)}).stdout.strip().split("|")
+norm = lambda p: p.replace("\\", "/").rstrip("/").lower()    # noqa: E731
 check("no layout file -> the development clone",
-      got[0].lower().endswith("/ceravis2") and got[3] == got[0] + "/edge/data"
+      norm(got[0]) in (norm(str(ROOT)), norm(posix(ROOT))) and got[3] == got[0] + "/edge/data"
       and got[4] == got[0] + "/edge/models" and got[5] == "/etc/ceravis/credstore",
       "|".join(got))
 
