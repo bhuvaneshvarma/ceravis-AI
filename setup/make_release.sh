@@ -82,7 +82,8 @@ exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup/install.sh" "$@"
 EOF
 
 if [ "$WITH_MODELS" = 1 ]; then
-    list() { MODELS_DIR="$MODELS" CERAVIS_LAYOUT_FILE=/nonexistent "$PY" setup/export_models.py --list; }
+    # (tr: Python on Windows ends its lines with CRLF)
+    list() { MODELS_DIR="$MODELS" CERAVIS_LAYOUT_FILE=/nonexistent "$PY" setup/export_models.py --list | tr -d '\r'; }
     if list | grep -q '^missing '; then
         echo "== exporting the missing ONNX models into $MODELS (once; kept for the next release)"
         mkdir -p "$MODELS"
