@@ -3,7 +3,9 @@ The API sign-in gate (edge/api/auth.py) — every rule it enforces, driven with
 raw ASGI requests (no web server, no browser):
 
   * a protected route answers 401 without a session, a public route does not
-  * this device calling itself passes; the same call through the tunnel does not
+  * this device calling itself passes only with the device's local key (bare
+    loopback reads the health surface, nothing else); never through the tunnel
+  * the session cookie is Secure on every HTTPS page (tunnel and LAN listener)
   * the cloud routes (edge_id-checked in their own handlers) are not blocked
   * the sign-in answer {verified: true} gets a session cookie, {verified: false}
     does not — and the cookie then opens protected routes
@@ -36,6 +38,7 @@ settings.data_dir = _TMP
 
 from api import auth                                       # noqa: E402
 from api.control_auth import FLEET_EDGE_KEY                # noqa: E402
+from common.local_key import HEADER as LOCAL_KEY_HEADER, local_key  # noqa: E402
 
 failures: list[str] = []
 
@@ -102,12 +105,28 @@ for p, m in (("/api/v1/account/request-otp", "POST"), ("/api/v1/account/verify",
 check("a CORS pre-flight is never blocked", call("/api/v1/cameras", "OPTIONS")[0] == 200)
 
 print("\n2. this device calling itself")
-check("loopback, no tunnel -> allowed", call("/api/v1/system/status", client="127.0.0.1")[0] == 200)
-check("loopback THROUGH the tunnel (/<edge_id> prefix) -> 401",
-      call("/api/v1/system/status", client="127.0.0.1", fleet="E1")[0] == 401)
+KEY = [(LOCAL_KEY_HEADER.lower().encode(), local_key.ensure().encode())]
+check("loopback WITH the device's local key -> allowed",
+      call("/api/v1/cameras", client="127.0.0.1", headers=KEY)[0] == 200)
+check("loopback without the key -> 401 (reaching 127.0.0.1 proves nothing)",
+      call("/api/v1/cameras", client="127.0.0.1")[0] == 401)
+check("loopback with a wrong key -> 401",
+      call("/api/v1/cameras", client="127.0.0.1",
+           headers=[(KEY[0][0], b"x" * 43)])[0] == 401)
+check("loopback without the key may still READ the health surface (the fleet agent)",
+      call("/api/v1/system/status", client="127.0.0.1")[0] == 200)
+check("…read only", call("/api/v1/system/status", "POST", client="127.0.0.1")[0] == 401)
+check("the LAN never gets that read", call("/api/v1/system/status")[0] == 401)
+check("loopback THROUGH the tunnel (/<edge_id> prefix) -> 401, key or not",
+      call("/api/v1/system/status", client="127.0.0.1", fleet="E1", headers=KEY)[0] == 401)
 check("loopback carrying X-Forwarded-For (the cloud proxy) -> 401",
       call("/api/v1/system/status", client="127.0.0.1",
-           headers=[(b"x-forwarded-for", b"1.2.3.4")])[0] == 401)
+           headers=[(b"x-forwarded-for", b"1.2.3.4")] + KEY)[0] == 401)
+key_file = Path(_TMP) / "local.key"
+check("the key lives in the data folder", key_file.read_text().strip() == KEY[0][1].decode())
+if os.name == "posix":
+    check("…owner-only (0600)", stat.S_IMODE(key_file.stat().st_mode) == 0o600)
+check("it is kept across restarts", auth.local_key.ensure() == KEY[0][1].decode())
 
 print("\n3. the cloud routes keep their own edge_id check")
 for p, m in (("/api/v1/cameras/ptz", "POST"), ("/api/v1/cameras/control", "POST"),
@@ -137,6 +156,8 @@ st, h, _ = call("/api/v1/account/verify", "POST", fleet="EDGE42",
 fc = h.get("set-cookie", "")
 check("through the tunnel: Secure, bound to /<edge_id>/",
       "Secure" in fc and "Path=/EDGE42/" in fc, fc)
+lan_tls = auth._cookie_header({"scheme": "https"}, "t", 60).decode()
+check("on the LAN's HTTPS listener: Secure too", "Secure" in lan_tls and "Path=/;" in lan_tls)
 
 print("\n5. idle limit")
 settings.ui_session_idle_minutes = 1

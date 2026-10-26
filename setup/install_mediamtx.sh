@@ -47,7 +47,7 @@ else
     echo "Installed: $("$MTX_BIN" --version)"
 fi
 
-# ---- self-signed TLS cert (HLS/WebRTC over https on the LAN) --------
+# ---- self-signed TLS cert (the LAN's https: pages :8443, HLS, WebRTC) --------
 if [ -f "$CERT_DIR/server.crt" ] && [ -f "$CERT_DIR/server.key" ]; then
     echo "TLS cert already present: $CERT_DIR"
 else
@@ -58,7 +58,7 @@ else
     sudo openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
         -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.crt" \
         -subj "/CN=$NAME" \
-        -addext "subjectAltName=DNS:$NAME,DNS:$NAME.local,DNS:localhost,IP:127.0.0.1${IP:+,IP:$IP}" \
+        -addext "subjectAltName=DNS:$NAME,DNS:$NAME.local,DNS:localhost,IP:127.0.0.1,IP:10.42.0.1${IP:+,IP:$IP}" \
         >/dev/null 2>&1
     sudo chown -R "$CERAVIS_USER" "$CERT_DIR"
     sudo chmod 600 "$CERT_DIR/server.key"

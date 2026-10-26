@@ -79,7 +79,7 @@ r = sh("source setup/lib.sh; install_unit edge/infra/systemd/ceravis.service",
        {"OUT": posix(out), "USER": "ceravis", "SUDO_USER": "", "CERAVIS_CREDSTORE": posix(cred)})
 dev = (out / "ceravis.service").read_text() if (out / "ceravis.service").exists() else ""
 check("development unit written", "User=ceravis" in dev
-      and "ExecStart=/usr/bin/python3 -m uvicorn" in dev, r.stderr[-200:])
+      and "ExecStart=/usr/bin/python3 -m serve" in dev, r.stderr[-200:])
 check("development: the API key as a credential too, no secrets env file",
       "LoadCredential=ceravis_api_key:" in dev and "secrets.env" not in dev)
 check("development: data and engines stay in the clone",
@@ -101,7 +101,7 @@ sh("source setup/lib.sh; install_unit edge/infra/systemd/ceravis.service", prod_
 prod = (out / "ceravis.service").read_text() if (out / "ceravis.service").exists() else ""
 check("production: service account", "User=ceravis-svc" in prod)
 check("production: the release's virtualenv runs the app",
-      "ExecStart=/opt/ceravis/current/venv/bin/python -m uvicorn" in prod)
+      "ExecStart=/opt/ceravis/current/venv/bin/python -m serve" in prod)
 check("production: data and models folders set",
       "Environment=DATA_DIR=/var/lib/ceravis" in prod
       and "Environment=MODELS_DIR=/opt/ceravis/current/models" in prod)

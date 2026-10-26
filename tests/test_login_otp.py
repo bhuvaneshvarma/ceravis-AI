@@ -202,9 +202,12 @@ def _login(token):
 
 
 _real_account = account_routes.account_config
-# get_account answers in full to this device itself (api/auth).
+# get_account answers in full to this device itself, which proves it with the
+# device's local key (api/auth, common/local_key).
 from starlette.requests import Request as _Request                    # noqa: E402
-_LOCAL = _Request({"type": "http", "client": ("127.0.0.1", 1), "headers": []})
+from common.local_key import HEADER as _KEY_HEADER, local_key as _local_key  # noqa: E402
+_LOCAL = _Request({"type": "http", "client": ("127.0.0.1", 1),
+                   "headers": [(_KEY_HEADER.lower().encode(), _local_key.ensure().encode())]})
 
 STORED = {"ceravisUserId": 5012, "email": "user@example.com", "edgeId": "CAr5old"}
 account_routes.account_config = _Account(STORED)

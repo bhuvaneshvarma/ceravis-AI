@@ -29,6 +29,7 @@ from bootstrap.pipeline import Pipeline
 from maintenance import reboot
 
 from api.auth import SessionGate, router as session_router
+from common.local_key import local_key
 from api.setup_routes import router as setup_router
 from api.account_routes import router as account_router
 from api.camera_routes import router as camera_router
@@ -136,6 +137,7 @@ def _listen_for_refresh() -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    local_key.ensure()                # this device's own tools prove themselves with it
     refresh = _listen_for_refresh()
     _ensure_camera_labels_on_boot()   # cameras.json normalized before any read
     pipeline = Pipeline()

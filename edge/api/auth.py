@@ -46,6 +46,7 @@ from fastapi.responses import JSONResponse
 
 from api.control_auth import FLEET_EDGE_KEY
 from common.atomic import write_json_atomic
+from common.local_key import HEADER as LOCAL_KEY_HEADER, local_key
 from config.settings import settings
 
 logger = logging.getLogger("auth")
@@ -81,7 +82,11 @@ _CLOUD = [
     ("*", r"/api/v1/talkback/(cameras|log|health|credential|check)"),
     ("*", r"/api/v1/talkback/[^/]+/(credential|test|stream)"),
 ]
+# What a loopback caller WITHOUT the local key may still read: the health
+# surface the fleet agent forwards (edge/fleet) — read-only, nothing else.
+_LOCAL_READ = [("GET", r"/api/v1/system/status")]
 _PUBLIC_RE = [(m, re.compile(p + r"/?")) for m, p in _PUBLIC]
+_LOCAL_READ_RE = [(m, re.compile(p + r"/?")) for m, p in _LOCAL_READ]
 _CLOUD_RE = [(m, re.compile(p + r"/?")) for m, p in _CLOUD]
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -214,13 +219,23 @@ def _header(scope: dict, key: bytes) -> bytes | None:
     return None
 
 
-def is_local(scope: dict) -> bool:
-    """This device calling itself — never a request that came in through the
+def _loopback(scope: dict) -> bool:
+    """A request from this device itself — never one that came in through the
     tunnel (frpc also connects from loopback, but tunnel requests carry the
     /<edge_id> prefix and the cloud proxy's X-Forwarded-For)."""
     client = (scope.get("client") or ("", 0))[0]
     return (client in _LOOPBACK and FLEET_EDGE_KEY not in scope
             and _header(scope, b"x-forwarded-for") is None)
+
+
+def is_local(scope: dict) -> bool:
+    """This device calling itself WITH the device's local key (common/
+    local_key) — our own tools and scripts. Reaching 127.0.0.1 alone proves
+    nothing (any process on the box can, and so can a browser opened on the
+    device), so without the key a loopback caller signs in like anyone else;
+    only the read-only health surface (_LOCAL_READ) is open to it."""
+    return _loopback(scope) and local_key.matches(
+        _header(scope, LOCAL_KEY_HEADER.lower().encode("latin-1")))
 
 
 def session_of(request: Request) -> dict | None:
@@ -240,8 +255,11 @@ def _cookie_header(scope: dict, token: str, max_age: int) -> bytes:
     if fleet:
         from config.account_config import effective_edge_id
         path = f"/{effective_edge_id() or scope[FLEET_EDGE_KEY]}/"
+    # Secure wherever the page itself is: the tunnel (the fleet domain's HTTPS)
+    # and the LAN listener's HTTPS (serve.py) — never sent over plain HTTP then.
+    secure = fleet or scope.get("scheme") in ("https", "wss")
     parts = [f"{COOKIE}={token}", f"Path={path}", f"Max-Age={max_age}",
-             "HttpOnly", "SameSite=Strict"] + (["Secure"] if fleet else [])
+             "HttpOnly", "SameSite=Strict"] + (["Secure"] if secure else [])
     return "; ".join(parts).encode("latin-1")
 
 
@@ -259,6 +277,7 @@ class SessionGate:
         method = scope.get("method", "GET") if scope["type"] == "http" else "GET"
         allowed = (method == "OPTIONS"
                    or is_local(scope)
+                   or (_loopback(scope) and _matches(_LOCAL_READ_RE, method, path))
                    or _matches(_PUBLIC_RE, method, path)
                    or _matches(_CLOUD_RE, method, path)
                    or sessions.check(_cookie(scope)) is not None)
