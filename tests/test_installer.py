@@ -200,7 +200,7 @@ if shutil.which("git"):
     pc.mkdir()
     (pc / "ceravis-secrets.env").write_text("CERAVIS_API_KEY=never-in-the-folder\n")
     r = subprocess.run([BASH, posix(ROOT / "setup/make_release.sh"), "--allow-dirty",
-                        "--no-models", "--no-vendor"], cwd=ROOT, capture_output=True, text=True,
+                        "--no-models", "--no-vendor", "--no-wheels"], cwd=ROOT, capture_output=True, text=True,
                        env={**os.environ, "CERAVIS_DIST": posix(dist), "CERAVIS_PC_DIR": posix(pc)})
     version = (ROOT / "edge/VERSION").read_text().strip()
     folder = dist / "CERAVIS"
