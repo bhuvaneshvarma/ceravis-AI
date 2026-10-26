@@ -222,10 +222,10 @@ FREE_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
 [ "${FREE_GB:-0}" -ge 15 ] || fail "only ${FREE_GB} GB free on / — at least 15 GB needed"
 if curl -fsI --max-time 8 https://pypi.org >/dev/null 2>&1; then
     echo "  internet: yes"
+elif [ -d "$SRC/wheels" ]; then
+    echo "  internet: no — installing from the release's own packages (wheels/)"
 else
-    echo "  internet: no — the Python and system packages the device still lacks"
-    echo "            cannot be fetched. Connect an Ethernet cable from the router."
-    [ -d "$SRC/wheels" ] || fail "no internet: connect the device to the router by Ethernet cable"
+    fail "no internet, and this release carries no packages (wheels/): connect the device to the router by Ethernet cable"
 fi
 echo "  CERAVIS $VERSION from $SRC, JetPack $(head -1 /etc/nv_tegra_release | grep -oE 'R36[^,]*, REVISION: [0-9.]+')"
 
@@ -259,7 +259,7 @@ else
     # Code only: a re-run keeps the release's virtualenv and built engines; the
     # ONNX models go straight into models/ below.
     tar -C "$SRC" --exclude=./.git --exclude=./dist --exclude=./venv --exclude=./models \
-        --exclude=./models-src --exclude=./wheels -cf - . | tar -C "$REL" -xf -
+        --exclude=./models-src --exclude=./wheels --exclude=./debs -cf - . | tar -C "$REL" -xf -
 fi
 install -d -m 0755 -o "$SVC" -g "$SVC" "$REL/models"
 if [ -d "$SRC/models-src" ]; then
@@ -286,8 +286,14 @@ export_layout
 
 # ---- [5/9] software -------------------------------------------------------------
 stage "5/9" "software (virtualenv)"
-if [ -d "$SRC/wheels" ]; then export PIP_FIND_LINKS="$SRC/wheels"; fi
-CERAVIS_VENV="$REL/venv" CERAVIS_WHEELHOUSE="$APP/wheels" bash "$REL/setup/install_native.sh"
+# A release built on the PC carries every Python package for this device in
+# wheels/ and the system packages its JetPack lacks in debs/ — installed from
+# there, no internet (setup/install_native.sh).
+WHEELS=""; DEBS=""
+[ -d "$SRC/wheels" ] && WHEELS="$SRC/wheels"
+[ -d "$SRC/debs" ] && DEBS="$SRC/debs"
+CERAVIS_VENV="$REL/venv" CERAVIS_WHEELHOUSE="$APP/wheels" CERAVIS_WHEELS="$WHEELS" CERAVIS_DEBS="$DEBS" \
+    bash "$REL/setup/install_native.sh"
 "$REL/venv/bin/python" -m compileall -q "$REL/edge" >/dev/null 2>&1 || true
 
 # ---- [6/9] AI models ---------------------------------------------------------------

@@ -24,13 +24,30 @@
 #   models-src/     every ONNX model (setup/export_models.py's list) — made on
 #                   this PC once and kept in ~/.ceravis/models, so the device
 #                   only builds its TensorRT engines: no internet, no torch
-#   vendor/         the arm64 MediaMTX + frp binaries (kept in ~/.ceravis/vendor)
+#   vendor/         the arm64 MediaMTX + frp binaries and virtualenv.pyz (kept
+#                   in ~/.ceravis/vendor)
+#   wheels/         every Python package the app needs, for the device (arm64,
+#                   Python 3.10 — JetPack 6), resolved the way the device would
+#                   resolve them, with requirements.lock (the exact versions);
+#                   pycuda as source, built on the device. Kept in
+#                   ~/.ceravis/wheels. With models-src/ and vendor/ this makes
+#                   the install need NO internet (only the first sign-in, the
+#                   cloud and remote access do)
+#   debs/           the system packages the device's JetPack lacks, from the
+#                   list the device itself printed into ~/.ceravis/debs.txt:
+#                     sudo apt-get install --print-uris -qq --no-install-recommends \
+#                         gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg > debs.txt
+#                   each file downloaded once into ~/.ceravis/debs and checked
+#                   against the size and checksum in that list
 #
 # Options:
 #   --models DIR     take the ONNX from DIR (default ~/.ceravis/models; any
 #                    missing one is exported there first, in ~/.ceravis/export-venv)
 #   --no-models      leave the models out (the device then exports them itself)
 #   --no-vendor      leave the binaries out (the device downloads them)
+#   --no-wheels      leave the Python packages out (the device downloads them)
+#   --debs FILE      the device's package list (default ~/.ceravis/debs.txt, if there)
+#   --no-debs        leave the system packages out (the device downloads them)
 #   --usb DIR        also copy the folder, with the secrets and keys, to DIR/CERAVIS
 #   --allow-dirty    build even with uncommitted changes (they are NOT included)
 #
@@ -40,15 +57,19 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PC="${CERAVIS_PC_DIR:-$HOME/.ceravis}"
-MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; USB=""; DIRTY_OK=0
+MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; WHEELS=1; USB=""; DIRTY_OK=0
+DEBS_LIST="$PC/debs.txt"
 while [ $# -gt 0 ]; do
     case "$1" in
         --models) MODELS="$2"; shift 2 ;;
         --no-models) WITH_MODELS=0; shift ;;
         --no-vendor) VENDOR=0; shift ;;
+        --no-wheels) WHEELS=0; shift ;;
+        --debs) DEBS_LIST="$2"; shift 2 ;;
+        --no-debs) DEBS_LIST=""; shift ;;
         --usb) USB="$2"; shift 2 ;;
         --allow-dirty) DIRTY_OK=1; shift ;;
-        -h|--help) sed -n '2,39p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,56p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
     esac
 done
@@ -103,12 +124,88 @@ if [ "$VENDOR" = 1 ]; then
     FRP="$(grep -oE 'FRP_VERSION:-[0-9.]+' cloud/install_frpc.sh | cut -d- -f2)"
     mkdir -p "$PC/vendor" "$STAGE/vendor"
     for f in "mediamtx_v${MTX}_linux_arm64v8.tar.gz|https://github.com/bluenviron/mediamtx/releases/download/v${MTX}" \
-             "frp_${FRP}_linux_arm64.tar.gz|https://github.com/fatedier/frp/releases/download/v${FRP}"; do
+             "frp_${FRP}_linux_arm64.tar.gz|https://github.com/fatedier/frp/releases/download/v${FRP}" \
+             "virtualenv.pyz|https://bootstrap.pypa.io"; do
         file="${f%%|*}"
         [ -s "$PC/vendor/$file" ] || curl -fL --retry 3 -o "$PC/vendor/$file" "${f#*|}/$file"
         cp "$PC/vendor/$file" "$STAGE/vendor/"
     done
-    echo "   vendor MediaMTX $MTX, frp $FRP"
+    echo "   vendor MediaMTX $MTX, frp $FRP, virtualenv"
+fi
+
+# The device's Python packages: resolved for the device itself (Linux arm64,
+# Python 3.10, glibc 2.35 — JetPack 6 / Ubuntu 22.04) with uv, which applies the
+# device's platform markers, then downloaded once into ~/.ceravis/wheels (a
+# changed resolution starts the folder afresh). pycuda comes as source from
+# PyPI — it is compiled on the device against its own CUDA.
+if [ "$WHEELS" = 1 ]; then
+    win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
+    VENV="$PC/export-venv"
+    [ -x "$VENV/bin/python" ] || [ -x "$VENV/Scripts/python.exe" ] \
+        || "$PY" -m venv --system-site-packages "$VENV"
+    VPY="$VENV/bin/python"; [ -x "$VPY" ] || VPY="$VENV/Scripts/python.exe"
+    "$VPY" -c "import uv" 2>/dev/null || "$VPY" -m pip install -q uv
+    CACHE="$PC/wheels/cp310-aarch64"
+    mkdir -p "$PC/wheels"
+    printf '%s\n' "-r $(win "$REPO/edge/requirements.txt")" "scipy>=1.8,<1.14" "pycuda" > "$PC/wheels/target.in"
+    if "$VPY" -m uv pip compile "$(win "$PC/wheels/target.in")" -q --no-header --no-annotate \
+            --python-platform aarch64-manylinux_2_35 --python-version 3.10 \
+            -o "$(win "$PC/wheels/requirements.lock.new")"; then
+        tr -d '\r' < "$PC/wheels/requirements.lock.new" > "$PC/wheels/requirements.lock.next"
+        rm -f "$PC/wheels/requirements.lock.new"
+        cmp -s "$PC/wheels/requirements.lock.next" "$CACHE/requirements.lock" || rm -rf "$CACHE"
+        mkdir -p "$CACHE" && mv "$PC/wheels/requirements.lock.next" "$CACHE/requirements.lock"
+    elif [ -s "$CACHE/requirements.lock" ]; then
+        echo "   (could not resolve — no internet? — using the packages already in $CACHE)"
+    else
+        echo "cannot resolve the device's Python packages (internet needed once)" >&2; exit 1
+    fi
+    grep -v '^pycuda==' "$CACHE/requirements.lock" > "$PC/wheels/binary.txt"
+    "$VPY" -m pip download -q --no-deps -d "$CACHE" --only-binary=:all: \
+        --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 \
+        --platform manylinux_2_28_aarch64 --platform manylinux_2_35_aarch64 --platform linux_aarch64 \
+        --python-version 3.10 --implementation cp --abi cp310 --abi abi3 --abi none \
+        -r "$(win "$PC/wheels/binary.txt")"
+    # pycuda's build needs setuptools + wheel (numpy is in the set already).
+    "$VPY" -m pip download -q --no-deps -d "$CACHE" --only-binary=:all: --platform any \
+        --python-version 3.10 "setuptools>=64,<81" wheel
+    PYCUDA="$(grep '^pycuda==' "$CACHE/requirements.lock" | cut -d= -f3)"
+    if [ -n "$PYCUDA" ] && ! ls "$CACHE"/pycuda-"$PYCUDA".tar.gz >/dev/null 2>&1; then
+        URL="$("$VPY" -c "import json,sys,urllib.request; d=json.load(urllib.request.urlopen('https://pypi.org/pypi/pycuda/$PYCUDA/json')); print(next(u['url'] for u in d['urls'] if u['packagetype']=='sdist'))" | tr -d '\r')"
+        curl -fsSL --retry 3 -o "$CACHE/$(basename "$URL")" "$URL"
+    fi
+    mkdir -p "$STAGE/wheels" && cp "$CACHE"/* "$STAGE/wheels/"
+    echo "   wheels $(ls "$STAGE/wheels" | grep -c -v requirements.lock) Python packages for the device ($(du -sh "$STAGE/wheels" | cut -f1))"
+fi
+
+# The device's missing system packages: each line of its list is
+#   'URL' FILE SIZE MD5Sum:<hex> | SHA256:<hex> | SHA512:<hex>
+# (the checksums come from the device's own signed package index).
+if [ -n "$DEBS_LIST" ] && [ -s "$DEBS_LIST" ]; then
+    deb_ok() {      # <file> <size> <type:hex>
+        local sum
+        [ -s "$1" ] && [ "$(wc -c < "$1" | tr -d ' ')" = "$2" ] || return 1
+        case "${3%%:*}" in
+            MD5Sum) sum="$(md5sum "$1")" ;; SHA256) sum="$(sha256sum "$1")" ;;
+            SHA512) sum="$(sha512sum "$1")" ;; *) return 1 ;;
+        esac
+        [ "${sum%% *}" = "${3#*:}" ]
+    }
+    mkdir -p "$PC/debs" "$STAGE/debs"
+    n=0
+    while read -r url file size sum; do
+        url="${url//\'/}"
+        [ -n "$file" ] || continue
+        if ! deb_ok "$PC/debs/$file" "$size" "$sum"; then
+            curl -fsSL --retry 3 -o "$PC/debs/$file" "$url"
+            deb_ok "$PC/debs/$file" "$size" "$sum" \
+                || { echo "package $file does not match the device's checksum — not used" >&2; exit 1; }
+        fi
+        cp "$PC/debs/$file" "$STAGE/debs/"
+        n=$((n + 1))
+    done < <(tr -d '\r' < "$DEBS_LIST")
+    cp "$DEBS_LIST" "$STAGE/debs/debs.txt"
+    echo "   debs   $n system package files for the device ($(du -sh "$STAGE/debs" | cut -f1))"
 fi
 
 # manifest.json: what this is, and the fingerprint of every file in it.
