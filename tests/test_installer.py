@@ -468,6 +468,126 @@ if shutil.which("git"):
           r.returncode != 0 and "send the full release first" in r.stderr
           and "ON DEVICE" not in r.stdout, r.stderr[-120:])
 
+print("\n11. sending over a link that drops (send_to_device.sh)")
+# A stand-in device: every remote command runs here for real, with HOME = a
+# folder; `sudo` ones are only reported. It can drop the link mid-copy once.
+dev2, pc2 = out / "dev2", out / "pc2"
+dist2 = out / "dist2" / "CERAVIS"
+for d in (dev2, pc2, dist2):
+    d.mkdir(parents=True)
+rel = "ceravis-edge-9.9.9.tar.gz"
+blob = os.urandom(3_500_000)
+(dist2 / rel).write_bytes(blob)
+(dist2 / f"{rel}.sha256").write_text(f"{hashlib.sha256(blob).hexdigest()}  {rel}\n")
+(dist2 / "install.sh").write_text("#!/usr/bin/env bash\n")
+(dist2 / "README.txt").write_text("readme\n")
+(pc2 / "ceravis-secrets.env").write_text("CERAVIS_API_KEY=x\n")
+(pc2 / "authorized_keys").write_text("ssh-ed25519 AAAA developer\n")
+kdir = out / "kdir"
+kdir.mkdir()
+(kdir / "admin").write_text("not a real key")
+(kdir / "admin.pub").write_text("ssh-ed25519 BBBB admin\n")
+fake2 = out / "fakebin2"
+fake2.mkdir()
+(fake2 / "ssh").write_text(
+    '#!/bin/bash\nfor a in "$@"; do last="$a"; done\necho "$last" >> "$SEND_LOG"\n'
+    'case "$last" in *sudo*) echo "ON DEVICE: $last"; exit 0 ;; esac\n'
+    # SEND_DROP holds how many more copies the link cuts, each after SEND_CHUNK bytes
+    'if [[ "$last" == *"cat >"* ]] && [ -s "$SEND_DROP" ]; then\n'
+    '    n=$(cat "$SEND_DROP"); if [ "$n" -gt 1 ]; then echo $((n - 1)) > "$SEND_DROP"; else rm -f "$SEND_DROP"; fi\n'
+    '    head -c "${SEND_CHUNK:-1500000}" | HOME="$SEND_DEV" bash -c "$last"; exit 255\n'
+    'fi\nHOME="$SEND_DEV" bash -c "$last"\n')
+(fake2 / "timeout").write_text("#!/bin/bash\nexit 0\n")           # the link is back at once
+for f in ("ssh", "timeout"):
+    os.chmod(fake2 / f, 0o755)
+send_log, drop = out / "send.log", out / "drop"
+env2 = {**os.environ, "PATH": posix(fake2) + os.pathsep + os.environ.get("PATH", ""),
+        "CERAVIS_DIST": posix(out / "dist2"), "CERAVIS_PC_DIR": posix(pc2),
+        "SEND_DEV": posix(dev2), "SEND_LOG": posix(send_log), "SEND_DROP": posix(drop)}
+there = dev2 / "CERAVIS"
+
+
+def send(*extra: str) -> subprocess.CompletedProcess:
+    return subprocess.run([BASH, posix(ROOT / "setup/send_to_device.sh"), "ceravis@test",
+                           "--key", posix(kdir / "admin"), *extra], cwd=ROOT,
+                          capture_output=True, text=True, env=env2)
+
+
+def copies() -> list[str]:
+    return [ln for ln in send_log.read_text().splitlines() if "cat >" in ln] if send_log.exists() else []
+
+
+drop.write_text("1")
+r = send()
+whole = (there / rel).exists() and (there / rel).read_bytes() == blob
+check("the link drops mid-copy -> it waits, RESUMES from the byte the device has, the copy is whole",
+      whole and "resuming at 1 of 3 MB" in r.stdout, (r.stdout + r.stderr)[-300:])
+check("…sending only the rest the second time (append, not again from 0)",
+      [c.split()[1] for c in copies()] == [">", ">>"], str(copies()))
+check("the small files, the secrets and the developers' keys are there",
+      all((there / f).exists() for f in ("install.sh", "README.txt", f"{rel}.sha256",
+                                         "ceravis-secrets.env", "authorized_keys")))
+ak = (dev2 / ".ssh" / "authorized_keys")
+check("this PC's admin key is added to the admin account (and not left in the folder)",
+      ak.exists() and "ssh-ed25519 BBBB admin" in ak.read_text() and not list(there.glob("*.pub")))
+check("then the install starts", "ON DEVICE: sudo bash ~/CERAVIS/install.sh" in r.stdout)
+
+n = len(copies())
+r = send()
+check("sent again, the same build already whole -> not copied again",
+      "already on the device" in r.stdout and len(copies()) == n, r.stdout[-200:])
+
+(there / rel).write_bytes(blob[:2_200_000])                     # a partial copy of THIS build
+r = send()
+check("a partial copy of the same build (an earlier run cut off) is resumed, not restarted",
+      (there / rel).read_bytes() == blob and "resuming at 2 of 3 MB" in r.stdout, r.stdout[-200:])
+
+(there / rel).write_bytes(b"x" * 1_000_000)                     # another build's file
+(there / f"{rel}.sha256").write_text("0" * 64 + f"  {rel}\n")
+(there / "patch").mkdir()
+r = send()
+check("another build's file is replaced from the start, and old leftovers (patch/) go",
+      (there / rel).read_bytes() == blob and "resuming" not in r.stdout
+      and not (there / "patch").exists(), r.stdout[-200:])
+
+(there / rel).unlink()
+drop.write_text("3")                     # cut three times; the last one after the final byte
+n = len(copies())
+r = send()
+check("three drops in one copy (the last right after the final byte) -> resumed each time, whole",
+      (there / rel).read_bytes() == blob and [c.split()[1] for c in copies()[n:]] == [">", ">>", ">>"]
+      and r.returncode == 0, str(copies()[n:]) + r.stderr[-160:])
+
+(there / rel).unlink()
+drop.write_text("40")                    # the link keeps failing: 100 kB per try
+env2["SEND_CHUNK"] = "100000"
+r = send()
+got = (there / rel).stat().st_size if (there / rel).exists() else 0
+check("a link that keeps failing -> it stops after 20 tries, says how to go on, starts no install",
+      r.returncode != 0 and "gave up after 20 tries" in r.stderr and got == 2_000_000
+      and "ON DEVICE" not in r.stdout, f"rc={r.returncode} have={got} " + r.stderr[-160:])
+drop.unlink(missing_ok=True)
+del env2["SEND_CHUNK"]
+r = send()
+check("…and the next run resumes there (1.9 MB already on the device), the copy whole",
+      (there / rel).read_bytes() == blob and "resuming at 1 of 3 MB" in r.stdout, r.stdout[-200:])
+
+(there / rel).write_bytes(blob + b"more")                       # longer than this release
+r = send()
+check("a file longer than this release is not it -> copied again from 0",
+      (there / rel).read_bytes() == blob, r.stdout[-200:])
+
+(fake2 / "systemctl").write_text("#!/bin/bash\nexit 0\n")      # an install is running
+os.chmod(fake2 / "systemctl", 0o755)
+(there / rel).write_bytes(b"in use by the running install")
+r = send()
+check("an install running on the device -> refused, nothing there touched (its end deletes the folder)",
+      r.returncode == 3 and "an install is running" in r.stderr
+      and (there / rel).read_bytes() == b"in use by the running install", r.stderr[-200:])
+(fake2 / "systemctl").unlink()
+check("a release that fails its fingerprint on the device's own disk is removed (the next send copies it afresh)",
+      'on_device_disk && rm -f "$BUNDLE"' in usb_src)
+
 shutil.rmtree(out, ignore_errors=True)
 print()
 if failures:
