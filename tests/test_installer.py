@@ -409,6 +409,21 @@ seal = (ROOT / "setup/seal.sh").read_text(encoding="utf-8")
 check("the seal removes delivered release folders (they hold the keys)",
       "rm -rf /home/*/CERAVIS" in seal and "ceravis-install.result" in seal)
 check("…and downloaded release files", "/home/*/Downloads/CERAVIS-*.tar*" in seal)
+usb_src = (ROOT / "setup/usb/install.sh").read_text(encoding="utf-8")
+fns = "".join(re.search(rf"^{n}\(\) \{{.*?^\}}\n", usb_src, re.S | re.M).group(0)
+              for n in ("status", "follow"))
+(out / "result").write_text("ok 2026-10-27T13:17:46+05:30\n")
+r = sh('systemctl() { return 3; }; say() { echo "== $*"; }\n'
+       f'HERE=/home/ceravis/CERAVIS; UNIT=ceravis-install; RESULT="{posix(out / "result")}"; LOG=/x\n'
+       + fns + 'follow; echo "exit=$?"')
+check("--follow with nothing installing says so — never an old log that reads like news "
+      "(a copied release once sat uninstalled behind this morning's log)",
+      "nothing is installing now" in r.stdout and "sudo bash /home/ceravis/CERAVIS/install.sh" in r.stdout
+      and "following the install" not in r.stdout, r.stdout[-200:])
+send = (ROOT / "setup/send_to_device.sh").read_text(encoding="utf-8")
+check("a connection closed at step 3 says how to start it without copying again (--start)",
+      "--start) MODE=start" in send and '[ "$rc" = 255 ]' in send
+      and 'start) on "sudo bash ~/CERAVIS/install.sh"' in send)
 
 print("\n9. --code: a fix reaches a device in seconds")
 if shutil.which("git"):
