@@ -169,5 +169,9 @@ host_python() {
     return 1
 }
 
+# apt-get that waits for another apt run instead of failing at once: a freshly
+# flashed system with internet runs its daily update for minutes after boot.
+apt_get() { sudo apt-get -o DPkg::Lock::Timeout=900 "$@"; }
+
 # This device's name (ceravis-<code>) from the app's own identity module.
 device_name() { (cd "$EDGE_DIR" && "$CERAVIS_PYTHON" -m common.device_identity name); }

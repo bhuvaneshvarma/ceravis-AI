@@ -8,8 +8,9 @@
 #     ceravis-edge-<version>.tar.gz.sha256  its fingerprint
 #     README.txt                          what to do with it
 #
-# The same folder goes to a USB stick (--usb) or straight to a device over the
-# network (setup/send_to_device.sh). It never holds a secret: dist/ is inside
+# The same folder goes to a USB stick (--usb), straight to a device over the
+# network (setup/send_to_device.sh), or — packed as ONE file with the keys
+# encrypted (--package) — to someone far away. It never holds a secret: dist/ is inside
 # the synced project folder. The secrets and the developers' SSH keys live on
 # this PC only, in ~/.ceravis/, and are added at delivery:
 #   ~/.ceravis/ceravis-secrets.env   the keys (filled in once; template written
@@ -49,6 +50,11 @@
 #   --debs FILE      the device's package list (default ~/.ceravis/debs.txt, if there)
 #   --no-debs        leave the system packages out (the device downloads them)
 #   --usb DIR        also copy the folder, with the secrets and keys, to DIR/CERAVIS
+#   --package        also pack it as ONE file to download — dist/CERAVIS-<version>.tar
+#                    (+ .sha256): the folder, the keys ENCRYPTED with a passphrase
+#                    made here (shown once, kept in ~/.ceravis/CERAVIS-<version>.passphrase,
+#                    given by phone, never in the same message as the link),
+#                    and the developers' SSH public keys
 #   --allow-dirty    build even with uncommitted changes (they are NOT included)
 #
 # Run:  bash setup/make_release.sh [--usb E:/]
@@ -57,7 +63,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PC="${CERAVIS_PC_DIR:-$HOME/.ceravis}"
-MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; WHEELS=1; USB=""; DIRTY_OK=0
+MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; WHEELS=1; USB=""; DIRTY_OK=0; PACKAGE=0
 DEBS_LIST="$PC/debs.txt"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -68,8 +74,9 @@ while [ $# -gt 0 ]; do
         --debs) DEBS_LIST="$2"; shift 2 ;;
         --no-debs) DEBS_LIST=""; shift ;;
         --usb) USB="$2"; shift 2 ;;
+        --package) PACKAGE=1; shift ;;
         --allow-dirty) DIRTY_OK=1; shift ;;
-        -h|--help) sed -n '2,56p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,62p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
     esac
 done
@@ -91,7 +98,8 @@ DIST="${CERAVIS_DIST:-$REPO/dist}"
 OUT="$DIST/CERAVIS"
 STAGE="$DIST/.stage/$NAME"
 # Earlier outputs go: the one folder below is the release.
-rm -rf "$DIST/.stage" "$OUT" "$DIST/usb" "$DIST"/ceravis-edge-*.tar.gz "$DIST"/ceravis-edge-*.sha256
+rm -rf "$DIST/.stage" "$DIST/.pkg" "$OUT" "$DIST/usb" "$DIST"/ceravis-edge-*.tar.gz "$DIST"/ceravis-edge-*.sha256 \
+       "$DIST"/CERAVIS-*.tar "$DIST"/CERAVIS-*.tar.sha256
 mkdir -p "$STAGE" "$OUT"
 echo "== $NAME  ($BRANCH @ $COMMIT)"
 
@@ -242,4 +250,34 @@ if [ -n "$USB" ]; then
     done
     echo "== USB installer written to $USB/CERAVIS (with the secrets and SSH keys) — keep the stick safe"
 fi
-echo "Send it:  bash setup/send_to_device.sh ceravis@<device-ip>      (or --usb E:/ next time)"
+
+# ONE file for someone far away: the folder, the keys encrypted with a fresh
+# passphrase (16 characters from 32 that cannot be misheard — 80 bits, then
+# 200 000 rounds of PBKDF2), the developers' SSH public keys.
+if [ "$PACKAGE" = 1 ]; then
+    [ -s "$PC/ceravis-secrets.env" ] || { echo "no $PC/ceravis-secrets.env to pack" >&2; exit 1; }
+    eval "$(grep '^CIPHER=' setup/usb/install.sh)"          # the folder installer's ONE setting
+    ABC=ABCDEFGHJKLMNPQRSTUVWXYZ23456789
+    PASS=""
+    for b in $(od -An -tu1 -N16 /dev/urandom); do
+        [ $(( ${#PASS} % 5 )) = 4 ] && PASS+="-"
+        PASS+="${ABC:$((b % 32)):1}"
+    done
+    PKG="CERAVIS-$VERSION.tar"
+    EXTRA=(CERAVIS/ceravis-secrets.env.enc)
+    mkdir -p "$DIST/.pkg/CERAVIS"
+    printf '%s\n' "$PASS" | openssl enc "${CIPHER[@]}" -salt -pass stdin \
+        -in "$PC/ceravis-secrets.env" -out "$DIST/.pkg/CERAVIS/ceravis-secrets.env.enc"
+    if [ -s "$PC/authorized_keys" ]; then
+        cp "$PC/authorized_keys" "$DIST/.pkg/CERAVIS/" && EXTRA+=(CERAVIS/authorized_keys)
+    fi
+    tar -cf "$DIST/$PKG" -C "$DIST" CERAVIS -C "$DIST/.pkg" "${EXTRA[@]}"
+    rm -rf "$DIST/.pkg"
+    (cd "$DIST" && sha256sum "$PKG" > "$PKG.sha256")
+    (umask 077 && printf '%s\n' "$PASS" > "$PC/CERAVIS-$VERSION.passphrase")
+    echo "== ONE file to send: $DIST/$PKG  ($(du -h "$DIST/$PKG" | cut -f1))"
+    echo "   sha256      $(cut -d' ' -f1 "$DIST/$PKG.sha256")"
+    echo "   passphrase  $PASS   (also in $PC/CERAVIS-$VERSION.passphrase —"
+    echo "               give it by phone, never with the link)"
+fi
+echo "Send it:  bash setup/send_to_device.sh ceravis@<device-ip>      (or --usb E:/, or --package)"

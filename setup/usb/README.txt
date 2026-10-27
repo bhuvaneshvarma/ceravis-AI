@@ -8,6 +8,9 @@ What is in this folder
   ceravis-secrets.env                   the keys      } added from the PC's ~/.ceravis
   authorized_keys                       developer SSH }  at delivery, never kept in
                                         public keys   }  the project folder
+  ceravis-secrets.env.enc               the keys, ENCRYPTED — in a downloaded
+                                        release; the install asks for the
+                                        passphrase you were given by phone
 
 Before you start
   - The Jetson has JetPack 6 installed (SDK Manager) and is switched on.
@@ -30,7 +33,16 @@ Install from a USB stick (with a monitor and keyboard, or over SSH)
   3. Run:  sudo bash /media/$USER/<stick name>/CERAVIS/install.sh
      (or /mnt/usb/CERAVIS/install.sh)
 
-Either way (about 30-45 minutes the first time)
+Install from a download (CERAVIS-<version>.tar, a link you were sent)
+  On the Jetson (its Terminal, or SSH from a laptop: ssh <user>@192.168.55.1
+  over the USB-C cable), ONE command — the link in quotes:
+      cd ~ && curl -fL --retry 5 -o CERAVIS.tar "<the link>" \
+        && tar -xf CERAVIS.tar && rm CERAVIS.tar && sudo bash CERAVIS/install.sh
+  It asks for the device password (sudo), then the passphrase (by phone).
+  Downloaded on a laptop instead: copy it over, then the same from "tar":
+      scp CERAVIS-<version>.tar <user>@192.168.55.1:~/CERAVIS.tar
+
+Any way (about 30-45 minutes the first time)
   - The install runs as a background service: a closed window or a dropped
     connection does not stop it. Progress any time:
         sudo bash <folder>/install.sh --follow
@@ -41,8 +53,8 @@ Either way (about 30-45 minutes the first time)
     screen shows every readiness check and the camera hotspot's password;
     when it says READY, sign in with the care account's email.
   - Reboot once (sudo reboot) so the desktop is switched off.
-  - A copy of this folder on the device (sent over the network) is deleted
-    after a successful install, keys included. A USB stick is left as it is:
+  - A copy of this folder on the device (sent over the network or
+    downloaded) is deleted after a successful install, keys included. A USB stick is left as it is:
     keep it somewhere safe — it holds the keys.
 
 If something fails

@@ -75,13 +75,21 @@ find_missing
 # (debs/, listed by the device itself and checked against its fingerprints):
 # installed from there first. apt reads local files without any network (NOT
 # --no-download: that accepts only apt's own download cache and refuses local
-# files); it reaches the internet only for a dependency still missing, and
-# never downgrades a newer package already installed.
+# files); it reaches the internet only for a dependency still missing. A file
+# whose package this device already has at the same or a newer version is left
+# out: apt refuses a downgrade, and that would stop the whole set.
 DEBS="${CERAVIS_DEBS:-}"
 if [ -z "${CERAVIS_SKIP_APT:-}" ] && [ "${#MISSING[@]}" -gt 0 ] && [ -n "$DEBS" ] \
         && ls "$DEBS"/*.deb >/dev/null 2>&1; then
-    echo "   from the release: $(ls "$DEBS"/*.deb | wc -l) system package files (offline)"
-    sudo apt-get install -y --no-install-recommends "$DEBS"/*.deb \
+    NEED=()
+    for f in "$DEBS"/*.deb; do
+        have="$(dpkg-query -W -f='${Status} ${Version}' "$(dpkg-deb -f "$f" Package)" 2>/dev/null \
+                | sed -n 's/^install ok installed //p')"
+        [ -n "$have" ] && dpkg --compare-versions "$have" ge "$(dpkg-deb -f "$f" Version)" && continue
+        NEED+=("$f")
+    done
+    echo "   from the release: ${#NEED[@]} of $(ls "$DEBS"/*.deb | wc -l) system package files (offline)"
+    [ ${#NEED[@]} -eq 0 ] || apt_get install -y --no-install-recommends "${NEED[@]}" \
         || echo "   (the release's package files did not install — see above; trying the internet)"
     find_missing
 fi
@@ -91,8 +99,8 @@ elif [ "${#MISSING[@]}" -eq 0 ]; then
     echo "   all present — nothing to install (no internet needed)"
 elif curl -fsI --max-time 8 http://ports.ubuntu.com >/dev/null 2>&1; then
     echo "   installing: ${MISSING[*]}"
-    sudo apt-get update
-    sudo apt-get install -y --no-install-recommends "${MISSING[@]}"
+    apt_get update
+    apt_get install -y --no-install-recommends "${MISSING[@]}"
 else
     echo "ERROR: no internet, and these system packages are missing: ${MISSING[*]}" >&2
     echo "       connect the device to the internet once (Ethernet to the router, or the" >&2

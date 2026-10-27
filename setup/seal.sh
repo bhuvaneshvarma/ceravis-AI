@@ -11,7 +11,8 @@
 #   device     machine-id, SSH host keys, TLS certificate, hotspot, saved
 #              Wi-Fi networks, fleet identity, tunnel routes and prefix
 #   traces     logs, shell histories, temporary files, DHCP leases, delivered
-#              release folders (~/CERAVIS — they hold the keys), pip caches
+#              release folders (~/CERAVIS — they hold the keys) and downloaded
+#              release files (CERAVIS-<version>.tar), pip caches
 #
 # Kept: the installed software, the AI engines, the cloud server settings, the
 # operator's manual-reboot password and the developers' SSH access (keys +
@@ -100,6 +101,7 @@ rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
 
 say "install leftovers: delivered release folders (they hold the keys), caches"
 rm -rf /home/*/CERAVIS /root/CERAVIS /root/.cache/pip /home/*/.cache/pip 2>/dev/null || true
+rm -f /home/*/CERAVIS-*.tar* /home/*/Downloads/CERAVIS-*.tar* /root/CERAVIS-*.tar* 2>/dev/null || true
 rm -f /var/log/ceravis-install.result
 if [ -f /etc/systemd/system/usb-internet.service ]; then      # a testing aid only
     systemctl disable --now usb-internet >/dev/null 2>&1 || true
