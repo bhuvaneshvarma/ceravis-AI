@@ -424,6 +424,12 @@ check("a new install starts a new log (the last kept as .1), before it starts â€
       "its progress never opens with the previous install's ending",
       '[ -s "$LOG" ] && mv -f "$LOG" "$LOG.1"' in usb_src
       and usb_src.index('mv -f "$LOG" "$LOG.1"') < usb_src.index("systemd-run --unit"))
+timer_sh = (ROOT / "setup/install_reboot_timer.sh").read_text(encoding="utf-8")
+starts = [ln for ln in timer_sh.splitlines()
+          if re.search(r"systemctl .*(--now|start).*\.timer", ln) and not ln.lstrip().startswith(("#", "echo"))]
+check("no install step waits for network time: every timer starts --no-block "
+      "(an offline install once hung on the nightly-reboot timer)",
+      bool(starts) and all("--no-block" in ln for ln in starts), str(starts))
 send = (ROOT / "setup/send_to_device.sh").read_text(encoding="utf-8")
 check("a connection closed at step 3 says how to start it without copying again (--start)",
       "--start) MODE=start" in send and '[ "$rc" = 255 ]' in send
