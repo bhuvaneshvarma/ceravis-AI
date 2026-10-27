@@ -57,6 +57,13 @@ status() {
 }
 
 follow() {
+    # Nothing running: say so — an old log's last lines would read like news.
+    if ! systemctl is-active --quiet "$UNIT"; then
+        status
+        say "nothing is installing now. To install the release in this folder:  sudo bash $HERE/install.sh"
+        grep -q '^ok' "$RESULT" 2>/dev/null
+        return
+    fi
     say "following the install (Ctrl+C stops only the showing — it keeps running)"
     tail -n 40 -F "$LOG" 2>/dev/null &
     local tailer=$!

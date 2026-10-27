@@ -24,6 +24,8 @@
 #   --follow     only show the progress of an install already running
 #   --status     only say whether the last install finished, failed or runs
 #   --no-install copy the folder, do not start the install
+#   --start      start the install of the folder already on the device (after a
+#                connection that closed at step 3); shows it if it already runs
 #   --code [REF] TESTING: send only the committed code of REF (default
 #                prod_ceravis1.1) — a few MB — into ~/CERAVIS/patch on the
 #                device, with the newest folder installer, and install again.
@@ -43,6 +45,7 @@ while [ $# -gt 0 ]; do
         --follow) MODE=follow; shift ;;
         --status) MODE=status; shift ;;
         --no-install) MODE=copy; shift ;;
+        --start) MODE=start; shift ;;
         --code) MODE=code
                 if [ $# -gt 1 ] && [[ "$2" != -* && "$2" != *@* ]]; then REF="$2"; shift; fi
                 shift ;;
@@ -60,6 +63,7 @@ on() { ssh "${SSH_OPTS[@]}" -t "$TARGET" "$@"; }
 case "$MODE" in
     follow) on "sudo bash ~/CERAVIS/install.sh --follow || sudo tail -n 60 /var/log/ceravis-install.log"; exit ;;
     status) on "sudo cat /var/log/ceravis-install.result 2>/dev/null || echo 'no install has run yet'"; exit ;;
+    start) on "sudo bash ~/CERAVIS/install.sh"; exit ;;
     code)
         git -C "$REPO" rev-parse -q --verify "$REF^{commit}" >/dev/null \
             || { echo "no such branch or commit: $REF" >&2; exit 2; }
@@ -100,4 +104,10 @@ echo "   copied ($(du -sh "$OUT" | cut -f1)$([ ${#EXTRA[@]} -gt 0 ] && echo ", w
 
 [ "$MODE" = copy ] && { echo "Install on the device:  sudo bash ~/CERAVIS/install.sh"; exit 0; }
 echo "== 3/3 installing (the device keeps going if this window closes)"
-on "sudo bash ~/CERAVIS/install.sh"
+on "sudo bash ~/CERAVIS/install.sh" || {
+    rc=$?
+    # 255: the connection itself — e.g. a password not typed within the 30 s
+    # the device's SSH allows. The release is there; nothing is copied again.
+    [ "$rc" = 255 ] && echo "the connection closed — start (or watch) the install:  bash setup/send_to_device.sh $TARGET --start" >&2
+    exit "$rc"
+}
