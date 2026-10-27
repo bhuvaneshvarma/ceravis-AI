@@ -5,18 +5,25 @@
 #
 #     bash setup/send_to_device.sh ceravis@<device-ip>
 #
-#   1. this PC's admin SSH key is added to the device's admin account, so the
-#      next steps (and every later login) use it
-#   2. the folder is copied to ~/CERAVIS on the device, with the secrets and the
-#      developers' SSH keys from ~/.ceravis/ (never from the project folder)
+#   1. the small files — the folder installer, the release's fingerprint, the
+#      README, the secrets and the developers' SSH keys from ~/.ceravis/ (never
+#      from the project folder) — go to ~/CERAVIS on the device, and this PC's
+#      admin SSH key is added to the device's admin account: one connection
+#   2. the release itself is streamed, with its progress. A link that drops
+#      (the USB-C cable on Windows does) costs seconds, not the copy: this
+#      waits for the device and RESUMES from the byte the device has. A partial
+#      copy of the same build is resumed by the next run too; another build's
+#      is replaced. The device checks the fingerprint before installing.
 #   3. the install starts on the device as a background service and its
 #      progress is shown here. A dropped connection or a closed window does NOT
-#      stop it — run the same command with --follow to watch it again.
+#      stop it — --follow watches it again; --start starts it when the
+#      connection closed before it began.
 #   4. when it succeeds, the device deletes ~/CERAVIS, keys included
 #
 # The device's admin password is asked for by ssh/sudo themselves (typed by
-# you, never stored). The device address: the router's client list, the name
-# printed by the device, or 192.168.55.1 over the USB-C cable.
+# you, never stored) — once per connection: its SSH needs key AND password.
+# The device address: the router's client list, the name printed by the
+# device, or 192.168.55.1 over the USB-C cable.
 #
 # Options:
 #   --key FILE   the admin SSH key to use (default ~/.ssh/ceravis_admin, if it
@@ -37,7 +44,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PC="${CERAVIS_PC_DIR:-$HOME/.ceravis}"
-OUT="$REPO/dist/CERAVIS"
+OUT="${CERAVIS_DIST:-$REPO/dist}/CERAVIS"
+MAX_TRIES=20
 TARGET=""; KEY=""; MODE=install; REF=prod_ceravis1.1
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -49,16 +57,64 @@ while [ $# -gt 0 ]; do
         --code) MODE=code
                 if [ $# -gt 1 ] && [[ "$2" != -* && "$2" != *@* ]]; then REF="$2"; shift; fi
                 shift ;;
-        -h|--help) sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,/^# =====/p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
         -*) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
         *) TARGET="$1"; shift ;;
     esac
 done
 [ -n "$TARGET" ] || { echo "usage: bash setup/send_to_device.sh <admin>@<device-ip>" >&2; exit 2; }
 [ -n "$KEY" ] || { [ -f "$HOME/.ssh/ceravis_admin" ] && KEY="$HOME/.ssh/ceravis_admin"; } || true
-SSH_OPTS=(-o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+# A dead link is noticed within ~15 s, a device that does not answer in 10 s.
+SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
 [ -n "$KEY" ] && SSH_OPTS+=(-i "$KEY")
+HOST="${TARGET#*@}"
 on() { ssh "${SSH_OPTS[@]}" -t "$TARGET" "$@"; }
+
+# The USB-C cable on Windows: its old RNDIS network driver resets the link
+# every few minutes, and every session in it dies; Windows' NCM driver for the
+# same cable holds. Only ever advice, and only when the NCM adapter exists —
+# disabling RNDIS without it would cut the cable link altogether.
+usb_link_advice() {
+    [ "$HOST" = 192.168.55.1 ] && command -v powershell.exe >/dev/null 2>&1 || return 0
+    local found rndis ncm
+    echo "== checking this PC's USB-C network driver (a few seconds)"
+    # </dev/null: started from Git Bash, PowerShell otherwise waits for input.
+    found="$(timeout 30 powershell.exe -NoProfile -NonInteractive -Command \
+        "\$r = (Get-NetAdapter | Where-Object { \$_.InterfaceDescription -like '*Remote NDIS*' -and \$_.Status -eq 'Up' }).Name; \$n = (Get-NetAdapter | Where-Object { \$_.InterfaceDescription -like '*UsbNcm*' }).Name; \"\$r|\$n\"" \
+        </dev/null 2>/dev/null | tr -d '\r')" || return 0
+    rndis="${found%%|*}"; ncm="${found#*|}"
+    [ -n "$rndis" ] && [ -n "$ncm" ] || return 0
+    echo "note: the USB-C link runs on Windows' RNDIS driver ('$rndis'), which drops every few"
+    echo "      minutes. Steadier: its NCM adapter ('$ncm'). In PowerShell as Administrator:"
+    echo "        Enable-NetAdapter -Name '$ncm' -Confirm:\$false; Disable-NetAdapter -Name '$rndis' -Confirm:\$false"
+    echo "      (the copy below resumes after any drop either way)"
+}
+
+# Until the device's SSH port answers again — the link is back (3 minutes).
+wait_for_device() {
+    local i
+    for i in $(seq 60); do
+        timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/22" 2>/dev/null && return 0
+        [ "$i" = 1 ] && echo "   waiting for the device to answer again…"
+        sleep 3
+    done
+    echo "the device did not answer for 3 minutes — check the cable or network, then run the same command again (the copy resumes)" >&2
+    return 1
+}
+
+# "$@" until it succeeds, waiting for the link between tries.
+again() {
+    local try
+    for try in $(seq "$MAX_TRIES"); do
+        "$@" && return 0
+        [ "$try" -lt "$MAX_TRIES" ] || break
+        echo "   the connection dropped — again (${try}/${MAX_TRIES})"
+        wait_for_device || return 1
+    done
+    echo "gave up after $MAX_TRIES tries — run the same command again: the copy resumes where it stopped" >&2
+    return 1
+}
+usb_link_advice
 
 case "$MODE" in
     follow) on "sudo bash ~/CERAVIS/install.sh --follow || sudo tail -n 60 /var/log/ceravis-install.log"; exit ;;
@@ -87,20 +143,89 @@ ls "$OUT"/ceravis-edge-*.tar.gz >/dev/null 2>&1 \
 [ -s "$PC/ceravis-secrets.env" ] \
     || echo "note: no $PC/ceravis-secrets.env — the device uses the keys it already has"
 
-echo "== 1/3 the admin SSH key on the device"
+NAME="$(cd "$OUT" && ls ceravis-edge-*.tar.gz | head -1)"
+BUNDLE="$OUT/$NAME"
+SIZE="$(wc -c < "$BUNDLE" | tr -d ' ')"
+
+# Step 1 on the device, from one tar stream: the small files in place, every
+# *.pub in it added to the admin account, and a release file already there
+# kept only when its fingerprint is this build's (then the copy resumes).
+# Answers "<bytes of the release there>", or BUSY while an install runs (its
+# end deletes this folder).
+PREPARE='set -e; umask 077
+if systemctl is-active --quiet ceravis-install 2>/dev/null; then echo BUSY; exit 0; fi
+mkdir -p ~/CERAVIS ~/.ssh; chmod 700 ~/CERAVIS; cd ~/CERAVIS
+rm -rf .new; mkdir .new; tar -xf - -C .new
+for p in .new/*.pub; do
+    [ -f "$p" ] || continue
+    k="$(cat "$p")"; rm -f "$p"
+    grep -qxF "$k" ~/.ssh/authorized_keys 2>/dev/null || echo "$k" >> ~/.ssh/authorized_keys
+done
+s="$(cd .new && echo ceravis-edge-*.tar.gz.sha256)"; b="${s%.sha256}"
+keep=.new; [ -f "$b" ] && cmp -s "$s" ".new/$s" && keep="$b"
+find . -mindepth 1 -maxdepth 1 ! -name .new ! -name "$keep" -exec rm -rf {} +
+find .new -mindepth 1 -maxdepth 1 -exec mv -f {} . \;
+rmdir .new
+stat -c %s "$b" 2>/dev/null || echo 0'
+
+SMALL=(-C "$OUT" install.sh README.txt "$NAME.sha256")
+WITH=()
+for f in ceravis-secrets.env authorized_keys; do [ -s "$PC/$f" ] && WITH+=("$f"); done
+[ ${#WITH[@]} -gt 0 ] && SMALL+=(-C "$PC" "${WITH[@]}")
 if [ -n "$KEY" ] && [ -f "$KEY.pub" ]; then
-    ssh "${SSH_OPTS[@]}" "$TARGET" 'umask 077; mkdir -p ~/.ssh; k="$(cat)"; grep -qxF "$k" ~/.ssh/authorized_keys 2>/dev/null || echo "$k" >> ~/.ssh/authorized_keys' \
-        < "$KEY.pub"
+    SMALL+=(-C "$(dirname "$KEY")" "$(basename "$KEY").pub")
 else
-    echo "   (no --key / ~/.ssh/ceravis_admin — using ssh's default keys)"
+    echo "note: no --key / ~/.ssh/ceravis_admin — ssh's default keys are used"
 fi
 
-echo "== 2/3 copying the release folder to ~/CERAVIS"
-ssh "${SSH_OPTS[@]}" "$TARGET" 'rm -rf ~/CERAVIS && mkdir -p ~/CERAVIS && chmod 700 ~/CERAVIS'
-EXTRA=()
-for f in ceravis-secrets.env authorized_keys; do [ -s "$PC/$f" ] && EXTRA+=("$PC/$f"); done
-scp "${SSH_OPTS[@]}" -q "$OUT"/* ${EXTRA[@]+"${EXTRA[@]}"} "$TARGET:CERAVIS/"
-echo "   copied ($(du -sh "$OUT" | cut -f1)$([ ${#EXTRA[@]} -gt 0 ] && echo ", with the secrets and SSH keys"))"
+HAVE=0
+prepare() {
+    local out
+    out="$(tar -cf - "${SMALL[@]}" | ssh "${SSH_OPTS[@]}" "$TARGET" "$PREPARE")" || return 1
+    if [ "$out" = BUSY ]; then
+        echo "an install is running on the device — wait for it to end (--follow), then send again" >&2
+        exit 3
+    fi
+    [[ "$out" =~ ^[0-9]+$ ]] || { echo "unexpected answer from the device: $out" >&2; return 1; }
+    HAVE="$out"
+}
+size_there() {
+    local out
+    out="$(ssh "${SSH_OPTS[@]}" "$TARGET" "stat -c %s ~/CERAVIS/$NAME 2>/dev/null || echo 0")" || return 1
+    [[ "$out" =~ ^[0-9]+$ ]] && HAVE="$out"
+}
+# From the byte the device has; from the start (replacing it) when it holds
+# more than this release — then it is not this release.
+send_rest() {
+    local into='>>'
+    [ "$HAVE" -le "$SIZE" ] || HAVE=0
+    [ "$HAVE" -gt 0 ] || into='>'
+    [ "$HAVE" -eq 0 ] || echo "   resuming at $((HAVE / 1048576)) of $((SIZE / 1048576)) MB"
+    dd if="$BUNDLE" bs=1M iflag=skip_bytes skip="$HAVE" status=progress \
+        | ssh "${SSH_OPTS[@]}" "$TARGET" "cat $into ~/CERAVIS/$NAME"
+}
+copy_release() {
+    local try
+    for try in $(seq "$MAX_TRIES"); do
+        [ "$HAVE" != "$SIZE" ] || return 0
+        send_rest && return 0
+        [ "$try" -lt "$MAX_TRIES" ] || break
+        echo "   the link dropped — the copy resumes (${try}/${MAX_TRIES})"
+        wait_for_device && again size_there || return 1
+    done
+    echo "gave up after $MAX_TRIES tries — run the same command again: the copy resumes where it stopped" >&2
+    return 1
+}
+
+echo "== 1/3 the small files, the secrets and the admin SSH key → ~/CERAVIS"
+again prepare
+echo "== 2/3 the release ($((SIZE / 1048576)) MB) → ~/CERAVIS/$NAME"
+if [ "$HAVE" = "$SIZE" ]; then
+    echo "   already on the device (this same build) — not sent again"
+else
+    copy_release
+fi
+echo "   copied$([ ${#WITH[@]} -gt 0 ] && echo ", with the secrets and SSH keys")"
 
 [ "$MODE" = copy ] && { echo "Install on the device:  sudo bash ~/CERAVIS/install.sh"; exit 0; }
 echo "== 3/3 installing (the device keeps going if this window closes)"

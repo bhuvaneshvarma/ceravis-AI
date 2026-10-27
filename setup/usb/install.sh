@@ -138,8 +138,13 @@ fi
 BUNDLE="$(ls -1t "$HERE"/ceravis-edge-*.tar.gz 2>/dev/null | head -1)"
 [ -n "$BUNDLE" ] || { echo "no ceravis-edge-*.tar.gz in $HERE" >&2; exit 1; }
 say "checking $(basename "$BUNDLE")"
-(cd "$HERE" && sha256sum -c --quiet "$(basename "$BUNDLE").sha256") \
-    || { echo "the release file is damaged or was changed — copy the folder again" >&2; exit 1; }
+if ! (cd "$HERE" && sha256sum -c --quiet "$(basename "$BUNDLE").sha256"); then
+    # A copy on the device's own disk is useless now — removed, so the next
+    # send (setup/send_to_device.sh) copies it afresh instead of keeping it.
+    on_device_disk && rm -f "$BUNDLE"
+    echo "the release file is incomplete or damaged — copy it again" >&2
+    exit 1
+fi
 # Encrypted secrets: the passphrase is asked here, in the foreground (up to
 # three tries); the background install reads them from memory.
 if [ ! -f "$HERE/ceravis-secrets.env" ] && [ -f "$HERE/ceravis-secrets.env.enc" ]; then
