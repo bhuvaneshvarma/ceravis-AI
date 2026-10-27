@@ -159,6 +159,9 @@ fi
 [ -n "$(secrets_file)" ] || say "no ceravis-secrets.env here — the installer uses the keys already on the device"
 
 rm -f "$RESULT"
+# A new install, a new log (the last one kept as .1): what the progress shows
+# is this install only, never the end of the previous one.
+[ -s "$LOG" ] && mv -f "$LOG" "$LOG.1"
 ADMIN_ARGS=()
 [ -n "${SUDO_USER:-}" ] && ADMIN_ARGS=(--admin "$SUDO_USER")
 systemd-run --unit="$UNIT" --collect --description="CERAVIS install" \
