@@ -23,6 +23,15 @@ PUSH=0
 KEEP='^(setup/make_release\.sh|setup/send_to_device\.sh|setup/usb/)'
 
 cd "$REPO"
+# A branch checked out in another worktree (another session's) is never moved
+# under it — its files would no longer match its branch. Said plainly.
+BUSY="$(git worktree list --porcelain | awk -v b="branch refs/heads/$PROD" '/^worktree /{w=substr($0, 10)} $0 == b {print w}')"
+if [ -n "$BUSY" ]; then
+    echo "$PROD is checked out in another worktree: $BUSY" >&2
+    echo "  (another session may be using it) — promote once it is free; meanwhile" >&2
+    echo "  a release of what $PROD has now:  bash setup/make_release.sh --from $PROD" >&2
+    exit 1
+fi
 DEV_ONLY=()
 while read -r path _; do
     path="${path#/}"

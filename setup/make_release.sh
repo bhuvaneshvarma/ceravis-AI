@@ -59,13 +59,40 @@
 #                    allows (otherwise the ones already released stay — a new
 #                    upload on PyPI never slips an untested version into a release)
 #   --allow-dirty    build even with uncommitted changes (they are NOT included)
+#   --from REF       build REF (e.g. prod_ceravis1.1) exactly as committed — its
+#                    code AND its own release tooling — from a temporary read-only
+#                    checkout: no branch switch here, and a branch checked out in
+#                    another worktree is no obstacle
 #
-# Run:  bash setup/make_release.sh [--usb E:/]
+# Run:  bash setup/make_release.sh --from prod_ceravis1.1 [--usb E:/]
 # =============================================================
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PC="${CERAVIS_PC_DIR:-$HOME/.ceravis}"
+
+# --from REF: the build runs inside a detached worktree of REF (any number of
+# them may exist next to a branch checked out elsewhere) and leaves its result
+# in this checkout's dist/.
+FROM=""; PASS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from) FROM="${2:?--from needs a branch or commit}"; shift 2 ;;
+        *) PASS+=("$1"); shift ;;
+    esac
+done
+set -- ${PASS[@]+"${PASS[@]}"}
+if [ -n "$FROM" ]; then
+    git -C "$REPO" rev-parse -q --verify "$FROM^{commit}" >/dev/null \
+        || { echo "no such branch or commit: $FROM" >&2; exit 2; }
+    WT="$(mktemp -d)"; rmdir "$WT"
+    trap 'git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true; git -C "$REPO" worktree prune' EXIT
+    git -C "$REPO" worktree add -q --detach "$WT" "$FROM"
+    rc=0
+    CERAVIS_BUILD_REF="$FROM" CERAVIS_DIST="${CERAVIS_DIST:-$REPO/dist}" \
+        bash "$WT/setup/make_release.sh" "$@" || rc=$?
+    exit "$rc"
+fi
 MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; WHEELS=1; USB=""; DIRTY_OK=0; PACKAGE=0; RELOCK=0
 DEBS_LIST="$PC/debs.txt"
 while [ $# -gt 0 ]; do
@@ -91,7 +118,7 @@ CERAVIS_LAYOUT_FILE=/nonexistent . "$REPO/setup/lib.sh"      # host_python only
 PY="$(host_python)"
 VERSION="$(tr -d '[:space:]' < edge/VERSION)"
 COMMIT="$(git rev-parse --short HEAD)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BRANCH="${CERAVIS_BUILD_REF:-$(git rev-parse --abbrev-ref HEAD)}"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     [ "$DIRTY_OK" = 1 ] || { echo "uncommitted changes — commit them, or --allow-dirty (they are left out)" >&2; exit 1; }
     echo "note: uncommitted changes are NOT in the bundle"

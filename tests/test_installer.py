@@ -258,6 +258,20 @@ if shutil.which("git"):
         check("the device's missing system packages ride along (debs/, with their list)",
               {"debs/" + pkg.name, "debs/debs.txt"} <= rel, str(sorted(p for p in rel
                                                                    if p.startswith("debs"))))
+    trees = subprocess.run(["git", "worktree", "list"], cwd=ROOT, capture_output=True, text=True).stdout
+    r = release("--from", "dev_ceravis1.1")
+    head = subprocess.run(["git", "rev-parse", "--short", "dev_ceravis1.1"], cwd=ROOT,
+                          capture_output=True, text=True).stdout.strip()
+    built = {}
+    if bundle.exists():
+        with tarfile.open(bundle) as tf:
+            built = json.load(tf.extractfile(f"ceravis-edge-{version}/manifest.json"))
+    check("--from REF builds that branch as committed, with no branch switch here",
+          r.returncode == 0 and built.get("commit") == head and built.get("branch") == "dev_ceravis1.1",
+          (r.stderr or str(built))[-200:])
+    check("…and leaves no checkout of its own behind",
+          subprocess.run(["git", "worktree", "list"], cwd=ROOT, capture_output=True, text=True).stdout == trees)
+
     print("\n10. ONE file to download (--package)")
     (pc / "authorized_keys").write_text("ssh-ed25519 AAAA developer\n")
     r = release("--package")
