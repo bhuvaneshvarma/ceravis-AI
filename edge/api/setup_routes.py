@@ -28,7 +28,7 @@ from api.auth import signed_in
 from api.control_auth import FLEET_EDGE_KEY
 from common import hotspot
 from common.device_identity import identity
-from common.net import local_ipv4s, wired_uplink
+from common.net import home_ipv4s, wired_uplink
 from config.account_config import patient_user_id
 from config.settings import settings
 
@@ -165,7 +165,7 @@ def setup_state(request: Request) -> dict:
         "device": {"name": ident.name, "code": ident.code, "source": ident.source,
                    "version": settings.app_version},
         "checks": checks,
-        "access": {"lan": [base(ip) for ip in local_ipv4s() if ip != hotspot.ADDRESS],
+        "access": {"lan": [base(ip) for ip in home_ipv4s((hotspot.ADDRESS,))],
                    "local_name": base(f"{ident.name}.local"),
                    "hotspot": base(hotspot.ADDRESS)},
         "hotspot": {"ssid": hs_ssid, "active": hs_on},

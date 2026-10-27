@@ -341,6 +341,13 @@ check("nothing in a value is executed", len(got) > 4 and got[4] == "p$(touch nev
       and not (ROOT / "never").exists())
 check("the last line without a newline is read (the frp key is never lost)",
       len(got) > 5 and got[5] == "last-line-no-newline")
+sec.write_bytes(b"HOTSPOT_PASSWORD = fleet-wide-pass1\r\n")
+r = sh(fn + f'read_secrets "{posix(sec)}"; echo "$HOTSPOT_PASSWORD"')
+check("the fleet's hotspot password is a secrets-file key", r.stdout.strip() == "fleet-wide-pass1",
+      r.stdout + r.stderr[-100:])
+check("…stored root-only, checked 8-63 characters before anything changes",
+      'printf \'%s\\n\' "$HOTSPOT_PASSWORD" > "$CERAVIS_CREDSTORE/hotspot_password"' in src
+      and "HOTSPOT_PASSWORD must be 8 to 63 characters" in src)
 
 print("\n7. the tunnel config survives a re-run with the same server")
 frpc = (ROOT / "cloud/install_frpc.sh").read_text(encoding="utf-8")

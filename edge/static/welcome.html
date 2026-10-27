@@ -121,7 +121,13 @@ function kv(pairs) {
 async function refresh() {
   let s;
   try { s = await (await fetch("/api/v1/setup/state", { cache: "no-store" })).json(); }
-  catch (_) { document.getElementById("wl-title").textContent = "Can't reach the device service — retrying…"; return; }
+  catch (_) {
+    // Asked again in 5 s; what is below is the last answer that came.
+    document.getElementById("wl-title").textContent = "Lost contact with the device — trying again…";
+    document.getElementById("wl-sub").textContent =
+      "Is this phone or computer still on the device's Wi-Fi (hotspot) or the same network? The items below are from the last answer.";
+    return;
+  }
   if (s.commissioned && !s.checks) { location.replace("live.html"); return; }
 
   const d = s.device || {};

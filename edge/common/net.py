@@ -7,6 +7,7 @@ subnets do I own".
     local_ipv4s()          -> EVERY non-loopback IPv4 the host owns (all NICs)
     local_ipv4_networks()  -> the subnet(s) the host sits on, for a targeted sweep
     wired_uplink()         -> the Ethernet cable to the router: plugged? address?
+    home_ipv4s()           -> the addresses a person on the home network uses
 
 ONVIF discovery is the demanding consumer: the probe must go out every interface
 (the camera is often on a different NIC than the default route), and when the
@@ -77,6 +78,21 @@ def lan_ip() -> str | None:
         return ip
     except Exception:
         return None
+
+
+def home_ipv4s(skip: tuple[str, ...] = ()) -> list[str]:
+    """The addresses a person on the home network opens this device at: those on
+    its Ethernet port or a Wi-Fi network it joined — not the USB-C link,
+    containers or VPNs (_NOT_UPLINK), nor `skip` (the hotspot's own address).
+    Off Linux: the default-route address."""
+    addrs = {name: socket.inet_ntoa(raw[20:24])
+             for name, raw in _linux_ioctl(0x8915).items()}          # SIOCGIFADDR
+    if not addrs:
+        ip = lan_ip()
+        return [ip] if ip and ip not in skip else []
+    return sorted({ip for name, ip in addrs.items()
+                   if name != "lo" and not name.startswith(_NOT_UPLINK)
+                   and ip not in skip and not ip.startswith("169.254.")}, key=_ip_sort_key)
 
 
 def _ip_sort_key(ip: str) -> bytes:

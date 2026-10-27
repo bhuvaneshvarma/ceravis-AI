@@ -7,6 +7,8 @@ hotspot) — what the device sees and what it tells the person at the device:
 2. the one verdict (api/setup_routes.internet_problem) the first-run screen and
    the status problems share: nothing when the app server answers, else the
    step that fixes it — plug a cable in, use a LAN port, check the router
+3. the addresses shown for the home network: never the hotspot, the USB-C link
+   or a container's (Docker's 172.17.0.1 once showed as "Home network")
 
 Pure Python: runs anywhere.
 
@@ -86,6 +88,29 @@ finally:
 check("the hotspot is a required check (the cameras' only network)",
       '_check("hotspot", "Camera hotspot on", hs_on, "required"'
       in (ROOT / "edge/api/setup_routes.py").read_text(encoding="utf-8"))
+
+print("\n3. the addresses shown for the home network")
+import socket                                                 # noqa: E402
+
+real_ioctl, real_lan = net._linux_ioctl, net.lan_ip
+on_device = {"lo": "127.0.0.1", "wlP1p1s0": "10.42.0.1", "l4tbr0": "192.168.55.1",
+             "docker0": "172.17.0.1", "enP8p1s0": "192.168.1.20"}
+try:
+    net._linux_ioctl = lambda _req: {n: b"\0" * 20 + socket.inet_aton(ip)
+                                     for n, ip in on_device.items()}
+    check("only the Ethernet/Wi-Fi address — not the hotspot, the USB-C link or Docker",
+          net.home_ipv4s(("10.42.0.1",)) == ["192.168.1.20"], str(net.home_ipv4s(("10.42.0.1",))))
+    del on_device["enP8p1s0"]
+    check("no cable, only the hotspot -> none at all (never a wrong one)",
+          net.home_ipv4s(("10.42.0.1",)) == [], str(net.home_ipv4s(("10.42.0.1",))))
+    net._linux_ioctl = lambda _req: {}
+    net.lan_ip = lambda: "192.168.0.221"
+    check("not Linux -> the default-route address", net.home_ipv4s() == ["192.168.0.221"])
+finally:
+    net._linux_ioctl, net.lan_ip = real_ioctl, real_lan
+check("the setup screen and the install summary use it",
+      "home_ipv4s((hotspot.ADDRESS,))" in (ROOT / "edge/api/setup_routes.py").read_text(encoding="utf-8")
+      and "home_ipv4s((ADDRESS,))" in (ROOT / "setup/install.sh").read_text(encoding="utf-8"))
 
 print()
 if failures:

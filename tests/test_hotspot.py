@@ -8,7 +8,10 @@ stand-in NetworkManager (every nmcli call answered from a small table):
 2. another access point or a network already set not to connect is left alone
 3. an existing hotspot is never replaced (cameras are paired to it), but it
    too takes the radio back from a saved Wi-Fi network
-4. a failing nmcli step reports why, with the hint that fixes it
+4. the fleet's own password (HOTSPOT_PASSWORD): a new hotspot gets it, an
+   existing one with another password switches to it (same name), one that
+   already has it is left alone
+5. a failing nmcli step reports why, with the hint that fixes it
 
 Pure Python: runs anywhere.
 
@@ -70,6 +73,9 @@ class FakeNM:
         if a[0] == "-g" and a[1] == "802-11-wireless.ssid":
             p = next((p for p in self.profiles.values() if p["id"] == CON), None)
             return (0, p.get("ssid", "") + "\n") if p else (10, "")
+        if a[:3] == ["-s", "-g", "802-11-wireless-security.psk"]:
+            p = next((p for p in self.profiles.values() if p["id"] == CON), None)
+            return (0, p.get("psk", "") + "\n") if p else (10, "")
         if a[:3] == ["-t", "-f", "NAME"]:
             return 0, CON + "\n"
         if a[:2] == ["connection", "add"]:
@@ -89,6 +95,8 @@ class FakeNM:
                         target["priority"] = v
                     elif k == "802-11-wireless.mode":
                         target["mode"] = v
+                    elif k == "wifi-sec.psk":
+                        target["psk"] = v
             return 0, ""
         if a[:2] == ["connection", "delete"]:
             for u in [u for u, p in self.profiles.items() if p["id"] == a[2]]:
@@ -145,7 +153,43 @@ check("the saved Wi-Fi stops connecting by itself here too",
       nm.profiles["home-uuid"]["autoconnect"] == "no")
 check("the hotspot keeps connecting by itself", nm.profiles["hs-uuid"]["autoconnect"] == "yes")
 
-print("\n4. a failing step says why")
+print("\n4. the fleet's own password (HOTSPOT_PASSWORD in the secrets file)")
+import os                                                    # noqa: E402
+
+store = Path(tempfile.mkdtemp(prefix="ceravis-credstore-"))
+layout = store / "layout.env"
+layout.write_text(f"CERAVIS_CREDSTORE={store}\n")
+os.environ["CERAVIS_LAYOUT_FILE"] = str(layout)
+check("none set -> none (each device makes its own)", hotspot.fleet_password() == "")
+(store / "hotspot_password").write_text("fleet-wide-pass1\n")
+check("read from the root-only credential store", hotspot.fleet_password() == "fleet-wide-pass1")
+
+nm = FakeNM({})
+install(nm)
+r = hotspot.ensure_default()
+hs = next(p for p in nm.profiles.values() if p["id"] == CON)
+check("a new hotspot gets it", r["created"] is True and hs.get("psk") == "fleet-wide-pass1")
+
+nm = FakeNM({"hs-uuid": {"id": CON, "type": "802-11-wireless", "autoconnect": "yes",
+                         "mode": "ap", "ssid": "CERAVIS-KEEP", "psk": "OldRandomPw42"}})
+install(nm)
+r = hotspot.ensure_default()
+hs = next(p for p in nm.profiles.values() if p["id"] == CON)
+check("an existing hotspot with another password switches to it — same name",
+      hs.get("psk") == "fleet-wide-pass1" and hs.get("ssid") == "CERAVIS-KEEP" and r["created"] is False,
+      str(hs))
+check("…and the setup screen shows the new one",
+      hotspot.saved_credentials() == {"ssid": "CERAVIS-KEEP", "password": "fleet-wide-pass1"})
+
+nm = FakeNM({"hs-uuid": {"id": CON, "type": "802-11-wireless", "autoconnect": "yes",
+                         "mode": "ap", "ssid": "CERAVIS-KEEP", "psk": "fleet-wide-pass1"}})
+install(nm)
+hotspot.ensure_default()
+check("already in force -> nothing rebuilt (cameras stay connected)",
+      not any(c[1:3] == ["connection", "delete"] for c in nm.calls))
+del os.environ["CERAVIS_LAYOUT_FILE"]
+
+print("\n5. a failing step says why")
 nm = FakeNM({}, fail_on="connection add")
 install(nm)
 try:
