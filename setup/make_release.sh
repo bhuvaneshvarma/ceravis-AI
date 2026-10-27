@@ -55,6 +55,9 @@
 #                    made here (shown once, kept in ~/.ceravis/CERAVIS-<version>.passphrase,
 #                    given by phone, never in the same message as the link),
 #                    and the developers' SSH public keys
+#   --relock         take the newest Python package versions requirements.txt
+#                    allows (otherwise the ones already released stay — a new
+#                    upload on PyPI never slips an untested version into a release)
 #   --allow-dirty    build even with uncommitted changes (they are NOT included)
 #
 # Run:  bash setup/make_release.sh [--usb E:/]
@@ -63,7 +66,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PC="${CERAVIS_PC_DIR:-$HOME/.ceravis}"
-MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; WHEELS=1; USB=""; DIRTY_OK=0; PACKAGE=0
+MODELS="$PC/models"; WITH_MODELS=1; VENDOR=1; WHEELS=1; USB=""; DIRTY_OK=0; PACKAGE=0; RELOCK=0
 DEBS_LIST="$PC/debs.txt"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -76,7 +79,8 @@ while [ $# -gt 0 ]; do
         --usb) USB="$2"; shift 2 ;;
         --package) PACKAGE=1; shift ;;
         --allow-dirty) DIRTY_OK=1; shift ;;
-        -h|--help) sed -n '2,62p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --relock) RELOCK=1; shift ;;
+        -h|--help) sed -n '2,/^# =====/p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
         *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
     esac
 done
@@ -156,6 +160,12 @@ if [ "$WHEELS" = 1 ]; then
     CACHE="$PC/wheels/cp310-aarch64"
     mkdir -p "$PC/wheels"
     printf '%s\n' "-r $(win "$REPO/edge/requirements.txt")" "scipy>=1.8,<1.14" "pycuda" > "$PC/wheels/target.in"
+    # The versions already released stay: the last lock seeds the resolution
+    # (uv keeps every pin requirements.txt still allows), so a new upload on
+    # PyPI never slips an untested version into a release. --relock: newest.
+    rm -f "$PC/wheels/requirements.lock.new"
+    [ "$RELOCK" = 1 ] || [ ! -s "$CACHE/requirements.lock" ] \
+        || cp "$CACHE/requirements.lock" "$PC/wheels/requirements.lock.new"
     if "$VPY" -m uv pip compile "$(win "$PC/wheels/target.in")" -q --no-header --no-annotate \
             --python-platform aarch64-manylinux_2_35 --python-version 3.10 \
             -o "$(win "$PC/wheels/requirements.lock.new")"; then
@@ -169,14 +179,19 @@ if [ "$WHEELS" = 1 ]; then
         echo "cannot resolve the device's Python packages (internet needed once)" >&2; exit 1
     fi
     grep -v '^pycuda==' "$CACHE/requirements.lock" > "$PC/wheels/binary.txt"
-    "$VPY" -m pip download -q --no-deps -d "$CACHE" --only-binary=:all: \
+    # Offline first: what the cache already holds is not asked of PyPI again (a
+    # PyPI hiccup once failed a whole build); only what is missing is fetched.
+    fetch() {
+        "$VPY" -m pip download -q --no-deps -d "$CACHE" --no-index --find-links "$(win "$CACHE")" "$@" \
+            2>/dev/null || "$VPY" -m pip download -q --no-deps -d "$CACHE" --retries 5 "$@"
+    }
+    fetch --only-binary=:all: \
         --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 \
         --platform manylinux_2_28_aarch64 --platform manylinux_2_35_aarch64 --platform linux_aarch64 \
         --python-version 3.10 --implementation cp --abi cp310 --abi abi3 --abi none \
         -r "$(win "$PC/wheels/binary.txt")"
     # pycuda's build needs setuptools + wheel (numpy is in the set already).
-    "$VPY" -m pip download -q --no-deps -d "$CACHE" --only-binary=:all: --platform any \
-        --python-version 3.10 "setuptools>=64,<81" wheel
+    fetch --only-binary=:all: --platform any --python-version 3.10 "setuptools>=64,<81" wheel
     PYCUDA="$(grep '^pycuda==' "$CACHE/requirements.lock" | cut -d= -f3)"
     if [ -n "$PYCUDA" ] && ! ls "$CACHE"/pycuda-"$PYCUDA".tar.gz >/dev/null 2>&1; then
         URL="$("$VPY" -c "import json,sys,urllib.request; d=json.load(urllib.request.urlopen('https://pypi.org/pypi/pycuda/$PYCUDA/json')); print(next(u['url'] for u in d['urls'] if u['packagetype']=='sdist'))" | tr -d '\r')"
