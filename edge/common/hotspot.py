@@ -6,7 +6,9 @@ NetworkManager (AP mode + ipv4 shared, so NM runs DHCP/NAT): the web route
 call it. The device itself is always 10.42.0.1 on this network.
 
 The name and password in force are kept in data/hotspot.json (0600) so the
-first-run setup screen can show them before anyone has signed in.
+first-run setup screen can show them before anyone has signed in. A fleet-wide
+password (HOTSPOT_PASSWORD in the install's secrets file) is used by every
+device instead of a random one — fleet_password().
 
 The service user needs NetworkManager rights — setup/install_hotspot.sh
 installs the polkit rule that grants them.
@@ -152,6 +154,23 @@ def new_password(length: int = 12) -> str:
     return "".join(secrets.choice(_PW_ALPHABET) for _ in range(length))
 
 
+def fleet_password() -> str:
+    """The fleet's own hotspot password — HOTSPOT_PASSWORD in the install's
+    secrets file, kept by the installer in the root-only credential store (so a
+    copy of a sealed master gets it at first boot too); "" when none is set."""
+    from config.settings import layout_value
+    store = Path(layout_value("CERAVIS_CREDSTORE", "/etc/ceravis/credstore"))
+    try:
+        return (store / "hotspot_password").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _current_password() -> str:
+    code, out = _run(["nmcli", "-s", "-g", "802-11-wireless-security.psk", "connection", "show", CON])
+    return out.strip() if code == 0 else ""
+
+
 def start(ssid: str, password: str) -> dict:
     """Create (or rebuild) the hotspot with this name and password and bring it
     up. Raises HotspotError with an HTTP-style status and a hint."""
@@ -210,16 +229,22 @@ def stop() -> None:
 
 
 def ensure_default() -> dict:
-    """First boot: this device's own hotspot — CERAVIS-<code> and a new random
-    password — unless one is already set up (an installer's choice is kept)."""
+    """First boot and every install: this device's own hotspot — CERAVIS-<code>
+    with the fleet's password (fleet_password), else a new random one. One
+    already set up keeps its name (cameras may be paired to it); only the
+    fleet's password, when set, replaces a different one."""
     from common.device_identity import identity
+    fixed = fleet_password()
     ssid = configured_ssid()
-    if ssid:                     # cameras may already be paired to it — never replace
+    if ssid and fixed and _current_password() != fixed:
+        logger.info("hotspot %s: the fleet's password takes over", ssid)
+        return {**start(ssid, fixed), "created": False}
+    if ssid:
         if not is_active():
             _run(["nmcli", "connection", "up", CON], timeout=30)
         _own_the_radio()
         return {"active": is_active(), "ssid": ssid, "created": False}
-    result = start(identity().ssid, new_password())
+    result = start(identity().ssid, fixed or new_password())
     return {**result, "created": True}
 
 

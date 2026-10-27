@@ -88,7 +88,7 @@ echo "==== $(date -Is)  CERAVIS $VERSION from $SRC$([ "$SECRETS_ONLY" = 1 ] && e
 # Read as data, never executed: KEY=value lines, spaces around '=' allowed,
 # quotes stripped, CRLF and a last line without a newline tolerated. Only these
 # keys are taken. The summary names what was found — never a value.
-SECRET_KEYS=(CERAVIS_API_KEY FRP_SERVER_ADDR FRP_TOKEN FMS_ENROLL_KEY REBOOT_PASSWORD)
+SECRET_KEYS=(CERAVIS_API_KEY FRP_SERVER_ADDR FRP_TOKEN FMS_ENROLL_KEY REBOOT_PASSWORD HOTSPOT_PASSWORD)
 read_secrets() {
     local line k v
     while IFS= read -r line || [ -n "$line" ]; do
@@ -131,6 +131,9 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
         || fail "add the missing keys to the secrets file and run this again (nothing was changed)"
     warn "installing without them (ALLOW_MISSING_SECRETS=1)"
 fi
+# A Wi-Fi (WPA2) password is 8 to 63 characters: said now, before anything changes.
+[ -z "${HOTSPOT_PASSWORD:-}" ] || { [ ${#HOTSPOT_PASSWORD} -ge 8 ] && [ ${#HOTSPOT_PASSWORD} -le 63 ]; } \
+    || fail "HOTSPOT_PASSWORD must be 8 to 63 characters (it has ${#HOTSPOT_PASSWORD})"
 [ -n "${FMS_ENROLL_KEY:-}" ] || [ -s /etc/ceravis-fleet-agent/enroll.env ] \
     || warn "no FMS_ENROLL_KEY — the device will not appear in the fleet console"
 
@@ -144,6 +147,12 @@ apply_secrets() {
             | "$CERAVIS_PYTHON" "$CERAVIS_ROOT/setup/set_reboot_password.py" --stdin --replace
     elif [ ! -s "$(data_dir)/reboot_auth.json" ]; then
         warn "no REBOOT_PASSWORD — the manual reboot stays locked (the nightly one still runs)"
+    fi
+    # The fleet's hotspot password: the hotspot itself takes it at its next
+    # `common.hotspot ensure` (the end of this install, a copy's first boot).
+    if [ -n "${HOTSPOT_PASSWORD:-}" ]; then
+        install -d -m 0700 "$CERAVIS_CREDSTORE"
+        (umask 077 && printf '%s\n' "$HOTSPOT_PASSWORD" > "$CERAVIS_CREDSTORE/hotspot_password")
     fi
 }
 
@@ -208,6 +217,11 @@ if [ "$SECRETS_ONLY" = 1 ]; then
     if [ -n "${FRP_SERVER_ADDR:-}" ]; then systemctl try-restart ceravis || true; fi
     if [ -n "${FMS_ENROLL_KEY:-}" ]; then
         bash "$CERAVIS_ROOT/setup/install_fleet_agent.sh" </dev/null >/dev/null
+    fi
+    if [ -n "${HOTSPOT_PASSWORD:-}" ]; then
+        (cd "$EDGE_DIR" && "$CERAVIS_PYTHON" -m common.hotspot ensure >/dev/null) \
+            && echo "  camera hotspot: the new password is in force (rejoin the hotspot with it)" \
+            || warn "the hotspot did not take the new password — see the Hotspot page"
     fi
     echo; echo "  Secrets updated. $(date -Is)"
     exit 0
@@ -400,8 +414,9 @@ chown -R "$SVC:$SVC" "$DATA"
 bash "$CERAVIS_ROOT/setup/check_jetson.sh" || echo "  (the doctor flagged items above — the device still runs)"
 
 NAME="$(device_name)"
-# A LAN address — not the USB-C link (192.168.55.1) or the hotspot (10.42.0.1).
-IP="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v -e '^192\.168\.55\.1$' -e '^10\.42\.0\.1$' -e ':' -e '^$' | head -1)"
+# The home-network address — the app's own answer (not the USB-C link, the
+# hotspot or a container's address).
+IP="$(cd "$EDGE_DIR" && "$CERAVIS_PYTHON" -c 'from common.net import home_ipv4s; from common.hotspot import ADDRESS; print(*home_ipv4s((ADDRESS,))[:1])' 2>/dev/null || true)"
 echo
 echo "============================================================"
 echo "  CERAVIS $VERSION is installed on $NAME.   $(date -Is)"
