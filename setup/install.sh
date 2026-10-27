@@ -265,12 +265,12 @@ fi
 # install. A Wi-Fi uplink is kept awake (that radio drops connections when it
 # dozes under load) and reconnects by itself after a blip, until the very last
 # step turns the radio into the camera hotspot.
-UPLINK_DEV="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+UPLINK_DEV="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)" || UPLINK_DEV=""
 UPLINK_WIFI=0
 if [ -n "$UPLINK_DEV" ] && [ "$(nmcli -g GENERAL.TYPE device show "$UPLINK_DEV" 2>/dev/null)" = wifi ]; then
     UPLINK_WIFI=1
     UPLINK_CON="$(nmcli -t -f DEVICE,UUID connection show --active 2>/dev/null \
-                  | sed -n "s/^$UPLINK_DEV://p" | head -1)"
+                  | sed -n "s/^$UPLINK_DEV://p" | head -1)" || UPLINK_CON=""
     [ -n "$UPLINK_CON" ] && nmcli connection modify "$UPLINK_CON" \
         802-11-wireless.powersave 2 connection.autoconnect yes >/dev/null 2>&1
     command -v iw >/dev/null 2>&1 && iw dev "$UPLINK_DEV" set power_save off 2>/dev/null

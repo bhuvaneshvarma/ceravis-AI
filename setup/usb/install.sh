@@ -90,10 +90,10 @@ run() {
     trap 'echo "failed $(date -Is)" > "$RESULT"' ERR
     # The opened keys leave memory however this ends.
     trap 'shred -u "$OPENED" 2>/dev/null || rm -f "$OPENED"' EXIT
-    bundle="$(ls -1t "$HERE"/ceravis-edge-*.tar.gz | head -1)"
+    bundle="$(ls -1t "$HERE"/ceravis-edge-*.tar.gz | head -1)" || bundle=""
     rm -rf "$WORK" && mkdir -p "$WORK"
     tar -xzf "$bundle" -C "$WORK"
-    top="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    top="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -1)" || top=""
     # TESTING AID: files in patch/ (same paths as in the release, e.g.
     # patch/setup/tune_os.sh) replace the release's own — a fix travels in
     # seconds instead of the whole release again. Named in the log, always.
@@ -135,7 +135,7 @@ if systemctl is-active --quiet "$UNIT"; then
 fi
 
 # Checked here, in the foreground, so a damaged copy is said at once.
-BUNDLE="$(ls -1t "$HERE"/ceravis-edge-*.tar.gz 2>/dev/null | head -1)"
+BUNDLE="$(ls -1t "$HERE"/ceravis-edge-*.tar.gz 2>/dev/null | head -1)" || BUNDLE=""
 [ -n "$BUNDLE" ] || { echo "no ceravis-edge-*.tar.gz in $HERE" >&2; exit 1; }
 say "checking $(basename "$BUNDLE")"
 if ! (cd "$HERE" && sha256sum -c --quiet "$(basename "$BUNDLE").sha256"); then

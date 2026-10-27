@@ -83,9 +83,11 @@ if [ -z "${CERAVIS_SKIP_APT:-}" ] && [ "${#MISSING[@]}" -gt 0 ] && [ -n "$DEBS" 
         && ls "$DEBS"/*.deb >/dev/null 2>&1; then
     NEED=()
     for f in "$DEBS"/*.deb; do
-        have="$(dpkg-query -W -f='${Status} ${Version}' "$(dpkg-deb -f "$f" Package)" 2>/dev/null \
-                | sed -n 's/^install ok installed //p')"
-        [ -n "$have" ] && dpkg --compare-versions "$have" ge "$(dpkg-deb -f "$f" Version)" && continue
+        # A package this device does not have makes dpkg-query fail: under
+        # `set -e` that must read as "not installed", never end the install.
+        st="$(dpkg-query -W -f='${Status}|${Version}' "$(dpkg-deb -f "$f" Package)" 2>/dev/null)" || st=""
+        [ "${st%%|*}" = "install ok installed" ] \
+            && dpkg --compare-versions "${st#*|}" ge "$(dpkg-deb -f "$f" Version)" && continue
         NEED+=("$f")
     done
     echo "   from the release: ${#NEED[@]} of $(ls "$DEBS"/*.deb | wc -l) system package files (offline)"
@@ -161,7 +163,7 @@ if ! "$PY" -c "import pycuda" 2>/dev/null; then
         # pins, so an older release's wheel is never taken for it.
         PYCUDA_V=""
         [ ${#CONSTRAINTS[@]} -gt 0 ] \
-            && PYCUDA_V="$(grep -i '^pycuda==' "${CONSTRAINTS[1]}" | cut -d= -f3 | tr -d '\r')"
+            && { PYCUDA_V="$(grep -i '^pycuda==' "${CONSTRAINTS[1]}" | cut -d= -f3 | tr -d '\r')" || PYCUDA_V=""; }
         sudo mkdir -p "$WHEELHOUSE"
         ls "$WHEELHOUSE"/pycuda-"${PYCUDA_V:-}"*.whl >/dev/null 2>&1 \
             || sudo env PATH="$PATH" CUDA_ROOT="$CUDA_ROOT" "$PY" -m pip --no-cache-dir wheel --no-deps \

@@ -392,18 +392,45 @@ need = re.search(r"^    NEED=\(\)\n.*?^    done\n", native, re.S | re.M).group(0
 debdir = out / "debs"
 debdir.mkdir()
 for name in ("newpkg_1.0_arm64.deb", "libold_1.5_arm64.deb", "libsame_1.0_arm64.deb",
-             "libup_1.0_arm64.deb"):
+             "libup_1.0_arm64.deb", "libgone_1.0_arm64.deb"):
     (debdir / name).write_bytes(b"deb")
-r = sh('dpkg-deb() { local b="${2##*/}"; b="${b%_arm64.deb}"; '
+# Under the installer's own settings (set -euo pipefail), with dpkg-query as on
+# a fresh device: a package not installed is an error (exit 1, message on
+# stderr). A fresh client device once stopped silently right here.
+r = sh('set -euo pipefail\n'
+       'dpkg-deb() { local b="${2##*/}"; b="${b%_arm64.deb}"; '
        'if [ "$3" = Package ]; then echo "${b%%_*}"; else echo "${b#*_}"; fi; }\n'
-       'dpkg-query() { case "$3" in libold) printf "install ok installed 2.0" ;; '
-       'libsame) printf "install ok installed 1.0" ;; libup) printf "install ok installed 0.9" ;; '
-       '*) return 1 ;; esac; }\n'
+       'dpkg-query() { case "$3" in libold) printf "install ok installed|2.0" ;; '
+       'libsame) printf "install ok installed|1.0" ;; libup) printf "install ok installed|0.9" ;; '
+       'libgone) printf "deinstall ok config-files|1.5" ;; '
+       '*) echo "dpkg-query: no packages found matching $3" >&2; return 1 ;; esac; }\n'
        'dpkg() { [ "$(printf "%s\\n%s\\n" "$2" "$4" | sort -V | head -1)" = "$4" ]; }\n'
-       f'DEBS="{posix(debdir)}"\n' + need + 'for f in "${NEED[@]}"; do echo "${f##*/}"; done')
+       f'DEBS="{posix(debdir)}"\n' + need + 'for f in "${NEED[@]}"; do echo "${f##*/}"; done; echo END')
+check("a fresh device (packages missing) goes through the package check — it never stops there",
+      r.returncode == 0 and r.stdout.split()[-1:] == ["END"], f"rc={r.returncode} " + r.stderr[-120:])
 check("a .deb whose package is already there at the same or a newer version is left out "
-      "(apt refuses a downgrade)", r.stdout.split() == ["libup_1.0_arm64.deb", "newpkg_1.0_arm64.deb"],
+      "(apt refuses a downgrade); one missing, older or only half-removed is installed",
+      r.stdout.split()[:-1] == ["libgone_1.0_arm64.deb", "libup_1.0_arm64.deb", "newpkg_1.0_arm64.deb"],
       r.stdout + r.stderr[-120:])
+# Every captured "nothing found" in the device-side scripts is allowed for, so a
+# missing route, power mode or file can never end an install silently.
+r = sh('set -euo pipefail\nip() { return 2; }\n'
+       + re.search(r"^UPLINK_DEV=.*$", (ROOT / "setup/install.sh").read_text(encoding="utf-8"), re.M).group(0)
+       + '\necho "survived:[$UPLINK_DEV]"')
+check("a device with no internet route at all gets through the uplink check (offline install)",
+      "survived:[]" in r.stdout, r.stdout + r.stderr[-120:])
+device_side = ["setup/install.sh", "setup/install_native.sh", "setup/tune_os.sh", "setup/update.sh",
+               "setup/firstboot.sh", "setup/usb/install.sh", "setup/lib.sh", "setup/seal.sh"]
+unguarded = []
+for rel in device_side:
+    text = (ROOT / rel).read_text(encoding="utf-8").replace("\\\n", " ")
+    for ln in text.splitlines():
+        s = ln.strip()
+        if (re.match(r'^(local\s+)?[A-Za-z_]+="\$\(', s) and "|" in s.split('="$(', 1)[1]
+                and "||" not in s and not s.startswith("home=")):
+            unguarded.append(f"{rel}: {s[:70]}")
+check("no device-side script captures a command chain without allowing for 'nothing found'",
+      not unguarded, "; ".join(unguarded))
 check("apt waits for a running apt (a fresh system's daily update) instead of failing",
       "DPkg::Lock::Timeout" in (ROOT / "setup/lib.sh").read_text(encoding="utf-8")
       and "sudo apt-get" not in native)

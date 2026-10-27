@@ -45,7 +45,7 @@ fi
 echo "== [2/7] power mode: $POWER_MODE =="
 if command -v nvpmodel >/dev/null 2>&1 && [ -f /etc/nvpmodel.conf ]; then
     ID="$(grep -oE "POWER_MODEL ID=[0-9]+ NAME=$POWER_MODE( |>)" /etc/nvpmodel.conf \
-          | grep -oE 'ID=[0-9]+' | cut -d= -f2 | head -1)"
+          | grep -oE 'ID=[0-9]+' | cut -d= -f2 | head -1)" || ID=""
     if [ -n "$ID" ]; then
         # nvpmodel may ask to reboot now; answer "no" — it applies at next boot.
         yes no 2>/dev/null | sudo nvpmodel -m "$ID" >/dev/null 2>&1 || true
