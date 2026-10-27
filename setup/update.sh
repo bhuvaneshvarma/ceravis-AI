@@ -74,7 +74,7 @@ healthy() {
 
 # ---- rollback on request ---------------------------------------------------
 if [ "$ROLLBACK" = 1 ]; then
-    PREV="$(ls -1dt "$APP"/releases/*/ | grep -v "^$CURRENT/\?$" | grep -v '\.failed/$' | head -1)"
+    PREV="$(ls -1dt "$APP"/releases/*/ | grep -v "^$CURRENT/\?$" | grep -v '\.failed/$' | head -1)" || PREV=""
     [ -n "$PREV" ] || { log "no previous release to go back to"; exit 1; }
     PREV="${PREV%/}"
     log "rolling back $OLD_VERSION -> $(basename "$PREV")"
@@ -103,7 +103,7 @@ log "bundle verified"
 
 # ---- 3. stage -----------------------------------------------------------------------
 mkdir "$WORK/x" && tar -xzf "$WORK/bundle.tar.gz" -C "$WORK/x"
-TOP="$(find "$WORK/x" -mindepth 1 -maxdepth 1 -type d | head -1)"
+TOP="$(find "$WORK/x" -mindepth 1 -maxdepth 1 -type d | head -1)" || TOP=""
 [ -f "$TOP/edge/VERSION" ] || { log "not a CERAVIS bundle (no edge/VERSION)"; exit 3; }
 NEW_VERSION="$(tr -d '[:space:]' < "$TOP/edge/VERSION")"
 NEW="$APP/releases/$NEW_VERSION"
