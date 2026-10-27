@@ -14,7 +14,8 @@
 #     sudo bash <this folder>/install.sh --status   running / finished / failed
 #     sudo tail -f /var/log/ceravis-install.log     the whole log, any time
 #
-# Uses ceravis-secrets.env and authorized_keys (developers' SSH public keys)
+# Uses ceravis-secrets.env — or ceravis-secrets.env.enc, opened with the
+# passphrase it asks for — and authorized_keys (developers' SSH public keys)
 # from this folder when they are here, and — a testing aid — any file under
 # patch/ in place of the release's file at the same path. When the install succeeds and this
 # folder sits on the device's own disk (a copy, not a USB stick), the folder —
@@ -29,6 +30,19 @@ UNIT=ceravis-install
 LOG=/var/log/ceravis-install.log
 RESULT=/var/log/ceravis-install.result
 WORK=/var/tmp/ceravis-install
+# Encrypted secrets (a release sent to someone else): opened only into memory
+# (/run is RAM), deleted when the install ends.
+OPENED=/run/ceravis-secrets.env
+# The ONE cipher setting, on the PC and here (see README.txt).
+CIPHER=(-aes-256-cbc -pbkdf2 -iter 200000 -md sha256)
+
+# The secrets file to use: plain next to the release, else the one opened from
+# ceravis-secrets.env.enc; none when neither is here.
+secrets_file() {
+    if [ -f "$HERE/ceravis-secrets.env" ]; then echo "$HERE/ceravis-secrets.env"
+    elif [ -s "$OPENED" ]; then echo "$OPENED"
+    fi
+}
 
 say() { echo "== $*"; }
 
@@ -65,8 +79,10 @@ on_device_disk() {
 
 # What the background service runs: unpack, install, record the result, tidy.
 run() {
-    local bundle top rc=0 args=()
+    local bundle top secrets rc=0 args=()
     trap 'echo "failed $(date -Is)" > "$RESULT"' ERR
+    # The opened keys leave memory however this ends.
+    trap 'shred -u "$OPENED" 2>/dev/null || rm -f "$OPENED"' EXIT
     bundle="$(ls -1t "$HERE"/ceravis-edge-*.tar.gz | head -1)"
     rm -rf "$WORK" && mkdir -p "$WORK"
     tar -xzf "$bundle" -C "$WORK"
@@ -80,7 +96,8 @@ run() {
             echo "PATCHED from patch/: ${f#./}" | tee -a "$LOG"
         done
     fi
-    [ -f "$HERE/ceravis-secrets.env" ] && args+=(--secrets "$HERE/ceravis-secrets.env")
+    secrets="$(secrets_file)"
+    [ -n "$secrets" ] && args+=(--secrets "$secrets")
     [ -f "$HERE/authorized_keys" ] && args+=(--admin-keys "$HERE/authorized_keys")
     bash "$top/install.sh" ${args[@]+"${args[@]}"} "$@" || rc=$?
     rm -rf "$WORK"
@@ -116,13 +133,30 @@ BUNDLE="$(ls -1t "$HERE"/ceravis-edge-*.tar.gz 2>/dev/null | head -1)"
 say "checking $(basename "$BUNDLE")"
 (cd "$HERE" && sha256sum -c --quiet "$(basename "$BUNDLE").sha256") \
     || { echo "the release file is damaged or was changed — copy the folder again" >&2; exit 1; }
-[ -f "$HERE/ceravis-secrets.env" ] || say "no ceravis-secrets.env here — the installer uses the keys already on the device"
+# Encrypted secrets: the passphrase is asked here, in the foreground (up to
+# three tries); the background install reads them from memory.
+if [ ! -f "$HERE/ceravis-secrets.env" ] && [ -f "$HERE/ceravis-secrets.env.enc" ]; then
+    say "the keys are encrypted — type the passphrase you were given"
+    rm -f "$OPENED"
+    for try in 1 2 3; do
+        # A wrong passphrase can, rarely, decrypt to noise: the keys must be there.
+        (umask 077 && openssl enc -d "${CIPHER[@]}" -in "$HERE/ceravis-secrets.env.enc" \
+            -out "$OPENED" 2>/dev/null) \
+            && grep -qaE '^[[:space:]]*CERAVIS_API_KEY[[:space:]]*=' "$OPENED" && break
+        rm -f "$OPENED"
+        [ "$try" -lt 3 ] && say "that passphrase did not open them — try again"
+    done
+    [ -s "$OPENED" ] || { echo "the keys could not be opened — nothing was installed" >&2; exit 1; }
+    say "keys opened (kept in memory only)"
+fi
+[ -n "$(secrets_file)" ] || say "no ceravis-secrets.env here — the installer uses the keys already on the device"
 
 rm -f "$RESULT"
 ADMIN_ARGS=()
 [ -n "${SUDO_USER:-}" ] && ADMIN_ARGS=(--admin "$SUDO_USER")
 systemd-run --unit="$UNIT" --collect --description="CERAVIS install" \
     --property=KillMode=mixed --property=TimeoutStopSec=60 \
-    /bin/bash "$HERE/install.sh" --run ${ADMIN_ARGS[@]+"${ADMIN_ARGS[@]}"} "$@" >/dev/null
+    /bin/bash "$HERE/install.sh" --run ${ADMIN_ARGS[@]+"${ADMIN_ARGS[@]}"} "$@" >/dev/null \
+    || { rm -f "$OPENED"; echo "the install service could not start" >&2; exit 1; }
 say "install started in the background (service $UNIT)"
 follow

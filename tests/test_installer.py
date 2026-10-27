@@ -22,6 +22,8 @@ on the system touched):
 8. lessons from the first real device: the NVIDIA hold, the offline .deb files,
    the uplink, the hotspot taken last, the seal removing delivered folders
 9. send_to_device.sh --code puts the committed code in ~/CERAVIS/patch and installs again
+10. --package: ONE file to download — the folder, the keys encrypted (opened only
+   with the passphrase, by the folder installer's own cipher setting), SSH keys
 
 Needs bash and git (Git Bash on Windows). Run:  python tests/test_installer.py
 """
@@ -256,6 +258,65 @@ if shutil.which("git"):
         check("the device's missing system packages ride along (debs/, with their list)",
               {"debs/" + pkg.name, "debs/debs.txt"} <= rel, str(sorted(p for p in rel
                                                                    if p.startswith("debs"))))
+    print("\n10. ONE file to download (--package)")
+    (pc / "authorized_keys").write_text("ssh-ed25519 AAAA developer\n")
+    r = release("--package")
+    packed = dist / f"CERAVIS-{version}.tar"
+    check("packed as ONE file with its fingerprint", r.returncode == 0 and packed.exists()
+          and (dist / f"{packed.name}.sha256").read_text().split()[0]
+          == hashlib.sha256(packed.read_bytes()).hexdigest(), (r.stderr or r.stdout)[-200:])
+    if packed.exists():
+        with tarfile.open(packed) as tf:
+            names = {n.rstrip("/") for n in tf.getnames()}
+            enc = tf.extractfile("CERAVIS/ceravis-secrets.env.enc").read()
+        check("it holds the folder, the keys encrypted and the SSH public keys",
+              {"CERAVIS/install.sh", "CERAVIS/README.txt", f"CERAVIS/{bundle.name}",
+               f"CERAVIS/{bundle.name}.sha256", "CERAVIS/ceravis-secrets.env.enc",
+               "CERAVIS/authorized_keys"} <= names, str(sorted(names)))
+        check("…and no key readable anywhere in it", "CERAVIS/ceravis-secrets.env" not in names
+              and b"never-in-the-folder" not in packed.read_bytes())
+        phrase = (pc / f"CERAVIS-{version}.passphrase").read_text().strip()
+        check("the passphrase: 16 characters nobody mishears, in groups of 4",
+              re.fullmatch(r"([A-HJ-NP-Z2-9]{4}-){3}[A-HJ-NP-Z2-9]{4}", phrase) is not None, phrase)
+        check("…shown at the build", phrase in r.stdout)
+        cipher = re.search(r"^CIPHER=\((.*)\)$", (ROOT / "setup/usb/install.sh")
+                           .read_text(encoding="utf-8"), re.M).group(1)
+        (out / "s.enc").write_bytes(enc)
+        dec = f'openssl enc -d {cipher} -pass stdin -in "{posix(out / "s.enc")}"'
+        opened = sh(f'printf "%s\\n" "{phrase}" | {dec}')
+        check("the folder installer's own setting opens them with that passphrase",
+              opened.stdout.strip() == "CERAVIS_API_KEY=never-in-the-folder", opened.stderr[-120:])
+        check("…and refuses any other", sh(f'printf "wrong\\n" | {dec}').returncode != 0)
+        # The folder installer's own passphrase loop, each typed answer from a list.
+        usb = (ROOT / "setup/usb/install.sh").read_text(encoding="utf-8")
+        loop = re.search(r"^# Encrypted secrets: the passphrase.*?^fi\n", usb, re.S | re.M).group(0)
+        here = out / "here"
+        here.mkdir()
+
+        def typed(answers: list[str], enc_bytes: bytes = enc) -> subprocess.CompletedProcess:
+            (here / "ceravis-secrets.env.enc").write_bytes(enc_bytes)
+            (out / "tries").write_text("\n".join(answers) + "\n")
+            (out / "n").write_text("0")
+            (here / "opened").unlink(missing_ok=True)
+            return sh(f'T="{posix(out)}"; HERE="{posix(here)}"; OPENED="$HERE/opened"\n'
+                      f'CIPHER=({cipher}); say() {{ echo "== $*"; }}\n'
+                      'openssl() { local n; n=$(cat "$T/n"); echo $((n + 1)) > "$T/n"; '
+                      'command openssl "$@" -pass "pass:$(sed -n "$((n + 1))p" "$T/tries")"; }\n'
+                      + loop + 'echo "tries=$(cat "$T/n")"; cat "$OPENED"')
+
+        r = typed(["wrong", phrase])
+        check("a wrong passphrase -> asked again; the right one opens the keys",
+              "tries=2" in r.stdout and "CERAVIS_API_KEY=never-in-the-folder" in r.stdout
+              and "try again" in r.stdout, r.stdout[-160:] + r.stderr[-120:])
+        r = typed(["a", "b", "c", phrase])
+        check("three wrong -> stops, nothing opened, nothing installed",
+              r.returncode != 0 and "nothing was installed" in r.stderr
+              and not (here / "opened").exists(), r.stderr[-120:])
+        noise = sh(f'printf "random words\\n" | openssl enc {cipher} -salt -pass pass:{phrase} '
+                   f'-out "{posix(out / "noise.enc")}"')
+        r = typed([phrase] * 3, (out / "noise.enc").read_bytes() if noise.returncode == 0 else b"")
+        check("a file that opens to something without the keys counts as not opened",
+              r.returncode != 0 and not (here / "opened").exists(), r.stdout[-120:])
     pkg.write_bytes(b"a CHANGED package")                       # not what the device listed
     shutil.rmtree(pc / "debs", ignore_errors=True)
     bad = release()
@@ -303,9 +364,28 @@ check("NVIDIA hold: only installed packages (ii, hi) — apt-mark refuses the re
       r.stdout.split() == ["libnvinfer10", "nvidia-l4t-core"], r.stdout)
 check("…and a refused hold never stops the install", "|| echo" in tune.split("apt-mark hold")[1][:120])
 native = (ROOT / "setup/install_native.sh").read_text(encoding="utf-8")
-deb_cmd = next(ln for ln in native.splitlines() if "apt-get install" in ln and "$DEBS" in ln)
+deb_cmd = next(ln for ln in native.splitlines() if "apt_get install" in ln and "NEED" in ln)
 check("the release's .deb files install without --no-download (it refuses local files)",
       "--no-download" not in deb_cmd, deb_cmd.strip())
+need = re.search(r"^    NEED=\(\)\n.*?^    done\n", native, re.S | re.M).group(0)
+debdir = out / "debs"
+debdir.mkdir()
+for name in ("newpkg_1.0_arm64.deb", "libold_1.5_arm64.deb", "libsame_1.0_arm64.deb",
+             "libup_1.0_arm64.deb"):
+    (debdir / name).write_bytes(b"deb")
+r = sh('dpkg-deb() { local b="${2##*/}"; b="${b%_arm64.deb}"; '
+       'if [ "$3" = Package ]; then echo "${b%%_*}"; else echo "${b#*_}"; fi; }\n'
+       'dpkg-query() { case "$3" in libold) printf "install ok installed 2.0" ;; '
+       'libsame) printf "install ok installed 1.0" ;; libup) printf "install ok installed 0.9" ;; '
+       '*) return 1 ;; esac; }\n'
+       'dpkg() { [ "$(printf "%s\\n%s\\n" "$2" "$4" | sort -V | head -1)" = "$4" ]; }\n'
+       f'DEBS="{posix(debdir)}"\n' + need + 'for f in "${NEED[@]}"; do echo "${f##*/}"; done')
+check("a .deb whose package is already there at the same or a newer version is left out "
+      "(apt refuses a downgrade)", r.stdout.split() == ["libup_1.0_arm64.deb", "newpkg_1.0_arm64.deb"],
+      r.stdout + r.stderr[-120:])
+check("apt waits for a running apt (a fresh system's daily update) instead of failing",
+      "DPkg::Lock::Timeout" in (ROOT / "setup/lib.sh").read_text(encoding="utf-8")
+      and "sudo apt-get" not in native)
 inst = (ROOT / "setup/install.sh").read_text(encoding="utf-8")
 sed_dev = re.search(r"sed -n '(s/\.\* dev [^']+)'", inst).group(1)
 r = sh("printf '1.1.1.1 via 192.168.0.1 dev wlP1p1s0 src 192.168.0.164 uid 0 \\n    cache \\n' "
@@ -321,6 +401,7 @@ check("…and takes the radio only after every service is installed",
 seal = (ROOT / "setup/seal.sh").read_text(encoding="utf-8")
 check("the seal removes delivered release folders (they hold the keys)",
       "rm -rf /home/*/CERAVIS" in seal and "ceravis-install.result" in seal)
+check("…and downloaded release files", "/home/*/Downloads/CERAVIS-*.tar*" in seal)
 
 print("\n9. --code: a fix reaches a device in seconds")
 if shutil.which("git"):

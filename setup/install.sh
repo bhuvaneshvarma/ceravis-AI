@@ -220,7 +220,27 @@ grep -q 'R36' /etc/nv_tegra_release 2>/dev/null \
     || fail "JetPack 6 (L4T R36) not found — install it with SDK Manager first"
 FREE_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
 [ "${FREE_GB:-0}" -ge 15 ] || fail "only ${FREE_GB} GB free on / — at least 15 GB needed"
-if curl -fsI --max-time 8 https://pypi.org >/dev/null 2>&1; then
+ONLINE=0
+curl -fsI --max-time 8 https://pypi.org >/dev/null 2>&1 && ONLINE=1
+# JetPack's own parts (SDK Manager's "Jetson SDK Components": CUDA, TensorRT)
+# are NVIDIA's: fetched from NVIDIA's own package server when the internet is
+# here (~2 GB), else said in the first minute, before anything changes.
+jetpack_missing() {
+    MISSING_JP=()
+    [ -f /usr/local/cuda/include/cuda.h ] || MISSING_JP+=("CUDA")
+    { python3 -c "import tensorrt" 2>/dev/null \
+      && { [ -x /usr/src/tensorrt/bin/trtexec ] || command -v trtexec >/dev/null 2>&1; }; } \
+        || MISSING_JP+=("TensorRT")
+}
+jetpack_missing
+if [ ${#MISSING_JP[@]} -gt 0 ] && [ "$ONLINE" = 1 ]; then
+    echo "  JetPack's ${MISSING_JP[*]} missing — installing NVIDIA's nvidia-jetpack (~2 GB, 15-40 min)"
+    bash -c '. "$1/setup/lib.sh" && apt_get update && apt_get install -y nvidia-jetpack' _ "$SRC" || true
+    jetpack_missing
+fi
+[ ${#MISSING_JP[@]} -eq 0 ] || fail "JetPack's ${MISSING_JP[*]} not installed. Install them with SDK Manager (tick \
+\"Jetson SDK Components\"), or connect the internet (Ethernet) and run this again — it fetches them itself"
+if [ "$ONLINE" = 1 ]; then
     echo "  internet: yes"
 elif [ -d "$SRC/wheels" ]; then
     echo "  internet: no — installing from the release's own packages (wheels/)"
@@ -245,6 +265,8 @@ elif [ -n "$UPLINK_DEV" ]; then
     echo "  uplink: $UPLINK_DEV"
 fi
 echo "  CERAVIS $VERSION from $SRC, JetPack $(head -1 /etc/nv_tegra_release | grep -oE 'R36[^,]*, REVISION: [0-9.]+')"
+# Every event, recording and alert carries this device's local time.
+echo "  time zone: $(timedatectl show -p Timezone --value 2>/dev/null) (another: sudo timedatectl set-timezone <Area/City>, then run this again)"
 
 # ---- [2/9] system -----------------------------------------------------------
 stage "2/9" "system settings"
