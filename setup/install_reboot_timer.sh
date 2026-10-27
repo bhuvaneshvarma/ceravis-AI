@@ -58,7 +58,11 @@ else
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now ceravis-reboot.timer
+# --no-block: a calendar timer starts only after time-sync.target, which (with
+# systemd-time-wait-sync above) waits for network time — forever on a device
+# without internet, and a plain `--now` waited with it: an offline install hung
+# here. Queued, the timer starts by itself once the clock is synchronised.
+sudo systemctl enable --now --no-block ceravis-reboot.timer
 
 echo
 systemctl list-timers ceravis-reboot.timer --no-pager || true
