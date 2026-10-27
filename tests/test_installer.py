@@ -19,6 +19,9 @@ on the system touched):
 6. install.sh reads the secrets file as data: spaces, quotes, CRLF, a last line
    without a newline; nothing executed, unknown keys ignored
 7. install_frpc.sh keeps a keyed tunnel config when server and token are the same
+8. lessons from the first real device: the NVIDIA hold, the offline .deb files,
+   the uplink, the hotspot taken last, the seal removing delivered folders
+9. send_to_device.sh --code puts the committed code in ~/CERAVIS/patch and installs again
 
 Needs bash and git (Git Bash on Windows). Run:  python tests/test_installer.py
 """
@@ -290,6 +293,67 @@ check("same server and token -> kept",
       sh(probe, {"FRP_SERVER_ADDR": "1.2.3.4", "FRP_TOKEN": "tok"}).stdout.strip() == "same")
 check("a new token -> rebuilt",
       sh(probe, {"FRP_SERVER_ADDR": "1.2.3.4", "FRP_TOKEN": "new"}).stdout.strip() == "other")
+
+print("\n8. lessons from the first real device (2026-10-27)")
+tune = (ROOT / "setup/tune_os.sh").read_text(encoding="utf-8")
+awk = re.search(r"\| awk '([^']+)'", tune).group(1)
+r = sh("printf 'ii  nvidia-l4t-core\\nun  libcudnn9\\npn  libnvinfer-doc\\nhi  libnvinfer10\\n"
+       f"rc  nvidia-l4t-ccp-generic\\n' | awk '{awk}' | sort | tr '\\n' ' '")
+check("NVIDIA hold: only installed packages (ii, hi) — apt-mark refuses the rest",
+      r.stdout.split() == ["libnvinfer10", "nvidia-l4t-core"], r.stdout)
+check("…and a refused hold never stops the install", "|| echo" in tune.split("apt-mark hold")[1][:120])
+native = (ROOT / "setup/install_native.sh").read_text(encoding="utf-8")
+deb_cmd = next(ln for ln in native.splitlines() if "apt-get install" in ln and "$DEBS" in ln)
+check("the release's .deb files install without --no-download (it refuses local files)",
+      "--no-download" not in deb_cmd, deb_cmd.strip())
+inst = (ROOT / "setup/install.sh").read_text(encoding="utf-8")
+sed_dev = re.search(r"sed -n '(s/\.\* dev [^']+)'", inst).group(1)
+r = sh("printf '1.1.1.1 via 192.168.0.1 dev wlP1p1s0 src 192.168.0.164 uid 0 \\n    cache \\n' "
+       f"| sed -n '{sed_dev}' | head -1")
+check("the uplink device is read from the route (Wi-Fi or Ethernet)", r.stdout.strip() == "wlP1p1s0",
+      r.stdout)
+check("the install's first-boot step leaves the hotspot to the end",
+      "CERAVIS_DEFER_HOTSPOT=1 bash" in inst
+      and 'CERAVIS_DEFER_HOTSPOT:-0}" = 1' in (ROOT / "setup/firstboot.sh").read_text(encoding="utf-8"))
+end = inst[inst.index('stage "9/9"'):]
+check("…and takes the radio only after every service is installed",
+      end.index("common.hotspot ensure") > end.index("systemctl restart ceravis"))
+seal = (ROOT / "setup/seal.sh").read_text(encoding="utf-8")
+check("the seal removes delivered release folders (they hold the keys)",
+      "rm -rf /home/*/CERAVIS" in seal and "ceravis-install.result" in seal)
+
+print("\n9. --code: a fix reaches a device in seconds")
+if shutil.which("git"):
+    dev = out / "device"
+    (dev / "CERAVIS").mkdir(parents=True)
+    (dev / "CERAVIS" / "ceravis-edge-1.3.0.tar.gz").write_bytes(b"the release already there")
+    fake = out / "fakebin"
+    fake.mkdir()
+    (fake / "ssh").write_text(
+        "#!/bin/bash\nfor a in \"$@\"; do last=\"$a\"; done\n"
+        f"case \"$last\" in *ceravis-edge-*) HOME='{posix(dev)}' bash -c \"$last\" ;;\n"
+        "  *) echo \"ON DEVICE: $last\" ;; esac\n")
+    os.chmod(fake / "ssh", 0o755)
+    r = subprocess.run([BASH, posix(ROOT / "setup/send_to_device.sh"), "ceravis@test", "--code"],
+                       cwd=ROOT, capture_output=True, text=True,
+                       env={**os.environ, "PATH": posix(fake) + os.pathsep + os.environ.get("PATH", "")})
+    patch = dev / "CERAVIS" / "patch"
+    check("the committed code lands in ~/CERAVIS/patch", (patch / "edge" / "main.py").exists()
+          and (patch / "setup" / "install.sh").exists(), (r.stderr or r.stdout)[-160:])
+    check("…without tests or dev tools", not (patch / "tests").exists()
+          and not (patch / "setup" / "make_release.sh").exists())
+    check("the folder installer is refreshed", (dev / "CERAVIS" / "install.sh").read_text(
+        encoding="utf-8").startswith("#!/usr/bin/env bash"))
+    check("the release already there is kept", (dev / "CERAVIS" / "ceravis-edge-1.3.0.tar.gz")
+          .read_bytes() == b"the release already there")
+    check("then the install runs again", "ON DEVICE: sudo bash ~/CERAVIS/install.sh" in r.stdout)
+    (dev / "CERAVIS" / "ceravis-edge-1.3.0.tar.gz").unlink()
+    r = subprocess.run([BASH, posix(ROOT / "setup/send_to_device.sh"), "ceravis@test", "--code"],
+                       cwd=ROOT, capture_output=True, text=True,
+                       env={**os.environ, "PATH": posix(fake) + os.pathsep + os.environ.get("PATH", "")})
+    check("no release on the device -> refused, nothing installed",
+          r.returncode != 0 and "send the full release first" in r.stderr
+          and "ON DEVICE" not in r.stdout, r.stderr[-120:])
 
 shutil.rmtree(out, ignore_errors=True)
 print()

@@ -73,13 +73,16 @@ find_missing() {
 find_missing
 # A release built on the PC carries the system packages this JetPack lacks
 # (debs/, listed by the device itself and checked against its fingerprints):
-# installed from there first, with no download at all.
+# installed from there first. apt reads local files without any network (NOT
+# --no-download: that accepts only apt's own download cache and refuses local
+# files); it reaches the internet only for a dependency still missing, and
+# never downgrades a newer package already installed.
 DEBS="${CERAVIS_DEBS:-}"
 if [ -z "${CERAVIS_SKIP_APT:-}" ] && [ "${#MISSING[@]}" -gt 0 ] && [ -n "$DEBS" ] \
         && ls "$DEBS"/*.deb >/dev/null 2>&1; then
     echo "   from the release: $(ls "$DEBS"/*.deb | wc -l) system package files (offline)"
-    sudo apt-get install -y --no-download --no-install-recommends "$DEBS"/*.deb \
-        || echo "   (the release's package files did not install — see above)"
+    sudo apt-get install -y --no-install-recommends "$DEBS"/*.deb \
+        || echo "   (the release's package files did not install — see above; trying the internet)"
     find_missing
 fi
 if [ -n "${CERAVIS_SKIP_APT:-}" ]; then
@@ -115,7 +118,8 @@ make_venv() {
 if [ -n "$CERAVIS_VENV" ]; then
     [ -x "$CERAVIS_VENV/bin/python" ] || make_venv "$CERAVIS_VENV"
     PY="$CERAVIS_VENV/bin/python"
-    PIP=(sudo "$PY" -m pip)
+    # No cache: nothing of the install is left in /root (the master image).
+    PIP=(sudo "$PY" -m pip --no-cache-dir)
     PIP_TARGET="the release virtualenv ($CERAVIS_VENV)"
 else
     PY=python3
@@ -145,10 +149,14 @@ export CUDA_ROOT="/usr/local/cuda"
 if ! "$PY" -c "import pycuda" 2>/dev/null; then
     if [ -n "$WHEELHOUSE" ]; then
         # Compiled ONCE into the wheelhouse; every later release installs that
-        # wheel in seconds instead of compiling again.
+        # wheel in seconds instead of compiling again — the version the lock
+        # pins, so an older release's wheel is never taken for it.
+        PYCUDA_V=""
+        [ ${#CONSTRAINTS[@]} -gt 0 ] \
+            && PYCUDA_V="$(grep -i '^pycuda==' "${CONSTRAINTS[1]}" | cut -d= -f3 | tr -d '\r')"
         sudo mkdir -p "$WHEELHOUSE"
-        ls "$WHEELHOUSE"/pycuda-*.whl >/dev/null 2>&1 \
-            || sudo env PATH="$PATH" CUDA_ROOT="$CUDA_ROOT" "$PY" -m pip wheel --no-deps \
+        ls "$WHEELHOUSE"/pycuda-"${PYCUDA_V:-}"*.whl >/dev/null 2>&1 \
+            || sudo env PATH="$PATH" CUDA_ROOT="$CUDA_ROOT" "$PY" -m pip --no-cache-dir wheel --no-deps \
                    ${PIP_SRC[@]+"${PIP_SRC[@]}"} ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"} pycuda -w "$WHEELHOUSE"
         # Its runtime packages (pytools, mako, …) from the same source as the rest.
         "${PIP[@]}" install ${PIP_SRC[@]+"${PIP_SRC[@]}"} --find-links "$WHEELHOUSE" \
