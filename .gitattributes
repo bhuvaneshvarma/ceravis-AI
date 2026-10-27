@@ -31,3 +31,4 @@ VERSION   text eol=lf
 /cloud/systemd/caddy.service     export-ignore
 /cloud/README.md                 export-ignore
 /setup/usb/                      export-ignore
+/setup/promote_to_prod.sh        export-ignore
