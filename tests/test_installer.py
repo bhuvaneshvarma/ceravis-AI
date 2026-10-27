@@ -420,6 +420,10 @@ check("--follow with nothing installing says so — never an old log that reads 
       "(a copied release once sat uninstalled behind this morning's log)",
       "nothing is installing now" in r.stdout and "sudo bash /home/ceravis/CERAVIS/install.sh" in r.stdout
       and "following the install" not in r.stdout, r.stdout[-200:])
+check("a new install starts a new log (the last kept as .1), before it starts — "
+      "its progress never opens with the previous install's ending",
+      '[ -s "$LOG" ] && mv -f "$LOG" "$LOG.1"' in usb_src
+      and usb_src.index('mv -f "$LOG" "$LOG.1"') < usb_src.index("systemd-run --unit"))
 send = (ROOT / "setup/send_to_device.sh").read_text(encoding="utf-8")
 check("a connection closed at step 3 says how to start it without copying again (--start)",
       "--start) MODE=start" in send and '[ "$rc" = 255 ]' in send
