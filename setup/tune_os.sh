@@ -47,7 +47,7 @@ if command -v nvpmodel >/dev/null 2>&1 && [ -f /etc/nvpmodel.conf ]; then
           | grep -oE 'ID=[0-9]+' | cut -d= -f2 | head -1)"
     if [ -n "$ID" ]; then
         # nvpmodel may ask to reboot now; answer "no" — it applies at next boot.
-        yes no | sudo nvpmodel -m "$ID" >/dev/null 2>&1 || true
+        yes no 2>/dev/null | sudo nvpmodel -m "$ID" >/dev/null 2>&1 || true
         echo "   mode $ID ($POWER_MODE) set"
     else
         echo "   WARNING: no power mode named $POWER_MODE here. Available:"
@@ -73,10 +73,15 @@ else
 fi
 
 echo "== [4/7] hold the NVIDIA stack =="
-mapfile -t PKGS < <(dpkg-query -W -f='${Package}\n' \
-    'nvidia-l4t-*' 'tensorrt*' 'libnvinfer*' 'libcudnn*' 2>/dev/null | sort -u)
+# Only what is INSTALLED (status letter 2 = "i": ii, hi): dpkg also knows
+# packages that are merely available (libcudnn9, the -cross- ones…), and
+# apt-mark refuses to hold those.
+mapfile -t PKGS < <(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' \
+    'nvidia-l4t-*' 'tensorrt*' 'libnvinfer*' 'libcudnn*' 2>/dev/null \
+    | awk 'substr($1, 2, 1) == "i" {print $2}' | sort -u)
 if [ "${#PKGS[@]}" -gt 0 ]; then
-    sudo apt-mark hold "${PKGS[@]}" >/dev/null
+    sudo apt-mark hold "${PKGS[@]}" >/dev/null \
+        || echo "   WARNING: apt-mark could not hold them all (the install goes on)"
     echo "   ${#PKGS[@]} packages held (list: apt-mark showhold)"
 else
     echo "   no NVIDIA packages found (skipped)"

@@ -15,7 +15,8 @@
 #     sudo tail -f /var/log/ceravis-install.log     the whole log, any time
 #
 # Uses ceravis-secrets.env and authorized_keys (developers' SSH public keys)
-# from this folder when they are here. When the install succeeds and this
+# from this folder when they are here, and — a testing aid — any file under
+# patch/ in place of the release's file at the same path. When the install succeeds and this
 # folder sits on the device's own disk (a copy, not a USB stick), the folder —
 # keys included — is deleted: no secret or code stays in a home folder.
 # Extra options are passed on to the installer (setup/install.sh --help).
@@ -70,6 +71,15 @@ run() {
     rm -rf "$WORK" && mkdir -p "$WORK"
     tar -xzf "$bundle" -C "$WORK"
     top="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    # TESTING AID: files in patch/ (same paths as in the release, e.g.
+    # patch/setup/tune_os.sh) replace the release's own — a fix travels in
+    # seconds instead of the whole release again. Named in the log, always.
+    if [ -d "$HERE/patch" ]; then
+        (cd "$HERE/patch" && find . -type f) | while IFS= read -r f; do
+            install -D -m 0644 "$HERE/patch/$f" "$top/$f"
+            echo "PATCHED from patch/: ${f#./}" | tee -a "$LOG"
+        done
+    fi
     [ -f "$HERE/ceravis-secrets.env" ] && args+=(--secrets "$HERE/ceravis-secrets.env")
     [ -f "$HERE/authorized_keys" ] && args+=(--admin-keys "$HERE/authorized_keys")
     bash "$top/install.sh" ${args[@]+"${args[@]}"} "$@" || rc=$?
