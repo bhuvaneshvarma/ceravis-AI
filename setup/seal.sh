@@ -10,7 +10,8 @@
 #              upload queue, talk-back credentials
 #   device     machine-id, SSH host keys, TLS certificate, hotspot, saved
 #              Wi-Fi networks, fleet identity, tunnel routes and prefix
-#   traces     logs, shell histories, temporary files, DHCP leases
+#   traces     logs, shell histories, temporary files, DHCP leases, delivered
+#              release folders (~/CERAVIS — they hold the keys), pip caches
 #
 # Kept: the installed software, the AI engines, the cloud server settings, the
 # operator's manual-reboot password and the developers' SSH access (keys +
@@ -96,6 +97,14 @@ find /var/log -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' \) -de
 find /var/log -type f -name '*.log' -exec truncate -s 0 {} + 2>/dev/null || true
 rm -f /root/.bash_history /home/*/.bash_history
 rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+
+say "install leftovers: delivered release folders (they hold the keys), caches"
+rm -rf /home/*/CERAVIS /root/CERAVIS /root/.cache/pip /home/*/.cache/pip 2>/dev/null || true
+rm -f /var/log/ceravis-install.result
+if [ -f /etc/systemd/system/usb-internet.service ]; then      # a testing aid only
+    systemctl disable --now usb-internet >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/usb-internet.service && systemctl daemon-reload
+fi
 
 say "first boot will run on the next start"
 rm -f /etc/ceravis/.firstboot-done

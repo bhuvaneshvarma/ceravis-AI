@@ -227,6 +227,23 @@ elif [ -d "$SRC/wheels" ]; then
 else
     fail "no internet, and this release carries no packages (wheels/): connect the device to the router by Ethernet cable"
 fi
+# Whatever carries the internet now — Ethernet or a Wi-Fi network — carries the
+# install. A Wi-Fi uplink is kept awake (that radio drops connections when it
+# dozes under load) and reconnects by itself after a blip, until the very last
+# step turns the radio into the camera hotspot.
+UPLINK_DEV="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+UPLINK_WIFI=0
+if [ -n "$UPLINK_DEV" ] && [ "$(nmcli -g GENERAL.TYPE device show "$UPLINK_DEV" 2>/dev/null)" = wifi ]; then
+    UPLINK_WIFI=1
+    UPLINK_CON="$(nmcli -t -f DEVICE,UUID connection show --active 2>/dev/null \
+                  | sed -n "s/^$UPLINK_DEV://p" | head -1)"
+    [ -n "$UPLINK_CON" ] && nmcli connection modify "$UPLINK_CON" \
+        802-11-wireless.powersave 2 connection.autoconnect yes >/dev/null 2>&1
+    command -v iw >/dev/null 2>&1 && iw dev "$UPLINK_DEV" set power_save off 2>/dev/null
+    echo "  uplink: Wi-Fi ($UPLINK_DEV) — used for the install, then it becomes the camera hotspot"
+elif [ -n "$UPLINK_DEV" ]; then
+    echo "  uplink: $UPLINK_DEV"
+fi
 echo "  CERAVIS $VERSION from $SRC, JetPack $(head -1 /etc/nv_tegra_release | grep -oE 'R36[^,]*, REVISION: [0-9.]+')"
 
 # ---- [2/9] system -----------------------------------------------------------
@@ -334,18 +351,35 @@ install_unit "$EDGE_DIR/infra/systemd/ceravis-firstboot.service"
 systemctl daemon-reload
 systemctl enable ceravis-firstboot >/dev/null
 rm -f /etc/ceravis/.firstboot-done
-bash "$APP/current/setup/firstboot.sh"
+# The hotspot waits for the end of the install: taking the radio now would cut
+# a Wi-Fi uplink the install may still use.
+CERAVIS_DEFER_HOTSPOT=1 bash "$APP/current/setup/firstboot.sh"
 
 # ---- [9/9] services -----------------------------------------------------------------------
-stage "9/9" "services"
+stage "9/9" "services, then the camera hotspot"
 bash "$CERAVIS_ROOT/setup/install_service.sh" >/dev/null
 bash "$CERAVIS_ROOT/setup/install_reboot_timer.sh"
 bash "$CERAVIS_ROOT/setup/install_fleet_agent.sh" </dev/null
 systemctl restart ceravis
+
+# Last, the radio becomes the cameras' hotspot — nothing left needs the network.
+if [ "$UPLINK_WIFI" = 1 ]; then
+    echo "  The Wi-Fi ($UPLINK_DEV) becomes the camera hotspot NOW: a connection to this"
+    echo "  device over that Wi-Fi ends here, the install finishes by itself. Reach it"
+    echo "  again over Ethernet, the USB-C cable (192.168.55.1) or the hotspot (10.42.0.1):"
+    echo "    sudo tail -n 40 $LOG"
+fi
+if (cd "$EDGE_DIR" && "$CERAVIS_PYTHON" -m common.hotspot ensure); then
+    echo "  camera hotspot ready"
+else
+    warn "the camera hotspot did not start — set it up from the Hotspot page"
+fi
+chown -R "$SVC:$SVC" "$DATA"
 bash "$CERAVIS_ROOT/setup/check_jetson.sh" || echo "  (the doctor flagged items above — the device still runs)"
 
 NAME="$(device_name)"
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+# A LAN address — not the USB-C link (192.168.55.1) or the hotspot (10.42.0.1).
+IP="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v -e '^192\.168\.55\.1$' -e '^10\.42\.0\.1$' -e ':' -e '^$' | head -1)"
 echo
 echo "============================================================"
 echo "  CERAVIS $VERSION is installed on $NAME.   $(date -Is)"
@@ -353,6 +387,7 @@ echo
 echo "  Open in a browser on the same network:  https://${IP:-<device-ip>}:8443"
 echo "          or by name:                      https://$NAME.local:8443"
 echo "  Through its own hotspot:                 https://10.42.0.1:8443"
+echo "  Over the USB-C cable:                    https://192.168.55.1:8443"
 echo "  (the browser asks once to trust this device's own certificate)"
 echo
 if ! curl -fsI --max-time 8 https://pypi.org >/dev/null 2>&1; then

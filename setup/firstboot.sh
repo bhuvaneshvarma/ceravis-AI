@@ -60,9 +60,13 @@ if [ -n "$NAME" ] && [ -f /etc/frp/frpc.toml ]; then
 fi
 
 # 6. camera hotspot ----------------------------------------------------------
+# Taking the radio ends any Wi-Fi uplink, so the installer, which may still be
+# using one, defers this step and does it as its very last (CERAVIS_DEFER_HOTSPOT=1).
 DATA="$(data_dir)"
 mkdir -p "$DATA"
-if (cd "$EDGE_DIR" && "$CERAVIS_PYTHON" -m common.hotspot ensure) >/dev/null 2>&1; then
+if [ "${CERAVIS_DEFER_HOTSPOT:-0}" = 1 ]; then
+    say "camera hotspot: left to the end of the install"
+elif (cd "$EDGE_DIR" && "$CERAVIS_PYTHON" -m common.hotspot ensure) >/dev/null 2>&1; then
     say "camera hotspot ready"
 else
     say "hotspot not started (no Wi-Fi adapter, or NetworkManager not ready) — set it up from the Hotspot page"

@@ -24,6 +24,7 @@
 #
 # Undo: sudo systemctl set-default graphical.target · sudo apt-mark unhold <pkg>
 #       sudo systemctl unmask <unit> && sudo systemctl enable --now <unit>
+#       sudo dpkg-divert --rename --remove /etc/apt/apt.conf.d/20packagekit
 #       sudo rm -r /etc/systemd/system/apt-daily*.timer.d
 #
 # Run:  sudo bash setup/tune_os.sh           (HEADLESS=0 keeps the desktop)
@@ -117,6 +118,14 @@ for u in "${NOT_NEEDED[@]}"; do
     sudo systemctl mask "$u" >/dev/null 2>&1 && OFF+=("${u%.*}")
 done
 echo "   off: ${OFF[*]:-nothing to turn off}"
+# PackageKit's apt hook would still call the masked service after every apt
+# run ("Error: … packagekit.service is masked"): set aside, the dpkg way, so a
+# package upgrade keeps it aside (undo: sudo dpkg-divert --rename --remove <file>).
+PK_HOOK=/etc/apt/apt.conf.d/20packagekit
+if [ -f "$PK_HOOK" ] && [ "$(systemctl is-enabled packagekit.service 2>/dev/null)" = masked ]; then
+    sudo dpkg-divert --local --rename --divert "$PK_HOOK.disabled" --add "$PK_HOOK" >/dev/null \
+        && echo "   packagekit's apt hook set aside"
+fi
 
 echo "== [7/7] OS security updates in the night window =="
 if systemctl list-unit-files --no-legend apt-daily-upgrade.timer 2>/dev/null | grep -q .; then

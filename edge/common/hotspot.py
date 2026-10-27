@@ -112,6 +112,31 @@ def clients(device: str) -> list[dict]:
             for m in macs]
 
 
+def _own_the_radio() -> None:
+    """The radio is the cameras' from now on. The hotspot comes up first at
+    every boot (top autoconnect priority), and any other Wi-Fi network saved
+    on this device — the one used during the install, say — stops connecting
+    by itself, so it can never take the radio back. Such a profile is kept: it
+    can still be brought up by hand. Best-effort; each change is logged."""
+    _run(["nmcli", "connection", "modify", CON, "connection.autoconnect-priority", "100"])
+    code, own = _run(["nmcli", "-g", "connection.uuid", "connection", "show", CON])
+    own = own.strip() if code == 0 else ""
+    code, out = _run(["nmcli", "-t", "-f", "UUID,TYPE", "connection", "show"])
+    if code != 0:
+        return
+    for line in out.splitlines():
+        uuid, _, kind = line.partition(":")
+        if kind != "802-11-wireless" or not uuid or uuid == own:
+            continue
+        code, detail = _run(["nmcli", "-g", "connection.autoconnect,802-11-wireless.mode,"
+                             "connection.id", "connection", "show", uuid])
+        values = detail.splitlines() if code == 0 else []
+        if len(values) >= 2 and values[0] == "yes" and values[1] != "ap":
+            _run(["nmcli", "connection", "modify", uuid, "connection.autoconnect", "no"])
+            logger.info("hotspot: saved Wi-Fi '%s' no longer connects by itself "
+                        "(the radio is the cameras' hotspot)", values[2] if len(values) > 2 else uuid)
+
+
 def _credentials_file() -> Path:
     return settings.data_path / "hotspot.json"
 
@@ -167,6 +192,7 @@ def start(ssid: str, password: str) -> dict:
             else:
                 hint = ""
             raise HotspotError(502, f"hotspot setup failed: {out.strip()[:200]}{hint}")
+    _own_the_radio()
     try:
         write_json_atomic(_credentials_file(), {"ssid": ssid, "password": password},
                           mode=0o600)
@@ -191,6 +217,7 @@ def ensure_default() -> dict:
     if ssid:                     # cameras may already be paired to it — never replace
         if not is_active():
             _run(["nmcli", "connection", "up", CON], timeout=30)
+        _own_the_radio()
         return {"active": is_active(), "ssid": ssid, "created": False}
     result = start(identity().ssid, new_password())
     return {**result, "created": True}
