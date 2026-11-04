@@ -2,8 +2,11 @@
 Enrollment: the FMS is the only place a device's edge_id comes from.
 
 Against a stand-in FMS on this machine (real HTTP, real signatures, both ways):
-1. the enroll call: signed with the fleet enrollment key; its body is exactly
-   fingerprint, device_id (this device's own name), legacy_edge_id, hardware,
+1. the enroll call: signed with the fleet enrollment key over FOUR lines
+   (METHOD, path, timestamp, sha256 of the body), with no X-Ceravis-Device and
+   no X-Ceravis-Nonce header; the reply is signed over RESPONSE, the request's
+   timestamp and sha256 of the reply; its body is exactly
+   device_id (this device's own name), legacy_edge_id, hardware,
    software, agent facts (with free disk for / and the data folder) and status
    — no `protocol`; and it is made at once, without waiting for the edge app
 2. legacy_edge_id is the app server's token from account.json, only when valid
@@ -67,6 +70,7 @@ class FakeFms:
 
     def __init__(self) -> None:
         self.reply: tuple[int, dict] = (200, {})
+        self.old_reply_signature = False      # sign the reply the pre-v2 way (must be refused)
         self.seen: list[dict] = []
         fms = self
 
@@ -76,13 +80,12 @@ class FakeFms:
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                principal = self.headers.get(protocol.HDR_DEVICE, "")
-                nonce = self.headers.get(protocol.HDR_NONCE, "")
-                message = protocol.request_message(
-                    principal, "POST", self.path, body,
-                    self.headers.get(protocol.HDR_TIMESTAMP, ""), nonce)
+                stamp = self.headers.get(protocol.HDR_TIMESTAMP, "")
+                # The agreed v2 enroll call: exactly these four lines, signed.
+                message = protocol.enroll_request_message("POST", self.path, stamp, body)
                 signed = protocol.verify(KEY, message, self.headers.get(protocol.HDR_SIGNATURE))
-                fms.seen.append({"signed": signed, "principal": principal,
+                fms.seen.append({"signed": signed, "message": message,
+                                 "headers": {k.lower() for k in self.headers.keys()},
                                  "body": json.loads(body or b"{}")})
                 status, payload = fms.reply if signed else (401, {"error": "unauthorized"})
                 raw = json.dumps({"server_time": 1793361045.43, **payload}).encode()
@@ -90,7 +93,9 @@ class FakeFms:
                 self.send_header("Content-Type", "application/json")
                 if status == 200:
                     self.send_header(protocol.HDR_SIGNATURE,
-                                     protocol.sign(KEY, protocol.response_message(principal, nonce, raw)))
+                                     protocol.sign(KEY, protocol.response_message("x", "y", raw)
+                                                   if fms.old_reply_signature else
+                                                   protocol.enroll_response_message(stamp, raw)))
                 self.end_headers()
                 self.wfile.write(raw)
 
@@ -145,10 +150,17 @@ threading.Thread(target=loop.run_forever, daemon=True).start()
 loop.stop.wait(10)
 check("...and the agent's loop makes that first call at once (no stagger before enrolling)",
       bool(first) and first[0] < 1.0, str(first))
-check("signed with the fleet enrollment key; the principal is the fingerprint",
-      sent.get("signed") is True and sent.get("principal") == a.fingerprint == body.get("fingerprint"))
+import hashlib                                                       # noqa: E402
+lines = sent.get("message", b"").decode().split("\n")
+check("signed with the fleet enrollment key over exactly 4 lines: METHOD, path, timestamp, sha256(body)",
+      sent.get("signed") is True and len(lines) == 4 and lines[:2] == ["POST", protocol.ENROLL_PATH]
+      and lines[3] == hashlib.sha256(transport.encode(body)).hexdigest(), str(lines))
+check("no X-Ceravis-Device and no X-Ceravis-Nonce header; no fingerprint anywhere in the call",
+      protocol.HDR_DEVICE.lower() not in sent.get("headers", set())
+      and protocol.HDR_NONCE.lower() not in sent.get("headers", set())
+      and "fingerprint" not in body and a.fingerprint not in json.dumps(body), str(sent.get("headers")))
 check("the body is exactly the agreed fields — no `protocol`",
-      list(body) == ["fingerprint", "device_id", "legacy_edge_id", "hardware", "software",
+      list(body) == ["device_id", "legacy_edge_id", "hardware", "software",
                      "agent", "status"], str(list(body)))
 check("device_id = this device's own name (common/device_identity, as the hostname and hotspot use)",
       body.get("device_id") == device_identity().name and body["device_id"].startswith("ceravis-"),
@@ -217,6 +229,17 @@ for label, reply in (
         why = str(exc)
     check(f"{label}: refused, nothing saved",
           "not saved" in why and fms.seen and fms.seen[-1]["signed"] and identity.load(state) is None, why)
+
+reset()
+fms.reply, fms.old_reply_signature = (200, good_reply()), True
+why = ""
+try:
+    agent().beat()
+except transport.Rejected as exc:
+    why = str(exc)
+fms.old_reply_signature = False
+check("a reply NOT signed over RESPONSE, the request timestamp and sha256(reply): refused, nothing saved",
+      "signature invalid" in why and identity.load(state) is None, why)
 
 reset()
 older = good_reply()

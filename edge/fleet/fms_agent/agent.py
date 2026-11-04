@@ -131,14 +131,13 @@ class Agent:
         device_id = collect.device_id()
         try:
             reply = self._post(protocol.ENROLL_PATH, {
-                "fingerprint": self.fingerprint,
                 "device_id": device_id,
                 "legacy_edge_id": collect.legacy_edge_id(),
                 "hardware": collect.hardware(),
                 "software": collect.software(),
                 "agent": collect.facts(self.rtt_ms, self.interval, self.cfg.enroll_key),
                 "status": status,
-            }, self.fingerprint, self.cfg.enroll_key)
+            }, None, self.cfg.enroll_key)            # None: the 4-line enroll signature
         except transport.Rejected as exc:
             if exc.status == 409:
                 raise Waiting("this device is already enrolled — an admin must press "
@@ -164,7 +163,7 @@ class Agent:
         log.info("enrolled with the fleet as %s (%s)", edge_id, reply.get("origin") or "issued")
         return 1.0                        # first heartbeat right away
 
-    def _post(self, path: str, payload: dict, principal: str, secret: str) -> dict:
+    def _post(self, path: str, payload: dict, principal: str | None, secret: str) -> dict:
         reply, self.rtt_ms = transport.post(self.cfg.url, path, payload, principal, secret,
                                             self.clock_offset)
         self.clock_offset = float(reply.get("server_time", time.time())) - time.time()

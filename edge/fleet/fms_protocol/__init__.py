@@ -13,12 +13,17 @@ device's own signing key. From then on every heartbeat is signed with that key.
 
 Signing (HMAC-SHA256, Base64 — the same shape as the edge<->app-server design):
 
-    request  = principal \\n METHOD \\n path \\n sha256hex(body) \\n timestamp \\n nonce
-    response = principal \\n RESPONSE \\n request_nonce \\n sha256hex(body)
+    heartbeat request  = edge_id \\n METHOD \\n path \\n sha256hex(body) \\n timestamp \\n nonce
+    heartbeat response = edge_id \\n RESPONSE \\n request_nonce \\n sha256hex(body)
 
-`principal` is the edge_id for heartbeats and the fingerprint for enrollment.
-Replies are signed too, bound to the request's nonce, so a device only ever acts
-on what the real server said to THIS request.
+Enrollment is signed with the fleet enrollment key over FOUR lines, and sends
+no X-Ceravis-Device and no X-Ceravis-Nonce header (the agreed v2 call):
+
+    enroll request     = METHOD \\n path \\n timestamp \\n sha256hex(body)
+    enroll response    = RESPONSE \\n request_timestamp \\n sha256hex(body)
+
+Replies are signed too, bound to the request (its nonce, or for enrollment its
+timestamp), so a device only ever acts on what the real server said to it.
 """
 from __future__ import annotations
 
@@ -31,7 +36,7 @@ VERSION = 1
 HEARTBEAT_PATH = "/v1/device/heartbeat"
 ENROLL_PATH = "/v1/device/enroll"
 
-HDR_DEVICE = "X-Ceravis-Device"          # edge_id, or the fingerprint when enrolling
+HDR_DEVICE = "X-Ceravis-Device"          # edge_id (heartbeats; enrollment sends none)
 HDR_TIMESTAMP = "X-Ceravis-Timestamp"
 HDR_NONCE = "X-Ceravis-Nonce"
 HDR_SIGNATURE = "X-Ceravis-Signature"
@@ -76,6 +81,14 @@ def request_message(principal: str, method: str, path: str, body: bytes,
 def response_message(principal: str, request_nonce: str, body: bytes) -> bytes:
     return "\n".join((principal, "RESPONSE", request_nonce,
                       _sha256_hex(body))).encode("utf-8")
+
+
+def enroll_request_message(method: str, path: str, timestamp: str, body: bytes) -> bytes:
+    return "\n".join((method.upper(), path, timestamp, _sha256_hex(body))).encode("utf-8")
+
+
+def enroll_response_message(request_timestamp: str, body: bytes) -> bytes:
+    return "\n".join(("RESPONSE", request_timestamp, _sha256_hex(body))).encode("utf-8")
 
 
 def sign(secret: str, message: bytes) -> str:

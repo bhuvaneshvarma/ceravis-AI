@@ -30,20 +30,23 @@ def encode(payload) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
-def post(url: str, path: str, payload: dict, principal: str, secret: str,
+def post(url: str, path: str, payload: dict, principal: str | None, secret: str,
          clock_offset: float) -> tuple[dict, float]:
+    """principal None = enrollment: four signed lines, no device or nonce header."""
     body = encode(payload)                                  # sign these exact bytes
     stamp = f"{time.time() + clock_offset:.3f}"
-    nonce = secrets.token_hex(16)
-    message = protocol.request_message(principal, "POST", path, body, stamp, nonce)
-    request = urllib.request.Request(url + path, data=body, method="POST", headers={
-        "Content-Type": "application/json",
-        "User-Agent": "ceravis-fleet-agent",
-        protocol.HDR_DEVICE: principal,
-        protocol.HDR_TIMESTAMP: stamp,
-        protocol.HDR_NONCE: nonce,
-        protocol.HDR_SIGNATURE: protocol.sign(secret, message),
-    })
+    headers = {"Content-Type": "application/json", "User-Agent": "ceravis-fleet-agent",
+               protocol.HDR_TIMESTAMP: stamp}
+    if principal is None:
+        message = protocol.enroll_request_message("POST", path, stamp, body)
+        expect = lambda raw: protocol.enroll_response_message(stamp, raw)    # noqa: E731
+    else:
+        nonce = secrets.token_hex(16)
+        message = protocol.request_message(principal, "POST", path, body, stamp, nonce)
+        expect = lambda raw: protocol.response_message(principal, nonce, raw)  # noqa: E731
+        headers.update({protocol.HDR_DEVICE: principal, protocol.HDR_NONCE: nonce})
+    headers[protocol.HDR_SIGNATURE] = protocol.sign(secret, message)
+    request = urllib.request.Request(url + path, data=body, method="POST", headers=headers)
     started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=20) as resp:
@@ -57,7 +60,7 @@ def post(url: str, path: str, payload: dict, principal: str, secret: str,
     except (urllib.error.URLError, OSError) as exc:
         raise Rejected(f"cannot reach {url} ({getattr(exc, 'reason', exc)})") from None
     rtt_ms = round((time.monotonic() - started) * 1000, 1)
-    if not protocol.verify(secret, protocol.response_message(principal, nonce, raw), signature):
+    if not protocol.verify(secret, expect(raw), signature):
         raise Rejected("reply signature invalid — ignoring it")
     reply = _json(raw)
     if not reply:
