@@ -75,11 +75,8 @@ def facts(rtt_ms: float | None, interval: float, enroll_key: str) -> dict:
         "python": platform.python_version(),
         "rtt_ms": rtt_ms,
         "interval_secs": interval,
-        # WHICH fleet enrollment key it holds — a short id, never the key. The
-        # server checks it against its own: only that key lets the device enroll
-        # again by itself after an admin's Reset key. can_enroll is what 0.2.1
-        # agents reported instead (holds some key); kept for servers that read it.
-        "enroll_key_id": protocol.enroll_key_id(enroll_key),
+        # Holds the fleet enrollment key, so it can enroll again by itself after
+        # an admin's Reset key. The console warns before a reset when it cannot.
         "can_enroll": bool(enroll_key),
         "disk": disk(),
     }

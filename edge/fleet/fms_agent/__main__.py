@@ -9,7 +9,7 @@ import time
 
 from . import __version__, transport
 from .agent import Agent
-from .config import Config, ConfigError
+from .config import Config, ConfigError, lan_test_fms
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,6 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"fleet agent: {exc}", file=sys.stderr)
         return 2
+    if cfg.url.startswith("http://") and lan_test_fms(cfg.url):
+        logging.warning("fleet agent: TEST FMS over plain http on this network (%s, "
+                        "FMS_ALLOW_HTTP_LAN=1) — for a test bench only, never a home", cfg.url)
     agent = Agent(cfg)
     signal.signal(signal.SIGTERM, lambda *_: agent.stop.set())
     if not (cfg.configured or (cfg.url and agent.identity)):

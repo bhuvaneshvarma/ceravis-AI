@@ -83,6 +83,9 @@ else
     skip "non-interactive shell — run setup/set_reboot_password.py later"
 fi
 
+# What runs here, with its version (/etc/ceravis/versions.json).
+bash "$SCRIPTS_DIR/record_versions.sh" >/dev/null || echo "  (the versions file was not written)"
+
 # ---- [6/6] doctor ------------------------------------------------------
 stage "6/6" "verification"
 bash "$SCRIPTS_DIR/check_jetson.sh" || {

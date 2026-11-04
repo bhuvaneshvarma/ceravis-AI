@@ -58,6 +58,7 @@ sudo systemctl restart ceravis
 # once for the fleet enrollment key — the key left jetson.env, and without it
 # the device cannot re-enroll after a Reset key. Keeps a key already stored.
 bash "$SETUP_DIR/install_fleet_agent.sh"
+bash "$SETUP_DIR/record_versions.sh" >/dev/null || echo "  (the versions file was not written)"
 sleep 6
 
 echo "== [6/6] verify =="

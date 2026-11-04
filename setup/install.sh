@@ -28,6 +28,8 @@
 # Secrets come from ONE file you keep off the release (never in the repo):
 #   CERAVIS_API_KEY=…  FRP_SERVER_ADDR=…  FRP_TOKEN=…        (required)
 #   FMS_ENROLL_KEY=…   REBOOT_PASSWORD=…                     (recommended)
+#   FMS_URL=…  FMS_ALLOW_HTTP_LAN=1     (a TEST FMS instead of jetson.env's — a
+#                                        test bench only; see install_fleet_agent.sh)
 # given with --secrets FILE, else ceravis-secrets.env next to the release
 # folder or in it. KEY=value lines: spaces around '=' and quotes are fine, the
 # last line needs no newline. The install STOPS before changing anything when
@@ -88,7 +90,8 @@ echo "==== $(date -Is)  CERAVIS $VERSION from $SRC$([ "$SECRETS_ONLY" = 1 ] && e
 # Read as data, never executed: KEY=value lines, spaces around '=' allowed,
 # quotes stripped, CRLF and a last line without a newline tolerated. Only these
 # keys are taken. The summary names what was found — never a value.
-SECRET_KEYS=(CERAVIS_API_KEY FRP_SERVER_ADDR FRP_TOKEN FMS_ENROLL_KEY REBOOT_PASSWORD HOTSPOT_PASSWORD)
+SECRET_KEYS=(CERAVIS_API_KEY FRP_SERVER_ADDR FRP_TOKEN FMS_ENROLL_KEY REBOOT_PASSWORD HOTSPOT_PASSWORD
+             FMS_URL FMS_ALLOW_HTTP_LAN)
 read_secrets() {
     local line k v
     while IFS= read -r line || [ -n "$line" ]; do
@@ -212,10 +215,10 @@ if [ "$SECRETS_ONLY" = 1 ]; then
     stage "secrets" "keys into their root-only files"
     apply_secrets
     [ -z "$ADMIN_KEYS" ] || setup_ssh
-    # A rebuilt tunnel config is keyed to the account's edge_id again by the
+    # A rebuilt tunnel config is keyed to this device's edge_id again by the
     # app itself at start (its boot-time self-heal).
     if [ -n "${FRP_SERVER_ADDR:-}" ]; then systemctl try-restart ceravis || true; fi
-    if [ -n "${FMS_ENROLL_KEY:-}" ]; then
+    if [ -n "${FMS_ENROLL_KEY:-}${FMS_URL:-}${FMS_ALLOW_HTTP_LAN:-}" ]; then
         bash "$CERAVIS_ROOT/setup/install_fleet_agent.sh" </dev/null >/dev/null
     fi
     if [ -n "${HOTSPOT_PASSWORD:-}" ]; then
@@ -412,6 +415,8 @@ else
 fi
 chown -R "$SVC:$SVC" "$DATA"
 bash "$CERAVIS_ROOT/setup/check_jetson.sh" || echo "  (the doctor flagged items above — the device still runs)"
+bash "$CERAVIS_ROOT/setup/record_versions.sh" >/dev/null \
+    && echo "  versions: /etc/ceravis/versions.json" || warn "the versions file was not written"
 
 NAME="$(device_name)"
 # The home-network address — the app's own answer (not the USB-C link, the

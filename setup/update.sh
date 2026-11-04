@@ -61,6 +61,13 @@ switch_to() {   # <release dir>
     systemctl daemon-reload
     systemctl restart ceravis
     systemctl restart ceravis-fleet-agent 2>/dev/null || true
+    # What is installed now (/etc/ceravis/versions.json) — after a rollback too,
+    # so it reads THIS release, not the one this run exported for the update.
+    if [ -f "$1/setup/record_versions.sh" ]; then
+        local py="$1/venv/bin/python"; [ -x "$py" ] || py=/usr/bin/python3
+        CERAVIS_ROOT="$1" CERAVIS_PYTHON="$py" bash "$1/setup/record_versions.sh" >/dev/null 2>&1 \
+            || log "WARNING: versions file not written"
+    fi
 }
 units_of() {    # <release dir>: its units re-written; one it does not have goes
     local u

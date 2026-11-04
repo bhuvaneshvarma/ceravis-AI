@@ -15,6 +15,12 @@ Against a stand-in FMS on this machine (real HTTP, real signatures, both ways):
    second time; --migrate keeps a pre-FMS home's edge_id until it enrolls,
    --store-only leaves units and restarts to its caller (sudo/systemctl stubbed)
 5. the app — service and every page — reads its edge_id from that credential
+6. a test FMS on this network over plain http: only with FMS_ALLOW_HTTP_LAN=1
+   and a private IP address — never a name, a public address, or without it;
+   install_fleet_agent.sh keeps FMS_URL and the key side by side in enroll.env;
+   seal.sh drops the test address so no golden image ships it
+7. /etc/ceravis/versions.json: what is installed, written by every installer
+   (a rollback records the release it went back to)
 
     python tests/test_fleet_enroll.py
 """
@@ -158,6 +164,8 @@ check("agent facts: everything the agent reported before is still there",
       all(k in facts for k in ("version", "unix_time", "boot_id", "uptime_secs", "hostname", "os",
                                "kernel", "l4t", "python", "rtt_ms", "interval_secs", "can_enroll")),
       str(sorted(facts)))
+check("no enroll_key_id: the FMS checks the signature, it needs no key name",
+      "enroll_key_id" not in facts and not hasattr(protocol, "enroll_key_id"), str(sorted(facts)))
 
 print("\n   free disk (statvfs) for / and the data folder")
 root_now = os.statvfs("/")
@@ -338,6 +346,110 @@ pages = {name: (ROOT / "edge" / "static" / name).read_text(encoding="utf-8")
 stale = [n for n, t in pages.items() if "user.edgeId" in t or "u.edgeId" in t]
 check("every page takes the edge_id from /api/v1/account's edge_id, none from the account record",
       not stale and all("edge_id" in t for t in pages.values()), str(stale))
+
+# --------------------------------------------------------------------------
+print("\n6. a test FMS on this network: plain http only when asked, only to a private IP")
+from fms_agent.config import ConfigError, lan_test_fms           # noqa: E402
+
+
+def config_with(**env):
+    saved = {k: os.environ.get(k) for k in ("FMS_URL", "FMS_ALLOW_HTTP_LAN")}
+    try:
+        for k in saved:
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        return Config.from_env()
+    except ConfigError as exc:
+        return exc
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+lan = "http://192.168.1.40:8085"
+check("http to a private IP with FMS_ALLOW_HTTP_LAN=1: allowed",
+      isinstance(config_with(FMS_URL=lan, FMS_ALLOW_HTTP_LAN="1"), Config))
+check("...10.x and 172.16-31.x too",
+      all(isinstance(config_with(FMS_URL=u, FMS_ALLOW_HTTP_LAN="1"), Config)
+          for u in ("http://10.0.0.7:8085", "http://172.20.3.4:9000")))
+check("the same address without the flag: refused", isinstance(config_with(FMS_URL=lan), ConfigError))
+check("FMS_ALLOW_HTTP_LAN=yes is not 1: refused",
+      isinstance(config_with(FMS_URL=lan, FMS_ALLOW_HTTP_LAN="yes"), ConfigError))
+check("a NAME over http, even with the flag: refused (a name can resolve anywhere)",
+      isinstance(config_with(FMS_URL="http://fms.local:8085", FMS_ALLOW_HTTP_LAN="1"), ConfigError))
+check("a PUBLIC address over http, even with the flag: refused",
+      isinstance(config_with(FMS_URL="http://8.8.8.8:8085", FMS_ALLOW_HTTP_LAN="1"), ConfigError))
+check("https anywhere and http to this machine: as before",
+      isinstance(config_with(FMS_URL="https://fms.ceravishealth.in"), Config)
+      and isinstance(config_with(FMS_URL=fms.url), Config))
+check("lan_test_fms() is only for http", not lan_test_fms("https://192.168.1.40", {"FMS_ALLOW_HTTP_LAN": "1"}))
+
+src = (ROOT / "setup" / "install_fleet_agent.sh").read_text(encoding="utf-8")
+helper = src[src.index("set_fleet_value() {"):src.index("has_key() {")]
+box = Path(tempfile.mkdtemp(prefix="ceravis-enrollenv-"))
+key_file = box / "etc" / "enroll.env"
+script = ("set -euo pipefail\nsudo() { \"$@\"; }\n" f"KEY_FILE='{key_file}'\n" + helper +
+          "set_fleet_value FMS_ENROLL_KEY k1\nset_fleet_value FMS_URL http://192.168.1.40:8085\n"
+          "set_fleet_value FMS_ALLOW_HTTP_LAN 1\nset_fleet_value FMS_ENROLL_KEY k2\n"
+          "set_fleet_value FMS_ALLOW_HTTP_LAN ''\n")
+r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+lines = key_file.read_text().splitlines() if key_file.exists() else []
+check("enroll.env: each value set once, a changed one replaced, an empty one removed",
+      r.returncode == 0 and sorted(lines) == ["FMS_ENROLL_KEY=k2", "FMS_URL=http://192.168.1.40:8085"],
+      f"{lines} {r.stderr.strip()}")
+check("...and it stays root-only (0600)",
+      key_file.exists() and stat.S_IMODE(key_file.stat().st_mode) == 0o600,
+      oct(stat.S_IMODE(key_file.stat().st_mode)) if key_file.exists() else "missing")
+shutil.rmtree(box, ignore_errors=True)
+seal = (ROOT / "setup" / "seal.sh").read_text(encoding="utf-8")
+check("seal.sh drops a test FMS address from enroll.env (no golden image ships one), keeps the key",
+      "/^FMS_URL=/d" in seal and "/^FMS_ALLOW_HTTP_LAN=/d" in seal and "/^FMS_ENROLL_KEY=/d" not in seal)
+
+# --------------------------------------------------------------------------
+print("\n7. versions.json: what is installed, written by every installer")
+box = Path(tempfile.mkdtemp(prefix="ceravis-versions-"))
+(box / "bin").mkdir()
+for name, out in (("mediamtx", "v1.9.3"), ("frpc", "0.61.1")):
+    (box / "bin" / name).write_text(f"#!/bin/sh\necho {out}\n")
+    (box / "bin" / name).chmod(0o755)
+(box / "bin" / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+(box / "bin" / "sudo").chmod(0o755)
+out_file = box / "etc" / "versions.json"
+env = {**os.environ, "PATH": f"{box / 'bin'}:{os.environ['PATH']}", "CERAVIS_LAYOUT_FILE": os.devnull,
+       "CERAVIS_ROOT": str(ROOT), "CERAVIS_PYTHON": sys.executable,
+       "CERAVIS_VERSIONS_FILE": str(out_file),
+       "CERAVIS_MEDIAMTX_BIN": str(box / "bin" / "mediamtx"), "CERAVIS_FRPC_BIN": str(box / "bin" / "frpc")}
+r = subprocess.run(["bash", str(ROOT / "setup" / "record_versions.sh")], capture_output=True, text=True, env=env)
+try:
+    v = json.loads(out_file.read_text())
+except (OSError, ValueError):
+    v = {}
+agent_ver = (ROOT / "edge" / "fleet" / "fms_agent" / "__init__.py").read_text()
+check("written, readable by all (no secret in it)",
+      r.returncode == 0 and out_file.exists() and stat.S_IMODE(out_file.stat().st_mode) == 0o644,
+      r.stderr.strip()[-200:])
+check("release = edge/VERSION; fleet agent = its __version__ and protocol",
+      (v.get("release") or {}).get("version") == (ROOT / "edge" / "VERSION").read_text().strip()
+      and f'"{(v.get("fleet_agent") or {}).get("version")}"' in agent_ver
+      and (v.get("fleet_agent") or {}).get("protocol") == protocol.VERSION, str(v))
+check("mediamtx and frpc: what the installed binaries say",
+      v.get("mediamtx") == "v1.9.3" and v.get("frpc") == "0.61.1", str(v))
+check("python and the time it was recorded",
+      v.get("python") == ".".join(map(str, sys.version_info[:3])) and v.get("recorded_at"), str(v))
+env.update(CERAVIS_MEDIAMTX_BIN=str(box / "none"), CERAVIS_FRPC_BIN=str(box / "none"))
+r = subprocess.run(["bash", str(ROOT / "setup" / "record_versions.sh")], capture_output=True, text=True, env=env)
+check("a binary not installed yet is '' — the file is still written",
+      r.returncode == 0 and json.loads(out_file.read_text()).get("mediamtx") == "", r.stderr.strip()[-200:])
+shutil.rmtree(box, ignore_errors=True)
+hooks = {name: (ROOT / "setup" / name).read_text(encoding="utf-8")
+         for name in ("install.sh", "setup.sh", "update.sh", "upgrade.sh")}
+check("every installer records it (install, setup, update, upgrade)",
+      all("record_versions.sh" in t for t in hooks.values()),
+      str([n for n, t in hooks.items() if "record_versions.sh" not in t]))
+sw = hooks["update.sh"][hooks["update.sh"].index("switch_to() {"):]
+sw = sw[:sw.index("\n}\n")]
+check("update.sh records the release it switched to — after a rollback, the one it went back to",
+      'CERAVIS_ROOT="$1"' in sw and "record_versions.sh" in sw)
 
 fms.server.shutdown()
 shutil.rmtree(state, ignore_errors=True)

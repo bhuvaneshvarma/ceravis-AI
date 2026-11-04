@@ -74,6 +74,11 @@ rm -f "$CERAVIS_CREDSTORE/edge_id"
 if [ -f /etc/systemd/system/ceravis.service ]; then
     install_unit "$EDGE_DIR/infra/systemd/ceravis.service" && systemctl daemon-reload
 fi
+# The enrollment key stays (the same on every device); a TEST FMS this device
+# was pointed at does not — every copy reports to jetson.env's FMS.
+if [ -f /etc/ceravis-fleet-agent/enroll.env ]; then
+    sed -i '/^FMS_URL=/d;/^FMS_ALLOW_HTTP_LAN=/d' /etc/ceravis-fleet-agent/enroll.env
+fi
 
 if [ -f /etc/frp/frpc.toml ]; then
     say "tunnel routes and prefix back to their placeholders"
