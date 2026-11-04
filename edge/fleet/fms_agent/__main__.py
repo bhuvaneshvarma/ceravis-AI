@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"fleet agent: {exc}", file=sys.stderr)
         return 2
-    agent = Agent(cfg, enroll_grace=0) if args.check else Agent(cfg)   # --check never waits
+    agent = Agent(cfg)
     signal.signal(signal.SIGTERM, lambda *_: agent.stop.set())
     if not (cfg.configured or (cfg.url and agent.identity)):
         # Not an error: a device without FMS_URL — or, before it has enrolled,

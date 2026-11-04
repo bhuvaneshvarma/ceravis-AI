@@ -56,8 +56,8 @@ the empty gaps on its own.
 ## 3. Authentication — the edgeId match, nothing else
 
 Every call carries this device's `edgeId` as the **`edge_id` query parameter**,
-and the edge verifies it MATCHES the value provisioned for it (the `deviceToken`
-from `userDetails`). Only the app server that provisioned the device knows it, so
+and the edge verifies it MATCHES the value provisioned for it (the edge_id the
+Fleet Management Server issued it). Only the app server that provisioned the device knows it, so
 **the match IS the authentication** ([edge/api/control_auth.py](edge/api/control_auth.py)).
 
 ```

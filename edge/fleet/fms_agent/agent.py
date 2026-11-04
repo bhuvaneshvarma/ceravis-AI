@@ -1,14 +1,16 @@
 """The loop: (enroll once) → gather → exchange → act → sleep, forever.
 
 Rules it lives by:
-  • No per-device setup. With no identity yet it ENROLLS by itself: it waits
-    briefly for the edge app so an existing edge_id is adopted, then gets its
-    permanent edge_id and its own key back. If the server later refuses its key
-    (an admin pressed Reset key), it enrolls again — which needs the fleet
-    enrollment key, so it tells the server whether it holds one.
+  • No per-device setup. With no identity yet it ENROLLS by itself, at once:
+    it sends who this device is (its name, board, release, disk) and gets back
+    its permanent edge_id — the FMS is the only place edge_ids come from — and
+    its own key. If the server later refuses its key (an admin pressed Reset
+    key), it enrolls again — which needs the fleet enrollment key, so it tells
+    the server whether it holds one.
   • The server sets the rhythm (`next_poll_after_secs`); the agent obeys.
-  • First call is offset by a hash of the fingerprint, retries back off with
-    jitter — thousands of devices booting together never arrive together.
+  • An enrolled device's first call is offset by a hash of its fingerprint,
+    retries back off with jitter — thousands of devices booting together never
+    arrive together.
   • Order results are kept until a heartbeat carrying them is accepted — as
     many per heartbeat as fit the server's size limit, the rest on the next.
   • Any failure is logged once, on the transition, and the loop carries on.
@@ -32,7 +34,6 @@ from .config import Config
 log = logging.getLogger("fms_agent")
 
 MIN_WAIT, MAX_WAIT, MAX_BACKOFF = 5, 3600, 300
-ENROLL_GRACE_SECS = 600   # how long to wait for the edge app before enrolling without its edge_id
 
 
 class Waiting(transport.Rejected):
@@ -69,9 +70,8 @@ def _shorten(result: dict, room: int) -> dict:
 
 
 class Agent:
-    def __init__(self, cfg: Config, enroll_grace: float = ENROLL_GRACE_SECS) -> None:
+    def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.enroll_grace = enroll_grace
         self.stop = threading.Event()
         self.fingerprint = identity.fingerprint(cfg.fingerprint)
         self.identity = identity.load(cfg.state_dir)
@@ -79,7 +79,6 @@ class Agent:
         self.interval = 60.0
         self.rtt_ms: float | None = None
         self.results: list[dict] = []    # answers to orders, waiting to be delivered
-        self._started = time.monotonic()
         self._last_problem: str | None = ""
 
     # ---- one exchange ---------------------------------------------------
@@ -129,14 +128,16 @@ class Agent:
         if not self.cfg.enroll_key:
             raise Waiting("this device must enroll but has no fleet enrollment key (FMS_ENROLL_KEY) "
                           "— on a Jetson, run setup/install_fleet_agent.sh to give it one")
-        if status is None and time.monotonic() - self._started < self.enroll_grace:
-            raise Waiting("waiting for the edge app to answer, so its edge_id can be adopted")
-        reported = (status or {}).get("edge_id") or ""
+        device_id = collect.device_id()
         try:
             reply = self._post(protocol.ENROLL_PATH, {
-                "protocol": protocol.VERSION, "fingerprint": self.fingerprint,
-                "edge_id": reported if isinstance(reported, str) else "",
+                "fingerprint": self.fingerprint,
+                "device_id": device_id,
+                "legacy_edge_id": collect.legacy_edge_id(),
+                "hardware": collect.hardware(),
+                "software": collect.software(),
                 "agent": collect.facts(self.rtt_ms, self.interval, self.cfg.enroll_key),
+                "status": status,
             }, self.fingerprint, self.cfg.enroll_key)
         except transport.Rejected as exc:
             if exc.status == 409:
@@ -145,10 +146,22 @@ class Agent:
             if exc.status == 403:
                 raise Waiting("this device's access is revoked in the fleet console", 403) from None
             raise
-        self.identity = {"edge_id": reply["edge_id"], "secret": reply["secret"],
-                         "origin": reply.get("origin"), "enrolled_at": time.time()}
+        # The edge_id becomes every route and link of this device: nothing of a
+        # reply that is not plainly this device's is kept.
+        edge_id, secret = reply.get("edge_id"), reply.get("secret")
+        if not protocol.valid_edge_id(edge_id) or not isinstance(secret, str) or not secret:
+            raise transport.Rejected("the enrollment reply carries no valid edge_id and key — not saved")
+        if reply.get("device_id") not in (None, device_id):
+            raise transport.Rejected(f"the enrollment reply is for {reply['device_id']!r}, "
+                                     f"not this device ({device_id}) — not saved")
+        self.identity = {"edge_id": edge_id, "secret": secret, "device_id": device_id,
+                         "key_version": reply.get("key_version"), "origin": reply.get("origin"),
+                         "enrolled_at": time.time()}
         identity.save(self.cfg.state_dir, self.identity)
-        log.info("enrolled with the fleet as %s (%s)", reply["edge_id"], reply.get("origin"))
+        warnings = reply.get("warnings")
+        for note in warnings if isinstance(warnings, list) else []:
+            log.warning("fleet: %s", note)
+        log.info("enrolled with the fleet as %s (%s)", edge_id, reply.get("origin") or "issued")
         return 1.0                        # first heartbeat right away
 
     def _post(self, path: str, payload: dict, principal: str, secret: str) -> dict:
@@ -159,7 +172,9 @@ class Agent:
 
     # ---- forever ----------------------------------------------------------
     def run_forever(self, exit_on_code_change: bool = False) -> None:
-        wait = int(self.fingerprint, 16) % 30
+        # A device still to enroll does so at once (the installer waits on it);
+        # an enrolled one staggers its first heartbeat.
+        wait = 0 if self.identity is None else int(self.fingerprint, 16) % 30
         backoff, skewed = float(MIN_WAIT), False
         code = _code_stamp()
         log.info("fleet agent started — reporting to %s", self.cfg.url)

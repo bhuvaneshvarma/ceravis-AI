@@ -414,10 +414,8 @@ def system_status(request: Request):
         "version": settings.app_version,
         "code": code,
         "device_id": settings.device_id,
-        # The LIVE routing token, resolved the one canonical way: account.json
-        # (written at verify, no restart) wins over jetson.env's EDGE_ID — which
-        # is deliberately never written, so reading settings.edge_id here showed
-        # a blank/stale value and made a freshly-verified device look un-keyed.
+        # The LIVE routing token, resolved the one canonical way (the edge_id
+        # the FMS issued — config.account_config.effective_edge_id).
         "edge_id": effective_edge_id(),
         "time": time_info,
         # When it is DOWN, say WHY: MediaMTX's own last lines are the cause

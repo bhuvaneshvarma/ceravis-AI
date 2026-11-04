@@ -20,10 +20,6 @@ from integration.ceravis_api import (
     send_otp,
     verify_otp,
 )
-from livestream.mediamtx_client import is_up as media_backbone_up
-from livestream.mediamtx_client import (
-    drop_previous_live_path, stream_base, sync_camera, webrtc_url,
-)
 
 
 router = APIRouter(prefix="/api/v1/account", tags=["Account"])
@@ -33,53 +29,47 @@ logger = logging.getLogger("account")
 _BOOTED_AT = time.time()
 
 
-def _stream_base(request: Request) -> str:
-    """Externally-reachable base for the live links handed to the cloud —
-    delegates to livestream.mediamtx_client.stream_base (the ONE base builder,
-    shared with tests/test_cloud.py): DEVICE_STREAM_BASE override, else this
-    host with the scheme MediaMTX is actually serving."""
-    return stream_base(request.headers.get("host") or "localhost")
+def _keep_tunnel_keyed(background_tasks: BackgroundTasks) -> tuple[bool, dict | None]:
+    """Make sure the frp tunnel routes this device's edge_id (the FMS one).
+    Re-applied only when it does not AND the privileged helper can do it —
+    never on every login. Returns (provisioning, remote) for the login page:
+    `provisioning` = a tunnel restart is really about to happen."""
+    edge_id = effective_edge_id()
+    if not edge_id:
+        return False, None
+    from integration.edge_provision import apply_edge_id_async, provisioning_report
+    remote = provisioning_report(edge_id)
+    if remote["helper_installed"] and not remote["keyed"]:
+        background_tasks.add_task(apply_edge_id_async, edge_id)
+        return True, remote
+    return False, remote
 
 
-def _repoint_live_paths(base: str, previous_edge_id: str, cameras) -> None:
-    """After an edge_id change, bring the running device onto the new routing
-    token WITHOUT a full restart, per camera:
-      1. drop the live path under the PREVIOUS token — left in place it keeps a
-         second connection to the camera;
-      2. sync the live path under the new token ('<new_edge_id>/<ROOM>');
-      3. refresh the link stored in cameras.json, so the next cloud sync pushes
-         the current URL;
-      4. restart the running AI reader whose loopback URL carried the old token
-         (a camera with its own '<cam>-ai' path never changed, so it is left be).
-    `base` is the scheme://host live-link base and `cameras` the CameraManager
-    (None when the pipeline is not up). Best-effort — a failure here just means
-    a `systemctl restart ceravis` is needed to pick the change up."""
-    time.sleep(1.5)                       # let the verify response flush first
-    running = cameras.get_status() if cameras is not None else {}
-    for c in CameraConfig().get_all():
-        try:
-            if media_backbone_up():
-                drop_previous_live_path(c.camera_id, previous_edge_id)
-                sync_camera(c)
-            c.webrtc_url = webrtc_url(c.camera_id, base)
-            CameraConfig().update(c.camera_id, c)
-            status = running.get(c.camera_id)
-            if status is not None and status.is_running and not getattr(c, "ai_rtsp_url", ""):
-                cameras.restart_camera(c.camera_id)
-        except Exception as exc:          # noqa: BLE001 — never fail provisioning
-            logger.warning("repoint live path failed for %s: %s",
-                           c.camera_id, exc)
-    logger.info("live paths repointed to the new edge_id")
+def _note_app_server_token(user: dict) -> str:
+    """The app server still names this device by its own token (deviceToken).
+    It is kept in account.json only as the hint the fleet agent sends at
+    enrollment; routing uses the FMS edge_id alone. When the two differ, say so
+    plainly: the app server's links to this device miss until it uses the FMS
+    edge_id. Returns the token ('' when none)."""
+    token = canonical_edge_id((user or {}).get("deviceToken") or (user or {}).get("edgeId"))
+    mine = effective_edge_id()
+    if token and mine and token != mine:
+        logger.warning("the app server names this device %s, the FMS edge_id is %s — "
+                       "the app server must use %s", token, mine, mine)
+        from integration import call_log
+        call_log.record("event", False, label="App server uses another edge_id for this device",
+                        error=f"app server: {token} — FMS: {mine}")
+    return token
 
 
 def _restart_after_switch() -> None:
     """A care-recipient switch changes who the whole device works for: the
-    edge_id, the recipient's galleries, every live path and cloud link. The
-    steps queued before this one (frpc, live paths) apply in place first; then
-    the service restarts cleanly through the nightly refresh's own mechanism, so
-    every component starts again on the new recipient at once, not at the next
-    manual or overnight restart. Not under systemd (dev box): logged, and the
-    in-place steps stand on their own."""
+    recipient's galleries, alerts and cloud account. The steps queued before
+    this one apply first; then the service restarts cleanly through the nightly
+    refresh's own mechanism, so every component starts again on the new
+    recipient at once, not at the next manual or overnight restart. (The edge_id
+    does not change with the recipient: the FMS issued it to the device.) Not
+    under systemd (dev box): logged, and the in-place steps stand on their own."""
     from maintenance.refresh import restart_service
     time.sleep(1.0)
     logger.warning("care-recipient switch applied — restarting the service so "
@@ -175,10 +165,11 @@ class VerifyRequest(BaseModel):
 def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTasks):
     """
     Gate the setup wizard. First check the login one-time code with the app
-    server (/v1/ai/verifyOtp). Its confirmation carries the account itself
-    (deviceToken = this device's edge_id); /v1/ai/userDetails is asked only when
-    it does not. Persist the account and return it so the next screen can
-    pre-fill. Every app-server hit is recorded in the wire log.
+    server (/v1/ai/verifyOtp). Its confirmation carries the account itself;
+    /v1/ai/userDetails is asked only when it does not. Persist the account and
+    return it so the next screen can pre-fill. The edge_id is never taken from
+    here: the FMS issued it to this device (config.account_config). Every
+    app-server hit is recorded in the wire log.
     """
     email = (req.email or "").strip()
     if not email:
@@ -197,42 +188,28 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         logger.info("login code not accepted for %s: %s", email, reason)
         return {"verified": False, "reason": reason}
 
-    # 2) RETURNING device — account.json already holds THIS recipient with the
-    # SAME edge_id the server just confirmed. A normal sign-in (to add a camera /
-    # edit zones) must NOT re-fetch userDetails every time; the local account is
-    # the source of truth. We only make sure the frp tunnel is still keyed to the
-    # stored edge_id, then let the operator straight into the app. `fresh:false`
-    # tells the login page to open the Live Wall (not the onboarding wizard).
-    # A DIFFERENT edge_id for the same recipient (e.g. the device moved to
-    # another app server) is not a returning login: it goes through step 3, so
-    # the new edge_id is saved and applied exactly like a new recipient's.
+    # 2) RETURNING device — account.json already holds THIS recipient. A normal
+    # sign-in (to add a camera / edit zones) must NOT re-fetch userDetails every
+    # time; the local account is the source of truth. We only make sure the frp
+    # tunnel is still keyed to this device's edge_id, then let the operator
+    # straight into the app. `fresh:false` tells the login page to open the
+    # Live Wall (not the onboarding wizard). The edge_id is the FMS's, so what
+    # the app server calls this device never changes the route.
     verified = verified or {}
-    server_edge_id = canonical_edge_id(verified.get("deviceToken") or verified.get("edgeId"))
     stored = account_config.get()
     if (stored.get("ceravisUserId")
-            and (stored.get("email") or "").strip().lower() == email.lower()
-            and server_edge_id in ("", account_config.get_edge_id())):
-        edge_id = account_config.get_edge_id()
-        provisioning, remote = False, None
-        if edge_id:
-            from integration.edge_provision import (
-                apply_edge_id_async, provisioning_report,
-            )
-            remote = provisioning_report(edge_id)
-            # Re-apply only when the tunnel is not already routing this token AND
-            # the privileged helper is present to do it — never on every login.
-            if remote["helper_installed"] and not remote["keyed"]:
-                background_tasks.add_task(apply_edge_id_async, edge_id)
-                provisioning = True
+            and (stored.get("email") or "").strip().lower() == email.lower()):
+        _note_app_server_token(verified)
+        provisioning, remote = _keep_tunnel_keyed(background_tasks)
         logger.info("returning login: user #%s (%s) — userDetails skipped",
                     stored.get("ceravisUserId"), email)
         return {"verified": True, "user": stored, "fresh": False,
-                "edgeId": edge_id or None, "provisioning": provisioning,
+                "edgeId": effective_edge_id() or None, "provisioning": provisioning,
                 "remote": remote}
 
-    # 3) FRESH registration (no local account yet, a different email, or a new
-    # edge_id) — the account the server confirmed with the code, else fetched
-    # from userDetails, and onboard via the wizard (`fresh:true`).
+    # 3) FRESH registration (no local account yet, or a different email) — the
+    # account the server confirmed with the code, else fetched from userDetails,
+    # and onboard via the wizard (`fresh:true`).
     try:
         user = verified if verified.get("ceravisUserId") else get_user_details(email)
     except CeravisApiError as exc:
@@ -242,15 +219,6 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         return {"verified": False,
                 "reason": "No CERAVIS account found for this email"}
 
-    # The app server hands this device's routing token back as `deviceToken`
-    # (older field name: edgeId). Stored VERBATIM — the ONE canonical value the
-    # live-link segment, cloud/frpc.toml locations, the MediaMTX path and control
-    # auth all share. canonical_edge_id only trims/guards a path-safe token; it
-    # never remaps characters, so the edge value can never diverge from the
-    # backend's. See [[ceravis-devicetoken-verbatim]].
-    raw_token = user.get("deviceToken") or user.get("edgeId")
-    edge_id = canonical_edge_id(raw_token)
-    prev_edge_id = account_config.get_edge_id()
     account = {
         "ceravisUserId": user.get("ceravisUserId"),
         "firstName": user.get("firstName"),
@@ -260,69 +228,21 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         "gender": user.get("gender"),
         "role": user.get("role"),
         "tier": user.get("tier"),
-        "edgeId": edge_id or None,
+        # The app server's token, kept only as the fleet agent's enrollment hint.
+        "edgeId": _note_app_server_token(user) or None,
     }
     account_config.save(account)
-    # account.json is the authoritative runtime source (live links + control
-    # checks read it with no restart — so ceravis itself never needs restarting).
-    provisioning = False
-    remote = None
-    if edge_id:
-        # NOT written into jetson.env. account.json already persists it, is
-        # gitignored, and effective_edge_id() reads it FIRST — so copying the
-        # token into a git-TRACKED file bought nothing and cost a merge conflict
-        # on every device at every update, with `git checkout --` as the usual
-        # "fix" silently discarding the routing token. One home for the value.
-        # Apply to the frp tunnel (patch frpc.toml locations + restart frpc) AFTER
-        # this response is sent, so we never cut the tunnel this reply travels
-        # through. Best-effort: the value is already saved, so a manual frpc setup
-        # still works if the privileged helper isn't installed.
-        from integration.edge_provision import (
-            apply_edge_id_async, provisioning_report,
-        )
-        background_tasks.add_task(apply_edge_id_async, edge_id)
-        remote = provisioning_report(edge_id)
-        # `provisioning` drives the UI's "restarting the tunnel…" spinner + the
-        # reconnect wait, so it must mean a tunnel restart is ACTUALLY going to
-        # happen — i.e. the privileged helper is installed. Reporting True on a
-        # device without the helper made the UI promise "remote access ready"
-        # while the auto-apply silently no-op'd and the tunnel stayed on the old
-        # token. Now the UI reflects the honest state (and shows the manual
-        # command from `remote` when the helper is missing).
-        provisioning = remote["helper_installed"]
-        if provisioning:
-            logger.info("edge_id %s saved to account.json; frpc apply scheduled "
-                        "after response (NOT written to jetson.env by design)",
-                        edge_id)
-        else:
-            logger.warning("edge_id %s saved, but the privileged frpc helper is "
-                           "NOT installed — the tunnel will not auto-update. Run "
-                           "'%s' then '%s'", edge_id,
-                           remote["install_cmd"], remote["apply_cmd"])
-        # The edge_id is the first segment of every camera live path. When it
-        # CHANGES, MediaMTX is still serving the old paths (its config was baked
-        # at the last start) and cameras.json still holds the old links — so
-        # repoint the live paths and refresh the stored links now. This makes the
-        # device self-heal on re-provision with no `systemctl restart ceravis`.
-        if edge_id != prev_edge_id:
-            # Compute the link base NOW (the Request is valid inside the handler);
-            # the background task only needs the resulting scheme://host string.
-            background_tasks.add_task(
-                _repoint_live_paths, _stream_base(request), prev_edge_id,
-                getattr(request.app.state, "camera_manager", None))
-            logger.info("edge_id changed %r -> %r: MediaMTX repoint + link "
-                        "refresh scheduled", prev_edge_id, edge_id)
-    # A different recipient or edge_id: restart once the steps above have run
+    provisioning, remote = _keep_tunnel_keyed(background_tasks)
+    # A different recipient: restart once the steps above have run
     # (BackgroundTasks run in order), so nothing keeps the previous identity.
-    restarting = (edge_id != prev_edge_id
-                  or stored.get("ceravisUserId") != account["ceravisUserId"])
+    restarting = stored.get("ceravisUserId") != account["ceravisUserId"]
     if restarting:
         background_tasks.add_task(_restart_after_switch)
     logger.info("account verified (fresh): user #%s (%s)%s",
                 account["ceravisUserId"], account["email"],
                 " — service restart scheduled" if restarting else "")
     return {"verified": True, "user": account, "fresh": True,
-            "edgeId": edge_id or None,
+            "edgeId": effective_edge_id() or None,
             "provisioning": provisioning, "remote": remote,
             "restarting": restarting, "bootedAt": _BOOTED_AT}
 

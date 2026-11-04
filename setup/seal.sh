@@ -66,8 +66,9 @@ for d in events recordings recordings_proof outbox recipients certs .cache; do
     rm -rf "${DATA:?}/$d"
 done
 
-say "fleet identity"
+say "fleet identity and the edge_id the FMS issued (each copy enrolls itself)"
 rm -rf /var/lib/ceravis-fleet-agent/* 2>/dev/null || true
+rm -f "$CERAVIS_CREDSTORE/edge_id"
 
 if [ -f /etc/frp/frpc.toml ]; then
     say "tunnel routes and prefix back to their placeholders"

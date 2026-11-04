@@ -108,10 +108,11 @@ CERAVIS email + one-time-code sign-in). First HTTPS request mints the cert.
 
 ## 4. Set up a house (edge / Jetson)
 
-`edge_id` is **fully auto-provisioned**. Install the tunnel once with a
-placeholder; then verifying the operator's email in the setup wizard makes the
-edge read `deviceToken` from the app-server response, save it (`account.json` +
-`EDGE_ID` in `jetson.env`), key **every** frpc proxy to it, and restart frpc — no
+`edge_id` is **fully auto-provisioned** by the Fleet Management Server. Install
+the tunnel once with a placeholder; at install the fleet agent enrolls the
+device, the FMS issues its `edge_id`, `setup/sync_edge_id.sh` stores it root-only
+(`/etc/ceravis/credstore/edge_id`, handed to the app as a credential), and the
+app keys **every** frpc proxy to it and restarts frpc at its next start — no
 manual copy. (`install_frpc.sh` installs the `ceravis-apply-edge-id` helper + a
 locked-down sudoers rule that lets the app do that one privileged step.)
 

@@ -286,8 +286,11 @@ class Settings(BaseSettings):
     # sweep the local /24 for ONVIF devices. Bounded + thread-pooled; safe to
     # leave on. A "deep" scan (?deep=1) always sweeps and widens the port list.
     onvif_unicast_fallback: bool = True
-    # This device's stable identity AND fleet routing token (a long unguessable
-    # value like "home-9f3c1e2b…"). Two jobs:
+    # This device's fleet routing token, issued by the FMS when the fleet agent
+    # enrolls the device and handed to the service as the systemd credential
+    # `edge_id` (config.account_config.effective_edge_id — read it there, never
+    # here). Set EDGE_ID in jetson.env only to pin one on a bench with no fleet.
+    # Two jobs:
     #   1) Live-link routing: it is the FIRST path segment of every public live
     #      link — https://<domain>/<edge_id>/<cam>/whep — and the key frp routes
     #      on (locations=["/<edge_id>"]). One shared domain + one shared port
@@ -1171,10 +1174,10 @@ class Settings(BaseSettings):
         # Resolve relative to the repo, not the process cwd, so the env file
         # is found whether launched by systemd, a shell, or an IDE.
         #
-        # ONE env file, tracked in git. Nothing at runtime writes to it:
-        # the edge_id lives in data/account.json (gitignored, and what
-        # effective_edge_id() reads first), so this file stays a pure,
-        # hand-edited config that `git pull` never collides with.
+        # ONE env file, tracked in git. Nothing at runtime writes to it, so it
+        # stays a pure, hand-edited config that `git pull` never collides with.
+        # A setting it names — even as an empty KEY= — wins over a credential
+        # below, so a secret's own setting is never listed there.
         env_file=str(APP_DIR / "infra" / "env" / "jetson.env"),
         env_file_encoding="utf-8",
         # Secrets as systemd credentials (production): systemd copies each root-

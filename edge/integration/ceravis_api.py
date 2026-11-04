@@ -11,8 +11,9 @@ Endpoint used during setup:
     -> ApiResponse<UserDetailsResponse>
        { ceravisUserId, firstName, lastName, email, gender, role, tier,
          deviceToken }
-    deviceToken is this device's edge_id — the fleet routing token used as the
-    first segment of every live link and in cloud/frpc.toml locations.
+    deviceToken is the app server's own token for this device. The edge routes
+    on the edge_id the Fleet Management Server issued instead; the token is kept
+    only as the hint the fleet agent sends at enrollment (legacy_edge_id).
 A user that exists in the server's DB is what "verifies" the operator; if the
 email isn't found, onboarding is blocked.
 """
@@ -472,7 +473,7 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     Fails CLOSED: returns (True, None, account) only for the server's one
     confirmation (_otp_confirmed: HTTP 2xx, code 1, "OTP verified successfully"),
     `account` being the user it confirmed — its `data`: ceravisUserId,
-    deviceToken (this device's edge_id), names, role, tier — or None when the
+    deviceToken (the app server's token for it), names, role, tier — or None when the
     reply carries none. Any other reply gives (False, reason, None), the reason
     being the server's message exactly as sent ("No OTP found…", …).
     Raises CeravisApiError on config/transport/5xx errors. The full request +

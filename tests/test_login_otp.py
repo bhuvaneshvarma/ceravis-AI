@@ -169,9 +169,10 @@ check("5xx -> plain retry message, no HTML",
 
 
 # --------------------------------------------------------------------------
-print("\n2b. the confirmed account decides the edge_id: same -> returning, new -> updated")
+print("\n2b. sign-in never decides the edge_id: the FMS issued it; the server's token is a hint")
 from types import SimpleNamespace                                 # noqa: E402
 from fastapi import BackgroundTasks                               # noqa: E402
+from integration import call_log                                  # noqa: E402
 
 
 class _Account:                                    # account.json, kept in memory
@@ -180,9 +181,6 @@ class _Account:                                    # account.json, kept in memor
 
     def get(self):
         return dict(self.data)
-
-    def get_edge_id(self):
-        return self.data.get("edgeId") or ""
 
     def save(self, account):
         self.data = dict(account)
@@ -202,6 +200,9 @@ def _login(token):
 
 
 _real_account = account_routes.account_config
+_real_record, noted = call_log.record, []
+call_log.record = (lambda kind, ok, label="", error="", **_:       # the edge_id notes only
+                   "edge_id" in (label or "") and noted.append((label, error)))
 # get_account answers in full to this device itself, which proves it with the
 # device's local key (api/auth, common/local_key).
 from starlette.requests import Request as _Request                    # noqa: E402
@@ -209,37 +210,56 @@ from common.local_key import HEADER as _KEY_HEADER, local_key as _local_key  # n
 _LOCAL = _Request({"type": "http", "client": ("127.0.0.1", 1),
                    "headers": [(_KEY_HEADER.lower().encode(), _local_key.ensure().encode())]})
 
+_real_edge_id, settings.edge_id = settings.edge_id, "ce7k2m9xq4w8n3"      # issued by the FMS
 STORED = {"ceravisUserId": 5012, "email": "user@example.com", "edgeId": "CAr5old"}
 account_routes.account_config = _Account(STORED)
-r, tasks, calls = _login("CAr5old")
-check("same recipient, SAME edge_id -> returning login, nothing re-applied, no restart",
-      r["verified"] and r["fresh"] is False and r["edgeId"] == "CAr5old"
-      and calls == ["verifyOtp"] and tasks == [], f"{r.get('fresh')} {tasks} {calls}")
+r, tasks, calls = _login("ce7k2m9xq4w8n3")
+check("same recipient -> returning login, the FMS edge_id, nothing re-applied, no restart",
+      r["verified"] and r["fresh"] is False and r["edgeId"] == "ce7k2m9xq4w8n3"
+      and calls == ["verifyOtp"] and tasks == [] and not noted, f"{r.get('fresh')} {tasks} {calls}")
 account_routes.account_config = _Account(STORED)
 r, tasks, calls = _login("VzspNew")
-check("same recipient, NEW edge_id (moved server) -> saved, applied, then the service restarts",
-      r["verified"] and r["fresh"] is True and r["restarting"] is True
-      and account_routes.account_config.get_edge_id() == "VzspNew"
-      and tasks == ["apply_edge_id_async", "_repoint_live_paths", "_restart_after_switch"],
-      f"{r.get('fresh')} {tasks}")
-check("…and the reply carries this process's boot time for the page to wait on",
-      r.get("bootedAt") == account_routes._BOOTED_AT
-      and account_routes.get_account(_LOCAL)["bootedAt"] == account_routes._BOOTED_AT)
-check("…from the account the code confirmed — no second userDetails call",
-      calls == ["verifyOtp"], str(calls))
+check("same recipient, the server names the device differently -> STILL the FMS edge_id, no restart",
+      r["fresh"] is False and r["edgeId"] == "ce7k2m9xq4w8n3" and tasks == []
+      and account_routes.account_config.get() == STORED, f"{r.get('fresh')} {tasks}")
+check("...and the mismatch is said plainly on the sync console, naming both",
+      noted and "another edge_id" in noted[-1][0]
+      and "VzspNew" in noted[-1][1] and "ce7k2m9xq4w8n3" in noted[-1][1], str(noted))
+noted.clear()
 account_routes.account_config = _Account(STORED)
 r, tasks, calls = _login(None)
 check("a confirmation without an account keeps the returning login as before",
-      r["verified"] and r["fresh"] is False and r["edgeId"] == "CAr5old", str(r.get("fresh")))
+      r["verified"] and r["fresh"] is False and r["edgeId"] == "ce7k2m9xq4w8n3", str(r.get("fresh")))
+account_routes.account_config = _Account({})
+r, tasks, calls = _login("CAr5old")
+saved = account_routes.account_config.get()
+check("a new device: the account is saved, its edgeId = the server's token (the enrollment hint)",
+      r["fresh"] is True and saved.get("ceravisUserId") == 5012 and saved.get("edgeId") == "CAr5old",
+      str(saved))
+check("...while the reply and every route use the FMS edge_id",
+      r["edgeId"] == "ce7k2m9xq4w8n3", str(r.get("edgeId")))
+check("...and the reply carries this process's boot time for the page to wait on",
+      r.get("bootedAt") == account_routes._BOOTED_AT
+      and account_routes.get_account(_LOCAL)["bootedAt"] == account_routes._BOOTED_AT)
 account_routes.account_config = _Account({})
 r, tasks, calls = _login(None)
-check("…and a new device without one falls back to userDetails",
+check("...and a new device without one falls back to userDetails",
       calls == ["verifyOtp", "userDetails"], str(calls))
 account_routes.account_config = _Account({"ceravisUserId": 4000, "email": "other@example.com",
                                            "edgeId": "VzspNew"})
-r, tasks, calls = _login("VzspNew")
-check("a DIFFERENT recipient on the same edge_id still restarts (galleries, alerts follow)",
-      r["fresh"] is True and r["restarting"] is True and tasks[-1] == "_restart_after_switch", str(tasks))
+r, tasks, calls = _login("ce7k2m9xq4w8n3")
+check("a DIFFERENT recipient restarts the service (galleries, alerts follow) — edge_id unchanged",
+      r["fresh"] is True and r["restarting"] is True and tasks[-1] == "_restart_after_switch"
+      and r["edgeId"] == "ce7k2m9xq4w8n3", str(tasks))
+settings.edge_id = ""
+account_routes.account_config = _Account(STORED)
+noted.clear()
+r, tasks, calls = _login("CAr5old")
+check("not enrolled with the fleet yet: sign-in still works, no edge_id, nothing to report",
+      r["verified"] and r["edgeId"] is None and r["provisioning"] is False and not noted,
+      f"{r.get('edgeId')} {noted}")
+settings.edge_id = _real_edge_id
+call_log.record = _real_record
 account_routes.account_config = _real_account
 
 from maintenance import refresh as _refresh                       # noqa: E402

@@ -1,0 +1,16 @@
+# CERAVIS edge_id hand-over — copies the edge_id the FMS issued (kept by the
+# fleet agent) into the root-only credstore, from where systemd hands it to
+# ceravis.service as a credential (setup/sync_edge_id.sh). Runs at every boot
+# BEFORE ceravis, and whenever the agent's identity changes
+# (ceravis-edge-id.path). Installed by setup/install_fleet_agent.sh, which
+# substitutes the real repo path; don't edit the /etc copy by hand.
+[Unit]
+Description=CERAVIS edge_id hand-over (fleet agent -> edge app)
+Before=ceravis.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/ceravis/ceravis2/setup/sync_edge_id.sh
+
+[Install]
+WantedBy=multi-user.target

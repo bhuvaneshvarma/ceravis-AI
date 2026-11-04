@@ -82,9 +82,10 @@ the first non-null key), so the backend can send its natural shape.
 
 ## 3. Authentication — the edgeId match, nothing else
 
-The request must carry the `edgeId` provisioned for that device (the
-`deviceToken` from `userDetails`, used byte-identical everywhere — live links,
-frp routing, this call). Only the app server that provisioned the device knows
+The request must carry the `edgeId` provisioned for that device (the edge_id
+the Fleet Management Server issued it — for a home installed before the FMS,
+the same value as its `deviceToken` — used byte-identical everywhere: live
+links, frp routing, this call). Only the app server that provisioned the device knows
 it, so **the match IS the authentication** ([edge/api/control_auth.py](edge/api/control_auth.py)).
 
 | Device state | Request `edgeId` | Result |

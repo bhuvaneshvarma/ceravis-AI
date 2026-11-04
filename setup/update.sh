@@ -47,6 +47,9 @@ while [ $# -gt 0 ]; do
 done
 
 CURRENT="$(readlink -f "$APP/current")"
+# The units an update re-writes from the release it switches to.
+UNITS="ceravis.service ceravis-reboot.service ceravis-reboot.timer ceravis-fleet-agent.service
+       ceravis-firstboot.service ceravis-edge-id.service ceravis-edge-id.path"
 OLD_VERSION="$(basename "$CURRENT")"
 log() { echo "update: $*"; }
 history() {     # <result> <version> <detail>
@@ -150,13 +153,15 @@ log "built"
 # a changed template applies.
 unset "${LAYOUT_KEYS[@]}"
 . "$NEW/setup/lib.sh"
-for u in ceravis.service ceravis-reboot.service ceravis-reboot.timer \
-         ceravis-fleet-agent.service ceravis-firstboot.service; do
+for u in $UNITS; do
     install_unit "$NEW/edge/infra/systemd/$u"
 done
 install_unit "$NEW/cloud/systemd/frpc.service"
 log "switching to $NEW_VERSION"
 switch_to "$NEW"
+# The edge_id hand-over (setup/sync_edge_id.sh): on at boot and on every change.
+systemctl enable ceravis-edge-id.service >/dev/null 2>&1 || true
+systemctl enable --now ceravis-edge-id.path >/dev/null 2>&1 || true
 
 # ---- 6-7. check, keep or roll back -----------------------------------------------------------
 if healthy; then
@@ -169,9 +174,13 @@ if healthy; then
 fi
 log "$NEW_VERSION is NOT healthy within ${CHECK_SECS}s — rolling back to $OLD_VERSION"
 journalctl -u ceravis -n 30 --no-pager > "$WORK/fail.log" 2>&1 || true
-for u in ceravis.service ceravis-reboot.service ceravis-reboot.timer \
-         ceravis-fleet-agent.service ceravis-firstboot.service; do
-    install_unit "$CURRENT/edge/infra/systemd/$u"
+for u in $UNITS; do
+    if [ -f "$CURRENT/edge/infra/systemd/$u" ]; then
+        install_unit "$CURRENT/edge/infra/systemd/$u"
+    else                       # new in the failed release: gone with it
+        systemctl disable --now "$u" >/dev/null 2>&1 || true
+        rm -f "/etc/systemd/system/$u"
+    fi
 done
 install_unit "$CURRENT/cloud/systemd/frpc.service"
 switch_to "$CURRENT"

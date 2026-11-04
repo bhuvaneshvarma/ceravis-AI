@@ -65,8 +65,8 @@ logging.getLogger("uvicorn.access").addFilter(_QuietPolling())
 
 def _apply_edge_id_on_boot() -> None:
     """(Re)apply this device's edge_id to the frp tunnel on startup, so a
-    `systemctl restart ceravis` reliably points frpc at the LATEST verified
-    device token (from account.json / jetson.env). Runs in a daemon thread — the
+    `systemctl restart ceravis` reliably points frpc at the edge_id the FMS
+    issued (config.account_config.effective_edge_id). Runs in a daemon thread — the
     privileged helper restarts frpc, which must not block the API coming up.
     Best-effort: no account or no installed helper just logs (see
     integration.edge_provision — install it with `bash cloud/install_frpc.sh`)."""

@@ -69,14 +69,11 @@ def edge_prefix() -> str:
     """`<edge_id>/` when this device carries a fleet routing token, else ''.
     The token is the FIRST path segment of every public live link and the key
     frp routes on (locations=["/<edge_id>"]) — one shared domain, one shared
-    port, disambiguated purely by this segment. Resolved from the account
-    (edgeId handed back by the app server) first, then jetson.env's EDGE_ID, so a
-    freshly-verified device routes with no restart. Empty = LAN-only, no prefix.
+    port, disambiguated purely by this segment: the edge_id the FMS issued
+    (config.account_config.effective_edge_id). Empty = LAN-only, no prefix.
 
-    The value is already canonical (normalized once at account ingest by
-    account_config.canonical_edge_id) — it is used verbatim here so the segment
-    frp routes on and the segment MediaMTX serves are byte-identical to the
-    backend's deviceToken. No second transform: see [[ceravis-devicetoken-verbatim]]."""
+    It is used verbatim, so the segment frp routes on and the segment MediaMTX
+    serves are byte-identical. No second transform."""
     from config.account_config import effective_edge_id
     eid = effective_edge_id()
     return f"{eid}/" if eid else ""
@@ -379,15 +376,6 @@ def sync_live_path(camera) -> None:
 def remove_live_path(camera_id: str) -> None:
     """Drop ONLY the LIVE main path, leaving the recording paths in place."""
     _remove_named_path(stream_path(camera_id))
-
-
-def drop_previous_live_path(camera_id: str, previous_edge_id: str) -> None:
-    """After an edge_id change, drop the live path the PREVIOUS token served
-    ('<old_edge_id>/<cam>', or '<cam>' when there was none). Left in place it
-    keeps pulling the camera, so the camera carries two connections until the
-    next restart."""
-    prefix = f"{previous_edge_id}/" if previous_edge_id else ""
-    _drop_quietly(f"{prefix}{path_name(camera_id)}")
 
 
 def set_record(path: str, on: bool) -> None:

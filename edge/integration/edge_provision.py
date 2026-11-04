@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 """
-Apply this device's edge_id to the frp tunnel at account verification.
+Apply this device's edge_id (issued by the FMS) to the frp tunnel — at every
+service start, and at sign-in when the tunnel does not route it.
 
 The web app runs as an unprivileged user, so it can't edit /etc/frp/frpc.toml or
 restart frpc itself. Instead it calls a LOCKED-DOWN privileged helper —
@@ -12,8 +13,8 @@ The helper validates the token, rewrites only the per-edge routing keys (the
 of the tcpmux proxy), verifies the config, and restarts frpc.
 
 Everything here is BEST-EFFORT: any failure (no sudo, helper not installed, dev
-box) is logged and swallowed, never raised — the edge_id is already saved to
-account.json, so onboarding never fails and a manual frpc setup
+box) is logged and swallowed, never raised — the edge_id is already stored, so
+onboarding never fails and a manual frpc setup
 (`bash cloud/install_frpc.sh`) stays possible.
 """
 
@@ -110,7 +111,7 @@ def tunnel_status(edge_id: str | None = None) -> dict:
            "installed": _helper_present(), "readable": False,
            "keyed": False, "reason": None}
     if not want:
-        out["reason"] = "no edge_id on this device yet (account not verified)"
+        out["reason"] = "no edge_id on this device yet (not enrolled with the fleet)"
         return out
     try:
         with open(_FRPC_CONF, encoding="utf-8") as fh:

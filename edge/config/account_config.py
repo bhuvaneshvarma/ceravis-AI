@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
+from pathlib import Path
 
 from config.config_store import ConfigStore
 
@@ -8,17 +10,14 @@ logger = logging.getLogger("account")
 
 
 def canonical_edge_id(raw: str | None) -> str:
-    """THE single normalizer for a device edge_id / deviceToken — applied in ONE
-    place (account ingest) so the value is byte-identical everywhere it lands:
-    account.json, jetson.env, frpc `locations`, the MediaMTX live path, the
-    public live-link segment, and the control-auth compare.
+    """THE single normalizer for an edge_id / the app server's deviceToken, so a
+    value compares byte-identical wherever it lands.
 
-    The app server owns the token, so it is stored VERBATIM — never remapped.
-    The only transform is stripping surrounding whitespace and any stray leading/
-    trailing '/', which would break the `/<edge_id>` path routing (the backend
-    already guarantees no interior '/'). A token that still contains a path
-    separator or whitespace after that is refused (returns '') and logged, rather
-    than silently mangled into a value that no longer matches the backend's."""
+    It is stored VERBATIM — never remapped. The only transform is stripping
+    surrounding whitespace and any stray leading/trailing '/', which would break
+    the `/<edge_id>` path routing. A value that still contains a path separator
+    or whitespace after that is refused (returns '') and logged, rather than
+    silently mangled into one that no longer matches its issuer's."""
     eid = (raw or "").strip().strip("/").strip()
     if not eid:
         return ""
@@ -32,7 +31,9 @@ def canonical_edge_id(raw: str | None) -> str:
 class AccountConfig:
     """Persists the verified operator account (account.json) so the device
     remembers who set it up — including the ceravisUserId used to associate
-    alerts with the cloud account and the edgeId used to route live links."""
+    alerts with the cloud account. Its `edgeId` is the APP SERVER's token for
+    this device (deviceToken): kept only as the hint the fleet agent sends at
+    enrollment (legacy_edge_id), never used to route — effective_edge_id() is."""
 
     FILE = "account.json"
 
@@ -46,20 +47,39 @@ class AccountConfig:
     def save(self, account: dict) -> None:
         self.store.save(self.FILE, account)
 
-    def get_edge_id(self) -> str:
-        """This device's edge_id as handed back by the app server at account
-        verification (stored in account.json). '' when not yet verified."""
+    def app_server_edge_id(self) -> str:
+        """The app server's own token for this device (its deviceToken), as it
+        handed it back at account verification. Not this device's edge_id."""
         return str(self.get().get("edgeId") or "").strip()
 
 
 def effective_edge_id() -> str:
     """THE one resolver for this device's edge_id — the routing token that is the
     first segment of every live link, the key frp routes on, and the value the
-    control endpoints verify. The account.json value (from userDetails) wins so a
-    freshly-verified device routes correctly with no restart; jetson.env's
-    EDGE_ID is the persisted fallback used on the next boot."""
+    control endpoints verify.
+
+    The FMS issues it when the fleet agent enrolls this device. Like every other
+    secret it then lives in ONE root-only file, <credstore>/edge_id (written by
+    setup/sync_edge_id.sh), which systemd hands the service as the credential
+    `edge_id` -> settings.edge_id. A tool run by hand as root reads that file
+    itself. '' until the device has enrolled. (EDGE_ID in jetson.env overrides
+    it, for a bench without a fleet only.)"""
     from config.settings import settings
-    return AccountConfig().get_edge_id() or settings.edge_id.strip()
+    return settings.edge_id.strip() or _edge_id_from_credstore()
+
+
+@lru_cache(maxsize=1)
+def _edge_id_from_credstore() -> str:
+    """The credstore's edge_id file, for a process outside the service (a root
+    shell tool). Unreadable — the service account, a dev PC, the tests — is ''."""
+    from config.settings import layout_value
+    store = layout_value("CERAVIS_CREDSTORE", "")
+    if not store:
+        return ""
+    try:
+        return canonical_edge_id((Path(store) / "edge_id").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return ""
 
 
 def patient_user_id():
