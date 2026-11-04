@@ -5,11 +5,12 @@ on how a request is signed and on which orders exist. Both live here, in one
 stdlib-only module that also runs on the Jetson (Python 3.10+). The edge repo
 carries a verbatim copy (tools/vendor_agent.py), so the two sides cannot drift.
 
-Identity: a device IS its edge_id — permanent, fixed to the hardware. On first
-contact the agent ENROLLS: it proves it runs the CERAVIS image (a request signed
-with the fleet enrollment key) and presents its hardware fingerprint; the server
-adopts the edge_id the device already has, or issues a new one, and returns the
-device's own signing key. From then on every heartbeat is signed with that key.
+Identity: the FMS issues each device its edge_id. On first contact the agent
+ENROLLS: it proves it runs the CERAVIS image (a request signed with the fleet
+enrollment key) and names itself by its device_id (from the board serial); the
+server returns the edge_id and the device's own signing key. From then on every
+heartbeat is signed with that key. The enroll call is specified in
+docs/fleet-enrollment-api.md.
 
 Signing (HMAC-SHA256, Base64 — the same shape as the edge<->app-server design):
 

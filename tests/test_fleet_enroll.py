@@ -115,12 +115,13 @@ def agent() -> Agent:
 
 
 def good_reply(**extra) -> dict:
-    return {"result": "enrolled", "edge_id": "ce7k2m9xq4w8n3", "origin": "issued",
-            "device_id": device_identity().name, "key_version": 1,
+    """The reply exactly as the Java FMS builds it (final, 2026-11-04): no
+    key_version, origin, public_base_url or tunnel; config null."""
+    return {"result": "enrolled", "edge_id": "ce7k2m9xq4w8n3",
+            "device_id": device_identity().name,
             "secret": "nHuchkxLPFxmobs_7wDbrWz5hmIcx7J5ymFohvnDpyE",
-            "heartbeat": {"path": protocol.HEARTBEAT_PATH, "interval_secs": 60},
-            "public_base_url": "https://edgeai.ceravishealth.in/ce7k2m9xq4w8n3",
-            "warnings": [], "tunnel": None, "config": {}, **extra}
+            "heartbeat": {"path": protocol.HEARTBEAT_PATH, "interval_secs": 60.0},
+            "warnings": [], "config": None, **extra}
 
 
 def reset() -> None:
@@ -208,9 +209,9 @@ check("no account: none", collect.legacy_edge_id() is None)
 # --------------------------------------------------------------------------
 print("\n3. the reply: kept only when plainly this device's")
 kept = identity.load(state) or {}
-check("edge_id, key, device_id and key version kept in identity.json",
+check("edge_id, key and device_id kept in identity.json (from the Java FMS's final reply)",
       kept.get("edge_id") == "ce7k2m9xq4w8n3" and kept.get("secret") == good_reply()["secret"]
-      and kept.get("device_id") == device_identity().name and kept.get("key_version") == 1, str(kept))
+      and kept.get("device_id") == device_identity().name, str({k: v for k, v in kept.items() if k != "secret"}))
 check("...readable by the agent alone (0600)",
       stat.S_IMODE((state / "identity.json").stat().st_mode) == 0o600)
 
@@ -240,6 +241,29 @@ except transport.Rejected as exc:
 fms.old_reply_signature = False
 check("a reply NOT signed over RESPONSE, the request timestamp and sha256(reply): refused, nothing saved",
       "signature invalid" in why and identity.load(state) is None, why)
+
+import logging                                                      # noqa: E402
+reset()
+fms.reply = (200, good_reply(warnings=["device already enrolled; details updated",
+                                       "device clock differs from server by 431704 seconds"]))
+with_notes = agent()
+logged: list[str] = []
+handler = logging.Handler()
+handler.emit = lambda record: logged.append(record.getMessage())
+agent_log = logging.getLogger("fms_agent")
+level = agent_log.level
+agent_log.setLevel(logging.INFO)          # setLevel also clears the cached level
+agent_log.addHandler(handler)
+with_notes.beat()
+agent_log.removeHandler(handler)
+agent_log.setLevel(level)
+check("the FMS's warnings are logged, and the key is still kept",
+      any("details updated" in m for m in logged) and any("431704" in m for m in logged)
+      and identity.load(state) is not None, str(logged))
+check("...and the log does not claim an origin the FMS did not send",
+      any(m == "enrolled with the fleet as ce7k2m9xq4w8n3" for m in logged), str(logged))
+check("the device's clock is corrected from server_time",
+      abs(with_notes.clock_offset - (1793361045.43 - time.time())) < 5, str(with_notes.clock_offset))
 
 reset()
 older = good_reply()

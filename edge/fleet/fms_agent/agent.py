@@ -160,7 +160,8 @@ class Agent:
         warnings = reply.get("warnings")
         for note in warnings if isinstance(warnings, list) else []:
             log.warning("fleet: %s", note)
-        log.info("enrolled with the fleet as %s (%s)", edge_id, reply.get("origin") or "issued")
+        log.info("enrolled with the fleet as %s%s", edge_id,
+                 f" ({reply['origin']})" if reply.get("origin") else "")
         return 1.0                        # first heartbeat right away
 
     def _post(self, path: str, payload: dict, principal: str | None, secret: str) -> dict:
