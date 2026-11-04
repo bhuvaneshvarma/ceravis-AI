@@ -149,7 +149,7 @@ class Agent:
         # The edge_id becomes every route and link of this device: nothing of a
         # reply that is not plainly this device's is kept.
         edge_id, secret = reply.get("edge_id"), reply.get("secret")
-        if not protocol.valid_edge_id(edge_id) or not isinstance(secret, str) or not secret:
+        if not collect.routable_edge_id(edge_id) or not isinstance(secret, str) or not secret:
             raise transport.Rejected("the enrollment reply carries no valid edge_id and key — not saved")
         if reply.get("device_id") not in (None, device_id):
             raise transport.Rejected(f"the enrollment reply is for {reply['device_id']!r}, "

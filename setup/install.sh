@@ -135,7 +135,7 @@ fi
 [ -z "${HOTSPOT_PASSWORD:-}" ] || { [ ${#HOTSPOT_PASSWORD} -ge 8 ] && [ ${#HOTSPOT_PASSWORD} -le 63 ]; } \
     || fail "HOTSPOT_PASSWORD must be 8 to 63 characters (it has ${#HOTSPOT_PASSWORD})"
 [ -n "${FMS_ENROLL_KEY:-}" ] || [ -s /etc/ceravis-fleet-agent/enroll.env ] \
-    || warn "no FMS_ENROLL_KEY — the device will not appear in the fleet console"
+    || warn "no FMS_ENROLL_KEY — the device cannot enroll with the fleet: no edge_id, so no remote access (a home installed before keeps the edge_id it has)"
 
 # What step 7 does, on a full install and with --secrets-only alike: each key
 # into its own root-only file; the services that use one restarted with it.

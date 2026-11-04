@@ -86,9 +86,12 @@ Hybrid transport, the CCTV model: **signaling is TCP** (the WHEP handshake over
 the frp tunnel), **video is UDP** and travels peer-to-peer. Public link:
 `https://<domain>/<edge_id>/<camera>/whep`.
 
-Set `EDGE_ID`, `DEVICE_STREAM_BASE=https://<domain>` and `MEDIAMTX_STUN_SERVER`
-in `infra/env/jetson.env`, then re-sync cameras. Blank `EDGE_ID`/`DEVICE_STREAM_BASE`
-= LAN-direct: links hit MediaMTX's WebRTC port on the device directly.
+The `edge_id` comes from the Fleet Management Server: the fleet agent enrolls the
+device at install and `setup/sync_edge_id.sh` hands it to the app as a root-only
+credential. Set `DEVICE_STREAM_BASE=https://<domain>` and `MEDIAMTX_STUN_SERVER`
+in `infra/env/jetson.env`. No edge_id or a blank `DEVICE_STREAM_BASE` = LAN-direct:
+links hit MediaMTX's WebRTC port on the device directly. (`EDGE_ID` in jetson.env
+pins one by hand — for a bench with no fleet only.)
 
 ## One stream per camera — and the one case that needs two
 

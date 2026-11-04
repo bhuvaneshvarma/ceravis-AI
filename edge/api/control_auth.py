@@ -42,8 +42,8 @@ FLEET_EDGE_KEY = "ceravis.fleet_edge_id"
 
 
 def check_edge_id(req_edge_id: str | None, scope: dict | None = None) -> None:
-    """The request must target THIS device. When the device has an edge_id (a
-    verified account / jetson.env EDGE_ID), the request MUST carry a matching
+    """The request must target THIS device. When the device has an edge_id (the
+    one the FMS issued it, or a bench's EDGE_ID pin), the request MUST carry a matching
     one — missing => 401, wrong => 409. No edge_id on the device = LAN dev, so
     accept anything (nothing provisioned to check against yet).
 

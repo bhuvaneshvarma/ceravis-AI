@@ -1,10 +1,13 @@
-# Vendored from github.com/bhuvaneshvarma/ceravis-FMS — DO NOT EDIT here.
-# source commit: b26e235  (re-vendor with tools/vendor_agent.py)
+# The fleet agent's source is THIS folder now (dev_ceravis1.1). It was vendored
+# from github.com/bhuvaneshvarma/ceravis-FMS (last: b26e235); the FMS server is
+# being rebuilt by the Java team, so the agent is changed here and never
+# re-vendored over — a re-vendor from ceravis-FMS would undo the FMS-issued
+# edge_id enrollment. The hashes below are of this folder's files.
 
 838fa9faa491fb6dd34cd227f9ca49e0b3d8d51281549432f52872a79e549b6e  fms_agent/__init__.py
-753c1ce1187a1a0c25e74fed30688e23d8b8a0615a420037ef46a01b36491772  fms_agent/__main__.py
-5c0e0218d9831e8ee9ba0ec177a0bbf19bc0977873a85b755da7d30e6ad5e028  fms_agent/agent.py
-822f26a08bf9d77c82511ef2b36fd69735bab255aab180997e55bb3419d9efb0  fms_agent/collect.py
+2925ff312ef33ec798447ae9d55e533596e87f642d213637ffcfc0a8603de470  fms_agent/__main__.py
+ef14ae0d358a8641217f53a64534fc8fec126384a5fdfc95469928d1366cd4e3  fms_agent/agent.py
+2667e5db9dfd0ebeb8ef0d6a61079049cbbe15a631141b377807f7c847a90f07  fms_agent/collect.py
 f02feefe25fb61127fc37bab15d2cc85683c8ec78b31d82eec24a03eacfe594e  fms_agent/commands.py
 9d54097be1b7ed613bd183dcf1b87e86f1faba280aa18eeafd2695241a56b9c4  fms_agent/config.py
 f36f7c82bcaa1117cae3559466f298e334ed256972d980d8b251d7c936ad4d03  fms_agent/identity.py

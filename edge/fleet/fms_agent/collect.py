@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -32,6 +33,14 @@ from . import __version__
 # The edge app this agent ships inside: edge/fleet/fms_agent/collect.py -> edge/.
 EDGE_DIR = Path(__file__).resolve().parents[2]
 LAYOUT_FILE = "/etc/ceravis/layout.env"
+# An edge_id this device can route on: the rule the tunnel helper
+# (cloud/apply_edge_id.sh) and setup/sync_edge_id.sh hold it to, within the
+# protocol's own (fms_protocol.EDGE_ID_RE).
+_ROUTABLE = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
+
+
+def routable_edge_id(value) -> bool:
+    return isinstance(value, str) and bool(_ROUTABLE.match(value)) and protocol.valid_edge_id(value)
 
 
 def edge_status(url: str, timeout: float = 8.0) -> tuple[dict | None, str | None]:
@@ -96,7 +105,7 @@ def legacy_edge_id() -> str | None:
     except (OSError, ValueError):
         return None
     value = str(account.get("edgeId") or "").strip() if isinstance(account, dict) else ""
-    return value if protocol.valid_edge_id(value) else None
+    return value if routable_edge_id(value) else None
 
 
 def hardware() -> dict:

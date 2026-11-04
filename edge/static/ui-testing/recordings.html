@@ -465,7 +465,7 @@ async function apiGet(path){
    Through the tunnel we already know it (it IS the prefix) and skip this. */
 async function autofillEdge(){
   if (EDGE) return;
-  try { const a = await apiGet("/api/v1/account"); const e = a && a.user && a.user.edgeId;
+  try { const a = await apiGet("/api/v1/account"); const e = a && a.edge_id;
         if (e) EDGE = e; } catch(_) {}
 }
 

@@ -41,7 +41,7 @@ legacy header was removed for good — see §3.
 ```jsonc
 // move
 {
-  "edgeId":      "NrPq8...",      // REQUIRED — this home's edge_id (deviceToken)
+  "edgeId":      "NrPq8...",      // REQUIRED — this home's edge_id (issued by the FMS)
   "cameraLabel": "KITCHEN",       // REQUIRED — which camera
   "action":      "move",          // "move" (default) | "revert"
   "pan":         -0.4,            // -1.0 .. 1.0   negative = left,  positive = right

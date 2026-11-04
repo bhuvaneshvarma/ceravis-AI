@@ -10,9 +10,11 @@ Against a stand-in FMS on this machine (real HTTP, real signatures, both ways):
 3. the reply: the edge_id and key are kept (identity.json, 0600) only when the
    reply is plainly this device's — never another device's, never a bad edge_id
 4. setup/sync_edge_id.sh hands ONLY the edge_id to the app, as the root-only
-   credential file, makes the service unit load it, restarts a running service
-   once, and changes nothing the second time (sudo/systemctl stubbed)
-5. the app reads its edge_id from that credential (config.account_config)
+   credential file, makes the service unit load exactly what exists (a sealed
+   image with no file must still start), restarts once, changes nothing the
+   second time; --migrate keeps a pre-FMS home's edge_id until it enrolls,
+   --store-only leaves units and restarts to its caller (sudo/systemctl stubbed)
+5. the app — service and every page — reads its edge_id from that credential
 
     python tests/test_fleet_enroll.py
 """
@@ -127,6 +129,16 @@ sent = fms.seen[-1] if fms.seen else {"body": {}}
 body = sent["body"]
 check("it enrolls at once, with the edge app not answering (no waiting for it)",
       len(fms.seen) == 1 and nxt == 1.0, f"{len(fms.seen)} call(s), next in {nxt}")
+import time                                                          # noqa: E402
+t0, first = time.monotonic(), []
+loop = Agent(Config(url=fms.url, enroll_key=KEY, status_url="http://127.0.0.1:9/status",
+                    state_dir=Path(tempfile.mkdtemp(prefix="ceravis-agent-fresh-")),
+                    fingerprint="1424622063459"))                   # never enrolled
+loop.beat = lambda: (first.append(time.monotonic() - t0), loop.stop.set(), 60.0)[-1]
+threading.Thread(target=loop.run_forever, daemon=True).start()
+loop.stop.wait(10)
+check("...and the agent's loop makes that first call at once (no stagger before enrolling)",
+      bool(first) and first[0] < 1.0, str(first))
 check("signed with the fleet enrollment key; the principal is the fingerprint",
       sent.get("signed") is True and sent.get("principal") == a.fingerprint == body.get("fingerprint"))
 check("the body is exactly the agreed fields — no `protocol`",
@@ -168,6 +180,8 @@ print("\n2. legacy_edge_id: the app server's old token, only when valid")
 check("taken from account.json's edgeId", body.get("legacy_edge_id") == "CAr5old", str(body.get("legacy_edge_id")))
 (DATA / "account.json").write_text(json.dumps({"edgeId": "bad id/../x"}))
 check("an invalid one is not sent", collect.legacy_edge_id() is None)
+(DATA / "account.json").write_text(json.dumps({"edgeId": "a.b"}))
+check("...nor one the tunnel could not route ('.', under 3 characters)", collect.legacy_edge_id() is None)
 (DATA / "account.json").unlink()
 check("no account: none", collect.legacy_edge_id() is None)
 
@@ -183,16 +197,18 @@ check("...readable by the agent alone (0600)",
 for label, reply in (
         ("another device's reply", good_reply(device_id="ceravis-zzzzzzzzz")),
         ("an edge_id that is not one", good_reply(edge_id="../etc")),
+        ("an edge_id the tunnel cannot route", good_reply(edge_id="a.b")),
         ("no key", good_reply(secret="")),
 ):
     reset()
     fms.reply = (200, reply)
+    why = ""
     try:
         agent().beat()
-        refused = False
-    except transport.Rejected:
-        refused = True
-    check(f"{label}: refused, nothing saved", refused and identity.load(state) is None)
+    except transport.Rejected as exc:
+        why = str(exc)
+    check(f"{label}: refused, nothing saved",
+          "not saved" in why and fms.seen and fms.seen[-1]["signed"] and identity.load(state) is None, why)
 
 reset()
 older = good_reply()
@@ -237,17 +253,28 @@ else:
     env = {**{k: v for k, v in os.environ.items() if not k.startswith("CERAVIS_")},
            "PATH": f"{fake}{os.pathsep}{os.environ.get('PATH', '')}", "OUT": str(out), "CALLS": str(calls),
            "FMS_IDENTITY_FILE": str(ident), "CERAVIS_CREDSTORE": str(cred), "CERAVIS_UNIT_DIR": str(out),
-           "CERAVIS_LAYOUT_FILE": os.devnull, "CERAVIS_PYTHON": sys.executable}
+           "CERAVIS_LAYOUT_FILE": os.devnull, "CERAVIS_PYTHON": sys.executable,
+           "CERAVIS_DATA_DIR": str(box / "data"), "CERAVIS_SYNC_LOCK": str(box / "sync.lock")}
+    (box / "data").mkdir()
 
-    def sync(active: bool) -> subprocess.CompletedProcess:
+    def sync(active: bool, *args: str) -> subprocess.CompletedProcess:
         calls.write_text("")
-        return subprocess.run([BASH, str(ROOT / "setup" / "sync_edge_id.sh")], cwd=ROOT,
+        return subprocess.run([BASH, str(ROOT / "setup" / "sync_edge_id.sh"), *args], cwd=ROOT,
                               env={**env, "ACTIVE": "0" if active else "1"},
                               capture_output=True, text=True)
 
+    unit_path = out / "ceravis.service"
+    (box / "data" / "account.json").write_text(json.dumps({"edgeId": "CAr5old"}))
     r0 = sync(True)
     check("not enrolled yet: nothing to do, nothing written", r0.returncode == 0 and not cred.exists(),
           r0.stdout.strip())
+    unit_path.write_text("[Service]\nUser=ceravis\n")
+    r0m = sync(True, "--migrate", "--store-only")
+    check("--migrate: a home installed before keeps the edge_id it routes on (account.json)",
+          r0m.returncode == 0 and (cred / "edge_id").read_text() == "CAr5old", r0m.stdout + r0m.stderr)
+    check("--store-only: the unit and the service are left to the caller",
+          unit_path.read_text() == "[Service]\nUser=ceravis\n" and "restart" not in calls.read_text())
+    shutil.rmtree(cred)
     ident.write_text(json.dumps({"edge_id": "ce7k2m9xq4w8n3", "secret": "the-device-key-never-copied"}))
     (out / "ceravis.service").write_text("[Service]\nUser=ceravis\n")      # installed before: no credential
     r1 = sync(True)
@@ -264,10 +291,21 @@ else:
     r2 = sync(True)
     check("run again: nothing changes, no restart",
           r2.returncode == 0 and "restart" not in calls.read_text(), calls.read_text())
+    sync(True, "--migrate")
+    check("--migrate never replaces an edge_id already stored",
+          (cred / "edge_id").read_text() == "ce7k2m9xq4w8n3")
     ident.write_text(json.dumps({"edge_id": "bad id"}))
     r3 = sync(True)
     check("an unusable edge_id is refused and the stored one kept",
           r3.returncode == 2 and (cred / "edge_id").read_text() == "ce7k2m9xq4w8n3", r3.stderr.strip())
+    # A sealed image: the identity and the file are gone, the unit still loads it —
+    # systemd would refuse to start ceravis. The boot run puts the unit right.
+    ident.unlink()
+    (cred / "edge_id").unlink()
+    r4 = sync(False)
+    check("a unit that loads a credential file no longer there is re-written without it (seal)",
+          r4.returncode == 0 and "LoadCredential=edge_id" not in unit_path.read_text()
+          and "daemon-reload" in calls.read_text(), r4.stdout + r4.stderr)
     shutil.rmtree(box, ignore_errors=True)
 
 # --------------------------------------------------------------------------
@@ -288,9 +326,18 @@ real, settings.edge_id = settings.edge_id, "ce7k2m9xq4w8n3"
 check("effective_edge_id() = the FMS one, whatever account.json says",
       effective_edge_id() == "ce7k2m9xq4w8n3")
 settings.edge_id = ""
+os.environ["CERAVIS_LAYOUT_FILE"] = os.devnull                   # never a real device's credstore
+from config import account_config                                # noqa: E402
+account_config._edge_id_from_credstore.cache_clear()
 check("not enrolled: '' — the app server's token is never used to route", effective_edge_id() == "")
 settings.edge_id = real
 shutil.rmtree(creds, ignore_errors=True)
+pages = {name: (ROOT / "edge" / "static" / name).read_text(encoding="utf-8")
+         for name in ("cameras-panel.js", "live-view.js", "talk.js", "setup.html",
+                      "ui-testing/monitor.html", "ui-testing/recordings.html")}
+stale = [n for n, t in pages.items() if "user.edgeId" in t or "u.edgeId" in t]
+check("every page takes the edge_id from /api/v1/account's edge_id, none from the account record",
+      not stale and all("edge_id" in t for t in pages.values()), str(stale))
 
 fms.server.shutdown()
 shutil.rmtree(state, ignore_errors=True)

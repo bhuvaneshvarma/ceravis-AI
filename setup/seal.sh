@@ -69,6 +69,11 @@ done
 say "fleet identity and the edge_id the FMS issued (each copy enrolls itself)"
 rm -rf /var/lib/ceravis-fleet-agent/* 2>/dev/null || true
 rm -f "$CERAVIS_CREDSTORE/edge_id"
+# ceravis.service must no longer load it: systemd refuses to start a unit whose
+# credential file is missing.
+if [ -f /etc/systemd/system/ceravis.service ]; then
+    install_unit "$EDGE_DIR/infra/systemd/ceravis.service" && systemctl daemon-reload
+fi
 
 if [ -f /etc/frp/frpc.toml ]; then
     say "tunnel routes and prefix back to their placeholders"

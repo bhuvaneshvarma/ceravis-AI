@@ -301,7 +301,7 @@ async function initRecipient() {
     + profRow("Role", u.role ? prettyValue(u.role) : "—")
     + profRow("Tier", u.tier ? prettyValue(u.tier) : "—")
     + profRow("CERAVIS user", "#" + (u.ceravisUserId ?? "—"))
-    + profRow("Device edge id", u.edgeId || "—", true)   // edge_id shown RAW
+    + profRow("Device edge id", ACCOUNT.edge_id || "not enrolled yet", true)   // the FMS edge_id, shown RAW
     + `</div>`;
   await ensureRecipient(u);
   refreshRecipients();

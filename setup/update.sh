@@ -62,6 +62,17 @@ switch_to() {   # <release dir>
     systemctl restart ceravis
     systemctl restart ceravis-fleet-agent 2>/dev/null || true
 }
+units_of() {    # <release dir>: its units re-written; one it does not have goes
+    local u
+    for u in $UNITS; do
+        if [ -f "$1/edge/infra/systemd/$u" ]; then
+            install_unit "$1/edge/infra/systemd/$u"
+        else
+            systemctl disable --now "$u" >/dev/null 2>&1 || true
+            rm -f "/etc/systemd/system/$u"
+        fi
+    done
+}
 healthy() {
     local until=$((SECONDS + CHECK_SECS)) body
     while [ "$SECONDS" -lt "$until" ]; do
@@ -81,6 +92,9 @@ if [ "$ROLLBACK" = 1 ]; then
     [ -n "$PREV" ] || { log "no previous release to go back to"; exit 1; }
     PREV="${PREV%/}"
     log "rolling back $OLD_VERSION -> $(basename "$PREV")"
+    # shellcheck source=setup/lib.sh
+    . "$PREV/setup/lib.sh"          # the release's own units, for the layout's paths
+    units_of "$PREV"
     switch_to "$PREV"
     if healthy; then history rolled-back "$(basename "$PREV")" "on request"; log "done"; exit 0; fi
     history rollback-unhealthy "$(basename "$PREV")" "previous release also unhealthy"
@@ -153,6 +167,10 @@ log "built"
 # a changed template applies.
 unset "${LAYOUT_KEYS[@]}"
 . "$NEW/setup/lib.sh"
+# The edge_id first (a home not yet enrolled keeps the one it routes on), so the
+# unit written next loads it.
+bash "$NEW/setup/sync_edge_id.sh" --migrate --store-only \
+    || log "WARNING: the edge_id was not handed over — see the line above"
 for u in $UNITS; do
     install_unit "$NEW/edge/infra/systemd/$u"
 done
@@ -174,14 +192,7 @@ if healthy; then
 fi
 log "$NEW_VERSION is NOT healthy within ${CHECK_SECS}s — rolling back to $OLD_VERSION"
 journalctl -u ceravis -n 30 --no-pager > "$WORK/fail.log" 2>&1 || true
-for u in $UNITS; do
-    if [ -f "$CURRENT/edge/infra/systemd/$u" ]; then
-        install_unit "$CURRENT/edge/infra/systemd/$u"
-    else                       # new in the failed release: gone with it
-        systemctl disable --now "$u" >/dev/null 2>&1 || true
-        rm -f "/etc/systemd/system/$u"
-    fi
-done
+units_of "$CURRENT"
 install_unit "$CURRENT/cloud/systemd/frpc.service"
 switch_to "$CURRENT"
 mv "$NEW" "$NEW.failed"

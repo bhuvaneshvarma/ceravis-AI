@@ -214,7 +214,7 @@ async function initCamNames() {
     cams.map(c => [c.camera_id, `${prettyLabel(c.camera_name)} (${prettyLabel(c.room_name)})`]));
   // This device's edge_id — the snapshot/control endpoints verify it matches
   // (control_auth). Fetched once; empty on an unverified dev box (then accepted).
-  try { const a = await api("/api/v1/account"); M.edgeId = (a && a.user && a.user.edgeId) || ""; }
+  try { const a = await api("/api/v1/account"); M.edgeId = (a && a.edge_id) || ""; }
   catch { M.edgeId = ""; }
 }
 

@@ -76,9 +76,11 @@ if [ -n "$FMS_URL" ] && sudo test -s "$KEY_FILE" && ! sudo test -s "$IDENTITY"; 
     done
 fi
 echo
-if sudo test -s "$IDENTITY"; then
-    sudo bash "$CERAVIS_ROOT/setup/sync_edge_id.sh"
-else
+# Hand the edge_id to the app (a home installed before the FMS keeps the one it
+# routes on until the FMS confirms it). Never stops the install.
+sudo bash "$CERAVIS_ROOT/setup/sync_edge_id.sh" --migrate \
+    || echo "WARNING: the edge_id was not handed to the app — see the line above"
+if ! sudo test -s "$IDENTITY"; then
     echo "NOTE: not enrolled with the fleet yet. The agent keeps trying by itself, and the"
     echo "      edge_id reaches the app the moment the FMS issues it. Its latest words:"
     sudo journalctl -u ceravis-fleet-agent -n 3 --no-pager -o cat 2>/dev/null | sed 's/^/        /' || true
