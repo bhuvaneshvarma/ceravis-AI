@@ -325,65 +325,75 @@ def _backbone_log() -> list[str]:
         return []
 
 
-@router.get("/api/v1/system/status")
-def system_status(request: Request):
-    """Full live status for the ceravis-status CLI and the monitor. `status` is
-    'degraded' when any safety-relevant subsystem is unhealthy — the backbone is
-    down, a camera that should be recording isn't landing segments, the disk is
-    nearly full, or the clock isn't NTP-synced — with the specific reasons in
-    `problems`."""
+def _gather(request: Request) -> dict:
+    """Everything the status and health reports read, measured ONCE per call."""
     from livestream.mediamtx_client import is_up
     st = request.app.state
-    backbone_up = is_up()
     rc = getattr(st, "recording_controller", None)
-    recording = {
-        "available": rc is not None,
-        "enabled": rc.is_enabled() if rc else False,
-        "recording_now": rc.recording_now() if rc else [],
-        "cameras": rc.health() if rc else [],
+    manager = getattr(st, "camera_manager", None)
+    from api.setup_routes import internet_problem
+    return {
+        "state": st,
+        "backbone_up": is_up(),
+        "recording": {
+            "available": rc is not None,
+            "enabled": rc.is_enabled() if rc else False,
+            "recording_now": rc.recording_now() if rc else [],
+            "cameras": rc.health() if rc else [],
+        },
+        "storage": _storage_status(),
+        "time": _time_status(),
+        "cameras": _camera_status(manager),
+        "live": manager.get_status() if manager is not None else {},
+        "internet": internet_problem(),
+        "cloud": _cloud_status(getattr(st, "outbox", None)),
+        "code": code_version(),
     }
-    storage = _storage_status()
-    time_info = _time_status()
-    cameras = _camera_status(getattr(st, "camera_manager", None))
 
-    problems: list[str] = []
-    if not backbone_up:
-        problems.append("media backbone down (no live links, no recording)")
-    for c in cameras:
+
+def _warnings(g: dict) -> list[tuple[str, str | None, str]]:
+    """Every warning rule, ONCE: (part, camera_id or None, message), in the order
+    /system/status lists them. /system/health groups the same list by part, so
+    the two reports can never disagree."""
+    out: list[tuple[str, str | None, str]] = []
+    if not g["backbone_up"]:
+        out.append(("mediamtx", None, "media backbone down (no live links, no recording)"))
+    for c in g["cameras"]:
         if not c["enabled"]:
             continue
         for warning in (substream_warning(c["camera_id"], c.get("width") or 0,
                                           c.get("height") or 0),
                         codec_warning(c["camera_id"], c.get("codec"))):
             if warning:
-                problems.append(warning)
-    for c in recording["cameras"]:
+                out.append(("camera", c["camera_id"], warning))
+    for c in g["recording"]["cameras"]:
         if not c.get("writing_ok", True):
-            problems.append(f"{c['camera_id']}: recording but no segments landing")
+            out.append(("camera", c["camera_id"],
+                        f"{c['camera_id']}: recording but no segments landing"))
+    storage = g["storage"]
     if (storage.get("disk_used_pct") or 0) >= 90:
-        problems.append(f"recordings disk {storage.get('disk_used_pct')}% full")
-    if time_info.get("ntp_synchronized") is False:
-        problems.append("system clock is not NTP-synced")
-    from api.setup_routes import internet_problem
-    no_internet = internet_problem()
-    if no_internet:
-        problems.append(no_internet)
+        out.append(("hardware", None, f"recordings disk {storage.get('disk_used_pct')}% full"))
+    if g["time"].get("ntp_synchronized") is False:
+        out.append(("hardware", None, "system clock is not NTP-synced"))
+    if g["internet"]:
+        out.append(("internet", None, g["internet"]))
+    st = g["state"]
     monitor = getattr(st, "system_monitor", None)
     if monitor is not None:
-        problems.extend(monitor.problems())
+        out.extend(("hardware", None, p) for p in monitor.problems())
     # The whole chain below detection (tracking, ReID, pose, falls, no-motion)
     # is gated on an enrolled gallery. It can be empty on purpose — removing the
     # recipient's embeddings is how the AI is switched off today — but either way
     # the device is not watching for falls, and status must say so plainly.
     gallery = getattr(st, "gallery", None)
     if gallery is not None and gallery.size == 0 and account_recipient():
-        problems.append("AI chain off — no enrolled embeddings, so tracking, "
-                        "fall and no-motion detection are not running")
-    cloud = _cloud_status(getattr(st, "outbox", None))
+        out.append(("backend", None, "AI chain off — no enrolled embeddings, so tracking, "
+                                     "fall and no-motion detection are not running"))
+    cloud = g["cloud"]
     # Before the upload symptoms below: a missing key is their cause, and with
     # the old built-in key nothing fails YET — only this line says so.
     if cloud.get("api_key_problem"):
-        problems.append(cloud["api_key_problem"])
+        out.append(("app_server", None, cloud["api_key_problem"]))
     queue = cloud.get("outbox") or {}
     stuck = queue.get("oldest_pending_age_secs") or 0
     # A brief blip drains itself and is not worth reporting; an upload that has
@@ -391,48 +401,214 @@ def system_status(request: Request):
     # down, and the operator should hear it from the device, not from a missing
     # alert on their phone.
     if stuck >= 900:
-        problems.append(
-            f"cloud uploads backing up — {queue.get('pending')} waiting, oldest "
-            f"{stuck / 60:.0f} min old ({queue.get('last_error') or 'no response'})")
+        out.append(("app_server", None,
+                    f"cloud uploads backing up — {queue.get('pending')} waiting, oldest "
+                    f"{stuck / 60:.0f} min old ({queue.get('last_error') or 'no response'})"))
     # A rejection code that usually means a human must act (bad API key, wrong
     # patient, clip too big). The upload is NOT lost — it keeps retrying — but
     # the cause wants fixing, so it surfaces as a degraded reason on its own.
-    code = code_version()
+    code = g["code"]
     if code["restart_needed"]:
-        problems.append(f"code on disk ({code['on_disk']}) is not the code running "
-                        f"({code['commit']}) — restart the ceravis service")
+        out.append(("backend", None, f"code on disk ({code['on_disk']}) is not the code running "
+                                     f"({code['commit']}) — restart the ceravis service"))
     attn = queue.get("attention")
     if attn:
-        problems.append(
-            f"cloud uploads need attention — server rejecting with HTTP "
-            f"{attn.get('code')} ({attn.get('reason') or 'see console'}); still "
-            f"queued and retrying, not lost")
+        out.append(("app_server", None,
+                    f"cloud uploads need attention — server rejecting with HTTP "
+                    f"{attn.get('code')} ({attn.get('reason') or 'see console'}); still "
+                    f"queued and retrying, not lost"))
+    return out
 
+
+@router.get("/api/v1/system/status")
+def system_status(request: Request):
+    """Full live status for the ceravis-status CLI and the monitor. `status` is
+    'degraded' when any safety-relevant subsystem is unhealthy — the backbone is
+    down, a camera that should be recording isn't landing segments, the disk is
+    nearly full, or the clock isn't NTP-synced — with the specific reasons in
+    `problems`."""
+    g = _gather(request)
+    problems = [message for _, _, message in _warnings(g)]
+    backbone_up = g["backbone_up"]
     return {
         "status": "ok" if not problems else "degraded",
         "problems": problems,
         "version": settings.app_version,
-        "code": code,
+        "code": g["code"],
         "device_id": settings.device_id,
         # The LIVE routing token, resolved the one canonical way (the edge_id
         # the FMS issued — config.account_config.effective_edge_id).
         "edge_id": effective_edge_id(),
-        "time": time_info,
+        "time": g["time"],
         # When it is DOWN, say WHY: MediaMTX's own last lines are the cause
         # (a config key this build rejects -> it exits on boot and nothing
         # binds; a port in use; a missing cert). Omitted while healthy.
         "media_backbone": {"up": backbone_up,
                            "binary": settings.mediamtx_binary,
                            **({} if backbone_up else {"log_tail": _backbone_log()})},
-        "cameras": cameras,
-        "recording": recording,
-        "storage": storage,
-        "cloud": cloud,
+        "cameras": g["cameras"],
+        "recording": g["recording"],
+        "storage": g["storage"],
+        "cloud": g["cloud"],
         # Whether frpc is REALLY routing this device's edge_id. A tunnel that
         # lost its routing looks identical to a healthy one from in here — right
         # up until every live link is dead.
         "tunnel": _tunnel_status(),
     }
+
+
+_STARTED = time.monotonic()                  # this process's start, for its uptime
+
+
+def _tunnel_health(t: dict) -> dict:
+    """The tunnel's part: a warning only when it is KNOWN to be wrong. Not set
+    up (a LAN-only home), not enrolled yet, or a config this app may not read
+    are states, not faults."""
+    if not t.get("installed"):
+        state, warnings = "not_installed", []
+    elif not t.get("edge_id"):
+        state, warnings = "not_enrolled", []
+    elif not t.get("readable"):
+        state, warnings = "unknown", []
+    elif t.get("keyed"):
+        state, warnings = "ok", []
+    else:
+        state, warnings = "warning", [t.get("reason") or "the tunnel does not route this edge_id"]
+    return {"state": state, "routes_edge_id": t.get("keyed"), "edge_id": t.get("edge_id"),
+            "detail": t.get("reason"), "warnings": warnings}
+
+
+def _rounded(value, digits: int = 1):
+    return round(value, digits) if isinstance(value, (int, float)) else None
+
+
+def _secs(value) -> int | None:
+    """Whole seconds, or None for "not running / unknown"."""
+    return int(round(value)) if isinstance(value, (int, float)) else None
+
+
+@router.get("/api/v1/system/health")
+def system_health(request: Request):
+    """The same facts as /system/status, grouped by PART, each with its own
+    `state` and `warnings` (empty = fine). The fleet agent builds its heartbeat
+    from this (edge/fleet, docs/fleet-heartbeat-api.md); it adds what only it can
+    measure — the hardware itself and the systemd services — so a device whose
+    app is down still reports. Loopback read, like /system/status."""
+    g = _gather(request)
+    rules = _warnings(g)
+
+    def part(name: str) -> list[str]:
+        return [m for p, _, m in rules if p == name]
+
+    # ---- cameras: one entry each, with its own warnings ----
+    live = g["live"]
+    rec = {c["camera_id"]: c for c in g["recording"]["cameras"]}
+    cameras = []
+    for c in g["cameras"]:
+        cid = c["camera_id"]
+        st = live.get(cid)
+        state = getattr(getattr(st, "health_state", None), "value", None) or "offline"
+        if not c["enabled"]:
+            state = "disabled"
+        warnings = [m for p, cam, m in rules if p == "camera" and cam == cid]
+        last = getattr(st, "last_frame_time", None)
+        last_age = (clock.now() - last).total_seconds() if last else None
+        if c["enabled"] and state != "running":
+            warnings.insert(0, f"{cid}: {state} — no video from this camera right now")
+        r = rec.get(cid, {})
+        cameras.append({
+            "camera_id": cid, "name": c["name"], "room": c["room"], "enabled": c["enabled"],
+            "state": state,
+            "fps": _rounded(getattr(st, "current_fps", None)),
+            "resolution": c["resolution"], "codec": c["codec"], "profile": c["profile"],
+            "uptime_secs": _secs(getattr(st, "connected_secs", None)),
+            "reconnects": getattr(st, "reconnect_count", 0) if st else 0,
+            "last_frame_age_secs": _rounded(last_age),
+            "frames_captured": getattr(st, "frames_captured", 0) if st else 0,
+            "stream_ready": c["path_ready"], "viewers": c["readers"],
+            "recording": {"on": bool(r.get("recording")), "writing_ok": r.get("writing_ok", True),
+                          "newest_segment_age_secs": r.get("newest_segment_age_secs"),
+                          "segments_last_hour": r.get("segments_last_hour", 0)},
+            "night_vision": bool((c.get("illumination") or {}).get("night_vision")),
+            "ptz": c["ptz"],
+            "warnings": warnings,
+        })
+
+    # ---- services this app runs or talks to ----
+    mtx = getattr(g["state"], "mediamtx", None)
+    mtx_up = g["backbone_up"]
+    mtx_warn = part("mediamtx")
+    if not mtx_up:
+        mtx_warn += [f"mediamtx log: {line}" for line in _backbone_log()[-3:]]
+    cloud = g["cloud"]
+    queue = cloud.get("outbox") or {}
+    last_call = cloud.get("last_call") or {}
+    app_state = ("not_configured" if not cloud.get("configured") else
+                 "warning" if part("app_server") else
+                 "unreachable" if last_call and not last_call.get("ok", True) else "ok")
+    tunnel = _tunnel_status()
+    services = {
+        "mediamtx": {
+            "state": "running" if mtx_up else "down",
+            "uptime_secs": _secs(getattr(mtx, "uptime_secs", None)),
+            "restarts": getattr(mtx, "restarts", 0) if mtx else 0,
+            "warnings": mtx_warn,
+        },
+        "app_server": {
+            "state": app_state,
+            "url": settings.ceravis_api_base_url or None,
+            "recent_calls": cloud.get("recent_calls", 0),
+            "recent_errors": cloud.get("recent_errors", 0),
+            "last_call_ok": last_call.get("ok") if last_call else None,
+            "uploads_pending": queue.get("pending", 0),
+            "oldest_pending_secs": queue.get("oldest_pending_age_secs"),
+            "warnings": part("app_server"),
+        },
+        "internet": {"state": "down" if part("internet") else "ok",
+                     "warnings": part("internet")},
+        "tunnel": _tunnel_health(tunnel),
+    }
+
+    # ---- this app ----
+    gallery = getattr(g["state"], "gallery", None)
+    storage = g["storage"]
+    listed = {c["camera_id"] for c in cameras}
+    # A camera warning for a camera not listed (removed meanwhile) is never lost.
+    backend_warn = part("backend") + [m for p, cam, m in rules
+                                      if p == "camera" and cam not in listed]
+    backend = {
+        "state": "warning" if backend_warn else "running",
+        "version": settings.app_version,
+        "commit": g["code"].get("commit"),
+        "restart_needed": g["code"].get("restart_needed"),
+        "uptime_secs": round(time.monotonic() - _STARTED),
+        "device_id": settings.device_id,
+        "edge_id": effective_edge_id(),
+        "ai": {"gallery_size": getattr(gallery, "size", None)},
+        "recording": {"enabled": g["recording"]["enabled"],
+                      "cameras_recording": len(g["recording"]["recording_now"])},
+        "storage": {k: storage.get(k) for k in ("recordings_gb", "retention_hours",
+                                                "oldest_segment", "event_snapshots_gb",
+                                                "event_retention_days")},
+        "warnings": backend_warn,
+    }
+
+    # ---- the board's own sensors (tegrastats), when this app reads them ----
+    monitor = getattr(g["state"], "system_monitor", None)
+    snap = monitor.snapshot() if monitor is not None else {}
+    hw_warn = part("hardware")
+    hardware = {
+        "state": "warning" if hw_warn else "ok",
+        "gpu_load_pct": snap.get("gpu_pct"),
+        "cpu_load_pct": snap.get("cpu_pct_avg"),
+        "temperature_c": {k: snap[f] for k, f in (("cpu", "cpu_temp_c"), ("gpu", "gpu_temp_c"),
+                                                  ("tj", "junction_temp_c")) if f in snap},
+        "board_power_w": snap.get("power_in_w"),
+        "over_current_events": snap.get("overcurrent_events"),
+        "clock": g["time"],
+        "warnings": hw_warn,
+    }
+    return {"backend": backend, "services": services, "cameras": cameras, "hardware": hardware}
 
 
 # ---- reboot ---------------------------------------------------------

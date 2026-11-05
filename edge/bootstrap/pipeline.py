@@ -335,6 +335,7 @@ class Pipeline:
             "metrics_registry": metrics_registry,
             "system_monitor": system_monitor,
             "mediamtx_active": via_mediamtx,
+            "mediamtx": mediamtx,          # its uptime and restarts, for /system/health
             "recording_controller": recording_controller,
             "rule_engine": rule_engine,   # /ai/stillness reads its live verdict
             "outbox": outbox,

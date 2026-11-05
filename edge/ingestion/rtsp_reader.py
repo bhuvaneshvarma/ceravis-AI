@@ -120,6 +120,7 @@ class RTSPReader:
         # the first connection, so the watchdog stays disarmed before then.
         self._last_frame_monotonic = 0.0
         self._health_state = CameraHealthState.OFFLINE
+        self._connected_at: float | None = None     # monotonic, of the current connection
 
         self._fps_lock = threading.Lock()
         self._fps_counter = 0
@@ -156,6 +157,15 @@ class RTSPReader:
     def current_fps(self) -> float:
         with self._fps_lock:
             return self._current_fps
+
+    @property
+    def connected_secs(self) -> float | None:
+        """How long the current connection has delivered video — this camera's
+        uptime. None while it is not running (connecting, reconnecting, off)."""
+        since = self._connected_at
+        if since is None or self._health_state != CameraHealthState.RUNNING:
+            return None
+        return time.monotonic() - since
 
     # ---- lifecycle ------------------------------------------------------
     def start(self) -> None:
@@ -324,6 +334,7 @@ class RTSPReader:
 
     def _connect(self, codec: str | None = None) -> bool:
         self._health_state = CameraHealthState.CONNECTING
+        self._connected_at = None
         # The plain-FFmpeg fallback honors this env var; interleaved TCP avoids
         # UDP loss artifacts on every link we use (loopback or direct).
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
@@ -430,6 +441,7 @@ class RTSPReader:
             self._last_frame_monotonic = time.monotonic()
             skip_window, skip_frames = time.monotonic(), 0
             connected_at = time.monotonic()
+            self._connected_at = connected_at
 
             while self._running and self._capture is not None:
                 if frame_interval:                       # 0 => uncapped, no pacing

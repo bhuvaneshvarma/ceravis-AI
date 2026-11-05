@@ -85,7 +85,7 @@ _CLOUD = [
 # What a loopback caller WITHOUT the local key may still read: the health
 # surface the fleet agent forwards (edge/fleet) and the pipeline's own metrics
 # (an operator measuring on the device) — read-only, nothing else.
-_LOCAL_READ = [("GET", r"/api/v1/system/status"),
+_LOCAL_READ = [("GET", r"/api/v1/system/(status|health)"),
                ("GET", r"/api/v1/metrics(/(system|pipelines|postures))?")]
 _PUBLIC_RE = [(m, re.compile(p + r"/?")) for m, p in _PUBLIC]
 _LOCAL_READ_RE = [(m, re.compile(p + r"/?")) for m, p in _LOCAL_READ]

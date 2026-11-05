@@ -69,7 +69,13 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   → `ceravis-edge-id.path` → `sync_edge_id.sh` → restart → frpc re-keyed,
   MediaMTX paths, status beat to the app server).
 - The heartbeat (`POST /v1/device/heartbeat`, 6 signed lines, device key) is
-  not built on the Java side yet: the agent logs one 404 warning and backs off.
+  specified in **`docs/fleet-heartbeat-api.md`**: body = `{status, results}`;
+  `status` = `state`, `warning_count`, `hardware`, `backend`, `services`,
+  `cameras`, every part with its own `state` and `warnings` (empty = fine). The
+  agent measures hardware and systemd services (`fms_agent/health.py`); the app
+  reports the rest from `GET /api/v1/system/health`, built from the SAME warning
+  rules as `/api/v1/system/status` (whose output must not change). Not built on
+  the Java side yet: the agent logs one 404 warning and backs off.
 - An update never enrolls again: `/var/lib/ceravis-fleet-agent/identity.json`
   survives install, update and upgrade; only `seal.sh` removes it.
 - A test FMS on the LAN: `FMS_URL=http://<private IP>:<port>` plus

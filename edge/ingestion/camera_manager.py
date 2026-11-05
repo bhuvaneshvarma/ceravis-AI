@@ -271,6 +271,7 @@ class CameraManager:
                 current_fps=reader.current_fps,
                 frame_width=latest.width if latest else 0,
                 frame_height=latest.height if latest else 0,
+                connected_secs=getattr(reader, "connected_secs", None),
             )
 
         return status

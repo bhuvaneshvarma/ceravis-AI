@@ -153,13 +153,12 @@ A home that routed on the app server's edge_id before (migrated with
 stop working once the app server uses the new edge_id. Recordings are kept
 (they are stored under `<cam>-aac`, not under the edge_id).
 
-## Heartbeat (unchanged)
+## Heartbeat
 
-`POST /v1/device/heartbeat`, headers `X-Ceravis-Device` (= edge_id),
-`X-Ceravis-Timestamp`, `X-Ceravis-Nonce`, `X-Ceravis-Signature`; signed with the
-**device key** over 6 lines: `edge_id`, `POST`, path, sha256(body), timestamp,
-nonce. Reply signed over `edge_id`, `RESPONSE`, request nonce, sha256(reply).
-Not yet built on the Java side (the agent logs 404s until it is).
+After enrolling, the device checks in every ~60 s: `POST /v1/device/heartbeat`,
+signed with the **device key** over 6 lines. Its body is the health of every part
+of the device (hardware, backend, services, cameras), each with its own
+warnings. Specified in **`docs/fleet-heartbeat-api.md`**.
 
 ## Test FMS on the local network
 

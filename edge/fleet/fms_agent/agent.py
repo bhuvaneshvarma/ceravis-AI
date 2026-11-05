@@ -29,6 +29,7 @@ from pathlib import Path
 import fms_protocol as protocol
 
 from . import collect, commands, identity, transport
+from . import health as health_report
 from .config import Config
 
 log = logging.getLogger("fms_agent")
@@ -79,19 +80,21 @@ class Agent:
         self.interval = 60.0
         self.rtt_ms: float | None = None
         self.results: list[dict] = []    # answers to orders, waiting to be delivered
+        self.health = health_report.Health()
         self._last_problem: str | None = ""
 
     # ---- one exchange ---------------------------------------------------
     def beat(self) -> float:
         """One exchange with the server. Returns seconds until the next one."""
-        status, status_error = collect.edge_status(self.cfg.status_url)
         if self.identity is None:
+            status, _ = collect.edge_status(self.cfg.status_url)
             return self._enroll(status)
+        # Every part of the device, each with its state, uptime and warnings
+        # (fms_agent.health, docs/fleet-heartbeat-api.md).
+        app, app_error = collect.edge_status(self.cfg.health_url)
         payload = {
-            "protocol": protocol.VERSION,
-            "agent": collect.facts(self.rtt_ms, self.interval, self.cfg.enroll_key),
-            "status": status,
-            "status_error": status_error,
+            "status": self.health.build(app, app_error, health_report.agent_facts(
+                self.rtt_ms, self.interval, self.cfg.enroll_key)),
             "results": [],
         }
         payload["results"] = carried = self._carry(payload)

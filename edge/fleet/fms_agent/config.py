@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-DEFAULT_STATUS_URL = "http://127.0.0.1:8000/api/v1/system/status"
+DEFAULT_STATUS_URL = "http://127.0.0.1:8000/api/v1/system/status"     # sent at enrollment
+DEFAULT_HEALTH_URL = "http://127.0.0.1:8000/api/v1/system/health"     # each heartbeat
 
 
 class ConfigError(Exception):
@@ -29,6 +30,7 @@ class Config:
     status_url: str     # the edge's own health surface, on this machine
     state_dir: Path     # where the enrolled identity is kept (never in the repo)
     fingerprint: str = ""   # override the hardware fingerprint source (simulator/tests only)
+    health_url: str = DEFAULT_HEALTH_URL   # the edge's per-part health, for heartbeats
 
     @property
     def configured(self) -> bool:
@@ -54,7 +56,8 @@ class Config:
         return cls(url=url, enroll_key=env.get("FMS_ENROLL_KEY", "").strip(),
                    status_url=env.get("FMS_EDGE_STATUS_URL", DEFAULT_STATUS_URL).strip(),
                    state_dir=Path(state),
-                   fingerprint=env.get("FMS_FINGERPRINT", "").strip())
+                   fingerprint=env.get("FMS_FINGERPRINT", "").strip(),
+                   health_url=env.get("FMS_EDGE_HEALTH_URL", DEFAULT_HEALTH_URL).strip())
 
 
 def lan_test_fms(url: str, env=os.environ) -> bool:
