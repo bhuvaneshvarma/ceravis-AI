@@ -132,7 +132,6 @@ class Agent:
         try:
             reply = self._post(protocol.ENROLL_PATH, {
                 "device_id": device_id,
-                "legacy_edge_id": collect.legacy_edge_id(),
                 "hardware": collect.hardware(),
                 "software": collect.software(),
                 "agent": collect.facts(self.rtt_ms, self.interval, self.cfg.enroll_key),

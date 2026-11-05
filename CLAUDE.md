@@ -61,8 +61,15 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   (`setup/sync_edge_id.sh`). Never read it from `account.json`; never hash it
   (it is a routing address used in plain form in URLs and frpc).
 - The enroll API is final and documented in **`docs/fleet-enrollment-api.md`**
-  — the single source of truth (4 signed lines, no fingerprint, no nonce, the
-  Java FMS's final reply shape, test vector).
+  — the single source of truth (4 signed lines, no fingerprint, no nonce, no
+  `legacy_edge_id`, the Java FMS's final reply shape, test vector).
+- Nothing from `account.json` is sent to the FMS. A home installed before the
+  FMS routes on its old (app-server) edge_id only until it enrolls; then the
+  FMS issues a new one and the device switches to it by itself (identity.json
+  → `ceravis-edge-id.path` → `sync_edge_id.sh` → restart → frpc re-keyed,
+  MediaMTX paths, status beat to the app server).
+- The heartbeat (`POST /v1/device/heartbeat`, 6 signed lines, device key) is
+  not built on the Java side yet: the agent logs one 404 warning and backs off.
 - An update never enrolls again: `/var/lib/ceravis-fleet-agent/identity.json`
   survives install, update and upgrade; only `seal.sh` removes it.
 - A test FMS on the LAN: `FMS_URL=http://<private IP>:<port>` plus

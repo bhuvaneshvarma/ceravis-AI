@@ -13,7 +13,7 @@ Endpoint used during setup:
          deviceToken }
     deviceToken is the app server's own token for this device. The edge routes
     on the edge_id the Fleet Management Server issued instead; the token is kept
-    only as the hint the fleet agent sends at enrollment (legacy_edge_id).
+    only to notice a mismatch (the status beat tells the server the real one).
 A user that exists in the server's DB is what "verifies" the operator; if the
 email isn't found, onboarding is blocked.
 """

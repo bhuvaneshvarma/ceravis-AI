@@ -2,7 +2,7 @@
 
 **Status: final, as built on both sides (2026-11-04).** This file is the single
 source of truth. If code or another document disagrees with it, this file and
-the code in `edge/fleet/` win. Agent version: **0.4.0** (`edge/fleet/fms_agent/__init__.py`).
+the code in `edge/fleet/` win. Agent version: **0.5.0** (`edge/fleet/fms_agent/__init__.py`).
 
 ## What enrollment is
 
@@ -25,9 +25,9 @@ POST /v1/device/enroll HTTP/1.1
 Content-Type: application/json
 User-Agent: ceravis-fleet-agent
 X-Ceravis-Timestamp: 1793361045.218
-X-Ceravis-Signature: Bytl3Yd82SkPtorRYBuxas20KTjnOV+KQ5bsEaVUGHM=
+X-Ceravis-Signature: 6nmUkckfyCsTaud1zyY1oygY6tFUMwxLLe/WRhSVkCY=
 
-{"device_id":"ceravis-acg08mbv3","legacy_edge_id":null,"hardware":{...},"software":{...},"agent":{...},"status":null}
+{"device_id":"ceravis-acg08mbv3","hardware":{...},"software":{...},"agent":{...},"status":null}
 ```
 
 There is **no** `X-Ceravis-Device` header, **no** `X-Ceravis-Nonce` header and
@@ -54,13 +54,15 @@ device, kept root-only in `/etc/ceravis-fleet-agent/enroll.env`. Hash the
 | Field | Type | Meaning |
 |---|---|---|
 | `device_id` | string | The device's name from its board serial: `ceravis-` + Crockford base32 of int("1"+serial), lowercase (`edge/common/device_identity.py`). Also its hostname and hotspot name. **The FMS identifies the device by this.** |
-| `legacy_edge_id` | string or null | The edge_id the app server gave this device before the FMS existed (`account.json` `edgeId`), so an installed home can keep its links. Null when none. |
 | `hardware` | object | `model` (board name), `ram_total_bytes`. |
 | `software` | object | `edge_version` (`edge/VERSION`), `edge_commit` when known. |
 | `agent` | object | `version`, `unix_time` (device clock), `boot_id`, `uptime_secs`, `hostname`, `os`, `kernel`, `l4t`, `python`, `rtt_ms`, `interval_secs`, `can_enroll`, `disk` (`root` and `data`: `total_bytes`, `free_bytes`, `used_pct` from statvfs). |
 | `status` | object or null | The edge app's own `/api/v1/system/status`, verbatim; null when the edge app is not answering. |
 
-Not sent any more: `fingerprint`, `protocol`, `agent.enroll_key_id`.
+Not sent any more: `fingerprint`, `protocol`, `agent.enroll_key_id`, `legacy_edge_id`.
+Nothing from the app server's account record (`account.json`) is sent: the FMS
+issues every edge_id itself, so a home installed before the FMS gets a **new**
+edge_id when it enrolls (see "After enrollment" below).
 
 ## Response (as the Java FMS sends it)
 
@@ -115,10 +117,10 @@ A reply with a missing or wrong signature is **ignored** and nothing is saved.
 | enrollment key | `SAMPLE-enroll-key-NOT-REAL-0123456789abcdef` |
 | timestamp | `1793361045.218` |
 
-Request body (725 bytes, exactly):
+Request body (703 bytes, exactly):
 
 ```json
-{"device_id":"ceravis-acg08mbv3","legacy_edge_id":null,"hardware":{"model":"NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super","ram_total_bytes":7990648832},"software":{"edge_version":"1.2.0","edge_commit":"bcce561"},"agent":{"version":"0.4.0","unix_time":1793361045.21,"boot_id":"6c1d0f3e-2b7a-4c1e-9f55-0a8d3b7e1c42","uptime_secs":312.4,"hostname":"ceravis-acg08mbv3","os":"Ubuntu 22.04.5 LTS","kernel":"5.15.148-tegra","l4t":"R36 (release), REVISION: 4.0","python":"3.10.12","rtt_ms":null,"interval_secs":60.0,"can_enroll":true,"disk":{"root":{"total_bytes":125029539840,"free_bytes":98213572608,"used_pct":21.4},"data":{"total_bytes":125029539840,"free_bytes":98213572608,"used_pct":21.4}}},"status":null}
+{"device_id":"ceravis-acg08mbv3","hardware":{"model":"NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super","ram_total_bytes":7990648832},"software":{"edge_version":"1.2.0","edge_commit":"bcce561"},"agent":{"version":"0.5.0","unix_time":1793361045.21,"boot_id":"6c1d0f3e-2b7a-4c1e-9f55-0a8d3b7e1c42","uptime_secs":312.4,"hostname":"ceravis-acg08mbv3","os":"Ubuntu 22.04.5 LTS","kernel":"5.15.148-tegra","l4t":"R36 (release), REVISION: 4.0","python":"3.10.12","rtt_ms":null,"interval_secs":60.0,"can_enroll":true,"disk":{"root":{"total_bytes":125029539840,"free_bytes":98213572608,"used_pct":21.4},"data":{"total_bytes":125029539840,"free_bytes":98213572608,"used_pct":21.4}}},"status":null}
 ```
 
 Reply body (256 bytes, exactly):
@@ -129,10 +131,27 @@ Reply body (256 bytes, exactly):
 
 | Expected | Value |
 |---|---|
-| request body sha256 | `a1c29e2f02f9f4e95799843a0dcfc461a72356cf2ab397b108df8294e0dae5c2` |
-| request `X-Ceravis-Signature` | `Bytl3Yd82SkPtorRYBuxas20KTjnOV+KQ5bsEaVUGHM=` |
+| request body sha256 | `93e03db997235d4427efd830c8e2a9c50ffbe69b061b4b42ecda168e3b62f4a0` |
+| request `X-Ceravis-Signature` | `6nmUkckfyCsTaud1zyY1oygY6tFUMwxLLe/WRhSVkCY=` |
 | reply body sha256 | `a96d5f0a098180b0ea388cc915006a98391a883dd7b1219d21b9c43ff36658eb` |
 | reply `X-Ceravis-Signature` | `YeFltj0BkEogNt0AOhrvZxwToenNpp58JN6xq33+P+o=` |
+
+## After enrollment: how a new edge_id reaches every part
+
+```
+FMS reply ─► agent saves identity.json ─► ceravis-edge-id.path notices the change
+          ─► setup/sync_edge_id.sh writes /etc/ceravis/credstore/edge_id (root only)
+          ─► systemctl --no-block try-restart ceravis   (once; nothing if unchanged)
+          ─► the app starts with the new edge_id:
+               • frpc routes re-keyed to /<new>  and /<new>/api|ui (old routes replaced)
+               • MediaMTX config rewritten: live paths <new>/<cam>
+               • every status beat to the app server carries edgeId=<new> + ceravisUserId
+```
+
+A home that routed on the app server's edge_id before (migrated with
+`sync_edge_id.sh --migrate`) switches to the new one the same way; its old links
+stop working once the app server uses the new edge_id. Recordings are kept
+(they are stored under `<cam>-aac`, not under the edge_id).
 
 ## Heartbeat (unchanged)
 
@@ -172,6 +191,7 @@ network unencrypted: a test bench only.
 
 | Date | Change |
 |---|---|
+| 2026-11-05 | `legacy_edge_id` removed (the Java FMS does not accept it). Agent 0.5.0. |
 | 2026-11-04 | Request signed over 4 lines; no fingerprint, device or nonce header; reply signed over RESPONSE/timestamp/sha256. Final reply shape from the Java FMS. Agent 0.4.0. |
 | 2026-11-04 | `enroll_key_id` removed. LAN test FMS. `/etc/ceravis/versions.json`. Agent 0.3.0. |
 | 2026-11-03 | FMS-issued edge_id only; `device_id`, `legacy_edge_id`, hardware, software, disk added; `protocol` removed. |

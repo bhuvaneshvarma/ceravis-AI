@@ -17,8 +17,9 @@
 #
 #   --migrate     a home installed before the FMS, not enrolled yet, keeps the
 #                 edge_id it routes on today (the app server's, in account.json)
-#                 until the FMS confirms it — the agent sends that same value as
-#                 legacy_edge_id when it enrolls. Never replaces a stored edge_id.
+#                 until it enrolls; the FMS then issues a NEW edge_id and the
+#                 path unit switches the device to it (the app server learns it
+#                 from the next status beat). Never replaces a stored edge_id.
 #   --store-only  write the file only; the caller re-writes the units and
 #                 restarts ceravis itself (setup/update.sh).
 #

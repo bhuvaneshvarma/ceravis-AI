@@ -6,10 +6,10 @@ Against a stand-in FMS on this machine (real HTTP, real signatures, both ways):
    (METHOD, path, timestamp, sha256 of the body), with no X-Ceravis-Device and
    no X-Ceravis-Nonce header; the reply is signed over RESPONSE, the request's
    timestamp and sha256 of the reply; its body is exactly
-   device_id (this device's own name), legacy_edge_id, hardware,
-   software, agent facts (with free disk for / and the data folder) and status
-   — no `protocol`; and it is made at once, without waiting for the edge app
-2. legacy_edge_id is the app server's token from account.json, only when valid
+   device_id (this device's own name), hardware, software, agent facts (with
+   free disk for / and the data folder) and status — no `protocol`, no
+   `legacy_edge_id`; and it is made at once, without waiting for the edge app
+2. nothing of the app server's account record (account.json) is sent
 3. the reply: the edge_id and key are kept (identity.json, 0600) only when the
    reply is plainly this device's — never another device's, never a bad edge_id
 4. setup/sync_edge_id.sh hands ONLY the edge_id to the app, as the root-only
@@ -160,9 +160,8 @@ check("no X-Ceravis-Device and no X-Ceravis-Nonce header; no fingerprint anywher
       protocol.HDR_DEVICE.lower() not in sent.get("headers", set())
       and protocol.HDR_NONCE.lower() not in sent.get("headers", set())
       and "fingerprint" not in body and a.fingerprint not in json.dumps(body), str(sent.get("headers")))
-check("the body is exactly the agreed fields — no `protocol`",
-      list(body) == ["device_id", "legacy_edge_id", "hardware", "software",
-                     "agent", "status"], str(list(body)))
+check("the body is exactly the agreed fields — no `protocol`, no `legacy_edge_id`",
+      list(body) == ["device_id", "hardware", "software", "agent", "status"], str(list(body)))
 check("device_id = this device's own name (common/device_identity, as the hostname and hotspot use)",
       body.get("device_id") == device_identity().name and body["device_id"].startswith("ceravis-"),
       str(body.get("device_id")))
@@ -197,14 +196,11 @@ check("a data folder not there yet is null, not an error",
       collect._usage(DATA / "not-there-yet") is None)
 
 # --------------------------------------------------------------------------
-print("\n2. legacy_edge_id: the app server's old token, only when valid")
-check("taken from account.json's edgeId", body.get("legacy_edge_id") == "CAr5old", str(body.get("legacy_edge_id")))
-(DATA / "account.json").write_text(json.dumps({"edgeId": "bad id/../x"}))
-check("an invalid one is not sent", collect.legacy_edge_id() is None)
-(DATA / "account.json").write_text(json.dumps({"edgeId": "a.b"}))
-check("...nor one the tunnel could not route ('.', under 3 characters)", collect.legacy_edge_id() is None)
+print("\n2. nothing of the app server's account record is sent")
+check("account.json's edgeId (the app server's token) appears nowhere in the enroll call",
+      "CAr5old" not in json.dumps(body) and "legacy_edge_id" not in json.dumps(body)
+      and not hasattr(collect, "legacy_edge_id"), str(list(body)))
 (DATA / "account.json").unlink()
-check("no account: none", collect.legacy_edge_id() is None)
 
 # --------------------------------------------------------------------------
 print("\n3. the reply: kept only when plainly this device's")
@@ -349,6 +345,18 @@ else:
     sync(True, "--migrate")
     check("--migrate never replaces an edge_id already stored",
           (cred / "edge_id").read_text() == "ce7k2m9xq4w8n3")
+    # The case a home installed before the FMS goes through: it routed on the app
+    # server's edge_id (migrated), then the FMS enrolls it with a NEW one.
+    (cred / "edge_id").write_text("CAr5old")
+    ident.write_text(json.dumps({"edge_id": "2zuvi9kd83txoj", "secret": "k"}))
+    rn = sync(True)
+    check("a migrated edge_id is REPLACED by the one the FMS issues, and ceravis restarted once",
+          rn.returncode == 0 and (cred / "edge_id").read_text() == "2zuvi9kd83txoj"
+          and calls.read_text().count("try-restart ceravis") == 1, rn.stdout + calls.read_text())
+    check("...and running it again changes nothing", sync(True).returncode == 0
+          and "restart" not in calls.read_text(), calls.read_text())
+    ident.write_text(json.dumps({"edge_id": "ce7k2m9xq4w8n3", "secret": "k"}))
+    sync(True)                                      # back to the id the next checks expect
     ident.write_text(json.dumps({"edge_id": "bad id"}))
     r3 = sync(True)
     check("an unusable edge_id is refused and the stored one kept",

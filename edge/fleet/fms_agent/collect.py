@@ -9,8 +9,8 @@ Two sources, and only two:
      disk — and, crucially, whether the edge app answered at all.
 
 Enrollment adds who this device is: its name (from the edge's own identity
-module), its board and memory, the release installed, and the edge_id the app
-server gave it before the FMS issued them (so an installed home keeps it).
+module), its board and memory, and the release installed. Nothing from the app
+server's account record is sent: the FMS issues the edge_id on its own.
 """
 from __future__ import annotations
 
@@ -91,18 +91,6 @@ def device_id() -> str:
         sys.path.append(str(EDGE_DIR))     # edge/common, after the agent's own modules
     from common.device_identity import identity
     return identity().name
-
-
-def legacy_edge_id() -> str | None:
-    """The edge_id the app server gave this device before the FMS issued them
-    (account.json's edgeId), sent at enrollment so an installed home keeps its
-    links. None when there is none, or it is not a valid edge_id."""
-    try:
-        account = json.loads((data_dir() / "account.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    value = str(account.get("edgeId") or "").strip() if isinstance(account, dict) else ""
-    return value if routable_edge_id(value) else None
 
 
 def hardware() -> dict:

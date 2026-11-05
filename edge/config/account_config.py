@@ -32,8 +32,9 @@ class AccountConfig:
     """Persists the verified operator account (account.json) so the device
     remembers who set it up — including the ceravisUserId used to associate
     alerts with the cloud account. Its `edgeId` is the APP SERVER's token for
-    this device (deviceToken): kept only as the hint the fleet agent sends at
-    enrollment (legacy_edge_id), never used to route — effective_edge_id() is."""
+    this device (deviceToken): kept only to notice when the app server knows
+    this device by another edge_id (account_routes logs it), never used to
+    route and never sent to the FMS — effective_edge_id() is."""
 
     FILE = "account.json"
 
