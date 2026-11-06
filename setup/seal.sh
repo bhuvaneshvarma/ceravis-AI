@@ -69,6 +69,9 @@ done
 say "fleet identity and the edge_id the FMS issued (each copy enrolls itself)"
 rm -rf /var/lib/ceravis-fleet-agent/* 2>/dev/null || true
 rm -f "$CERAVIS_CREDSTORE/edge_id"
+# A bench's open LAN (UI_LAN_OPEN, set in a ceravis.service drop-in) must not
+# ship either: every copy keeps the sign-in. The reload below applies it.
+sed -i '/UI_LAN_OPEN/d' /etc/systemd/system/ceravis.service.d/*.conf 2>/dev/null || true
 # ceravis.service must no longer load it: systemd refuses to start a unit whose
 # credential file is missing.
 if [ -f /etc/systemd/system/ceravis.service ]; then

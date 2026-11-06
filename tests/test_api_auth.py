@@ -226,6 +226,9 @@ check("on: …but not through the tunnel",
                                   FLEET_EDGE_KEY: "E1"})))
 settings.ui_lan_open = False
 check("off again: back to 401", call("/api/v1/cameras")[0] == 401)
+seal = (ROOT / "setup" / "seal.sh").read_text(encoding="utf-8")
+check("seal.sh strips it from the unit's drop-ins (no golden image ships an open LAN)",
+      "sed -i '/UI_LAN_OPEN/d' /etc/systemd/system/ceravis.service.d/*.conf" in seal)
 
 print()
 if failures:
