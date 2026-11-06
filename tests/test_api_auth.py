@@ -207,6 +207,57 @@ tok3 = token_of(h["set-cookie"])
 check("sessions survive a restart (a new store reads them back)",
       fresh.check(tok3) is not None)
 
+print("\n7. UI_TESTING_OPEN (bench / test devices only)")
+from api.camera_routes import list_cameras      # noqa: E402
+from fastapi.encoders import jsonable_encoder   # noqa: E402
+from schemas.cameras import Camera              # noqa: E402
+from starlette.requests import Request          # noqa: E402
+READS = ("/api/v1/cameras", "/api/v1/cameras/status", "/api/v1/system/status",
+         "/api/v1/ai/state", "/api/v1/recordings/state", "/api/v1/cloud/activity")
+check("off by default", settings.ui_testing_open is False)
+check("off: the testing reads -> 401", all(call(p)[0] == 401 for p in READS))
+settings.ui_testing_open = True
+check("on: the testing reads open on the LAN", all(call(p)[0] == 200 for p in READS))
+check("on: …and through the tunnel (/<edge_id> prefix)",
+      all(call(p, client="127.0.0.1", fleet="E1")[0] == 200 for p in READS))
+check("on: a change is still 401 (recording on/off, a camera edit)",
+      call("/api/v1/recordings/toggle", "POST")[0] == 401
+      and call("/api/v1/cameras", "POST")[0] == 401
+      and call("/api/v1/cameras/LOUNGE", "PUT", fleet="E1")[0] == 401)
+check("on: every other screen's data is still 401",
+      all(call(p, fleet="E1")[0] == 401
+          for p in ("/api/v1/events", "/api/v1/recipients", "/api/v1/cloud/outbox",
+                    "/api/v1/system/settings", "/api/v1/cameras/LOUNGE")))
+check("on: the account answer stays the reduced one (no email, no edge_id)",
+      not auth.signed_in(Request({"type": "http", "headers": [],
+                                  "client": ("192.168.0.20", 1), FLEET_EDGE_KEY: "E1"})))
+cam = Camera(room_name="Lounge", camera_id="LOUNGE", camera_name="Lounge cam",
+             rtsp_url="rtsp://admin:S3cret@10.42.0.250:554/s0",
+             ai_rtsp_url="rtsp://admin:S3cret@10.42.0.250:554/s1",
+             record_rtsp_url="rtsp://admin:S3cret@10.42.0.250:554/s0",
+             onvif_username="admin", onvif_password="S3cret", ptz_supported=True)
+import api.camera_routes as _cr                 # noqa: E402
+_real = _cr.camera_config.get_all
+_cr.camera_config.get_all = lambda: [cam]
+anon = list_cameras(Request({"type": "http", "headers": [], "client": ("1.2.3.4", 1),
+                             FLEET_EDGE_KEY: "E1"}))
+wire = json.dumps(jsonable_encoder(anon))       # what FastAPI would send
+check("on: the open camera list has no credential in it",
+      "S3cret" not in wire and "rtsp" not in wire and "onvif" not in wire, wire)
+check("on: …but what the consoles need is there",
+      anon == [{"camera_id": "LOUNGE", "camera_name": "Lounge cam", "room_name": "Lounge",
+                "device_label": "", "ptz_supported": True, "is_enabled": True}])
+st, h, _ = call("/api/v1/account/verify", "POST", answer={"verified": True})
+mine = list_cameras(Request({"type": "http", "client": ("192.168.0.20", 1),
+                             "headers": [(b"cookie", f"{auth.COOKIE}={token_of(h['set-cookie'])}".encode())]}))
+check("signed in: the full camera record, exactly as before", mine == [cam])
+_cr.camera_config.get_all = _real
+settings.ui_testing_open = False
+check("off again: back to 401", all(call(p)[0] == 401 for p in READS))
+seal = (ROOT / "setup" / "seal.sh").read_text(encoding="utf-8")
+check("seal.sh strips it from the unit's drop-ins (no golden image ships it)",
+      "sed -i '/UI_TESTING_OPEN/d' /etc/systemd/system/ceravis.service.d/*.conf" in seal)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED:")
