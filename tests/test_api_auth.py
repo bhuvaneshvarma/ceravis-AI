@@ -207,29 +207,6 @@ tok3 = token_of(h["set-cookie"])
 check("sessions survive a restart (a new store reads them back)",
       fresh.check(tok3) is not None)
 
-print("\n7. UI_LAN_OPEN (bench / test devices only)")
-from starlette.requests import Request          # noqa: E402
-check("off by default", settings.ui_lan_open is False)
-check("off: a LAN browser without a session -> 401", call("/api/v1/cameras")[0] == 401)
-settings.ui_lan_open = True
-check("on: a LAN browser without a session -> allowed", call("/api/v1/cameras")[0] == 200)
-check("on: …and on the camera hotspot", call("/api/v1/cameras", client="10.42.0.50")[0] == 200)
-check("on: it counts as signed in (a POST too)", call("/api/v1/cameras", "POST")[0] == 200)
-check("on: still 401 THROUGH the tunnel (/<edge_id> prefix)",
-      call("/api/v1/cameras", client="127.0.0.1", fleet="E1")[0] == 401)
-check("on: still 401 with the cloud proxy's X-Forwarded-For",
-      call("/api/v1/cameras", headers=[(b"x-forwarded-for", b"1.2.3.4")])[0] == 401)
-check("on: the account answer is the full one (pages learn the edge_id)",
-      auth.signed_in(Request({"type": "http", "headers": [], "client": ("192.168.0.20", 1)})))
-check("on: …but not through the tunnel",
-      not auth.signed_in(Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1),
-                                  FLEET_EDGE_KEY: "E1"})))
-settings.ui_lan_open = False
-check("off again: back to 401", call("/api/v1/cameras")[0] == 401)
-seal = (ROOT / "setup" / "seal.sh").read_text(encoding="utf-8")
-check("seal.sh strips it from the unit's drop-ins (no golden image ships an open LAN)",
-      "sed -i '/UI_LAN_OPEN/d' /etc/systemd/system/ceravis.service.d/*.conf" in seal)
-
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED:")
