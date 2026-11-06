@@ -15,7 +15,9 @@ the URL. Now one gate in front of every /api route decides, closed by default:
                            authenticate by the edge_id match in their own
                            handler (api/control_auth) exactly as before;
   * the PUBLIC routes    — the sign-in endpoints themselves, the health check,
-                           the session check and the first-run setup status.
+                           the session check and the first-run setup status;
+  * a BENCH's own LAN    — only with UI_LAN_OPEN (off by default; a test device's
+                           systemd drop-in), never through the tunnel.
 
 Everything else gets 401. A new route is protected without anyone remembering
 to protect it.
@@ -240,12 +242,22 @@ def is_local(scope: dict) -> bool:
         _header(scope, LOCAL_KEY_HEADER.lower().encode("latin-1")))
 
 
+def lan_open(scope: dict) -> bool:
+    """UI_LAN_OPEN (bench / test devices only): a request that reached this
+    device on its OWN networks — the LAN, the camera hotspot, the device itself —
+    counts as signed in. Never one through the tunnel: those carry the /<edge_id>
+    prefix and the cloud proxy's X-Forwarded-For, and stay behind the sign-in."""
+    return (settings.ui_lan_open and FLEET_EDGE_KEY not in scope
+            and _header(scope, b"x-forwarded-for") is None)
+
+
 def session_of(request: Request) -> dict | None:
     return sessions.check(_cookie(request.scope))
 
 
 def signed_in(request: Request) -> bool:
-    return is_local(request.scope) or session_of(request) is not None
+    return (is_local(request.scope) or lan_open(request.scope)
+            or session_of(request) is not None)
 
 
 def _cookie_header(scope: dict, token: str, max_age: int) -> bytes:
@@ -269,6 +281,10 @@ def _cookie_header(scope: dict, token: str, max_age: int) -> bytes:
 class SessionGate:
     def __init__(self, app):
         self.app = app
+        if settings.ui_lan_open:
+            logger.warning("UI_LAN_OPEN is on: browsers on this device's own networks "
+                           "(LAN, camera hotspot) use the API WITHOUT signing in — a bench "
+                           "or test device only. The fleet tunnel still requires sign-in.")
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
@@ -279,6 +295,7 @@ class SessionGate:
         method = scope.get("method", "GET") if scope["type"] == "http" else "GET"
         allowed = (method == "OPTIONS"
                    or is_local(scope)
+                   or lan_open(scope)
                    or (_loopback(scope) and _matches(_LOCAL_READ_RE, method, path))
                    or _matches(_PUBLIC_RE, method, path)
                    or _matches(_CLOUD_RE, method, path)

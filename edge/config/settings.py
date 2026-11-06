@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # A browser is signed out after this many minutes without a click or key
     # press; 0 = never (the dev branch, so testing is not interrupted).
     ui_session_idle_minutes: int = 15
+    # BENCH / TEST DEVICES ONLY. On: a browser on this device's own networks (the
+    # LAN, the camera hotspot, the device itself) counts as signed in, so the
+    # /ui/ui-testing consoles work without the email sign-in. Never through the
+    # fleet tunnel (api/auth). Off by default; switched on per device with a
+    # systemd drop-in (Environment=UI_LAN_OPEN=true), never in jetson.env.
+    ui_lan_open: bool = False
     # FastAPI's /docs and /openapi.json list every endpoint — off unless asked.
     api_docs_enabled: bool = False
     # Other web origins allowed to call this API from a browser (comma list).
