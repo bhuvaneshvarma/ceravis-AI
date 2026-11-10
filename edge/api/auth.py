@@ -15,7 +15,10 @@ the URL. Now one gate in front of every /api route decides, closed by default:
                            authenticate by the edge_id match in their own
                            handler (api/control_auth) exactly as before;
   * the PUBLIC routes    — the sign-in endpoints themselves, the health check,
-                           the session check and the first-run setup status.
+                           the session check and the first-run setup status;
+  * the TESTING reads    — only with UI_TESTING_OPEN (a bench's systemd drop-in,
+                           off by default): what the /ui/ui-testing consoles
+                           read, on the LAN and through the tunnel.
 
 Everything else gets 401. A new route is protected without anyone remembering
 to protect it.
@@ -87,7 +90,17 @@ _CLOUD = [
 # (an operator measuring on the device) — read-only, nothing else.
 _LOCAL_READ = [("GET", r"/api/v1/system/(status|health)"),
                ("GET", r"/api/v1/metrics(/(system|pipelines|postures))?")]
+# BENCH / TEST DEVICES ONLY (UI_TESTING_OPEN): the reads the /ui/ui-testing
+# consoles — recordings.html, monitor.html — make, open without a session, on
+# the LAN and through the tunnel. Reads only: no change, no other screen. The
+# camera list then leaves the credentials out (api/camera_routes). Their
+# recordings, snapshot and talk-back calls are already _CLOUD.
+_TESTING = [("GET", r"/api/v1/cameras(/status)?"),
+            ("GET", r"/api/v1/system/status"),
+            ("GET", r"/api/v1/(ai|recordings)/state"),
+            ("GET", r"/api/v1/cloud/activity")]
 _PUBLIC_RE = [(m, re.compile(p + r"/?")) for m, p in _PUBLIC]
+_TESTING_RE = [(m, re.compile(p + r"/?")) for m, p in _TESTING]
 _LOCAL_READ_RE = [(m, re.compile(p + r"/?")) for m, p in _LOCAL_READ]
 _CLOUD_RE = [(m, re.compile(p + r"/?")) for m, p in _CLOUD]
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
@@ -269,6 +282,10 @@ def _cookie_header(scope: dict, token: str, max_age: int) -> bytes:
 class SessionGate:
     def __init__(self, app):
         self.app = app
+        if settings.ui_testing_open:
+            logger.warning("UI_TESTING_OPEN is on: the /ui/ui-testing consoles' reads "
+                           "(cameras, status, recordings) are open WITHOUT sign-in, on the "
+                           "LAN and through the fleet tunnel — a bench or test device only.")
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
@@ -282,6 +299,7 @@ class SessionGate:
                    or (_loopback(scope) and _matches(_LOCAL_READ_RE, method, path))
                    or _matches(_PUBLIC_RE, method, path)
                    or _matches(_CLOUD_RE, method, path)
+                   or (settings.ui_testing_open and _matches(_TESTING_RE, method, path))
                    or sessions.check(_cookie(scope)) is not None)
         if not allowed:
             if scope["type"] == "websocket":
