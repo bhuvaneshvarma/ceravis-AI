@@ -14,7 +14,6 @@ from config.settings import settings
 from detection.detection_schema import DetectionClass
 from ingestion.illumination import Modality
 from reid import crop_quality
-from reid.face_identity import is_face_label
 
 
 logger = logging.getLogger("enrollment")
@@ -315,8 +314,6 @@ class EnrollmentWorker:
         images: list[np.ndarray] = []
         labels: list[str] = []
         for p in self._mgr.list_photos(recipient_id):
-            if is_face_label(labels_map.get(p.name)):
-                continue        # a face close-up: a face reference, never a body
             img = cv2.imread(str(p))
             if img is not None:
                 images.append(img)
