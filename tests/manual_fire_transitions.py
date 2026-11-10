@@ -24,7 +24,12 @@ Run from the repo root, on the device:
     python3 tests/manual_fire_transitions.py                  # all five, first camera
     python3 tests/manual_fire_transitions.py LIVING_ROOM      # a specific camera
     python3 tests/manual_fire_transitions.py --only sitting_down,no_transition_snapshot
-    python3 tests/manual_fire_transitions.py --allow-old-key   # bench: old built-in key
+    python3 tests/manual_fire_transitions.py --allow-old-key   # (kept; the old key is now allowed anyway)
+
+The key: taken from this bench's LOCAL edge/infra/env/jetson.env when a line
+there sets it (CERAVIS_API_KEY=…), else from $CERAVIS_API_KEY. Only a short
+sha256 fingerprint of it is printed. On a failure the server's full answer
+is printed from data/ceravis_api_wire.jsonl.
     unset CERAVIS_API_KEY
 """
 from __future__ import annotations
@@ -48,6 +53,57 @@ from integration.ceravis_api import (
     CeravisApiError, api_key_problem, is_configured, room_to_enum, save_snapshot,
 )
 from schemas.event import Event
+from config.settings import resolve_path, settings
+
+import hashlib
+import json
+import re
+
+JETSON_ENV = EDGE / "infra" / "env" / "jetson.env"
+WIRE = resolve_path(settings.data_dir) / "ceravis_api_wire.jsonl"     # same path the API module writes
+
+
+def _key_from_jetson_env() -> str | None:
+    """The app-server key from this bench's LOCAL jetson.env, if a line sets it
+    (CERAVIS_API_KEY=…, also CERAVIS_X_API_KEY / X_API_KEY spellings)."""
+    if not JETSON_ENV.exists():
+        return None
+    for line in JETSON_ENV.read_text(errors="replace").splitlines():
+        m = re.match(r"\s*(?:export\s+)?((?:CERAVIS[_-]?)?X?[_-]?API[_-]?KEY)\s*=\s*(.*)$",
+                     line, re.I)
+        if m:
+            value = m.group(2).strip().strip('"').strip("'")
+            if value:
+                return value
+    return None
+
+
+def _use_key() -> str:
+    """Pick the key and say where it came from — never the key itself."""
+    key = _key_from_jetson_env()
+    source = f"jetson.env ({JETSON_ENV})"
+    if key:
+        settings.ceravis_api_key = key
+    else:
+        key = settings.ceravis_api_key.strip()
+        source = "CERAVIS_API_KEY in the environment" if key else "none"
+    default = type(settings).model_fields["ceravis_api_key"].default
+    tag = "OLD built-in" if key == default else "own key"
+    print(f"[test-transitions] API key from {source}: sha256 {hashlib.sha256(key.encode()).hexdigest()[:10]}… ({tag})")
+    return key
+
+
+def _last_wire(endpoint: str = "saveSnapshot") -> dict | None:
+    """The newest wire-log record for `endpoint`: what was sent (no key, no
+    image bytes) and the server's full answer."""
+    try:
+        for line in reversed(WIRE.read_text(errors="replace").splitlines()[-50:]):
+            rec = json.loads(line)
+            if rec.get("endpoint") == endpoint:
+                return rec
+    except (OSError, ValueError):
+        return None
+    return None
 
 # event type -> (detail, duration_secs) as the rules fill them
 EVENTS = {
@@ -103,9 +159,11 @@ def main() -> None:
 
     if not is_configured():
         _die("CERAVIS_API_BASE_URL not set — cloud is not configured")
+    _use_key()
     key_problem = api_key_problem()
-    if key_problem and args.allow_old_key and "old built-in" in key_problem:
-        print("[test-transitions] WARNING: using the OLD built-in API key (--allow-old-key)")
+    if key_problem and "old built-in" in key_problem:
+        # A bench-only manual test: the old key is allowed, loudly.
+        print("[test-transitions] WARNING: using the OLD built-in API key")
         key_problem = None
     if key_problem:
         _die(f"{key_problem}. A shell does not get the service's key: first\n"
@@ -140,6 +198,11 @@ def main() -> None:
             print(f"[test-transitions] {category:<24} OK    {text.splitlines()[0]}")
         except CeravisApiError as exc:
             print(f"[test-transitions] {category:<24} FAIL  {exc}")
+            rec = _last_wire()
+            if rec and i == 0:            # the server's full answer, once
+                print("[test-transitions]   sent  :", json.dumps(rec.get("request"), ensure_ascii=False))
+                print("[test-transitions]   to    :", rec.get("method"), rec.get("url"))
+                print("[test-transitions]   reply :", rec.get("http_status"), repr(rec.get("response")))
     print(f"[test-transitions] done: {sent}/{len(chosen)} sent")
     raise SystemExit(0 if sent == len(chosen) else 1)
 
