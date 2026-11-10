@@ -19,6 +19,7 @@ runs exactly as before.
 """
 
 import logging
+import threading
 
 import cv2
 import numpy as np
@@ -44,12 +45,125 @@ _PHOTO_MAX_PX = 1280   # enrollment photos: a 2560 px frame keeps a ~45 px face
 _path = resolve_path
 
 
-def yaw_ratio(face: np.ndarray) -> float:
-    """How far a YuNet face is turned: the nose's offset from the eyes' midpoint
-    in eye-distances (0 = straight at the camera, ~0.5 = half profile)."""
+def turn(face: np.ndarray) -> float:
+    """Which way and how far a YuNet face is turned: the nose's offset from the
+    eyes' midpoint in eye-distances. 0 = straight at the camera, +-0.5 = half
+    profile; positive = turned to the person's OWN left (their nose moves to
+    the right of the picture)."""
     (rx, ry), (lx, ly), (nx, _ny) = face[4:6], face[6:8], face[8:10]
     eye = max(float(np.hypot(lx - rx, ly - ry)), 1.0)
-    return abs(float(nx) - (rx + lx) / 2.0) / eye
+    return (float(nx) - (rx + lx) / 2.0) / eye
+
+
+def yaw_ratio(face: np.ndarray) -> float:
+    """How far a YuNet face is turned, whichever way (see turn)."""
+    return abs(turn(face))
+
+
+def one_clear_face(faces: list[np.ndarray], min_px: float
+                   ) -> tuple[np.ndarray | None, str]:
+    """THE rule for a picture meant to show one person's face (an enrollment
+    photo, a face capture): the largest face, or (None, why not). A second face
+    at least half its size is ambiguous; a face narrower than `min_px` is too
+    small to be a reference."""
+    if not faces:
+        return None, "no face"
+    faces = sorted(faces, key=lambda r: float(r[2] * r[3]), reverse=True)
+    if len(faces) > 1 and faces[1][2] * faces[1][3] >= 0.5 * faces[0][2] * faces[0][3]:
+        return None, "two faces"
+    if faces[0][2] < min_px:
+        return None, "face too small"
+    return faces[0], ""
+
+
+# The face close-ups a carer is asked for (setup wizard, Enrollment, option C).
+# Their label is "face/<view>"; a photo so labelled is a FACE reference only —
+# it never enters the body gallery (enrollment_worker).
+FACE_LABEL = "face/"
+FACE_VIEWS = ("front", "left", "right")
+
+
+def is_face_label(label: str | None) -> bool:
+    return bool(label) and label.startswith(FACE_LABEL)
+
+
+def check_face_view(face: np.ndarray, view: str) -> str:
+    """Is this face the asked-for close-up? "" when it is, else what to change —
+    said to the person standing at the camera.
+
+    front = looking at the camera; left / right = the head turned a little that
+    way (the person's own side), but no further than a live look may be turned
+    and still count (face_max_yaw_ratio) — a reference turned further than any
+    look it will be compared with teaches nothing."""
+    if view not in FACE_VIEWS:
+        return f"unknown face view '{view}'"
+    if face[2] < settings.face_capture_min_px:
+        return (f"the face is too small ({int(face[2])} px wide, "
+                f"{int(settings.face_capture_min_px)} needed) — come closer to "
+                f"the camera")
+    t = turn(face)
+    front, limit = settings.face_capture_front_max_yaw, settings.face_max_yaw_ratio
+    if view == "front":
+        return "" if abs(t) <= front else "look straight at the camera"
+    if abs(t) <= front:
+        return f"turn the head a little to the {view}"
+    if (t > 0) != (view == "left"):
+        return f"the head is turned the other way — turn it a little to the {view}"
+    if abs(t) > limit:
+        return "turned too far — turn back towards the camera a little"
+    return ""
+
+
+class FaceFinder:
+    """YuNet alone: where the faces are in a picture (CPU, the device's OpenCV).
+    The ONE face detector: identity (FaceIdentity) looks through it, and so does
+    the capture check of the setup wizard (api/recipient_routes), which needs no
+    recognizer. Safe to call from any thread."""
+
+    def __init__(self) -> None:
+        self._det = None
+        self._lock = threading.Lock()
+        if not settings.face_enabled:
+            return
+        det = _path(settings.face_detector_path)
+        if not det.exists():
+            logger.warning("face detector missing (%s); run setup/export_models.py",
+                           det.name)
+            return
+        try:
+            self._det = cv2.FaceDetectorYN.create(str(det), "", (320, 320), 0.8, 0.3, 20)
+        except Exception:
+            logger.exception("face detector failed to load")
+
+    @property
+    def ready(self) -> bool:
+        return self._det is not None
+
+    def find(self, img: np.ndarray, max_px: int) -> list[np.ndarray]:
+        """YuNet rows (box, 5 landmarks, score) in `img` pixels."""
+        if self._det is None:
+            return []
+        h, w = img.shape[:2]
+        s = min(1.0, max_px / float(max(h, w)))
+        small = cv2.resize(img, (max(1, int(w * s)), max(1, int(h * s)))) if s < 1 else img
+        try:
+            with self._lock:
+                self._det.setInputSize((small.shape[1], small.shape[0]))
+                _, faces = self._det.detect(small)
+        except cv2.error:
+            return []
+        if faces is None:
+            return []
+        out = []
+        for f in faces:
+            f = f.copy()
+            f[:14] /= s                        # box + landmarks back to img pixels
+            out.append(f)
+        return out
+
+    def find_in_photo(self, img: np.ndarray) -> list[np.ndarray]:
+        """Faces in a whole enrollment photo or captured frame."""
+        return self.find(img, _PHOTO_MAX_PX)
 
 
 def _similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
@@ -69,27 +183,27 @@ class FaceIdentity:
     runner and the enrollment worker each own one)."""
 
     def __init__(self) -> None:
-        self._det = None
+        self._finder = FaceFinder()
         self._rec = None
         if not settings.face_enabled:
             return
-        det, rec = _path(settings.face_detector_path), _path(settings.face_recognizer_path)
-        if not (det.exists() and rec.exists()):
+        rec = _path(settings.face_recognizer_path)
+        if not (self._finder.ready and rec.exists()):
             logger.warning("face identity off — model files missing (%s, %s); "
-                           "run setup/export_models.py", det.name, rec.name)
+                           "run setup/export_models.py",
+                           _path(settings.face_detector_path).name, rec.name)
             return
         try:
             from detection.trt_engine import TensorRTEngine
-            self._det = cv2.FaceDetectorYN.create(str(det), "", (320, 320), 0.8, 0.3, 20)
             self._rec = TensorRTEngine(str(rec))
             logger.info("face identity ready (YuNet + AuraFace)")
         except Exception:
             logger.exception("face identity off — model load failed")
-            self._det = self._rec = None
+            self._rec = None
 
     @property
     def ready(self) -> bool:
-        return self._det is not None and self._rec is not None
+        return self._finder.ready and self._rec is not None
 
     def embed_person(self, frame: np.ndarray, bbox) -> tuple[np.ndarray | None, float]:
         """(unit 512-d face vector, face width in px) for the person whose box is
@@ -108,7 +222,7 @@ class FaceIdentity:
         region, ox, _ = crop_person(frame, x1, y1, x2, y1 + _UPPER_FRAC * (y2 - y1), 0.15)
         if region.size == 0 or min(region.shape[:2]) < _MIN_REGION_PX:
             return None, 0.0
-        faces = [f for f in self._faces(region, _LIVE_MAX_PX)
+        faces = [f for f in self._finder.find(region, _LIVE_MAX_PX)
                  if x1 <= ox + f[0] + f[2] / 2.0 <= x2]
         if not faces:
             return None, 0.0
@@ -122,37 +236,14 @@ class FaceIdentity:
         (None, why). A second face at least half the size is ambiguous."""
         if not self.ready:
             return None, "face models missing"
-        faces = self._faces(img, _PHOTO_MAX_PX)
-        if not faces:
-            return None, "no face"
-        faces.sort(key=lambda r: float(r[2] * r[3]), reverse=True)
-        if len(faces) > 1 and faces[1][2] * faces[1][3] >= 0.5 * faces[0][2] * faces[0][3]:
-            return None, "two faces"
-        if faces[0][2] < settings.face_enroll_min_px:
-            return None, "face too small"
-        v = self._feature(img, faces[0])
+        face, why = one_clear_face(self._finder.find_in_photo(img),
+                                   settings.face_enroll_min_px)
+        if face is None:
+            return None, why
+        v = self._feature(img, face)
         return (v, "") if v is not None else (None, "no face")
 
     # ---- internals ---------------------------------------------------
-    def _faces(self, img: np.ndarray, max_px: int) -> list[np.ndarray]:
-        """YuNet rows (box, 5 landmarks, score) in `img` pixels."""
-        h, w = img.shape[:2]
-        s = min(1.0, max_px / float(max(h, w)))
-        small = cv2.resize(img, (max(1, int(w * s)), max(1, int(h * s)))) if s < 1 else img
-        try:
-            self._det.setInputSize((small.shape[1], small.shape[0]))
-            _, faces = self._det.detect(small)
-        except cv2.error:
-            return []
-        if faces is None:
-            return []
-        out = []
-        for f in faces:
-            f = f.copy()
-            f[:14] /= s                        # box + landmarks back to img pixels
-            out.append(f)
-        return out
-
     def _feature(self, img: np.ndarray, face: np.ndarray) -> np.ndarray | None:
         """Align the face to the ArcFace template and embed it (AuraFace)."""
         try:
