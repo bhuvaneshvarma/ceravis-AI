@@ -72,6 +72,10 @@ class EnrollmentManager:
     """
 
     SUBDIRS = ("photos", "videos", "face", "body")
+    # Photos fetched from the CERAVIS app (postures/import) carry this prefix.
+    # They are the app's to manage: removed here, the next import would only
+    # fetch them again.
+    APP_PHOTO_PREFIX = "cloud_"
 
     def __init__(self) -> None:
         self.base_path = resolve_path(settings.data_dir) / "recipients"
@@ -110,6 +114,25 @@ class EnrollmentManager:
         root = self.get_recipient_folder(recipient_id)
         return bool(root and (root / "photos" / Path(name).name).exists())
 
+    def from_app(self, name: str) -> bool:
+        return Path(name).name.startswith(self.APP_PHOTO_PREFIX)
+
+    def delete_photo(self, recipient_id: str, name: str) -> bool:
+        """Remove ONE stored photo and its label; False when there is no such
+        photo. Only the photo: vectors already made from it stay in the gallery
+        until the recipient is enrolled again (the caller says so).
+        Path-traversal safe."""
+        root = self.get_recipient_folder(recipient_id)
+        safe = Path(name).name
+        path = root / "photos" / safe if root and safe else None
+        if path is None or not path.is_file():
+            return False
+        path.unlink()
+        labels = self.get_labels(recipient_id)
+        if labels.pop(safe, None) is not None:
+            self._write_labels(root, labels)
+        return True
+
     def save_video(self, recipient_id: str, data: bytes, ext: str = "mp4") -> Path:
         root = self.create_recipient_folder(recipient_id)
         name = f"{int(time.time() * 1000)}.{ext.lstrip('.').lower()}"
@@ -147,7 +170,11 @@ class EnrollmentManager:
         root = self.create_recipient_folder(recipient_id)
         labels = self.get_labels(recipient_id)
         labels[filename] = label
-        (root / "labels.json").write_text(json.dumps(labels, indent=2))
+        self._write_labels(root, labels)
+
+    @staticmethod
+    def _write_labels(root: Path, labels: dict[str, str]) -> None:
+        write_atomic(root / "labels.json", json.dumps(labels, indent=2).encode())
 
     def media_path(self, recipient_id: str, name: str) -> Path | None:
         """Resolve a stored photo/crop by basename — path-traversal safe."""
