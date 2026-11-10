@@ -24,6 +24,7 @@ Run from the repo root, on the device:
     python3 tests/manual_fire_transitions.py                  # all five, first camera
     python3 tests/manual_fire_transitions.py LIVING_ROOM      # a specific camera
     python3 tests/manual_fire_transitions.py --only sitting_down,no_transition_snapshot
+    python3 tests/manual_fire_transitions.py --allow-old-key   # bench: old built-in key
     unset CERAVIS_API_KEY
 """
 from __future__ import annotations
@@ -89,6 +90,8 @@ def main() -> None:
     ap.add_argument("label", nargs="?", help="camera room / label (default: first enabled)")
     ap.add_argument("--only", help="comma list of: " + ",".join(EVENTS))
     ap.add_argument("--gap", type=float, default=3.0, help="seconds between events (default 3)")
+    ap.add_argument("--allow-old-key", action="store_true",
+                    help="bench only: send even with the old built-in (public) API key")
     args = ap.parse_args()
 
     chosen = list(EVENTS)
@@ -101,6 +104,9 @@ def main() -> None:
     if not is_configured():
         _die("CERAVIS_API_BASE_URL not set — cloud is not configured")
     key_problem = api_key_problem()
+    if key_problem and args.allow_old_key and "old built-in" in key_problem:
+        print("[test-transitions] WARNING: using the OLD built-in API key (--allow-old-key)")
+        key_problem = None
     if key_problem:
         _die(f"{key_problem}. A shell does not get the service's key: first\n"
              "    export CERAVIS_API_KEY=$(sudo cat /etc/ceravis/credstore/ceravis_api_key)")
