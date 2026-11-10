@@ -42,7 +42,6 @@
   .frame-cell .flabel { position: absolute; left: 3px; bottom: 3px; font-size: 9.5px;
                         background: rgba(0,0,0,.72); color: #fff; padding: 1px 5px;
                         border-radius: 5px; }
-  .frame-cell .flabel.face { background: rgba(46,158,143,.92); }
   /* the cross on a picture, and the note that asks before deleting it */
   .frame-cell .fdel { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px;
                       padding: 0; border: 0; border-radius: 50%; cursor: pointer;
@@ -61,11 +60,6 @@
   .frame-pop-t { font-weight: 700; color: var(--navy); }
   .frame-pop-s { color: var(--muted); margin-top: 3px; line-height: 1.45; }
   .frame-pop-a { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
-  .en-mode { display: inline-flex; margin-top: 10px; border: 1px solid var(--line);
-             border-radius: 8px; overflow: hidden; }
-  .en-mode button { padding: 6px 12px; border: 0; cursor: pointer; font-size: 12px;
-                    font-weight: 600; background: var(--panel-2); color: var(--muted); }
-  .en-mode button.active { background: rgba(46,158,143,.14); color: var(--teal-dim); }
   .en-live-stage { position: relative; background: #000; border-radius: 10px;
                    overflow: hidden; margin-top: 8px; border: 1px solid var(--line); }
   .en-live-stage video { width: 100%; display: block; min-height: 120px;
@@ -176,14 +170,13 @@
                 <video id="en-live-video"></video>
                 <div class="en-live-nosig" id="en-live-nosig">Connecting…</div>
               </div>
-              <div class="en-mode" id="en-mode">
-                <button type="button" class="active" data-mode="body">Body poses</button>
-                <button type="button" data-mode="face">Face close-ups</button>
-              </div>
               <div class="row mt" style="gap:8px; align-items:center; flex-wrap:wrap">
                 <label class="f" style="margin:0">View</label>
-                <select id="en-view" style="width:auto"></select>
-                <label class="f" style="margin:0" id="en-posture-l">Posture</label>
+                <select id="en-view" style="width:auto">
+                  <option value="front">front</option><option value="back">back</option>
+                  <option value="left">left</option><option value="right">right</option>
+                </select>
+                <label class="f" style="margin:0">Posture</label>
                 <select id="en-posture" style="width:auto">
                   <option value="standing">standing</option><option value="sitting">sitting</option>
                   <option value="walking">walking</option><option value="turning">turning</option>
@@ -193,7 +186,6 @@
                 <span class="faint" id="en-capcount">0 captured</span>
               </div>
               <div id="en-grid"></div>
-              <div class="faint" id="en-gate" style="font-size:11.5px; margin-top:6px"></div>
               <button class="btn btn-ghost btn-sm mt" id="en-live-go">or auto-capture 4 s</button>
             </div>
 
@@ -382,54 +374,25 @@ function coverageCounts(m) {
   (m.frames || []).forEach(f => { if (f.label) c[f.label] = (c[f.label] || 0) + 1; });
   return c;
 }
-// Face close-ups (label "face/<view>"): references for face recognition only.
-// The device keeps one only when the face is large, alone and turned as asked.
-const FACE_VIEWS = ["front", "left", "right"];
-let enrollMode = "body";                     // what the live tab captures now
-function faceCells() { return FACE_VIEWS.map(v => "face/" + v); }
-function modeCells() { return enrollMode === "face" ? faceCells() : requiredCells(); }
-function coverage(m, cells) {
+function coverage(m) {
   const counts = coverageCounts(m);
-  return { counts, total: cells.length,
+  const cells = requiredCells();
+  return { counts, cells, total: cells.length,
            covered: cells.filter(c => (counts[c] || 0) > 0).length,
            next: cells.find(c => (counts[c] || 0) === 0) };
 }
-function selectCell(cell) {                  // "front/sitting" or "face/left"
-  const [a, b] = cell.split("/");
-  if (a === "face") { document.getElementById("en-view").value = b; return; }
-  document.getElementById("en-view").value = a;
-  document.getElementById("en-posture").value = b;
+function selectCell(cell) {                  // "front/sitting"
+  const [v, p] = cell.split("/");
+  document.getElementById("en-view").value = v;
+  document.getElementById("en-posture").value = p;
 }
-function captureLabel() {
-  const view = document.getElementById("en-view").value;
-  return enrollMode === "face" ? "face/" + view
-       : view + "/" + document.getElementById("en-posture").value;
-}
-function setEnrollMode(mode) {
-  enrollMode = mode;
-  document.querySelectorAll("#en-mode button").forEach(b =>
-    b.classList.toggle("active", b.dataset.mode === mode));
-  document.getElementById("en-view").innerHTML =
-    (mode === "face" ? FACE_VIEWS : ENROLL_VIEWS)
-      .map(v => `<option value="${v}">${v}</option>`).join("");
-  // style.display, not [hidden]: the button and label classes set a display.
-  ["en-posture", "en-posture-l", "en-live-go"].forEach(id =>
-    document.getElementById(id).style.display = mode === "face" ? "none" : "");
-  if (document.querySelector(".etab.active")?.dataset.tab === "live") setCtx("live");
-  loadFrames();
-}
-document.querySelectorAll("#en-mode button").forEach(b =>
-  b.onclick = () => setEnrollMode(b.dataset.mode));
-
 function renderGrid(m) {
   const grid = document.getElementById("en-grid");
-  const face = enrollMode === "face";
-  const cells = modeCells();
-  const { counts, covered, next } = coverage(m, cells);
+  const { counts, cells, covered, total, next } = coverage(m);
   grid.innerHTML =
-    `<div class="cov-head faint">${face ? "Face" : "Pose"} coverage ${covered}/${cells.length}`
+    `<div class="cov-head faint">Pose coverage ${covered}/${total}`
     + (next ? ` — next: <b>${next.replace("/", " · ")}</b>`
-            : ` — all ${face ? "close-ups" : "poses"} captured ✓`) + `</div>`
+            : ` — all poses captured ✓`) + `</div>`
     + `<div class="cov-grid">` + cells.map(c => {
         const n = counts[c] || 0;
         const cls = n > 0 ? "on" : (c === next ? "next" : "");
@@ -438,6 +401,7 @@ function renderGrid(m) {
       }).join("") + `</div>`;
   grid.querySelectorAll("[data-cell]").forEach(el =>
     el.onclick = () => selectCell(el.dataset.cell));
+  return { covered, total };
 }
 
 const ENROLL_CTX = {
@@ -450,12 +414,6 @@ const ENROLL_CTX = {
       + "(front / back / left / right), both standing AND sitting. Pick the "
       + "labels, click the red Capture button; Enroll unlocks once every pose "
       + "is covered.",
-  face: "Option C — face close-ups, for face recognition. The recipient stands "
-      + "about 1 m (3 ft) from the camera, face in good light, no mask or "
-      + "sunglasses, nobody else in view. Capture them looking at the camera, "
-      + "then with the head turned a little to their left, then to their right. "
-      + "A picture is kept only when the face is large and clear enough — "
-      + "otherwise you are told what to change.",
 };
 
 async function selectEnroll(rid, name) {
@@ -480,10 +438,7 @@ async function selectEnroll(rid, name) {
   enrollPoll = setInterval(pollEnroll, 2500);
 }
 
-function setCtx(tab) {
-  document.getElementById("en-ctx").textContent =
-    ENROLL_CTX[tab === "live" && enrollMode === "face" ? "face" : tab];
-}
+function setCtx(tab) { document.getElementById("en-ctx").textContent = ENROLL_CTX[tab]; }
 
 document.querySelectorAll(".etab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".etab").forEach(x => x.classList.remove("active"));
@@ -503,7 +458,7 @@ function frameCell(f) {
   cell.appendChild(img);
   if (f.label) {
     const tag = document.createElement("span");
-    tag.className = "flabel" + (f.label.startsWith("face/") ? " face" : "");
+    tag.className = "flabel";
     tag.textContent = f.label;
     cell.appendChild(tag);
   }
@@ -525,18 +480,12 @@ function renderFrames(m) {
   else grid.replaceChildren(...m.frames.map(frameCell));
   const cnt = document.getElementById("en-capcount");
   if (cnt) cnt.textContent = `${m.count} captured`;
-  // Live tab: Enroll unlocks when every BODY pose is covered — face close-ups
-  // add to that, they never replace it. Photos/video keep the >= 1 gate.
+  // Live tab: Enroll unlocks when the guided pose grid is fully covered.
+  // Photos/video keep the existing >= 1 gate.
   const liveActive = document.querySelector(".etab.active")?.dataset.tab === "live";
-  const gate = document.getElementById("en-gate");
   if (liveActive) {
-    renderGrid(m);
-    const body = coverage(m, requiredCells());
-    document.getElementById("en-commit").disabled = body.covered < body.total;
-    gate.textContent = enrollMode !== "face" ? ""
-      : body.covered < body.total
-        ? `Enroll unlocks once the body poses are covered too (${body.covered}/${body.total}).`
-        : "Body poses are covered — press Enroll when the close-ups are done.";
+    const cov = renderGrid(m);
+    document.getElementById("en-commit").disabled = cov.covered < cov.total;
   } else {
     document.getElementById("en-commit").disabled = m.count < 1;
   }
@@ -668,18 +617,16 @@ document.getElementById("en-video-go").onclick = async () => {
 document.getElementById("en-capture").onclick = async () => {
   const cam = document.getElementById("en-cam").value;
   if (!cam) return toast("No camera selected", "err");
-  const label = captureLabel();
+  const label = document.getElementById("en-view").value + "/" +
+                document.getElementById("en-posture").value;
   try {
     const m = await api(`/api/v1/recipients/${enrollRid}/enroll/capture`,
       { method: "POST", body: JSON.stringify({ camera_id: cam, label }) });
-    toast(`Captured · ${label}` + (m.face ? ` (face ${m.face.width_px} px wide)` : ""));
+    toast(`Captured · ${label}`);
     renderFrames(m);
-    const next = coverage(m, modeCells()).next;
+    const next = coverage(m).next;
     if (next) selectCell(next);
-  } catch (e) {
-    // A refused face close-up says what to change: keep it up long enough to read.
-    toast(e.detail || "Capture failed", "err", 5200);
-  }
+  } catch (e) { toast(e.detail || "Capture failed", "err"); }
 };
 document.getElementById("en-live-go").onclick = async () => {
   const cam = document.getElementById("en-cam").value;
@@ -728,7 +675,6 @@ async function initEnroll() {
   pendingEnrollRid = null;
 }
 
-setEnrollMode("body");
 initSetup();
 </script>
 </body>

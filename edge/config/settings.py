@@ -735,12 +735,6 @@ class Settings(BaseSettings):
     face_min_px: float = 64.0
     face_max_yaw_ratio: float = 0.4
     face_enroll_min_px: float = 40.0   # enrollment photos (a close, deliberate look)
-    # A face CLOSE-UP captured on purpose in the setup wizard (label face/<view>):
-    # wide enough to be in the range where the recipient's own looks scored
-    # 0.42-0.60 (>= 110 px, above), and "front" within this turn of straight on;
-    # left / right lie between it and face_max_yaw_ratio.
-    face_capture_min_px: float = 110.0
-    face_capture_front_max_yaw: float = 0.15
     # AuraFace cosine bars, set from the JOINT body+face test on the bench
     # (2026-09-24, production code, 710 stranger crops, the recipient in both
     # outfits). Strangers p95 0.36, max 0.47; recipient p5 0.47, lowest 0.313:

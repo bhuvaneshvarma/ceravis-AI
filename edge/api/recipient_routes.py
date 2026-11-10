@@ -11,8 +11,6 @@ from fastapi.responses import FileResponse
 from config.account_config import account_recipient
 from enrollment.enrollment_manager import EnrollmentManager
 from integration.ceravis_api import CeravisApiError, get_patient_postures
-from reid.face_identity import (FACE_LABEL, FACE_VIEWS, FaceFinder,
-                                check_face_view, is_face_label, one_clear_face)
 
 
 router = APIRouter(prefix="/api/v1/recipients", tags=["Recipients"])
@@ -27,41 +25,6 @@ _POSTURE_VIEWS = (("frontView", "front"), ("backView", "back"),
 
 def _worker(request: Request):
     return getattr(request.app.state, "enroll_worker", None)
-
-
-_finder: FaceFinder | None = None
-
-
-def _face_finder() -> FaceFinder:
-    """The face detector for capture checks, loaded on the first face capture
-    (detector only — the recognizer stays with the enrollment worker)."""
-    global _finder
-    if _finder is None:
-        _finder = FaceFinder()
-    return _finder
-
-
-def _check_face_capture(frame, label: str) -> dict:
-    """A frame offered as the face close-up `label` ('face/<view>'): what was
-    seen, or a 4xx saying what the person at the camera should change."""
-    view = label[len(FACE_LABEL):]
-    if view not in FACE_VIEWS:
-        raise HTTPException(400, f"face view must be one of {', '.join(FACE_VIEWS)}")
-    finder = _face_finder()
-    if not finder.ready:
-        raise HTTPException(409, "face recognition is off on this device — "
-                                 "face close-ups cannot be checked")
-    face, why = one_clear_face(finder.find_in_photo(frame), 0.0)
-    if face is None:
-        raise HTTPException(422, {
-            "no face": "no face found — face the camera, in good light",
-            "two faces": "two faces in view — only the recipient may be in "
-                         "the picture",
-        }.get(why, why))
-    why = check_face_view(face, view)
-    if why:
-        raise HTTPException(422, why)
-    return {"width_px": int(face[2])}
 
 
 def _media_payload(recipient_id: str) -> dict:
@@ -253,11 +216,6 @@ def enroll_capture(recipient_id: str, request: Request, body: dict):
     Save ONE live frame as an enrollment photo, with an optional label
     (e.g. 'front/standing'). Drives the new live-capture UI: the user lines up
     a pose/viewpoint, picks the label, and clicks the red capture button.
-
-    A label 'face/<view>' (front / left / right) is a FACE close-up: the frame
-    is kept only when it shows the one face, large enough and turned as asked
-    (reid.face_identity.check_face_view) — otherwise nothing is saved and the
-    answer says what to change.
     """
     camera_id = (body or {}).get("camera_id", "").strip()
     label = (body or {}).get("label", "").strip()
@@ -266,7 +224,6 @@ def enroll_capture(recipient_id: str, request: Request, body: dict):
     fd = request.app.state.camera_manager.get_frame(camera_id)
     if fd is None:
         raise HTTPException(404, "no frame available — is the camera live?")
-    face = _check_face_capture(fd.frame, label) if is_face_label(label) else None
     ok, buf = cv2.imencode(".jpg", fd.frame)
     if not ok:
         raise HTTPException(500, "encode failed")
@@ -276,7 +233,7 @@ def enroll_capture(recipient_id: str, request: Request, body: dict):
     enrollment_manager.set_status(
         recipient_id, state="review",
         message=f"{count} frame(s) captured — review then Enroll")
-    return {**_media_payload(recipient_id), "face": face}
+    return _media_payload(recipient_id)
 
 
 @router.post("/{recipient_id}/enroll/live")
