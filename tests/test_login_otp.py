@@ -216,7 +216,12 @@ account_routes.account_config = _Account(STORED)
 r, tasks, calls = _login("ce7k2m9xq4w8n3")
 check("same recipient -> returning login, the FMS edge_id, nothing re-applied, no restart",
       r["verified"] and r["fresh"] is False and r["edgeId"] == "ce7k2m9xq4w8n3"
-      and calls == ["verifyOtp"] and tasks == [] and not noted, f"{r.get('fresh')} {tasks} {calls}")
+      and calls == ["verifyOtp", "userDetails"] and tasks == [] and not noted,
+      f"{r.get('fresh')} {tasks} {calls}")
+from common.device_identity import identity                       # noqa: E402
+check("...and EVERY sign-in reports this device: userDetails {email, deviceId}",
+      SESSION.calls[-1][1] == {"email": "user@example.com", "deviceId": identity().name},
+      str(SESSION.calls[-1][1]))
 account_routes.account_config = _Account(STORED)
 r, tasks, calls = _login("VzspNew")
 check("same recipient, the server names the device differently -> STILL the FMS edge_id, no restart",
@@ -245,11 +250,32 @@ account_routes.account_config = _Account({})
 r, tasks, calls = _login(None)
 check("...and a new device without one falls back to userDetails",
       calls == ["verifyOtp", "userDetails"], str(calls))
-from common.device_identity import identity                       # noqa: E402
 sent = SESSION.calls[-1][1]
 check("...which sends the email AND this device's deviceId (its FMS device_id), nothing else",
       sent == {"email": "user@example.com", "deviceId": identity().name}
       and sent["deviceId"].startswith("ceravis-"), str(sent))
+_real_details = account_routes.get_user_details
+
+
+def _details_down(_email):
+    raise ceravis_api.CeravisApiError("app server returned HTTP 503", status=503)
+
+
+account_routes.get_user_details = _details_down
+account_routes.account_config = _Account(STORED)
+r, tasks, calls = _login("ce7k2m9xq4w8n3")
+check("userDetails failing never blocks a returning sign-in; the stored account is untouched",
+      r["verified"] and r["fresh"] is False and account_routes.account_config.get() == STORED, str(r))
+account_routes.account_config = _Account({})
+r, tasks, calls = _login("CAr5old")
+check("...nor a first sign-in whose confirmation already carries the account",
+      r["verified"] and r["fresh"] is True
+      and account_routes.account_config.get().get("ceravisUserId") == 5012, str(r))
+account_routes.account_config = _Account({})
+r, tasks, calls = _login(None)
+check("...but with NO account anywhere it still refuses, with the server's reason (as before)",
+      not r["verified"] and "try again" in r["reason"], str(r))
+account_routes.get_user_details = _real_details
 account_routes.account_config = _Account({"ceravisUserId": 4000, "email": "other@example.com",
                                            "edgeId": "VzspNew"})
 r, tasks, calls = _login("ce7k2m9xq4w8n3")

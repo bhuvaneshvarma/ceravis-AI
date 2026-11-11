@@ -165,8 +165,11 @@ class VerifyRequest(BaseModel):
 def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTasks):
     """
     Gate the setup wizard. First check the login one-time code with the app
-    server (/v1/ai/verifyOtp). Its confirmation carries the account itself;
-    /v1/ai/userDetails is asked only when it does not. Persist the account and
+    server (/v1/ai/verifyOtp). Its confirmation carries the account itself.
+    Then EVERY sign-in reports this device to the server: /v1/ai/userDetails
+    with {email, deviceId}, so the server maps the device (its FMS record in
+    the shared DB) to the account; its account answer is used only when the
+    confirmation has none. Persist the account and
     return it so the next screen can pre-fill. The edge_id is never taken from
     here: the FMS issued it to this device (config.account_config). Every
     app-server hit is recorded in the wire log.
@@ -188,33 +191,39 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         logger.info("login code not accepted for %s: %s", email, reason)
         return {"verified": False, "reason": reason}
 
-    # 2) RETURNING device — account.json already holds THIS recipient. A normal
-    # sign-in (to add a camera / edit zones) must NOT re-fetch userDetails every
-    # time; the local account is the source of truth. We only make sure the frp
+    # 2) Tell the app server which device this sign-in happens on (userDetails
+    # carries this device's deviceId). A report: a failure here never blocks a
+    # sign-in the confirmation (or the stored account) already allows.
+    verified = verified or {}
+    try:
+        details, details_error = get_user_details(email), None
+    except CeravisApiError as exc:
+        details, details_error = None, exc
+        logger.warning("userDetails failed for %s (sign-in continues): %s", email, exc)
+
+    # 3) RETURNING device — account.json already holds THIS recipient. The local
+    # account stays the source of truth (userDetails above only reported the
+    # device; its answer does not overwrite it). We only make sure the frp
     # tunnel is still keyed to this device's edge_id, then let the operator
     # straight into the app. `fresh:false` tells the login page to open the
     # Live Wall (not the onboarding wizard). The edge_id is the FMS's, so what
     # the app server calls this device never changes the route.
-    verified = verified or {}
     stored = account_config.get()
     if (stored.get("ceravisUserId")
             and (stored.get("email") or "").strip().lower() == email.lower()):
         _note_app_server_token(verified)
         provisioning, remote = _keep_tunnel_keyed(background_tasks)
-        logger.info("returning login: user #%s (%s) — userDetails skipped",
-                    stored.get("ceravisUserId"), email)
+        logger.info("returning login: user #%s (%s)", stored.get("ceravisUserId"), email)
         return {"verified": True, "user": stored, "fresh": False,
                 "edgeId": effective_edge_id() or None, "provisioning": provisioning,
                 "remote": remote}
 
-    # 3) FRESH registration (no local account yet, or a different email) — the
-    # account the server confirmed with the code, else fetched from userDetails,
+    # 4) FRESH registration (no local account yet, or a different email) — the
+    # account the server confirmed with the code, else the userDetails answer,
     # and onboard via the wizard (`fresh:true`).
-    try:
-        user = verified if verified.get("ceravisUserId") else get_user_details(email)
-    except CeravisApiError as exc:
-        logger.warning("account verify failed for %s: %s", email, exc)
-        return {"verified": False, "reason": _login_error(exc)}
+    user = verified if verified.get("ceravisUserId") else details
+    if not user and details_error is not None:
+        return {"verified": False, "reason": _login_error(details_error)}
     if not user:
         return {"verified": False,
                 "reason": "No CERAVIS account found for this email"}
