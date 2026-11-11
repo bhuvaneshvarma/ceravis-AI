@@ -245,6 +245,11 @@ account_routes.account_config = _Account({})
 r, tasks, calls = _login(None)
 check("...and a new device without one falls back to userDetails",
       calls == ["verifyOtp", "userDetails"], str(calls))
+from common.device_identity import identity                       # noqa: E402
+sent = SESSION.calls[-1][1]
+check("...which sends the email AND this device's deviceId (its FMS device_id), nothing else",
+      sent == {"email": "user@example.com", "deviceId": identity().name}
+      and sent["deviceId"].startswith("ceravis-"), str(sent))
 account_routes.account_config = _Account({"ceravisUserId": 4000, "email": "other@example.com",
                                            "edgeId": "VzspNew"})
 r, tasks, calls = _login("ce7k2m9xq4w8n3")

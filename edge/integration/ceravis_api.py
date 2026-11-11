@@ -7,7 +7,10 @@ Only the calls the edge device needs. Everything goes through here so the
 server address lives in ONE place (device config) and never in the browser.
 
 Endpoint used during setup:
-    POST {base}/v1/ai/userDetails   body {"email": "..."}
+    POST {base}/v1/ai/userDetails   body {"email": "...", "deviceId": "ceravis-<code>"}
+    deviceId is THIS device's name (common/device_identity) — the same device_id
+    the fleet agent enrolls with, so the server finds the device's FMS record
+    (edge_id, …) in the shared DB and maps the account's cameras and live links.
     -> ApiResponse<UserDetailsResponse>
        { ceravisUserId, firstName, lastName, email, gender, role, tier,
          deviceToken }
@@ -31,6 +34,7 @@ import requests
 from config.settings import resolve_path, settings
 from integration import call_log
 from common import clock
+from common.device_identity import identity
 
 
 logger = logging.getLogger("integration")
@@ -368,8 +372,11 @@ def get_user_details(email: str) -> dict | None:
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/userDetails"
-    request_body = {"email": email}
-    logger.info("userDetails -> POST %s  email=%s", url, email)
+    # identity().name, never settings.device_id (DEVICE_ID may override that):
+    # it must equal the device_id the FMS stored at enrollment.
+    device_id = identity().name
+    request_body = {"email": email, "deviceId": device_id}
+    logger.info("userDetails -> POST %s  email=%s  deviceId=%s", url, email, device_id)
     t0 = time.perf_counter()
     try:
         resp = _session().post(url, json=request_body, headers=_headers(),
