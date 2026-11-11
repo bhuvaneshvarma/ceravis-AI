@@ -17,48 +17,15 @@ models/**/*.trt
 edge/models/
 edge/*.pt
 
-# Runtime data
-edge/data/ceravis.db*
-edge/data/recipients/*/photos/*
-edge/data/recipients/*/videos/*
+# Runtime data: EVERYTHING the device writes under edge/data stays out of git —
+# keys (local.key), face photos (recipients/), sessions, recordings, camera
+# credentials (cameras.json), the account, talk-back hashes, the outbox, logs.
+# One rule, so a new data file can never be committed by accident.
+edge/data/*
+!edge/data/cameras.example.json
 
-# Media backbone runtime state (generated config, TLS cert, recordings)
-edge/data/mediamtx.yml
-edge/data/certs/
-edge/data/recordings/
-
-# Cloud call log (monitor sync console runtime state)
-edge/data/cloud_calls.jsonl
-
-# Cloud outbox media spool — stills and incident clips waiting for the link to
-# come back. Runtime state, sometimes large, never committed.
-edge/data/outbox/
-
-# Recording on/off runtime state (monitor button)
-edge/data/recording_mode.json
-
-# Live camera config — contains real RTSP credentials, never commit
-edge/data/cameras.json
-
-# Reboot password HASH + the last-reboot marker. Per-device secrets and
-# runtime state — never committed.
-edge/data/reboot_auth.json
-edge/data/last_reboot.json
-
-# Talk-back credentials: per-camera HASHES of the TP-Link account password
-# (never the password itself). Per-device secret — never committed.
-edge/data/talkback.json
-# Talk-back lock-out pauses (talkback.guard): per-device runtime state.
-edge/data/talkback_guard.json
-# Talk-back log (talkback.audit): who spoke into which room. Per-device, personal.
-edge/data/talkback_log.jsonl*
-
-# Per-install runtime config — never ship a seeded/example copy
-edge/data/zones.json
-edge/data/account.json
-# ConfigStore writes atomically via a sibling temp file (config_store.py)
-edge/data/*.json.tmp
-edge/data/ceravis_api_wire.jsonl
+# A device's real tunnel config (holds the frp token); the .example is tracked.
+cloud/frpc.toml
 
 # Docker / logs
 *.log
