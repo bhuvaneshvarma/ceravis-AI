@@ -21,11 +21,19 @@ again or undone.
 
 ## Branches
 
+Exactly three branches live on GitHub — no others (a work branch stays local
+and is deleted once merged):
+
 | Branch | Role |
 |---|---|
-| `dev_ceravis1.1` | development; the default branch |
-| `prod_ceravis1.1` | production releases |
-| `bench_ceravis1.1` | the bench device (formerly `ceravis1.1`); dev is ahead of it |
+| `dev_ceravis1.1` | development: every change is made and tested here first |
+| `bench_ceravis1.1` | what the bench device runs (`git pull` / `bash setup/upgrade.sh` in `~/ceravis`); GitHub's default branch; fast-forwarded from dev once a change is developed and tested |
+| `prod_ceravis1.1` | production: releases are built from it (`make_release.sh --from prod_ceravis1.1`) and installed on `prodtest` (then clients); changed only when the owner asks |
+
+The flow: `dev_ceravis1.1` → (tested) → `bench_ceravis1.1` → bench device;
+→ (owner asks) → `prod_ceravis1.1` → release package → `prodtest` device.
+A small fix for an installed client can go out as a patch of a few files
+(`setup/patch_device.sh`, pinned FROM/TO commits) instead of a full release.
 
 ## Devices
 
