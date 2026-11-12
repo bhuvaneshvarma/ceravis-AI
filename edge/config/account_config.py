@@ -29,12 +29,12 @@ def canonical_edge_id(raw: str | None) -> str:
 
 
 class AccountConfig:
-    """Persists the verified operator account (account.json) so the device
-    remembers who set it up — including the ceravisUserId used to associate
-    alerts with the cloud account. Its `edgeId` is the APP SERVER's token for
-    this device (deviceToken): kept only to notice when the app server knows
-    this device by another edge_id (account_routes logs it), never used to
-    route and never sent to the FMS — effective_edge_id() is."""
+    """Persists the verified care account (account.json) so the device remembers
+    who it serves — including the ceravisUserId used to associate alerts with
+    the cloud account. It holds no edge_id: the FMS issues that to the device
+    (effective_edge_id). An account.json written before the FMS may still carry
+    the app server's old `edgeId`; only setup/sync_edge_id.sh --migrate reads it,
+    once, to keep such a home routable until it enrolls."""
 
     FILE = "account.json"
 
@@ -51,11 +51,6 @@ class AccountConfig:
     def clear(self) -> None:
         """No care account on this device any more (maintenance.recipient_reset)."""
         (self.store.base_path / self.FILE).unlink(missing_ok=True)
-
-    def app_server_edge_id(self) -> str:
-        """The app server's own token for this device (its deviceToken), as it
-        handed it back at account verification. Not this device's edge_id."""
-        return str(self.get().get("edgeId") or "").strip()
 
 
 def effective_edge_id() -> str:

@@ -244,9 +244,11 @@ check("a confirmation without an account keeps the returning login as before",
 account_routes.account_config = _Account({})
 r, tasks, calls = _login("CAr5old")
 saved = account_routes.account_config.get()
-check("a new device: the account is saved, its edgeId = the server's token (the enrollment hint)",
-      r["fresh"] is True and saved.get("ceravisUserId") == 5012 and saved.get("edgeId") == "CAr5old",
+check("a new device: the account is saved — and holds NO edge_id (the FMS issues it)",
+      r["fresh"] is True and saved.get("ceravisUserId") == 5012 and "edgeId" not in saved,
       str(saved))
+check("...while the app server's other token for the device is said plainly, not kept",
+      noted and "CAr5old" in noted[-1][1], str(noted))
 check("...while the reply and every route use the FMS edge_id",
       r["edgeId"] == "ce7k2m9xq4w8n3", str(r.get("edgeId")))
 check("...and the reply carries this process's boot time for the page to wait on",

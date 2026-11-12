@@ -86,10 +86,10 @@ def _keep_tunnel_keyed(background_tasks: BackgroundTasks) -> tuple[bool, dict | 
 
 
 def _note_app_server_token(user: dict) -> str:
-    """The app server still names this device by its own token (deviceToken).
-    It is kept in account.json only as the hint the fleet agent sends at
-    enrollment; routing uses the FMS edge_id alone. When the two differ, say so
-    plainly: the app server's links to this device miss until it uses the FMS
+    """The app server may still name this device by its own token (deviceToken).
+    It is never stored and never routes: the edge_id is the FMS's alone
+    (config.account_config.effective_edge_id). When the two differ, say so
+    plainly — the app server's links to this device miss until it uses the FMS
     edge_id. Returns the token ('' when none)."""
     token = canonical_edge_id((user or {}).get("deviceToken") or (user or {}).get("edgeId"))
     mine = effective_edge_id()
@@ -188,6 +188,9 @@ class VerifyRequest(BaseModel):
 
 
 def _account_from(user: dict, email: str, phone: str | None) -> dict:
+    """The care account kept on this device: who it serves — never an edge_id
+    (the FMS issues that to the device; the app server's token is only noted)."""
+    _note_app_server_token(user)
     return {
         "ceravisUserId": user.get("ceravisUserId"),
         "firstName": user.get("firstName"),
@@ -197,8 +200,6 @@ def _account_from(user: dict, email: str, phone: str | None) -> dict:
         "gender": user.get("gender"),
         "role": user.get("role"),
         "tier": user.get("tier"),
-        # The app server's token, kept only as the fleet agent's enrollment hint.
-        "edgeId": _note_app_server_token(user) or None,
     }
 
 
