@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from config.settings import APP_DIR, settings
 from bootstrap.pipeline import Pipeline
 from maintenance import reboot
+from monitoring.request_log import requests as request_log
 
 from api.auth import SessionGate, router as session_router
 from common.local_key import local_key
@@ -165,6 +166,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("talk-back did not stop cleanly", exc_info=True)
     pipeline.stop()
+    request_log.flush(force=True)
+    reboot.mark_clean_stop()          # an orderly stop: the next boot is not a power cut
     if refresh["requested"]:
         logger.info("CERAVIS edge refreshed — systemd starts it again now")
         logging.shutdown()
@@ -329,9 +332,34 @@ async def _log_inbound_calls(request, call_next):
     return response
 
 
+async def _log_requests(request, call_next):
+    """Every request into the device -> logs/incoming.jsonl (monitoring/
+    request_log): writes and failures one line each, successful reads counted
+    per minute. Path and query NAMES only — never bodies or values. Registered
+    outside the session gate, so a refused call (401/403) is logged too."""
+    t0 = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        if request.method != "OPTIONS":
+            try:
+                client = request.client.host if request.client else None
+                origin = ("fleet" if request.scope.get(FLEET_EDGE_KEY)
+                          else "local" if client in ("127.0.0.1", "::1") else "lan")
+                request_log.record(request.method, request.url.path, status,
+                                   (time.perf_counter() - t0) * 1000, origin, client,
+                                   sorted(request.query_params.keys()))
+            except Exception:             # the log must never break a response
+                logger.debug("request log failed", exc_info=True)
+
+
 # Who may call /api — inside the prefix strip, so it sees the real route and
 # whether the request came through the tunnel (api/auth).
 app.add_middleware(SessionGate)
+app.middleware("http")(_log_requests)
 # Added LAST so it wraps everything — the per-edge prefix must be stripped (for
 # http AND websocket) before any routing or the other middleware run.
 app.add_middleware(_FleetEdgePrefix)

@@ -43,6 +43,11 @@ OOMScoreAdjust=500
 # Hardening. (No NoNewPrivileges: the two allow-listed restarts go through sudo.)
 ProtectSystem=full
 ProtectHome=read-only
+# The device's health record goes to the app's data folder (<data>/logs,
+# edge/LOGS.md). A release keeps it in /var/lib/ceravis, writable already;
+# a development clone keeps it under /home, so open just that folder ('-': a
+# layout without it is fine).
+ReadWritePaths=-/home/ceravis/ceravis2/edge/data
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes

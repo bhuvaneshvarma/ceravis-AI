@@ -1,19 +1,19 @@
 """
-The heartbeat: every part of the device, each with its state, uptime and warnings.
+The device's health — measured each minute, kept on the device, summarised in the heartbeat.
 
-1. the edge app's GET /api/v1/system/health: backend, services (MediaMTX, app
-   server, internet, tunnel), every camera (fps, uptime, reconnects, recording)
-   and the board sensors — each part with its own `warnings`; built from the SAME
-   warning rules as /api/v1/system/status, whose output does not change; and
-   readable over loopback like /system/status
-2. the agent's systemd services: running / stopped / failed / not installed,
-   uptime, restarts — "restarted since the last heartbeat" said once, not forever
-3. hardware: the app's checks while it answers, the agent's own as the fallback
-   when it does not (data disk, temperature, clock) — never both
-4. the heartbeat itself, against a stand-in FMS (real HTTP, real signatures):
-   the body is exactly {status, results} — no protocol, no agent, no
-   status_error; signed over the 6 lines with the device key; an order in the
-   reply is answered in the next heartbeat
+1. the edge app's GET /api/v1/system/health: every part in detail with one state
+   vocabulary (operational / degraded / outage / disabled / unknown) — networks
+   (internet + hotspot), AI, cameras with their Wi-Fi signal, the tunnel's live
+   connection — built from the SAME warning rules as /api/v1/system/status, whose
+   output does not change
+2. the agent's summary (the heartbeat body): service names anyone understands,
+   GB and whole percentages, systemd states, warnings said until delivered, the
+   app-down case (unknowns, last known cameras), unexpected restarts, OOM, outages
+3. the local logs: health.jsonl every minute, events.jsonl only on change,
+   incoming.jsonl (requests into the device), one rotation rule
+4. orders: `info`, `logs` of a log file, the allow-list
+5. the heartbeat against a stand-in FMS (real HTTP, real signatures)
+6. why the device last started (scheduled / manual / orderly / unexpected)
 
     python tests/test_fleet_heartbeat.py
 """
@@ -35,8 +35,11 @@ EDGE = ROOT / "edge"
 sys.path.insert(0, str(EDGE))
 sys.path.insert(0, str(EDGE / "fleet"))
 os.chdir(EDGE)
+DATA = Path(tempfile.mkdtemp(prefix="ceravis-health-"))
+os.environ["DATA_DIR"] = str(DATA)                  # the agent's logs go here, not edge/data
 
 failures: list[str] = []
+VOCAB = {"operational", "degraded", "outage", "disabled", "unknown"}
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -50,29 +53,45 @@ print("\n1. the edge app's /api/v1/system/health")
 from common import clock                                         # noqa: E402
 from config.settings import settings                             # noqa: E402
 
-settings.data_dir = tempfile.mkdtemp(prefix="ceravis-health-")
+settings.data_dir = str(DATA)
 from config.camera_config import CameraConfig                    # noqa: E402
 from ingestion.camera_status import CameraHealthState, CameraStatus  # noqa: E402
 from schemas.cameras import Camera                               # noqa: E402
 
 cfg = CameraConfig()
-cfg.add(Camera(room_name="LOUNGE", rtsp_url="rtsp://cam1/stream1"))
-cfg.add(Camera(room_name="KITCHEN", rtsp_url="rtsp://cam2/stream1"))
-lounge, kitchen = [c.camera_id for c in cfg.get_all()]
+cfg.add(Camera(room_name="LOUNGE", rtsp_url="rtsp://10.42.0.11/stream1"))
+cfg.add(Camera(room_name="KITCHEN", rtsp_url="rtsp://10.42.0.12/stream1"))
+cfg.add(Camera(room_name="BEDROOM", rtsp_url="rtsp://10.42.0.13/stream1", is_enabled=False))
+lounge, kitchen, bedroom = [c.camera_id for c in cfg.get_all()]
 
 import api.setup_routes as setup_routes                          # noqa: E402
 import api.system_routes as sr                                   # noqa: E402
+import common.hotspot as hotspot                                 # noqa: E402
+import common.net as net                                         # noqa: E402
 import livestream.mediamtx_client as mtx                         # noqa: E402
 
+real_gateway, real_stations, real_radio_run = net.default_gateway, hotspot._stations, hotspot._run
 setup_routes.internet_problem = lambda: None
+setup_routes.internet_latency_ms = lambda: 42.0
+net.wired_uplink = lambda: net.WiredUplink(True, "enP8p1s0", "192.168.0.125")
+net.default_gateway = lambda: "192.168.0.1"
+net.link_speed_mbps = lambda iface: 1000
+SPOT = {"supported": True, "interface": "wlP1p1s0", "on": True, "ssid": "ceravis-acg08mbv3",
+        "channel": 36, "power_save": "off",
+        "devices": [{"mac": "aa:bb:cc:00:00:11", "ip": "10.42.0.11", "hostname": "C220",
+                     "signal_dbm": -52, "signal_avg_dbm": -53, "tx_retries": 10, "tx_failed": 0},
+                    {"mac": "aa:bb:cc:00:00:12", "ip": "10.42.0.12", "hostname": "C200",
+                     "signal_dbm": -81, "signal_avg_dbm": -80}]}
+real_hotspot_health, hotspot.health = hotspot.health, lambda: json.loads(json.dumps(SPOT))
 mtx.is_up = lambda: True
 mtx.path_info = lambda cid: {"ready": cid == lounge, "readers": [{}] if cid == lounge else []}
 mtx.path_stream_info = lambda cid: {"codec": "h264" if cid == lounge else "h265", "profile": "High"}
 sr.code_version = lambda: {"commit": "abc1234", "on_disk": "abc1234", "restart_needed": False}
 sr._storage_status = lambda: {"disk_used_pct": 40.0, "recordings_gb": 12.5, "retention_hours": 72}
 sr._time_status = lambda: {"local": "x", "timezone": "Asia/Kolkata", "ntp_synchronized": True}
-sr._tunnel_status = lambda: {"installed": True, "edge_id": "ce7k2m9xq4w8n3", "readable": True,
-                             "keyed": True, "reason": None}
+TUNNEL = {"installed": True, "edge_id": "ce7k2m9xq4w8n3", "readable": True, "keyed": True,
+          "connected": True, "reason": None}
+sr._tunnel_status = lambda: dict(TUNNEL)
 sr._cloud_status = lambda outbox=None: {"configured": True, "api_key_problem": None,
                                         "recent_calls": 9, "recent_errors": 0,
                                         "last_call": {"ok": True},
@@ -118,164 +137,142 @@ class RC:
                  "newest_segment_age_secs": 900.0, "segments_last_hour": 0}]
 
 
-mediamtx = types.SimpleNamespace(uptime_secs=86000.2, restarts=0)
+detector = types.SimpleNamespace(is_running=True, last_inference_time=clock.now())
+metrics = types.SimpleNamespace(snapshot_all=lambda: [{"name": "detection", "fps": 5.0}])
 state = types.SimpleNamespace(system_monitor=Monitor(), recording_controller=RC(),
                               camera_manager=Manager(), gallery=types.SimpleNamespace(size=3),
-                              outbox=None, mediamtx=mediamtx)
+                              outbox=None, mediamtx=types.SimpleNamespace(uptime_secs=86000.2, restarts=0),
+                              detection_runner=detector, metrics_registry=metrics,
+                              rule_engine=object())
 request = types.SimpleNamespace(app=types.SimpleNamespace(state=state))
 status = sr.system_status(request)
 health = sr.system_health(request)
 
-check("four parts: backend, services, cameras, hardware",
-      sorted(health) == ["backend", "cameras", "hardware", "services"], sorted(health))
-parts = [health["backend"], health["hardware"], *health["services"].values(), *health["cameras"]]
-check("EVERY part carries its own `state` and a `warnings` list",
-      all(isinstance(p.get("warnings"), list) and p.get("state") for p in parts))
+check("six parts: backend, hardware, network, ai, services, cameras",
+      list(health) == ["backend", "hardware", "network", "ai", "services", "cameras"], list(health))
+parts = [health["backend"], health["hardware"], health["network"], health["ai"],
+         *health["services"].values(), *health["cameras"]]
+check("EVERY part: a state from the one vocabulary, and a warnings list",
+      all(isinstance(p.get("warnings"), list) and p.get("state") in VOCAB for p in parts),
+      [p.get("state") for p in parts])
 by_id = {c["camera_id"]: c for c in health["cameras"]}
-lo, ki = by_id[lounge], by_id[kitchen]
-check("a running camera: state, fps, resolution, codec, uptime, reconnects, recording",
-      lo["state"] == "running" and lo["fps"] == 14.8 and lo["resolution"] == "1920x1080"
-      and lo["codec"] == "h264" and lo["uptime_secs"] == 3601 and lo["reconnects"] == 1
-      and lo["recording"]["on"] and lo["recording"]["writing_ok"] and lo["viewers"] == 1
-      and lo["warnings"] == [], lo)
-check("...and its last frame is fresh (seconds since it)", 0 <= (lo["last_frame_age_secs"] or -1) < 5,
-      lo["last_frame_age_secs"])
-check("a camera that is not delivering: its own warnings (no video, codec, recording)",
-      ki["state"] == "reconnecting" and ki["uptime_secs"] is None and ki["reconnects"] == 7
-      and any("no video" in w for w in ki["warnings"])
-      and any("H265" in w for w in ki["warnings"])
-      and any("no segments landing" in w for w in ki["warnings"]), ki["warnings"])
+lo, ki, be = by_id[lounge], by_id[kitchen], by_id[bedroom]
+check("a healthy camera: operational, fps, resolution, uptime, recording, Wi-Fi signal and link",
+      lo["state"] == "operational" and lo["stream"] == "running" and lo["fps"] == 14.8
+      and lo["resolution"] == "1920x1080" and lo["uptime_secs"] == 3601
+      and lo["recording"]["on"] and lo["wifi"]["signal_dbm"] == -53
+      and lo["wifi"]["ip"] == "10.42.0.11" and lo["wifi"]["tx_retries"] == 10 and lo["warnings"] == [], lo)
+check("a camera without video: outage, with its reasons and its weak Wi-Fi signal",
+      ki["state"] == "outage" and ki["stream"] == "reconnecting"
+      and any("no video" in w for w in ki["warnings"]) and any("H265" in w for w in ki["warnings"])
+      and any("no segments landing" in w for w in ki["warnings"])
+      and any("weak Wi-Fi signal (-80 dBm)" in w for w in ki["warnings"]), ki["warnings"])
+check("a camera switched off: disabled, no warnings", be["state"] == "disabled" and be["warnings"] == [], be)
+nw = health["network"]
+check("network: internet connected with its latency, the uplink, the hotspot and its devices",
+      nw["state"] == "operational" and nw["internet"] == {"connected": True, "latency_ms": 42.0}
+      and nw["uplink"]["gateway"] == "192.168.0.1" and nw["uplink"]["speed_mbps"] == 1000
+      and nw["hotspot"]["on"] and nw["hotspot"]["state"] == "operational"
+      and len(nw["hotspot"]["devices"]) == 2, nw)
+ai = health["ai"]
+check("ai: operational — detector running, analysing, fall detection on, stage rates",
+      ai["state"] == "operational" and ai["detector_running"] and ai["fall_detection"]
+      and ai["last_analysis_age_secs"] < 5 and ai["pipelines"][0]["name"] == "detection", ai)
 svc = health["services"]
-check("services from the app: mediamtx (uptime, restarts), app_server, internet, tunnel",
-      svc["mediamtx"]["state"] == "running" and svc["mediamtx"]["uptime_secs"] == 86000
-      and svc["app_server"]["state"] == "ok" and svc["internet"]["state"] == "ok"
-      and svc["tunnel"]["state"] == "ok" and svc["tunnel"]["routes_edge_id"] is True, svc)
-check("backend: version, commit, its own uptime, AI and recording summary",
-      health["backend"]["version"] == settings.app_version and health["backend"]["commit"] == "abc1234"
-      and isinstance(health["backend"]["uptime_secs"], int)
-      and health["backend"]["ai"]["gallery_size"] == 3
-      and health["backend"]["recording"]["cameras_recording"] == 1, health["backend"])
-check("hardware sensors from tegrastats: GPU load, temperatures, board power",
-      health["hardware"]["gpu_load_pct"] == 64 and health["hardware"]["temperature_c"]["tj"] == 53.0
-      and health["hardware"]["board_power_w"] == 7.8, health["hardware"])
+check("services: video server, app server, tunnel (live connection), time sync",
+      list(svc) == ["mediamtx", "app_server", "tunnel", "time_sync"]
+      and svc["mediamtx"]["state"] == "operational" and svc["app_server"]["state"] == "operational"
+      and svc["tunnel"]["state"] == "operational" and svc["tunnel"]["connected"] is True
+      and svc["time_sync"]["state"] == "operational", svc)
+check("hardware: why it last started, tegrastats GPU, temperatures, board power",
+      health["hardware"]["last_boot"]["reason"] in ("unknown", "unexpected_restart", "scheduled_reboot",
+                                                    "manual_reboot", "system_restart")
+      and health["hardware"]["gpu_load_pct"] == 64 and health["hardware"]["board_power_w"] == 7.8,
+      health["hardware"])
 flat = [w for p in parts for w in p["warnings"]]
 check("every /system/status problem is in /system/health, under its part",
-      all(p in flat for p in status["problems"]) and len(status["problems"]) == 2,
-      status["problems"])
-check("/system/status still lists them in one flat `problems` list, as before",
+      all(p in flat for p in status["problems"]) and len(status["problems"]) == 2, status["problems"])
+check("/system/status is unchanged: the same 2 problems, the same keys (weak Wi-Fi is health-only)",
       status["status"] == "degraded" and set(status) >= {"problems", "cameras", "recording", "storage",
-                                                         "cloud", "tunnel", "media_backbone"})
+                                                         "cloud", "tunnel", "media_backbone"}
+      and not any("Wi-Fi" in p for p in status["problems"]))
 
-# The tunnel says "warning" only when it is KNOWN to be wrong.
-cases = {"not_installed": {"installed": False},
-         "not_enrolled": {"installed": True, "edge_id": None},
+detector.is_running = False
+check("AI detection stopped: an outage with the reason",
+      sr.system_health(request)["ai"]["state"] == "outage")
+detector.is_running, detector.last_inference_time = True, clock.now() - timedelta(minutes=5)
+stale = sr.system_health(request)["ai"]
+check("AI detection stalled while cameras deliver video: an outage",
+      stale["state"] == "outage" and "analysed no frame for 5 min" in stale["warnings"][0], stale["warnings"])
+detector.last_inference_time = clock.now()
+SPOT["on"], SPOT["devices"] = False, []
+off = sr.system_health(request)["network"]["hotspot"]
+check("hotspot off: an outage, cameras cannot connect", off["state"] == "outage"
+      and "hotspot is off" in off["warnings"][0], off)
+SPOT.update(on=True, power_save="on")
+check("hotspot power saving on: degraded, with what to do",
+      sr.system_health(request)["network"]["hotspot"]["state"] == "degraded")
+SPOT.update(power_save="off",
+            devices=[{"mac": "aa:bb:cc:00:00:11", "ip": "10.42.0.11", "hostname": "C220", "signal_dbm": -52,
+                      "signal_avg_dbm": -53, "tx_retries": 10, "tx_failed": 0},
+                     {"mac": "aa:bb:cc:00:00:12", "ip": "10.42.0.12", "hostname": "C200",
+                      "signal_dbm": -81, "signal_avg_dbm": -80}])
+setup_routes.internet_problem = lambda: "Connected to the router, but the app server cannot be reached"
+cut = sr.system_health(request)
+setup_routes.internet_problem = lambda: None
+check("app server unreachable: network outage, and the cloud link says alerts wait on the device",
+      cut["network"]["state"] == "outage" and cut["network"]["internet"]["connected"] is False
+      and cut["services"]["app_server"]["state"] == "outage"
+      and "alerts wait on this device" in cut["services"]["app_server"]["warnings"][0],
+      cut["services"]["app_server"])
+cases = {"disabled": {"installed": False},
          "unknown": {"installed": True, "edge_id": "e1", "readable": False},
-         "warning": {"installed": True, "edge_id": "e1", "readable": True, "keyed": False,
-                     "reason": "frpc.toml does not route /e1"}}
-check("tunnel: not installed / not enrolled / unreadable are states; only a wrong route warns",
-      all(sr._tunnel_health(t)["state"] == want and bool(sr._tunnel_health(t)["warnings"]) == (want == "warning")
-          for want, t in cases.items()))
+         "outage": {"installed": True, "edge_id": "e1", "readable": True, "keyed": False,
+                    "reason": "frpc.toml does not route /e1"}}
+lost = sr._tunnel_health({**TUNNEL, "connected": False})
+check("tunnel: not installed / unreadable are states; a wrong route or a lost server connection warns",
+      all(sr._tunnel_health(t)["state"] == want for want, t in cases.items())
+      and lost["state"] == "outage" and "tunnel server" in lost["warnings"][0], lost)
 
+STATION_DUMP = """Station aa:bb:cc:00:00:11 (on wlP1p1s0)
+\tinactive time:\t120 ms
+\ttx retries:\t12
+\ttx failed:\t1
+\tsignal:  \t-52 [-52, -55] dBm
+\tsignal avg:\t-53 [-53, -56] dBm
+\ttx bitrate:\t72.2 MBit/s MCS 7 short GI
+\tconnected time:\t3600 seconds
+Station aa:bb:cc:00:00:12 (on wlP1p1s0)
+\tsignal:  \t-81 dBm
+"""
+IW_INFO = ("Interface wlP1p1s0\n\tssid ceravis-acg08mbv3\n\ttype AP\n\tchannel 36 (5180 MHz), "
+           "width: 80 MHz, center1: 5210 MHz\n\ttxpower 20.00 dBm")
+hotspot._run = lambda args, timeout=15.0: (0, STATION_DUMP if "station" in args else
+                                           IW_INFO if "info" in args else "Power save: off")
+st = hotspot._stations("wlP1p1s0")
+rd = hotspot.radio("wlP1p1s0")
+hotspot._run = real_radio_run
+check("hotspot: each device's signal, retries, bitrate and connected time from `iw station dump`",
+      st["aa:bb:cc:00:00:11"] == {"inactive_ms": 120, "tx_retries": 12, "tx_failed": 1, "signal_dbm": -52,
+                                  "signal_avg_dbm": -53, "tx_bitrate_mbps": 72.2, "connected_secs": 3600}
+      and st["aa:bb:cc:00:00:12"] == {"signal_dbm": -81}, st)
+check("hotspot radio: name, channel, frequency, width, power, power saving",
+      rd == {"ssid": "ceravis-acg08mbv3", "channel": 36, "frequency_mhz": 5180, "width_mhz": 80,
+             "tx_power_dbm": 20.0, "power_save": "off"}, rd)
+box = Path(tempfile.mkdtemp(prefix="ceravis-net-"))
+(box / "route").write_text("Iface\tDestination\tGateway\tFlags\nenP8p1s0\t00000000\t0100A8C0\t0003\n")
+check("default gateway read from the kernel's routing table (little-endian hex)",
+      real_gateway(box / "route") == "192.168.0.1", real_gateway(box / "route"))
+APP_HEALTH = json.loads(json.dumps(sr.system_health(request), default=str))   # what the agent receives
 from api import auth                                              # noqa: E402
 check("/api/v1/system/health is readable over loopback, like /system/status",
       auth._matches(auth._LOCAL_READ_RE, "GET", "/api/v1/system/health")
-      and auth._matches(auth._LOCAL_READ_RE, "GET", "/api/v1/system/status")
       and not auth._matches(auth._LOCAL_READ_RE, "POST", "/api/v1/system/health"))
-APP_HEALTH = json.loads(json.dumps(health, default=str))          # what the agent receives
 
 # --------------------------------------------------------------------------
-print("\n2. the agent's systemd services")
+print("\n2. the agent's heartbeat summary")
 from fms_agent import collect, health as agent_health, identity, transport  # noqa: E402
 import fms_protocol as protocol                                   # noqa: E402
-
-box = Path(tempfile.mkdtemp(prefix="ceravis-hb-"))
-(box / "bin").mkdir()
-scenario = box / "units.txt"
-(box / "bin" / "systemctl").write_text('#!/bin/sh\ncat "$UNITS_FILE"\n')
-(box / "bin" / "timedatectl").write_text('#!/bin/sh\necho "${NTP:-yes}"\n')
-for f in (box / "bin").iterdir():
-    f.chmod(0o755)
-os.environ["PATH"] = f"{box / 'bin'}{os.pathsep}{os.environ['PATH']}"
-os.environ["UNITS_FILE"] = str(scenario)
-mono_us = int((__import__("time").monotonic() - 7200) * 1e6)          # active for 2 hours
-
-
-def units(ceravis_restarts: int) -> None:
-    blocks = [
-        f"Id=ceravis.service\nLoadState=loaded\nActiveState=active\nSubState=running\nResult=success\n"
-        f"ActiveEnterTimestampMonotonic={mono_us}\nNRestarts={ceravis_restarts}\nMemoryCurrent=812345678",
-        "Id=frpc.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\n"
-        "ActiveEnterTimestampMonotonic=0\nNRestarts=0\nMemoryCurrent=[not set]",
-        f"Id=ceravis-fleet-agent.service\nLoadState=loaded\nActiveState=active\nSubState=running\n"
-        f"Result=success\nActiveEnterTimestampMonotonic={mono_us}\nNRestarts=0\nMemoryCurrent=31000000",
-        "Id=ceravis-edge-id.path\nLoadState=loaded\nActiveState=inactive\nSubState=dead\nResult=success\n"
-        "ActiveEnterTimestampMonotonic=0\nNRestarts=\nMemoryCurrent=18446744073709551615",
-        "Id=ceravis-reboot.timer\nLoadState=loaded\nActiveState=failed\nSubState=failed\nResult=resources\n"
-        "ActiveEnterTimestampMonotonic=0\nNRestarts=\nMemoryCurrent=[not set]",
-    ]
-    scenario.write_text("\n\n".join(blocks) + "\n")
-
-
-units(2)
-h = agent_health.Health()
-facts = agent_health.agent_facts(41.3, 60.0, "the-key")
-s1 = h.build(APP_HEALTH, None, facts)
-units(3)
-s2 = h.build(APP_HEALTH, None, facts)
-s3 = h.build(APP_HEALTH, None, facts)
-c1, c2, c3 = (s["services"]["ceravis"] for s in (s1, s2, s3))
-check("ceravis: running, uptime from systemd (2 h), restarts, memory",
-      c1["state"] == "running" and 7190 <= c1["uptime_secs"] <= 7210 and c1["restarts"] == 2
-      and c1["memory_bytes"] == 812345678 and c1["warnings"] == [], c1)
-check("a restart since the last heartbeat is reported once, then not again",
-      c2["warnings"] == ["ceravis.service restarted 1 time since the last heartbeat"]
-      and c3["warnings"] == [], (c2["warnings"], c3["warnings"]))
-sv = s1["services"]
-check("frpc not installed (a LAN-only home): a state, not a warning",
-      sv["frpc"]["state"] == "not_installed" and sv["frpc"]["warnings"] == [], sv["frpc"])
-check("the edge_id watcher stopped: warned (a new edge_id would not reach the app)",
-      sv["edge_id_watch"]["state"] == "stopped" and sv["edge_id_watch"]["warnings"]
-      and sv["edge_id_watch"]["memory_bytes"] is None, sv["edge_id_watch"])
-check("a failed timer: warned, with systemd's reason",
-      sv["reboot_timer"]["state"] == "failed" and "resources" in sv["reboot_timer"]["warnings"][0],
-      sv["reboot_timer"])
-check("the fleet agent reports its own version, FMS round trip, interval, enrollment key",
-      sv["fleet_agent"]["version"] == agent_health.__version__ and sv["fleet_agent"]["fms_rtt_ms"] == 41.3
-      and sv["fleet_agent"]["can_enroll"] is True and sv["fleet_agent"]["state"] == "running",
-      sv["fleet_agent"])
-check("the app's own services ride along: mediamtx, app_server, internet, tunnel",
-      all(sv[k]["state"] == APP_HEALTH["services"][k]["state"] for k in agent_health.APP_SERVICES))
-check("status: the worst of all parts, and the number of warnings",
-      s1["state"] == "warning" and s1["warning_count"] == sum(
-          len(p["warnings"]) for p in [s1["hardware"], s1["backend"], *s1["services"].values(),
-                                       *s1["cameras"]]), (s1["state"], s1["warning_count"]))
-
-# --------------------------------------------------------------------------
-print("\n3. hardware: the app's checks while it answers, the agent's own when it does not")
-real = (collect.disk, agent_health._temperatures)
-collect.disk = lambda: {"root": {"total_bytes": 100, "free_bytes": 3, "used_pct": 97.0},
-                        "data": {"total_bytes": 100, "free_bytes": 3, "used_pct": 97.0}}
-agent_health._temperatures = lambda: {"cpu": 90.5, "tj": 91.2}
-os.environ["NTP"] = "no"
-down = h.build(None, "cannot reach http://127.0.0.1:8000/api/v1/system/health (Connection refused)", facts)
-hw = down["hardware"]
-check("app not answering: the agent warns itself — data disk, running hot, clock",
-      any("data disk 97.0% full" in w for w in hw["warnings"])
-      and any("running hot: 91" in w for w in hw["warnings"])
-      and "system clock is not NTP-synced" in hw["warnings"] and hw["state"] == "warning", hw["warnings"])
-check("...the backend is DOWN with the reason, cameras unknown (null), app services unknown",
-      down["state"] == "down" and down["backend"]["state"] == "down"
-      and "Connection refused" in down["backend"]["warnings"][0] and down["cameras"] is None
-      and all(down["services"][k]["state"] == "unknown" for k in agent_health.APP_SERVICES), down["backend"])
-up = h.build(APP_HEALTH, None, facts)
-check("app answering: its hardware checks are used, the agent adds none of the same",
-      not any("running hot" in w or "NTP" in w or "data disk" in w for w in up["hardware"]["warnings"]),
-      up["hardware"]["warnings"])
-check("...and the board's sensors from the app fill the hardware part (GPU, power)",
-      up["hardware"]["gpu"]["load_pct"] == 64 and up["hardware"]["power"]["board_w"] == 7.8
-      and up["hardware"]["temperature_c"]["cpu"] == 90.5, up["hardware"]["gpu"])
-collect.disk, agent_health._temperatures = real
-os.environ.pop("NTP")
 
 
 class _NoData(type(Path())):
@@ -289,21 +286,225 @@ _real_path, collect.Path = collect.Path, _NoData
 check("a sysfs file that gives no data reads as '' — never a crashed heartbeat",
       collect._read("/sys/class/thermal/thermal_zone9/temp") == "")
 collect.Path = _real_path
-mem = agent_health._memory()
-check("memory, CPU and uptime read from the kernel here",
-      (mem["total_bytes"] or 0) > 0 and isinstance(up["hardware"]["cpu"]["cores"], int)
-      and up["hardware"]["uptime_secs"] > 0, mem)
+
+UNITS = {
+    "ceravis.service": ("loaded", "active", "2"), "frpc.service": ("not-found", "inactive", "0"),
+    "ceravis-fleet-agent.service": ("loaded", "active", "0"),
+    "ceravis-reboot.timer": ("loaded", "failed", ""), "NetworkManager.service": ("loaded", "active", "0"),
+    "ssh.service": ("loaded", "active", "0"), "systemd-timesyncd.service": ("loaded", "active", "0"),
+    "systemd-resolved.service": ("loaded", "active", "0"), "avahi-daemon.service": ("loaded", "inactive", "0"),
+    "nvfancontrol.service": ("loaded", "active", "0"), "systemd-journald.service": ("loaded", "active", "0"),
+    "apt-daily-upgrade.timer": ("loaded", "active", ""), "bluetooth.service": ("loaded", "active", "0"),
+    "docker.service": ("masked", "inactive", "0"),
+}
+
+
+def fake_systemd(names):
+    out = {}
+    for n in names:
+        load, active, restarts = UNITS.get(n, ("not-found", "inactive", ""))
+        out[n] = {"Id": n, "LoadState": load, "ActiveState": active, "SubState": "",
+                  "Result": "resources" if active == "failed" else "success",
+                  "ActiveEnterTimestampMonotonic": "1", "NRestarts": restarts,
+                  "MemoryCurrent": "812345678" if n == "ceravis.service" else "[not set]"}
+    return out
+
+
+GiB = 1024 ** 3
+OOM = [5]
+BOOT = {"reason": "scheduled_reboot", "at": "2026-11-12T03:21:07+05:30"}
+agent_health._systemd = fake_systemd
+agent_health._ntp_synchronized = lambda: True
+agent_health._memory = lambda: {"total_bytes": 8 * GiB, "available_bytes": 3 * GiB, "used_pct": 62.5,
+                                "swap_total_bytes": 4 * GiB, "swap_used_pct": 4.1}
+agent_health._temperatures = lambda: {"cpu": 52.1, "tj": 53.0}
+agent_health._fan = lambda: {"pct": 40, "rpm": 2150}
+agent_health._power_mode = lambda: "25W"
+agent_health._read_only = lambda paths: []
+agent_health._oom_kills = lambda: OOM[0]
+agent_health._last_boot = lambda: dict(BOOT)
+agent_health._updates = lambda: {"pending": 3, "security": 1, "reboot_required": False}
+collect.disk = lambda: {"root": {"total_bytes": 116 * GiB, "free_bytes": 64 * GiB, "used_pct": 44.8},
+                        "data": {"total_bytes": 116 * GiB, "free_bytes": 64 * GiB, "used_pct": 44.8}}
+collect._uptime = lambda: 86412.0
+facts = agent_health.agent_facts(41.3, 60.0, "the-key")
+h = agent_health.Health()
+d1 = h.observe(APP_HEALTH, None, facts)
+s1 = h.summary(d1)
+check("the summary: state, warning_count, hardware, network, services, cameras — nothing else",
+      list(s1) == ["state", "warning_count", "hardware", "network", "services", "cameras"], list(s1))
+check("services under names anyone understands, in a fixed order (no edge_id watcher)",
+      list(s1["services"]) == [n for n, _, _ in agent_health.SERVICES] and "edge_id_watch" not in s1["services"]
+      and list(s1["services"])[:4] == ["edge_application", "video_server", "ai_detection", "cloud_connection"],
+      list(s1["services"]))
+check("every part in the summary: a state from the vocabulary and a warnings list",
+      all(p["state"] in VOCAB and isinstance(p["warnings"], list) for p in
+          [s1["hardware"], s1["network"], *s1["services"].values(), *s1["cameras"]]))
+hw = s1["hardware"]
+check("hardware in plain numbers: GB, whole %, hottest °C, fan %, watts, power mode, last boot",
+      hw == {"state": "operational", "uptime_secs": 86412, "last_boot": "scheduled_reboot",
+             "cpu_pct": hw["cpu_pct"], "gpu_pct": 64, "ram_used_gb": 5.0, "ram_total_gb": 8.0,
+             "disk_used_gb": 52.0, "disk_total_gb": 116.0, "temperature_c": 53.0, "fan_pct": 40,
+             "power_w": 7.8, "power_mode": "25W", "warnings": []}, hw)
+check("no model, OS, boot_id, hostname, edge_id or device_id in the heartbeat",
+      not any(k in json.dumps(s1) for k in ('"model"', '"os"', '"boot_id"', '"hostname"', '"edge_id"',
+                                            '"device_id"')))
+check("network: internet connected, latency, hotspot on, how many devices on it",
+      s1["network"] == {"state": "operational", "internet": "connected", "latency_ms": 42.0,
+                        "hotspot": "on", "hotspot_devices": 2, "warnings": []}, s1["network"])
+sv = s1["services"]
+check("edge_application: running and answering, with the release version",
+      sv["edge_application"] == {"state": "operational", "version": settings.app_version, "warnings": []},
+      sv["edge_application"])
+check("remote_access disabled on a LAN-only home (frpc not installed): a state, not a warning",
+      sv["remote_access"] == {"state": "disabled", "warnings": []}, sv["remote_access"])
+check("nightly_reboot: a failed timer is an outage with systemd's reason",
+      sv["nightly_reboot"]["state"] == "outage" and "resources" in sv["nightly_reboot"]["warnings"][0],
+      sv["nightly_reboot"])
+check("edge_hotspot = NetworkManager running AND the hotspot on",
+      sv["edge_hotspot"]["state"] == "operational", sv["edge_hotspot"])
+check("an optional service that is off (local discovery) is disabled, not an outage",
+      sv["local_discovery"]["state"] == "disabled" and sv["local_discovery"]["warnings"] == [])
+check("os_hardening: a switched-off service running again is drift (bluetooth)",
+      sv["os_hardening"]["state"] == "degraded" and "bluetooth" in sv["os_hardening"]["warnings"][0],
+      sv["os_hardening"])
+check("cloud_connection carries the uploads waiting; security_updates the security updates waiting",
+      sv["cloud_connection"]["pending_uploads"] == 0 and sv["security_updates"]["pending_security"] == 1)
+cams = {c["camera_id"]: c for c in s1["cameras"]}
+check("cameras: id, room, state, fps, reconnects, recording, night vision, PTZ, Wi-Fi signal — nothing else",
+      list(cams[lounge]) == ["camera_id", "room", "state", "fps", "reconnects", "recording", "night_vision",
+                             "ptz", "wifi_signal_dbm", "warnings"]
+      and cams[lounge]["wifi_signal_dbm"] == -53 and cams[kitchen]["state"] == "outage"
+      and cams[bedroom]["state"] == "disabled", cams[lounge])
+check("device state: degraded (warnings, the watch still works); the count adds every part's warnings",
+      s1["state"] == "degraded" and s1["warning_count"] == sum(
+          len(p["warnings"]) for p in [s1["hardware"], s1["network"], *s1["services"].values(),
+                                       *s1["cameras"]]), (s1["state"], s1["warning_count"]))
+UNITS["ceravis.service"] = ("loaded", "active", "3")
+s2 = h.summary(h.observe(APP_HEALTH, None, facts))
+d3 = h.observe(APP_HEALTH, None, facts)
+s3 = h.summary(d3)
+h.delivered(d3)
+s4 = h.summary(h.observe(APP_HEALTH, None, facts))
+check("a restart is said until a heartbeat carrying it is delivered, then not again",
+      s2["services"]["edge_application"]["warnings"] == ["ceravis.service restarted 1 time since the last heartbeat"]
+      and s3["services"]["edge_application"]["warnings"] == s2["services"]["edge_application"]["warnings"]
+      and s4["services"]["edge_application"]["warnings"] == [],
+      (s2["services"]["edge_application"], s4["services"]["edge_application"]))
+OOM[0] = 7
+s5 = h.summary(h.observe(APP_HEALTH, None, facts))
+check("processes stopped for lack of memory between two looks: said until delivered",
+      any("2 processes were stopped for lack of memory" in w for w in s5["hardware"]["warnings"]),
+      s5["hardware"]["warnings"])
+offline = json.loads(json.dumps(APP_HEALTH))
+offline["network"].update(state="outage", internet={"connected": False, "latency_ms": None},
+                          warnings=["No internet: connect an Ethernet cable"])
+d6 = h.observe(offline, None, facts)
+s6 = h.summary(d6)
+s7 = h.summary(h.observe(APP_HEALTH, None, facts))
+check("no internet: network outage, disconnected — and once back, when it was lost and for how long",
+      s6["network"]["state"] == "outage" and s6["network"]["internet"] == "disconnected"
+      and s7["network"]["state"] == "degraded"
+      and any("the internet connection was lost from" in w for w in s7["network"]["warnings"]),
+      s7["network"])
+BOOT.update(reason="unexpected_restart")
+collect._uptime = lambda: 300.0
+s8 = h.summary(h.observe(APP_HEALTH, None, facts))
+check("an unexpected restart (power cut / crash) is reported for 15 minutes after it",
+      s8["hardware"]["last_boot"] == "unexpected_restart"
+      and any("restarted unexpectedly 5 min ago" in w for w in s8["hardware"]["warnings"]))
+BOOT.update(reason="scheduled_reboot")
+collect._uptime = lambda: 86412.0
+down = h.summary(h.observe(None, "cannot reach http://127.0.0.1:8000/api/v1/system/health "
+                                 "(Connection refused)", facts))
+dsv = down["services"]
+check("app not answering: OUTAGE — the reason under edge_application",
+      down["state"] == "outage" and dsv["edge_application"]["state"] == "outage"
+      and "not answering" in dsv["edge_application"]["warnings"][-1], dsv["edge_application"])
+check("...what only the app can see is unknown: video server, AI, cloud, network",
+      all(dsv[k]["state"] == "unknown" for k in ("video_server", "ai_detection", "cloud_connection"))
+      and down["network"]["state"] == "unknown" and down["network"]["hotspot"] == "unknown")
+check("...the cameras stay listed (last known), each unknown — tiles grey, not gone",
+      [c["camera_id"] for c in down["cameras"]] == [lounge, kitchen, bedroom]
+      and all(c["state"] == "unknown" for c in down["cameras"]), down["cameras"])
+check("...the systemd services are still measured (NetworkManager, SSH, …)",
+      dsv["edge_hotspot"]["state"] == "operational" and dsv["ssh_access"]["state"] == "operational")
+size = len(transport.encode({"status": s1, "results": []}))
+check("the heartbeat is small: under 3 KB for three cameras and 16 services", size < 3072, size)
 
 # --------------------------------------------------------------------------
-print("\n4. the heartbeat against a stand-in FMS")
+print("\n3. the local logs")
+from common.logbook import Logbook, log_dir                       # noqa: E402
+from fms_agent.logs import DeviceLogs                             # noqa: E402
+
+logs = DeviceLogs(DATA)
+logs.observation(d1, s1)
+joined = json.loads(json.dumps(d6))
+joined["app"]["network"]["hotspot"]["devices"].append({"mac": "aa:bb:cc:00:00:99", "ip": "10.42.0.99",
+                                                       "hostname": "phone", "signal_dbm": -60})
+logs.observation(joined, s6)
+health_rows = [json.loads(r) for r in logs.health.tail(10)]
+event_rows = [json.loads(r) for r in logs.events.tail(100)]
+kinds = [e["event"] for e in event_rows]
+check("health.jsonl: one full record per look — the detail AND the summary sent",
+      len(health_rows) == 2 and health_rows[0]["kind"] == "snapshot" and "units" in health_rows[0]
+      and health_rows[0]["summary"]["state"] == s1["state"] and health_rows[0]["ts"], list(health_rows[0]))
+check("events.jsonl: the agent's start, then only what changed",
+      kinds[0] == "agent_started" and "state_changed" in kinds and "warning_raised" in kinds, kinds)
+check("...a part's state change says from what to what (network operational -> outage)",
+      any(e["event"] == "state_changed" and e["part"] == "network" and e["from"] == "operational"
+          and e["to"] == "outage" for e in event_rows))
+check("...a device joining the hotspot is an event (mac, ip, signal)",
+      any(e["event"] == "hotspot_device_joined" and e["mac"] == "aa:bb:cc:00:00:99" for e in event_rows))
+check("all logs live in ONE folder: <data>/logs", logs.health.path.parent == log_dir(DATA)
+      and logs.events.path.parent == logs.fleet.path.parent == log_dir(DATA))
+book = Logbook(DATA / "rot" / "x.jsonl", max_bytes=200, backups=2)
+for i in range(40):
+    book.write({"n": i, "pad": "x" * 30})
+names = sorted(p.name for p in (DATA / "rot").iterdir())
+newest = [json.loads(r)["n"] for r in book.tail(5)]
+check("one rotation rule: past the size the file moves to .1, .2 — never more than kept",
+      names == ["x.jsonl", "x.jsonl.1", "x.jsonl.2"] and newest == [35, 36, 37, 38, 39], (names, newest))
+from monitoring.request_log import RequestLog                     # noqa: E402
+
+inbound = Logbook(DATA / "in" / "incoming.jsonl", max_bytes=10 ** 6, backups=1)
+rl = RequestLog(inbound)
+for _ in range(5):
+    rl.record("GET", "/api/v1/system/status", 200, 3.0, "lan", "192.168.0.9", [])
+rl.record("POST", "/api/v1/system/reboot", 401, 12.0, "fleet", "127.0.0.1", ["edge_id"])
+rl.record("GET", "/api/v1/cameras", 500, 8.0, "lan", "192.168.0.9", [])
+rl.flush(force=True)
+rows = [json.loads(r) for r in inbound.tail(10)]
+check("incoming.jsonl: writes and failures one line each (names of query parameters only)",
+      [r["kind"] for r in rows] == ["request", "request", "polling"]
+      and rows[0]["status"] == 401 and rows[0]["origin"] == "fleet" and rows[0]["query"] == ["edge_id"]
+      and "body" not in rows[0], rows[:2])
+check("...successful reads counted per path in one polling line",
+      rows[2]["requests"] == {"GET /api/v1/system/status": 5}, rows[2])
+
+# --------------------------------------------------------------------------
+print("\n4. orders")
+check("`info` and `logs` of a log file are allowed",
+      protocol.normalize_command("info") == {}
+      and protocol.normalize_command("logs", {"file": "events", "lines": 50}) == {"file": "events", "lines": 50}
+      and protocol.normalize_command("logs", {"unit": "ceravis"}) == {"unit": "ceravis", "lines": 200})
+refused = []
+for bad in ({"file": "cloud_wire"}, {"file": "talkback"}, {"file": "../../etc/shadow"}, {"unit": "sshd"}):
+    try:
+        protocol.normalize_command("logs", bad)
+    except ValueError:
+        refused.append(bad)
+check("...the wire and talk-back logs (personal data), any path and any other unit are refused",
+      len(refused) == 4, refused)
+
+# --------------------------------------------------------------------------
+print("\n5. the heartbeat against a stand-in FMS")
 SECRET = "nHuchkxLPFxmobs_7wDbrWz5hmIcx7J5ymFohvnDpyE"           # the SAMPLE device key
 EDGE_ID = "ce7k2m9xq4w8n3"
 
 
 class Server:
     def __init__(self, handler_body) -> None:
-        outer = self
-
         class H(BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass
@@ -321,11 +522,11 @@ class Server:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        outer.seen = []
 
 
 fms_seen: list[dict] = []
-orders = [[{"id": "cmd_81", "kind": "ping"}], []]
+orders = [[{"id": "cmd_81", "kind": "ping"}, {"id": "cmd_82", "kind": "info"},
+           {"id": "cmd_83", "kind": "logs", "args": {"file": "events", "lines": 5}}], []]
 
 
 def fms_post(req):
@@ -333,8 +534,8 @@ def fms_post(req):
     h_ = req.headers
     message = protocol.request_message(h_.get(protocol.HDR_DEVICE, ""), "POST", req.path, body,
                                        h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""))
-    signed = protocol.verify(SECRET, message, h_.get(protocol.HDR_SIGNATURE))
-    fms_seen.append({"signed": signed, "path": req.path, "device": h_.get(protocol.HDR_DEVICE),
+    fms_seen.append({"signed": protocol.verify(SECRET, message, h_.get(protocol.HDR_SIGNATURE)),
+                     "path": req.path, "device": h_.get(protocol.HDR_DEVICE),
                      "lines": message.decode().split("\n"), "body": json.loads(body)})
     raw = json.dumps({"server_time": 1793795400.73, "next_poll_after_secs": 60,
                       "commands": orders.pop(0) if orders else []}).encode()
@@ -351,8 +552,7 @@ edge_app = Server(lambda req: None)
 from fms_agent.agent import Agent                                 # noqa: E402
 from fms_agent.config import Config                               # noqa: E402
 
-units(3)
-state_dir = box / "state"
+state_dir = DATA / "state"
 identity.save(state_dir, {"edge_id": EDGE_ID, "secret": SECRET, "device_id": "ceravis-acg08mbv3"})
 agent = Agent(Config(url=fms.url, enroll_key="k", status_url=edge_app.url + "/api/v1/system/status",
                      state_dir=state_dir, fingerprint="1424622063459",
@@ -360,29 +560,67 @@ agent = Agent(Config(url=fms.url, enroll_key="k", status_url=edge_app.url + "/ap
 first = agent.beat()
 second = agent.beat()
 b1, b2 = fms_seen[0], fms_seen[1]
-check("the body is exactly {status, results} — no protocol, no agent, no status_error",
-      list(b1["body"]) == ["status", "results"], list(b1["body"]))
-check("status holds every part: state, warning_count, hardware, backend, services, cameras",
-      list(b1["body"]["status"]) == ["state", "warning_count", "hardware", "backend", "services", "cameras"],
+check("the body is exactly {status, results}", list(b1["body"]) == ["status", "results"], list(b1["body"]))
+check("status: state, warning_count, hardware, network, services, cameras",
+      list(b1["body"]["status"]) == ["state", "warning_count", "hardware", "network", "services", "cameras"],
       list(b1["body"]["status"]))
 check("signed with the DEVICE key over the 6 lines (edge_id, POST, path, sha256, timestamp, nonce)",
       b1["signed"] and b1["path"] == protocol.HEARTBEAT_PATH and b1["device"] == EDGE_ID
       and len(b1["lines"]) == 6 and b1["lines"][0] == EDGE_ID, b1["lines"][:3])
-check("the cameras arrive with fps and uptime, as the app measured them",
-      [c["fps"] for c in b1["body"]["status"]["cameras"]] == [14.8, 0.0]
-      and b1["body"]["status"]["cameras"][0]["uptime_secs"] == 3601)
-check("an order in the reply runs, and its answer goes out 1 second later in the next heartbeat",
-      first == 1.0 and b2["body"]["results"] and b2["body"]["results"][0]["id"] == "cmd_81"
-      and b2["body"]["results"][0]["ok"] and "pong" in b2["body"]["results"][0]["output"],
-      b2["body"]["results"])
-check("...and once delivered it is not sent again", second == 60.0 and agent.results == [])
-check("the heartbeat stays far below the body limit",
-      len(transport.encode(b1["body"])) < protocol.MAX_BODY_BYTES // 20, len(transport.encode(b1["body"])))
-
+check("the cameras arrive with fps and Wi-Fi signal, as the app measured them",
+      [c["fps"] for c in b1["body"]["status"]["cameras"]] == [14.8, 0.0, None]
+      and b1["body"]["status"]["cameras"][0]["wifi_signal_dbm"] == -53, b1["body"]["status"]["cameras"])
+res = {r["id"]: r for r in b2["body"]["results"]}
+check("orders in the reply run, and their answers go out 1 second later in the next heartbeat",
+      first == 1.0 and res["cmd_81"]["ok"] and "pong" in res["cmd_81"]["output"], b2["body"]["results"])
+info = json.loads(res["cmd_82"]["output"]) if res.get("cmd_82", {}).get("ok") else {}
+check("`info`: release, agent version, board, OS — what is installed",
+      info.get("agent_version") == agent_health.__version__ and "edge_version" in info and "model" in info,
+      res.get("cmd_82"))
+check("`logs` of a log file: the device's own events, newest last",
+      res["cmd_83"]["ok"] and "agent_started" in res["cmd_83"]["output"], res["cmd_83"]["output"][-200:])
+check("...and once delivered they are not sent again", second == 60.0 and agent.results == [])
+fleet_rows = [json.loads(r) for r in agent.logs.fleet.tail(20)]
+check("fleet.jsonl: every check-in and every order, with its outcome",
+      [r["kind"] for r in fleet_rows].count("heartbeat") == 2
+      and {r.get("order") for r in fleet_rows if r["kind"] == "order"} == {"ping", "info", "logs"},
+      fleet_rows[:2])
 fms.server.shutdown()
 edge_app.server.shutdown()
+
+# --------------------------------------------------------------------------
+print("\n6. why the device last started")
+from maintenance import reboot                                    # noqa: E402
+
+boot_id = ["boot-A"]
+reboot._read = lambda path: boot_id[0] if path.endswith("boot_id") else "86400.0 1.0"
+reboot._BOOT_FILE.unlink(missing_ok=True)
+reboot._MARKER_FILE.unlink(missing_ok=True)
+reasons = []
+for step in ("first", "same boot", "no clean stop", "clean stop", "nightly", "manual"):
+    if step == "no clean stop":
+        boot_id[0] = "boot-B"
+    elif step == "clean stop":
+        reboot.mark_clean_stop()
+        boot_id[0] = "boot-C"
+    elif step == "nightly":
+        reboot._write_marker("scheduled nightly", "systemd timer")
+        boot_id[0] = "boot-D"
+    elif step == "manual":
+        reboot._write_marker("manual", "carer")
+        boot_id[0] = "boot-E"
+    reboot.boot_report()
+    reasons.append(reboot.last_boot()["reason"])
+check("first start: unknown; an app restart keeps the boot's answer",
+      reasons[:2] == ["unknown", "unknown"], reasons)
+check("no orderly stop and no marker: unexpected_restart (power cut / crash)",
+      reasons[2] == "unexpected_restart", reasons)
+check("an orderly stop outside CERAVIS: system_restart", reasons[3] == "system_restart", reasons)
+check("the nightly reboot / a person's reboot: scheduled_reboot / manual_reboot",
+      reasons[4:] == ["scheduled_reboot", "manual_reboot"], reasons)
+
+shutil.rmtree(DATA, ignore_errors=True)
 shutil.rmtree(box, ignore_errors=True)
-shutil.rmtree(settings.data_dir, ignore_errors=True)
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED:")

@@ -77,13 +77,24 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   → `ceravis-edge-id.path` → `sync_edge_id.sh` → restart → frpc re-keyed,
   MediaMTX paths, status beat to the app server).
 - The heartbeat (`POST /v1/device/heartbeat`, 6 signed lines, device key) is
-  specified in **`docs/fleet-heartbeat-api.md`**: body = `{status, results}`;
-  `status` = `state`, `warning_count`, `hardware`, `backend`, `services`,
-  `cameras`, every part with its own `state` and `warnings` (empty = fine). The
-  agent measures hardware and systemd services (`fms_agent/health.py`); the app
+  specified in **`docs/fleet-heartbeat-api.md`** (version 2, agent 0.7.0): body =
+  `{status, results}`; `status` = `state`, `warning_count`, `hardware`,
+  `network`, `services` (16, plain names: `edge_application`, `video_server`,
+  `ai_detection`, `cloud_connection`, `remote_access`, `edge_hotspot` …),
+  `cameras` (with `wifi_signal_dbm`). ONE state vocabulary everywhere:
+  `operational` / `degraded` / `outage` / `disabled` / `unknown`; every part has
+  `warnings` (empty = fine). It is a SHORT summary (~2 KB): the agent measures
+  every part each minute (`fms_agent/health.py`: hardware + systemd; the app
   reports the rest from `GET /api/v1/system/health`, built from the SAME warning
-  rules as `/api/v1/system/status` (whose output must not change). Not built on
-  the Java side yet: the agent logs one 404 warning and backs off.
+  rules as `/api/v1/system/status`, whose output must not change) and keeps the
+  full detail on the device. Not built on the Java side yet: the agent logs one
+  404 warning and backs off.
+- Device logs: ONE folder `<data>/logs/` (`health.jsonl` each minute,
+  `events.jsonl` changes only, `fleet.jsonl`, `incoming.jsonl`), one writer
+  (`edge/common/logbook.py`), one rotation rule; the older app logs stay in the
+  data folder. Every file and field is explained in **`edge/LOGS.md`** (it ships
+  with releases; `docs/` does not). Orders `info` and `logs` `{"file": …}` read
+  them remotely; the wire and talk-back logs (personal data) never leave the device.
 - An update never enrolls again: `/var/lib/ceravis-fleet-agent/identity.json`
   survives install, update and upgrade; only `seal.sh` removes it.
 - A test FMS on the LAN: `FMS_URL=http://<private IP>:<port>` plus

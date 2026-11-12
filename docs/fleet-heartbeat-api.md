@@ -1,15 +1,22 @@
-# Fleet heartbeat API (edge fleet agent → Java FMS)
+# Fleet heartbeat API (edge fleet agent → Java FMS) — version 2
 
-**Status: specified and built on the edge (agent 0.6.0, 2026-11-05); not yet built
-on the Java side.** The agent sends it every ~60 s after enrolling
-(`docs/fleet-enrollment-api.md`). Until the FMS has this endpoint the agent logs
-one `HTTP 404` warning and retries with back-off; it never enrolls again for it.
+**Status: version 2, specified and built on the edge (fleet agent 0.7.0,
+2026-11-12); to be built on the Java side.** It replaces version 1 (agent 0.6.0):
+see [Changes from version 1](#changes-from-version-1). The agent sends it every
+~60 s after enrolling (`docs/fleet-enrollment-api.md`). Until the FMS has this
+endpoint the agent logs one `HTTP 404` warning and retries with back-off; it
+never enrolls again for it.
 
-The heartbeat is the device's regular check-in: **"I am alive; here is the health
+The heartbeat is the device's regular check-in: **"I am alive; here is the state
 of every part of me; here are the answers to your last orders."** The FMS answers
-**"call again in N seconds; here are new orders."** It is a summary to keep
-everyone informed and to raise alerts; deep diagnosis is done afterwards by
-connecting to the device or with a specific order (`logs`, …).
+**"call again in N seconds; here are new orders."**
+
+It is deliberately short (about 2 KB): each part's **state**, the few numbers
+worth a graph, and **warnings** in plain sentences. Everything else — every
+sensor, every service's memory and uptime, each hotspot device's radio figures,
+the full camera detail — is recorded on the device every minute
+(`<data>/logs/health.jsonl`, `events.jsonl`, `edge/LOGS.md`) and read when a
+warning needs it: with the `logs` order below, or over SSH.
 
 ## Request
 
@@ -20,7 +27,7 @@ User-Agent: ceravis-fleet-agent
 X-Ceravis-Device: ce7k2m9xq4w8n3
 X-Ceravis-Timestamp: 1793795400.512
 X-Ceravis-Nonce: 4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
-X-Ceravis-Signature: zSOJZXIK3JC/UeM4h6cG4x3J11vr20eEWtX77gKMzK0=
+X-Ceravis-Signature: DoiVlI5v3JEpysLZ51z51jZyAS2GbE6kgF88XO4z2GE=
 ```
 
 | Header | Meaning |
@@ -48,240 +55,167 @@ POST
 ## Body
 
 ```
-{ "status": { state, warning_count, hardware, backend, services, cameras },
+{ "status": { state, warning_count, hardware, network, services, cameras },
   "results": [ answers to earlier orders ] }
 ```
 
-Not sent any more (2026-11-05): `protocol`, the `agent` object, `status_error`
-(their facts now live in `status.hardware`, `status.services.fleet_agent` and
-`status.backend.warnings`).
+Who the device is never travels in the body: the edge_id is the
+`X-Ceravis-Device` header; the board, OS and versions are read with the `info`
+order when needed.
 
-**One rule for every part:** each part has a `state` and a `warnings` list.
-`warnings` is **empty when nothing is wrong**; each entry is one plain sentence
-saying what is wrong and what to do. The FMS can alert on any non-empty list.
+### One state vocabulary for every part
 
-### Sample body (formatted for reading)
+Every part — the device, `hardware`, `network`, each service, each camera — has
+a `state` from these five words, and a `warnings` list.
+
+| `state` | Colour | Means |
+|---|---|---|
+| `operational` | green | working normally; `warnings` is empty |
+| `degraded` | amber | working, but something needs attention (the warnings say what) |
+| `outage` | red | not working (the warnings say why) |
+| `disabled` | grey | off on purpose or not installed — e.g. a camera switched off, no tunnel on a LAN-only home. Never a fault, never a warning |
+| `unknown` | grey | cannot be checked right now — e.g. the CERAVIS app is not answering, so what only it can see is unknown |
+
+**`warnings`**: one plain sentence per problem, saying what is wrong and what to
+do. **Empty = fine.** The FMS can alert on any non-empty list without knowing
+what the part is.
+
+**Device state** (`status.state`):
+
+| `status.state` | When |
+|---|---|
+| `outage` | the device cannot watch over the person: `edge_application`, `video_server`, `ai_detection` or `edge_hotspot` is in `outage`, or every camera that is switched on is in `outage` |
+| `degraded` | otherwise, at least one warning anywhere |
+| `operational` | no warnings anywhere |
+
+`offline` is **not** a device state: it is the FMS's own conclusion when no
+heartbeat arrives (see [What the FMS does](#what-the-fms-does)).
+
+### Sample 1 — operational (everything working; one order answered)
 
 ```json
 {
   "status": {
-    "state": "warning",
-    "warning_count": 2,
+    "state": "operational",
+    "warning_count": 0,
     "hardware": {
-      "state": "ok",
-      "model": "NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super",
+      "state": "operational",
       "uptime_secs": 86412,
-      "boot_id": "6c1d0f3e-2b7a-4c1e-9f55-0a8d3b7e1c42",
-      "os": {
-        "name": "Ubuntu 22.04.5 LTS",
-        "kernel": "5.15.148-tegra",
-        "l4t": "R36 (release), REVISION: 4.0",
-        "python": "3.10.12"
-      },
-      "cpu": {
-        "cores": 6,
-        "load_pct": 38.2,
-        "load_avg": [
-          2.11,
-          1.94,
-          1.87
-        ]
-      },
-      "gpu": {
-        "load_pct": 64
-      },
-      "memory": {
-        "total_bytes": 7990648832,
-        "available_bytes": 3101245440,
-        "used_pct": 61.2,
-        "swap_total_bytes": 3995324416,
-        "swap_used_pct": 4.1
-      },
-      "temperature_c": {
-        "cpu": 52.1,
-        "gpu": 50.3,
-        "soc0": 49.8,
-        "soc1": 50.1,
-        "soc2": 49.6,
-        "tj": 53.0
-      },
-      "power": {
-        "board_w": 7.8,
-        "over_current_events": 0
-      },
-      "disk": {
-        "root": {
-          "total_bytes": 125029539840,
-          "free_bytes": 72913821696,
-          "used_pct": 41.7
-        },
-        "data": {
-          "total_bytes": 125029539840,
-          "free_bytes": 72913821696,
-          "used_pct": 41.7
-        }
-      },
-      "clock": {
-        "unix_time": 1793795400.512,
-        "ntp_synchronized": true,
-        "timezone": "Asia/Kolkata"
-      },
-      "network": {
-        "hostname": "ceravis-acg08mbv3"
-      },
+      "last_boot": "scheduled_reboot",
+      "cpu_pct": 38,
+      "gpu_pct": 64,
+      "ram_used_gb": 4.9,
+      "ram_total_gb": 7.4,
+      "disk_used_gb": 52.3,
+      "disk_total_gb": 116.4,
+      "temperature_c": 53.4,
+      "fan_pct": 38,
+      "power_w": 7.8,
+      "power_mode": "25W",
       "warnings": []
     },
-    "backend": {
-      "state": "running",
-      "version": "1.3.0",
-      "commit": "e36ddd4",
-      "restart_needed": false,
-      "uptime_secs": 86398,
-      "device_id": "ceravis-acg08mbv3",
-      "edge_id": "ce7k2m9xq4w8n3",
-      "ai": {
-        "gallery_size": 3
-      },
-      "recording": {
-        "enabled": true,
-        "cameras_recording": 2
-      },
-      "storage": {
-        "recordings_gb": 41.7,
-        "retention_hours": 72,
-        "oldest_segment": "2026-11-02T11:20:04+05:30",
-        "event_snapshots_gb": 0.38,
-        "event_retention_days": 14
-      },
+    "network": {
+      "state": "operational",
+      "internet": "connected",
+      "latency_ms": 41.6,
+      "hotspot": "on",
+      "hotspot_devices": 3,
       "warnings": []
     },
     "services": {
-      "ceravis": {
-        "state": "running",
-        "unit": "ceravis.service",
-        "uptime_secs": 86400,
-        "restarts": 0,
-        "memory_bytes": 812345678,
+      "edge_application": {
+        "state": "operational",
+        "version": "1.3.0",
         "warnings": []
       },
-      "frpc": {
-        "state": "running",
-        "unit": "frpc.service",
-        "uptime_secs": 86400,
-        "restarts": 0,
-        "memory_bytes": 21000000,
+      "video_server": {
+        "state": "operational",
+        "warnings": []
+      },
+      "ai_detection": {
+        "state": "operational",
+        "warnings": []
+      },
+      "cloud_connection": {
+        "state": "operational",
+        "pending_uploads": 0,
+        "warnings": []
+      },
+      "remote_access": {
+        "state": "operational",
         "warnings": []
       },
       "fleet_agent": {
-        "state": "running",
-        "unit": "ceravis-fleet-agent.service",
-        "uptime_secs": 86401,
-        "restarts": 0,
-        "memory_bytes": 31000000,
-        "warnings": [],
-        "version": "0.6.0",
-        "fms_rtt_ms": 41.3,
-        "interval_secs": 60.0,
-        "can_enroll": true
-      },
-      "edge_id_watch": {
-        "state": "running",
-        "unit": "ceravis-edge-id.path",
-        "uptime_secs": 86400,
-        "restarts": null,
-        "memory_bytes": null,
+        "state": "operational",
+        "version": "0.7.0",
         "warnings": []
       },
-      "reboot_timer": {
-        "state": "running",
-        "unit": "ceravis-reboot.timer",
-        "uptime_secs": 86400,
-        "restarts": null,
+      "nightly_reboot": {
+        "state": "operational",
         "warnings": []
       },
-      "mediamtx": {
-        "state": "running",
-        "uptime_secs": 86400,
-        "restarts": 0,
+      "edge_hotspot": {
+        "state": "operational",
         "warnings": []
       },
-      "app_server": {
-        "state": "ok",
-        "url": "https://pilot.ceravishealth.in/ch",
-        "recent_calls": 50,
-        "recent_errors": 0,
-        "last_call_ok": true,
-        "uploads_pending": 0,
-        "oldest_pending_secs": null,
+      "ssh_access": {
+        "state": "operational",
         "warnings": []
       },
-      "internet": {
-        "state": "ok",
+      "time_sync": {
+        "state": "operational",
         "warnings": []
       },
-      "tunnel": {
-        "state": "ok",
-        "routes_edge_id": true,
-        "edge_id": "ce7k2m9xq4w8n3",
-        "detail": null,
+      "dns_resolver": {
+        "state": "operational",
+        "warnings": []
+      },
+      "local_discovery": {
+        "state": "operational",
+        "warnings": []
+      },
+      "fan_control": {
+        "state": "operational",
+        "warnings": []
+      },
+      "system_logging": {
+        "state": "operational",
+        "warnings": []
+      },
+      "security_updates": {
+        "state": "operational",
+        "pending_security": 2,
+        "warnings": []
+      },
+      "os_hardening": {
+        "state": "operational",
         "warnings": []
       }
     },
     "cameras": [
       {
         "camera_id": "LOUNGE",
-        "name": "Tapo C220",
         "room": "LOUNGE",
-        "enabled": true,
-        "state": "running",
+        "state": "operational",
         "fps": 14.8,
-        "resolution": "2560x1440",
-        "codec": "h264",
-        "profile": "High",
-        "uptime_secs": 86380,
         "reconnects": 0,
-        "last_frame_age_secs": 0.1,
-        "frames_captured": 1278512,
-        "stream_ready": true,
-        "viewers": 2,
-        "recording": {
-          "on": true,
-          "writing_ok": true,
-          "newest_segment_age_secs": 3.9,
-          "segments_last_hour": 60
-        },
+        "recording": true,
         "night_vision": false,
         "ptz": true,
+        "wifi_signal_dbm": -53,
         "warnings": []
       },
       {
         "camera_id": "KITCHEN",
-        "name": "Tapo C200",
         "room": "KITCHEN",
-        "enabled": true,
-        "state": "reconnecting",
-        "fps": 0.0,
-        "resolution": null,
-        "codec": null,
-        "profile": null,
-        "uptime_secs": null,
-        "reconnects": 7,
-        "last_frame_age_secs": 312.4,
-        "frames_captured": 0,
-        "stream_ready": false,
-        "viewers": 0,
-        "recording": {
-          "on": true,
-          "writing_ok": false,
-          "newest_segment_age_secs": 318.0,
-          "segments_last_hour": 52
-        },
-        "night_vision": false,
+        "state": "operational",
+        "fps": 15.0,
+        "reconnects": 0,
+        "recording": true,
+        "night_vision": true,
         "ptz": false,
-        "warnings": [
-          "KITCHEN: reconnecting — no video from this camera right now",
-          "KITCHEN: recording but no segments landing"
-        ]
+        "wifi_signal_dbm": -61,
+        "warnings": []
       }
     ]
   },
@@ -296,99 +230,523 @@ saying what is wrong and what to do. The FMS can alert on any non-empty list.
 }
 ```
 
-<details><summary>The exact bytes signed in this sample (3586 bytes)</summary>
+### Sample 2 — degraded (one camera without video, one with a weak signal, the app restarted once, the internet was lost for 17 minutes in the night)
+
+Two cameras with problems is still `degraded`, not `outage`: the other parts
+watch on. The internet loss is reported once it is back — the device could not
+send it while offline.
 
 ```json
-{"status":{"state":"warning","warning_count":2,"hardware":{"state":"ok","model":"NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super","uptime_secs":86412,"boot_id":"6c1d0f3e-2b7a-4c1e-9f55-0a8d3b7e1c42","os":{"name":"Ubuntu 22.04.5 LTS","kernel":"5.15.148-tegra","l4t":"R36 (release), REVISION: 4.0","python":"3.10.12"},"cpu":{"cores":6,"load_pct":38.2,"load_avg":[2.11,1.94,1.87]},"gpu":{"load_pct":64},"memory":{"total_bytes":7990648832,"available_bytes":3101245440,"used_pct":61.2,"swap_total_bytes":3995324416,"swap_used_pct":4.1},"temperature_c":{"cpu":52.1,"gpu":50.3,"soc0":49.8,"soc1":50.1,"soc2":49.6,"tj":53.0},"power":{"board_w":7.8,"over_current_events":0},"disk":{"root":{"total_bytes":125029539840,"free_bytes":72913821696,"used_pct":41.7},"data":{"total_bytes":125029539840,"free_bytes":72913821696,"used_pct":41.7}},"clock":{"unix_time":1793795400.512,"ntp_synchronized":true,"timezone":"Asia/Kolkata"},"network":{"hostname":"ceravis-acg08mbv3"},"warnings":[]},"backend":{"state":"running","version":"1.3.0","commit":"e36ddd4","restart_needed":false,"uptime_secs":86398,"device_id":"ceravis-acg08mbv3","edge_id":"ce7k2m9xq4w8n3","ai":{"gallery_size":3},"recording":{"enabled":true,"cameras_recording":2},"storage":{"recordings_gb":41.7,"retention_hours":72,"oldest_segment":"2026-11-02T11:20:04+05:30","event_snapshots_gb":0.38,"event_retention_days":14},"warnings":[]},"services":{"ceravis":{"state":"running","unit":"ceravis.service","uptime_secs":86400,"restarts":0,"memory_bytes":812345678,"warnings":[]},"frpc":{"state":"running","unit":"frpc.service","uptime_secs":86400,"restarts":0,"memory_bytes":21000000,"warnings":[]},"fleet_agent":{"state":"running","unit":"ceravis-fleet-agent.service","uptime_secs":86401,"restarts":0,"memory_bytes":31000000,"warnings":[],"version":"0.6.0","fms_rtt_ms":41.3,"interval_secs":60.0,"can_enroll":true},"edge_id_watch":{"state":"running","unit":"ceravis-edge-id.path","uptime_secs":86400,"restarts":null,"memory_bytes":null,"warnings":[]},"reboot_timer":{"state":"running","unit":"ceravis-reboot.timer","uptime_secs":86400,"restarts":null,"warnings":[]},"mediamtx":{"state":"running","uptime_secs":86400,"restarts":0,"warnings":[]},"app_server":{"state":"ok","url":"https://pilot.ceravishealth.in/ch","recent_calls":50,"recent_errors":0,"last_call_ok":true,"uploads_pending":0,"oldest_pending_secs":null,"warnings":[]},"internet":{"state":"ok","warnings":[]},"tunnel":{"state":"ok","routes_edge_id":true,"edge_id":"ce7k2m9xq4w8n3","detail":null,"warnings":[]}},"cameras":[{"camera_id":"LOUNGE","name":"Tapo C220","room":"LOUNGE","enabled":true,"state":"running","fps":14.8,"resolution":"2560x1440","codec":"h264","profile":"High","uptime_secs":86380,"reconnects":0,"last_frame_age_secs":0.1,"frames_captured":1278512,"stream_ready":true,"viewers":2,"recording":{"on":true,"writing_ok":true,"newest_segment_age_secs":3.9,"segments_last_hour":60},"night_vision":false,"ptz":true,"warnings":[]},{"camera_id":"KITCHEN","name":"Tapo C200","room":"KITCHEN","enabled":true,"state":"reconnecting","fps":0.0,"resolution":null,"codec":null,"profile":null,"uptime_secs":null,"reconnects":7,"last_frame_age_secs":312.4,"frames_captured":0,"stream_ready":false,"viewers":0,"recording":{"on":true,"writing_ok":false,"newest_segment_age_secs":318.0,"segments_last_hour":52},"night_vision":false,"ptz":false,"warnings":["KITCHEN: reconnecting \u2014 no video from this camera right now","KITCHEN: recording but no segments landing"]}]},"results":[{"id":"cmd_80","ok":true,"output":"pong from ceravis-acg08mbv3","duration_ms":2}]}
+{
+  "status": {
+    "state": "degraded",
+    "warning_count": 5,
+    "hardware": {
+      "state": "operational",
+      "uptime_secs": 86412,
+      "last_boot": "scheduled_reboot",
+      "cpu_pct": 38,
+      "gpu_pct": 64,
+      "ram_used_gb": 4.9,
+      "ram_total_gb": 7.4,
+      "disk_used_gb": 52.3,
+      "disk_total_gb": 116.4,
+      "temperature_c": 53.4,
+      "fan_pct": 38,
+      "power_w": 7.8,
+      "power_mode": "25W",
+      "warnings": []
+    },
+    "network": {
+      "state": "degraded",
+      "internet": "connected",
+      "latency_ms": 41.6,
+      "hotspot": "on",
+      "hotspot_devices": 3,
+      "warnings": [
+        "the internet connection was lost from 02:14 to 02:31 (17 min)"
+      ]
+    },
+    "services": {
+      "edge_application": {
+        "state": "degraded",
+        "version": "1.3.0",
+        "warnings": [
+          "ceravis.service restarted 1 time since the last heartbeat"
+        ]
+      },
+      "video_server": {
+        "state": "operational",
+        "warnings": []
+      },
+      "ai_detection": {
+        "state": "operational",
+        "warnings": []
+      },
+      "cloud_connection": {
+        "state": "operational",
+        "pending_uploads": 0,
+        "warnings": []
+      },
+      "remote_access": {
+        "state": "operational",
+        "warnings": []
+      },
+      "fleet_agent": {
+        "state": "operational",
+        "version": "0.7.0",
+        "warnings": []
+      },
+      "nightly_reboot": {
+        "state": "operational",
+        "warnings": []
+      },
+      "edge_hotspot": {
+        "state": "operational",
+        "warnings": []
+      },
+      "ssh_access": {
+        "state": "operational",
+        "warnings": []
+      },
+      "time_sync": {
+        "state": "operational",
+        "warnings": []
+      },
+      "dns_resolver": {
+        "state": "operational",
+        "warnings": []
+      },
+      "local_discovery": {
+        "state": "operational",
+        "warnings": []
+      },
+      "fan_control": {
+        "state": "operational",
+        "warnings": []
+      },
+      "system_logging": {
+        "state": "operational",
+        "warnings": []
+      },
+      "security_updates": {
+        "state": "operational",
+        "pending_security": 2,
+        "warnings": []
+      },
+      "os_hardening": {
+        "state": "operational",
+        "warnings": []
+      }
+    },
+    "cameras": [
+      {
+        "camera_id": "LOUNGE",
+        "room": "LOUNGE",
+        "state": "degraded",
+        "fps": 14.9,
+        "reconnects": 3,
+        "recording": true,
+        "night_vision": false,
+        "ptz": true,
+        "wifi_signal_dbm": -79,
+        "warnings": [
+          "LOUNGE: weak Wi-Fi signal (-79 dBm) — move the camera closer to the device or clear what is in between"
+        ]
+      },
+      {
+        "camera_id": "KITCHEN",
+        "room": "KITCHEN",
+        "state": "outage",
+        "fps": 0.0,
+        "reconnects": 3,
+        "recording": true,
+        "night_vision": false,
+        "ptz": false,
+        "wifi_signal_dbm": null,
+        "warnings": [
+          "KITCHEN: reconnecting — no video from this camera right now",
+          "KITCHEN: recording but no segments landing"
+        ]
+      }
+    ]
+  },
+  "results": []
+}
+```
+
+### Sample 3 — outage (the CERAVIS app has failed; `unknown` parts)
+
+The agent still reports: the hardware and every systemd service it measures
+itself. What only the app can see — the video server, AI, cloud link, networks
+and cameras — is `unknown`; the cameras stay listed (as last seen) so a UI can
+grey them out instead of dropping them.
+
+```json
+{
+  "status": {
+    "state": "outage",
+    "warning_count": 2,
+    "hardware": {
+      "state": "operational",
+      "uptime_secs": 86412,
+      "last_boot": "scheduled_reboot",
+      "cpu_pct": 12,
+      "gpu_pct": null,
+      "ram_used_gb": 4.9,
+      "ram_total_gb": 7.4,
+      "disk_used_gb": 52.3,
+      "disk_total_gb": 116.4,
+      "temperature_c": 53.4,
+      "fan_pct": 38,
+      "power_w": null,
+      "power_mode": "25W",
+      "warnings": []
+    },
+    "network": {
+      "state": "unknown",
+      "internet": "unknown",
+      "latency_ms": null,
+      "hotspot": "unknown",
+      "hotspot_devices": null,
+      "warnings": []
+    },
+    "services": {
+      "edge_application": {
+        "state": "outage",
+        "version": "1.3.0",
+        "warnings": [
+          "ceravis.service has FAILED (exit-code)",
+          "ceravis.service restarted 4 times since the last heartbeat"
+        ]
+      },
+      "video_server": {
+        "state": "unknown",
+        "warnings": []
+      },
+      "ai_detection": {
+        "state": "unknown",
+        "warnings": []
+      },
+      "cloud_connection": {
+        "state": "unknown",
+        "pending_uploads": null,
+        "warnings": []
+      },
+      "remote_access": {
+        "state": "operational",
+        "warnings": []
+      },
+      "fleet_agent": {
+        "state": "operational",
+        "version": "0.7.0",
+        "warnings": []
+      },
+      "nightly_reboot": {
+        "state": "operational",
+        "warnings": []
+      },
+      "edge_hotspot": {
+        "state": "operational",
+        "warnings": []
+      },
+      "ssh_access": {
+        "state": "operational",
+        "warnings": []
+      },
+      "time_sync": {
+        "state": "operational",
+        "warnings": []
+      },
+      "dns_resolver": {
+        "state": "operational",
+        "warnings": []
+      },
+      "local_discovery": {
+        "state": "operational",
+        "warnings": []
+      },
+      "fan_control": {
+        "state": "operational",
+        "warnings": []
+      },
+      "system_logging": {
+        "state": "operational",
+        "warnings": []
+      },
+      "security_updates": {
+        "state": "operational",
+        "pending_security": 2,
+        "warnings": []
+      },
+      "os_hardening": {
+        "state": "operational",
+        "warnings": []
+      }
+    },
+    "cameras": [
+      {
+        "camera_id": "LOUNGE",
+        "room": "LOUNGE",
+        "state": "unknown",
+        "fps": null,
+        "reconnects": null,
+        "recording": null,
+        "night_vision": null,
+        "ptz": null,
+        "wifi_signal_dbm": null,
+        "warnings": []
+      },
+      {
+        "camera_id": "KITCHEN",
+        "room": "KITCHEN",
+        "state": "unknown",
+        "fps": null,
+        "reconnects": null,
+        "recording": null,
+        "night_vision": null,
+        "ptz": null,
+        "wifi_signal_dbm": null,
+        "warnings": []
+      }
+    ]
+  },
+  "results": []
+}
+```
+
+### Sample 4 — disabled parts (a LAN-only home without the tunnel, a camera switched off)
+
+`disabled` is never a warning: this device is `operational`.
+
+```json
+{
+  "status": {
+    "state": "operational",
+    "warning_count": 0,
+    "hardware": {
+      "state": "operational",
+      "uptime_secs": 86412,
+      "last_boot": "scheduled_reboot",
+      "cpu_pct": 38,
+      "gpu_pct": 64,
+      "ram_used_gb": 4.9,
+      "ram_total_gb": 7.4,
+      "disk_used_gb": 52.3,
+      "disk_total_gb": 116.4,
+      "temperature_c": 53.4,
+      "fan_pct": 38,
+      "power_w": 7.8,
+      "power_mode": "25W",
+      "warnings": []
+    },
+    "network": {
+      "state": "operational",
+      "internet": "connected",
+      "latency_ms": 41.6,
+      "hotspot": "on",
+      "hotspot_devices": 3,
+      "warnings": []
+    },
+    "services": {
+      "edge_application": {
+        "state": "operational",
+        "version": "1.3.0",
+        "warnings": []
+      },
+      "video_server": {
+        "state": "operational",
+        "warnings": []
+      },
+      "ai_detection": {
+        "state": "operational",
+        "warnings": []
+      },
+      "cloud_connection": {
+        "state": "operational",
+        "pending_uploads": 0,
+        "warnings": []
+      },
+      "remote_access": {
+        "state": "disabled",
+        "warnings": []
+      },
+      "fleet_agent": {
+        "state": "operational",
+        "version": "0.7.0",
+        "warnings": []
+      },
+      "nightly_reboot": {
+        "state": "operational",
+        "warnings": []
+      },
+      "edge_hotspot": {
+        "state": "operational",
+        "warnings": []
+      },
+      "ssh_access": {
+        "state": "operational",
+        "warnings": []
+      },
+      "time_sync": {
+        "state": "operational",
+        "warnings": []
+      },
+      "dns_resolver": {
+        "state": "operational",
+        "warnings": []
+      },
+      "local_discovery": {
+        "state": "disabled",
+        "warnings": []
+      },
+      "fan_control": {
+        "state": "operational",
+        "warnings": []
+      },
+      "system_logging": {
+        "state": "operational",
+        "warnings": []
+      },
+      "security_updates": {
+        "state": "operational",
+        "pending_security": 2,
+        "warnings": []
+      },
+      "os_hardening": {
+        "state": "operational",
+        "warnings": []
+      }
+    },
+    "cameras": [
+      {
+        "camera_id": "LOUNGE",
+        "room": "LOUNGE",
+        "state": "operational",
+        "fps": 14.8,
+        "reconnects": 0,
+        "recording": true,
+        "night_vision": false,
+        "ptz": true,
+        "wifi_signal_dbm": -55,
+        "warnings": []
+      },
+      {
+        "camera_id": "BEDROOM",
+        "room": "BEDROOM",
+        "state": "disabled",
+        "fps": null,
+        "reconnects": 3,
+        "recording": false,
+        "night_vision": false,
+        "ptz": false,
+        "wifi_signal_dbm": null,
+        "warnings": []
+      }
+    ]
+  },
+  "results": []
+}
+```
+
+<details><summary>The exact bytes signed in sample 1 (1850 bytes) — the test vector body</summary>
+
+```json
+{"status":{"state":"operational","warning_count":0,"hardware":{"state":"operational","uptime_secs":86412,"last_boot":"scheduled_reboot","cpu_pct":38,"gpu_pct":64,"ram_used_gb":4.9,"ram_total_gb":7.4,"disk_used_gb":52.3,"disk_total_gb":116.4,"temperature_c":53.4,"fan_pct":38,"power_w":7.8,"power_mode":"25W","warnings":[]},"network":{"state":"operational","internet":"connected","latency_ms":41.6,"hotspot":"on","hotspot_devices":3,"warnings":[]},"services":{"edge_application":{"state":"operational","version":"1.3.0","warnings":[]},"video_server":{"state":"operational","warnings":[]},"ai_detection":{"state":"operational","warnings":[]},"cloud_connection":{"state":"operational","pending_uploads":0,"warnings":[]},"remote_access":{"state":"operational","warnings":[]},"fleet_agent":{"state":"operational","version":"0.7.0","warnings":[]},"nightly_reboot":{"state":"operational","warnings":[]},"edge_hotspot":{"state":"operational","warnings":[]},"ssh_access":{"state":"operational","warnings":[]},"time_sync":{"state":"operational","warnings":[]},"dns_resolver":{"state":"operational","warnings":[]},"local_discovery":{"state":"operational","warnings":[]},"fan_control":{"state":"operational","warnings":[]},"system_logging":{"state":"operational","warnings":[]},"security_updates":{"state":"operational","pending_security":2,"warnings":[]},"os_hardening":{"state":"operational","warnings":[]}},"cameras":[{"camera_id":"LOUNGE","room":"LOUNGE","state":"operational","fps":14.8,"reconnects":0,"recording":true,"night_vision":false,"ptz":true,"wifi_signal_dbm":-53,"warnings":[]},{"camera_id":"KITCHEN","room":"KITCHEN","state":"operational","fps":15.0,"reconnects":0,"recording":true,"night_vision":true,"ptz":false,"wifi_signal_dbm":-61,"warnings":[]}]},"results":[{"id":"cmd_80","ok":true,"output":"pong from ceravis-acg08mbv3","duration_ms":2}]}
 ```
 </details>
 
-### `status` (the summary)
+## Field reference
+
+### `status`
 
 | Field | Meaning |
 |---|---|
-| `state` | the worst of all parts: `ok` (no warnings), `warning` (at least one), `down` (the CERAVIS app is not answering, or `ceravis.service` is stopped/failed) |
+| `state` | the device: `operational` / `degraded` / `outage` (table above) |
 | `warning_count` | how many warnings in all parts together |
 
-### `status.hardware` — the board itself (measured by the agent; sensors from the app)
+### `status.hardware` — the board itself
 
-| Field | Meaning |
-|---|---|
-| `state` | `ok` / `warning` |
-| `model` | the board, e.g. Jetson Orin Nano |
-| `uptime_secs` | seconds since the device booted |
-| `boot_id` | changes at every boot: a new value = the device rebooted |
-| `os` | `name`, `kernel`, `l4t` (NVIDIA JetPack base), `python` |
-| `cpu` | `cores`, `load_pct` (average since the last heartbeat), `load_avg` (1, 5, 15 min) |
-| `gpu.load_pct` | GPU load, from the app's tegrastats (null when unknown) |
-| `memory` | `total_bytes`, `available_bytes`, `used_pct`, `swap_total_bytes`, `swap_used_pct` |
-| `temperature_c` | every thermal sensor by name (`cpu`, `gpu`, `tj` = hottest point of the chip, `soc0`…) |
-| `power` | `board_w` (power the board draws), `over_current_events` (times it slowed itself for drawing too much) |
-| `disk` | `root` (system disk) and `data` (recordings, database): `total_bytes`, `free_bytes`, `used_pct` |
-| `clock` | `unix_time` (the device's clock: compare with yours), `ntp_synchronized`, `timezone` |
-| `network.hostname` | the device's network name |
-
-Warnings: memory ≥ 90 %, system disk ≥ 90 %, recordings/data disk ≥ 90 %, running
-hot (≥ `THERMAL_WARN_C`, 85 °C), over-current, clock not synchronised. While the
-app answers, its own rules judge disk/heat/clock; when it does not, the agent
-checks them itself, so the device is never reported blind.
-
-### `status.backend` — the CERAVIS app on the device (`ceravis.service`)
-
-| Field | Meaning |
-|---|---|
-| `state` | `running` / `warning` / `down` (not answering: then it holds only `warnings` with the reason) |
-| `version`, `commit`, `restart_needed` | the release running, and whether newer code waits for a restart |
-| `uptime_secs` | seconds since the app started |
-| `device_id`, `edge_id` | who this device is |
-| `ai.gallery_size` | enrolled faces/people the AI tracks (0 = fall and no-motion detection are off) |
-| `recording` | `enabled`, `cameras_recording` |
-| `storage` | `recordings_gb`, `retention_hours`, `oldest_segment`, `event_snapshots_gb`, `event_retention_days` |
-
-Warnings: AI chain off, code on disk differs from the code running, a camera
-warning for a camera that is no longer listed.
-
-### `status.services` — every service and server
-
-Each entry: `state`, `warnings`, and its details.
-
-| Key | What it is | Details |
+| Field | Unit | Meaning |
 |---|---|---|
-| `ceravis` | systemd `ceravis.service` (the app) | `unit`, `uptime_secs`, `restarts`, `memory_bytes` |
-| `frpc` | systemd `frpc.service` (the tunnel client) | same; `not_installed` on a LAN-only home (no warning) |
-| `fleet_agent` | systemd `ceravis-fleet-agent.service` (this agent) | same + `version`, `fms_rtt_ms`, `interval_secs`, `can_enroll` |
-| `edge_id_watch` | systemd `ceravis-edge-id.path` (hands a new edge_id to the app) | same |
-| `reboot_timer` | systemd `ceravis-reboot.timer` (nightly reboot) | `unit`, `uptime_secs`, `restarts` |
-| `mediamtx` | the video server inside the app | `uptime_secs`, `restarts` |
-| `app_server` | the link to the CERAVIS app server | `url`, `recent_calls`, `recent_errors`, `last_call_ok`, `uploads_pending`, `oldest_pending_secs` |
-| `internet` | the device's internet connection | — |
-| `tunnel` | whether the tunnel really routes this edge_id | `routes_edge_id`, `edge_id`, `detail` |
+| `uptime_secs` | s | since the device booted — when it drops, the device restarted |
+| `last_boot` | | why it last started: `scheduled_reboot` (the nightly reboot), `manual_reboot` (a person, from CERAVIS), `system_restart` (an orderly shutdown outside CERAVIS — an engineer, an update), `unexpected_restart` (no orderly shutdown: a **power cut or a system crash**), `unknown` (first start after installation) |
+| `cpu_pct` | % | processor load, averaged over the last minute (whole number) |
+| `gpu_pct` | % | graphics/AI processor load (whole number); `null` when unknown |
+| `ram_used_gb` / `ram_total_gb` | GB | memory in use / installed (1 decimal) |
+| `disk_used_gb` / `disk_total_gb` | GB | the data disk (recordings, database) |
+| `temperature_c` | °C | the hottest point of the chip (1 decimal) |
+| `fan_pct` | % | how hard the fan is driven |
+| `power_w` | W | power the board draws now |
+| `power_mode` | | NVIDIA power mode in force: `15W`, `25W`, `MAXN_SUPER` … |
 
-systemd `state`: `running`, `stopped`, `failed`, `starting`, `stopping`,
-`not_installed`, `unknown`. Warnings: a service that must run is stopped or
-failed; it restarted since the last heartbeat (said once); MediaMTX down (with its
-last log lines); API key problem, uploads backing up or rejected; no internet;
-the tunnel does not route this edge_id. The app's services are `unknown` while
-the app is not answering.
+Warnings: memory ≥ 90 %, a disk ≥ 90 % full, a disk switched to read-only after
+errors, running hot (≥ 85 °C), over-current (the power supply is too weak),
+processes stopped for lack of memory, and — for 15 minutes after it — an
+unexpected restart.
 
-### `status.cameras[]` — every camera (`null` = unknown: the app is not answering)
+### `status.network` — the two networks
+
+The internet comes by Ethernet cable; the Wi-Fi radio runs the camera hotspot.
 
 | Field | Meaning |
 |---|---|
-| `camera_id`, `name`, `room`, `enabled` | which camera |
-| `state` | `running`, `connecting`, `reconnecting`, `offline`, `error`, `disabled` |
-| `fps` | frames per second decoded now |
-| `resolution`, `codec`, `profile` | measured off the live stream (H.264 is required) |
-| `uptime_secs` | seconds since this camera connected (null when not running) |
-| `reconnects` | times it reconnected since the app started |
-| `last_frame_age_secs` | seconds since its last frame |
-| `frames_captured` | frames since the app started |
-| `stream_ready`, `viewers` | the video server serves it; how many are watching or reading |
-| `recording` | `on`, `writing_ok`, `newest_segment_age_secs`, `segments_last_hour` |
-| `night_vision`, `ptz` | infrared mode now; can pan/tilt/zoom |
+| `internet` | `connected` / `disconnected` / `unknown`: can the device reach the CERAVIS app server |
+| `latency_ms` | time to connect to the app server (ms), `null` when disconnected |
+| `hotspot` | the camera hotspot: `on` / `off` / `unknown` |
+| `hotspot_devices` | devices on the hotspot now (cameras, an installer's phone) |
 
-Warnings: no video right now, sub-stream resolution, a codec browsers cannot
-play, recording on but no segments landing.
+Warnings: no cable, no address from the router, the router has no internet —
+each with what to do; and once back online: **"the internet connection was lost
+from 02:14 to 02:31 (17 min)"**.
+
+### `status.services` — every service and server, in this order
+
+Each entry: `state`, `warnings`, and (some) one or two details.
+
+| Key | What it is | Checked through | Details |
+|---|---|---|---|
+| `edge_application` | the CERAVIS application: web API, AI, recording, cloud uploads, talk-back | systemd `ceravis.service` + the app answering | `version` |
+| `video_server` | the video server (MediaMTX) inside the application: live view, recording | the app | — |
+| `ai_detection` | person, fall and no-motion detection — the safety function | the app: detector running and analysing frames | — |
+| `cloud_connection` | uploads to the CERAVIS app server (alerts, snapshots, clips) | the app | `pending_uploads` (waiting to be sent) |
+| `remote_access` | the secure tunnel for live view and remote support (frpc) | systemd `frpc.service` + route + live connection to the tunnel server | — |
+| `fleet_agent` | this heartbeat's sender | systemd `ceravis-fleet-agent.service` | `version` |
+| `nightly_reboot` | the safety-checked nightly reboot | systemd `ceravis-reboot.timer` + its last run | — |
+| `edge_hotspot` | the camera hotspot (NetworkManager) | systemd `NetworkManager.service` + the hotspot on | — |
+| `ssh_access` | secure shell, for support engineers | systemd `ssh.service` | — |
+| `time_sync` | the clock kept right (NTP) | systemd `systemd-timesyncd.service` + synchronised | — |
+| `dns_resolver` | name lookups (DNS) | systemd `systemd-resolved.service` | — |
+| `local_discovery` | `<name>.local` on the home network (mDNS) | systemd `avahi-daemon.service` (optional) | — |
+| `fan_control` | the fan's speed control | systemd `nvfancontrol.service` | — |
+| `system_logging` | the system journal | systemd `systemd-journald.service` | — |
+| `security_updates` | nightly Ubuntu security updates | systemd `apt-daily-upgrade.timer` | `pending_security` (waiting) |
+| `os_hardening` | services switched off for good stay off (Bluetooth shares the hotspot's antenna; Docker, printing, snaps …) | systemd, 12 units | — |
+
+From systemd: a stopped service that must run, or a failed one, is an `outage`;
+starting/stopping or restarted since the last heartbeat is `degraded`; not
+installed or masked is `disabled`.
+
+### `status.cameras[]` — every camera
+
+| Field | Meaning |
+|---|---|
+| `camera_id`, `room` | which camera, and the room it watches |
+| `state` | `operational`; `degraded` (video, with a problem: recording not landing, weak signal, wrong stream); `outage` (no video); `disabled` (switched off); `unknown` (the app is not answering) |
+| `fps` | frames per second received now |
+| `reconnects` | times it reconnected since the app started |
+| `recording` | recording switched on (`true`/`false`); failing is a warning |
+| `night_vision` | infrared (night) mode on now |
+| `ptz` | can pan/tilt/zoom |
+| `wifi_signal_dbm` | the camera's Wi-Fi signal as the device hears it (dBm): above −60 strong, −60 to −70 good, −70 to −75 fair, **below −75 weak** (a warning); `null` when not on the hotspot |
+
+### Warnings said once
+
+Some warnings report something that **happened** rather than a condition: a
+restart since the last heartbeat, processes stopped for lack of memory, the
+internet lost from … to …. Each is repeated in every heartbeat **until one
+carrying it is accepted** (HTTP 200), then never again — none is lost to a
+failed check-in.
 
 ### `results[]` — answers to earlier orders
 
@@ -400,9 +758,9 @@ play, recording on but no segments landing.
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/json
-X-Ceravis-Signature: OVzZWv43Xe37qOC/ycxgkeTiebqoSDnkDGLWKYnMllI=
+X-Ceravis-Signature: Xb1232YwGUdBeQ9exMTTLT5exY0tpGmgysqMpFlWDzE=
 
-{"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"unit":"ceravis","lines":100}}]}
+{"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"file":"events","lines":100}}]}
 ```
 
 | Field | What the device does |
@@ -427,10 +785,14 @@ A reply with a missing or wrong signature is ignored: no order runs.
 | `kind` | `args` | Does |
 |---|---|---|
 | `ping` | — | answers `pong from <hostname>` |
+| `info` | — | answers what is installed (JSON text): `device_id`, `hostname`, `model`, `ram_total_bytes`, `edge_version`, `edge_commit`, `agent_version`, `os`, `kernel`, `l4t`, `python`, `power_mode`, `installed` (every component's version: MediaMTX, frpc, JetPack …) |
 | `restart_service` | `{"unit": "ceravis" \| "frpc"}` | restarts that service |
-| `logs` | `{"unit": "ceravis" \| "frpc" \| "ceravis-fleet-agent", "lines": 1-500}` | returns its latest log lines |
+| `logs` | `{"unit": "ceravis" \| "frpc" \| "ceravis-fleet-agent", "lines": 1-500}` | that service's latest journal lines |
+| `logs` | `{"file": "events" \| "health" \| "fleet" \| "incoming" \| "cloud_calls" \| "mediamtx", "lines": 1-500}` | the device's own log file, newest lines last (`edge/LOGS.md`). `events` first: it says what changed and when |
 
-Anything else is refused (`ok: false, output: "refused: …"`).
+Anything else is refused (`ok: false, output: "refused: …"`). The app-server
+wire log and the talk-back log carry personal data and are never sent: they are
+read on the device only.
 
 ## Errors
 
@@ -438,7 +800,7 @@ Anything else is refused (`ok: false, output: "refused: …"`).
 |---|---|
 | `401 {"error":"clock_skew","server_time":…}` | corrects its clock, retries after 1 s |
 | `401` (any other) | its key is no longer valid (admin reset): enrolls again |
-| `404`, `5xx`, no network | logs once, retries after 5, 10, 20 … up to 300 s |
+| `404`, `5xx`, no network | logs once, retries after 5, 10, 20 … up to 300 s — and keeps its minute-by-minute record on the device meanwhile |
 
 ## Test vector (sample device key, not real)
 
@@ -446,17 +808,50 @@ Anything else is refused (`ok: false, output: "refused: …"`).
 |---|---|
 | device key | `nHuchkxLPFxmobs_7wDbrWz5hmIcx7J5ymFohvnDpyE` |
 | edge_id / timestamp / nonce | `ce7k2m9xq4w8n3` / `1793795400.512` / `4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b` |
-| request body | the 3586 bytes in "The exact bytes signed" above |
-| request body sha256 | `d26cc2ecf2e30aad62908d37dd8c156e70908ddb1881853512ea51408afb9503` |
-| request `X-Ceravis-Signature` | `zSOJZXIK3JC/UeM4h6cG4x3J11vr20eEWtX77gKMzK0=` |
-| reply body | `{"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"unit":"ceravis","lines":100}}]}` |
-| reply sha256 | `dee9f21c86d6ec0901be1279f7d13612d22746beea194f6050f252c5a6a2ba57` |
-| reply `X-Ceravis-Signature` | `OVzZWv43Xe37qOC/ycxgkeTiebqoSDnkDGLWKYnMllI=` |
+| request body | the 1850 bytes in "The exact bytes signed" above |
+| request body sha256 | `937b2b35d7a1f2b722d8334843fb40c70df909c2b4414fd406e86bebfcc00457` |
+| request `X-Ceravis-Signature` | `DoiVlI5v3JEpysLZ51z51jZyAS2GbE6kgF88XO4z2GE=` |
+| reply body | `{"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"file":"events","lines":100}}]}` |
+| reply sha256 | `1280ef69d546e07d4fefaa6c33954ef2610293fb3164556510838a8e9a57f7eb` |
+| reply `X-Ceravis-Signature` | `Xb1232YwGUdBeQ9exMTTLT5exY0tpGmgysqMpFlWDzE=` |
+
+## What the FMS does
+
+1. **Verifies** every heartbeat: the signature, a nonce not seen before, the
+   timestamp within ±300 s. A failed check is answered `401` and stored nowhere.
+2. **Decides offline**: no accepted heartbeat for 3 × `next_poll_after_secs`
+   (3 minutes at 60 s) → the device is **offline** — the FMS's own state, shown
+   above the device's last reported one. A device's `uptime_secs` after it comes
+   back tells a restart (small uptime; see `last_boot`) from a network outage
+   (uptime kept; the device then reports the internet loss itself).
+3. **Keeps** the latest status of every device, and a history for graphs. Worth
+   a graph: `cpu_pct`, `gpu_pct`, `ram_used_gb`, `temperature_c`, `power_w`,
+   `fan_pct`, `latency_ms`, `hotspot_devices`, and per camera `fps` and
+   `wifi_signal_dbm`.
+4. **Alerts on change**, not on every heartbeat: when a warning first appears
+   (and when a part's state worsens), and again when it clears.
+5. **Answers** with `next_poll_after_secs` and any orders.
 
 ## Where each part comes from (edge side)
 
 | Part | Measured by |
 |---|---|
-| `hardware` | the agent (`edge/fleet/fms_agent/health.py`: /proc, /sys, statvfs, timedatectl) + the app's tegrastats (GPU, power) |
-| systemd services | the agent (`systemctl show`) |
-| `backend`, `mediamtx`, `app_server`, `internet`, `tunnel`, `cameras` | the app: `GET /api/v1/system/health` (loopback), built from the same rules as `/api/v1/system/status` |
+| `hardware` | the agent (`edge/fleet/fms_agent/health.py`: /proc, /sys, statvfs, nvpmodel) + the app's tegrastats (GPU load, board power) |
+| systemd services, `os_hardening`, `security_updates` | the agent (`systemctl show`, Ubuntu's update notifier) |
+| `network`, `video_server`, `ai_detection`, `cloud_connection`, the tunnel route and connection, `time_sync`, `cameras` | the app: `GET /api/v1/system/health` (loopback), built from the same warning rules as `/api/v1/system/status` |
+
+## Changes from version 1
+
+| Version 1 (agent 0.6.0) | Version 2 (agent 0.7.0) |
+|---|---|
+| states `ok`, `warning`, `down`, `running`, `stopped`, `failed`, `not_installed` … | one vocabulary everywhere: `operational`, `degraded`, `outage`, `disabled`, `unknown` |
+| `status.backend` | gone: it is `services.edge_application` (the same service, `ceravis.service`) |
+| `hardware.model`, `os`, `boot_id`, `cpu.cores`, `load_avg`, every temperature sensor, swap, root + data disks, `clock`, `network.hostname` | gone from the heartbeat (kept in the device's log; `info` order); `boot_id` replaced by `last_boot` |
+| bytes (`memory.total_bytes` …), nested `cpu`/`gpu`/`memory`/`power` objects | flat numbers in GB and whole % (`ram_used_gb`, `cpu_pct` …) |
+| `services.frpc` + `services.tunnel` (with the edge_id) | one `services.remote_access`, no edge_id |
+| `services.internet` | `status.network` (internet + hotspot) |
+| `services.edge_id_watch` | gone (the edge_id is fixed for a device's life) |
+| `services.mediamtx`, `app_server`, `reboot_timer` | `video_server`, `cloud_connection`, `nightly_reboot` |
+| — | new: `ai_detection`, `edge_hotspot`, `ssh_access`, `time_sync`, `dns_resolver`, `local_discovery`, `fan_control`, `system_logging`, `security_updates`, `os_hardening`; `fan_pct`, `power_mode`, `last_boot`, `latency_ms`, `hotspot`, `hotspot_devices`, camera `wifi_signal_dbm` |
+| per service `unit`, `uptime_secs`, `restarts`, `memory_bytes`; per camera `name`, `resolution`, `codec`, `profile`, `uptime_secs`, `last_frame_age_secs`, `frames_captured`, `stream_ready`, `viewers`, recording detail | gone from the heartbeat, kept in the device's log every minute |
+| orders `ping`, `restart_service`, `logs` (journal) | + `info`; `logs` also reads the device's log files |

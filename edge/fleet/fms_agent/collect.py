@@ -84,11 +84,17 @@ def facts(rtt_ms: float | None, interval: float, enroll_key: str) -> dict:
 
 # ---- who this device is (enrollment) ---------------------------------------
 
+def use_edge_common() -> None:
+    """Make the edge's own `common` package importable (after the agent's own
+    modules): the agent shares its device identity, clock and log writer."""
+    if str(EDGE_DIR) not in sys.path:
+        sys.path.append(str(EDGE_DIR))
+
+
 def device_id() -> str:
     """This device's name, ceravis-<code>, from the edge's own identity module —
     the ONE mechanism the hostname, the hotspot and the tunnel prefix use too."""
-    if str(EDGE_DIR) not in sys.path:
-        sys.path.append(str(EDGE_DIR))     # edge/common, after the agent's own modules
+    use_edge_common()
     from common.device_identity import identity
     return identity().name
 
@@ -127,7 +133,7 @@ def data_dir() -> Path:
 def _usage(path) -> dict | None:
     try:
         st = os.statvfs(path)
-    except OSError:                                  # not there yet (fresh install)
+    except (OSError, AttributeError):                # not there yet (fresh install); not Linux
         return None
     total, free = st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
     return {"total_bytes": total, "free_bytes": free,

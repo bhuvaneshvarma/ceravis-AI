@@ -30,14 +30,15 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, lambda *_: agent.stop.set())
     if not (cfg.configured or (cfg.url and agent.identity)):
         # Not an error: a device without FMS_URL — or, before it has enrolled,
-        # FMS_ENROLL_KEY — simply isn't in a fleet yet. Idle quietly instead of
-        # crash-looping under systemd. Once enrolled it signs with its own key.
-        logging.info("fleet agent idle — %s", "set FMS_URL to join the fleet" if not cfg.url else
-                     "no fleet enrollment key: on a Jetson run setup/install_fleet_agent.sh "
+        # FMS_ENROLL_KEY — simply isn't in a fleet yet. It still keeps its own
+        # health record (logs/) instead of crash-looping under systemd. Once
+        # enrolled it signs with its own key.
+        logging.info("fleet agent not checking in — %s", "set FMS_URL to join the fleet" if not cfg.url
+                     else "no fleet enrollment key: on a Jetson run setup/install_fleet_agent.sh "
                      "(it keeps the key root-only — never put it in jetson.env)")
         if args.check:
             return 2
-        agent.stop.wait()
+        agent.run_forever(exit_on_code_change=True, check_in=False)
         return 0
     if args.check:
         return _check(agent)

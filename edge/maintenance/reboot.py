@@ -62,8 +62,19 @@ _MIN_PASSWORD_LEN = 8
 _DATA = settings.data_path        # anchored by settings — follows DATA_DIR
 _AUTH_FILE = _DATA / "reboot_auth.json"
 _MARKER_FILE = _DATA / "last_reboot.json"
+# This boot's identity, why it started, and whether the app stopped cleanly —
+# what tells a power cut from a planned reboot at the NEXT start.
+_BOOT_FILE = _DATA / "boot_state.json"
 
 _lock = threading.Lock()
+
+# Why the device last started (reported in /system/health → heartbeat, logs):
+#   scheduled_reboot    the nightly reboot (this module, the systemd timer)
+#   manual_reboot       a person rebooted it from CERAVIS (password-gated)
+#   system_restart      an orderly shutdown outside CERAVIS (an engineer, an update)
+#   unexpected_restart  no orderly shutdown at all: a power cut or a system crash
+#   unknown             the first start after installation (nothing to compare)
+_last_boot: dict = {"reason": "unknown", "at": None}
 
 
 # =====================================================================
@@ -371,13 +382,15 @@ def boot_report() -> dict | None:
     """Called once at startup. Returns the marker left by the reboot that
     brought us down (and clears it), so the restart is a logged FACT rather
     than an inference from a gap in the timeline."""
+    data = None
     try:
-        if not _MARKER_FILE.exists():
-            return None
-        data = json.loads(_MARKER_FILE.read_text())
-        _MARKER_FILE.unlink()
+        if _MARKER_FILE.exists():
+            data = json.loads(_MARKER_FILE.read_text())
+            _MARKER_FILE.unlink()
     except Exception:
         logger.exception("reboot: could not read the boot marker")
+    _classify_boot(data)
+    if data is None:
         return None
     logger.info("device is back up after a %s reboot requested at %s by %s",
                 data.get("reason", "?"), data.get("at", "?"),
@@ -386,6 +399,68 @@ def boot_report() -> dict | None:
         "event", True,
         label=f"INFO · Device restarted · {data.get('reason', 'reboot')}")
     return data
+
+
+def _classify_boot(marker: dict | None) -> None:
+    """Why this boot happened, decided once per boot: the reboot marker says a
+    planned reboot; an app that stopped cleanly says an orderly shutdown; neither
+    says the power went or the system crashed. An app restart within the same
+    boot keeps the boot's first answer."""
+    global _last_boot
+    current = _read("/proc/sys/kernel/random/boot_id")
+    try:
+        prev = json.loads(_BOOT_FILE.read_text())
+    except (OSError, ValueError):
+        prev = {}
+    if current and prev.get("boot_id") == current:
+        _last_boot = prev.get("last_boot") or _last_boot
+    else:
+        if marker:
+            reason = ("scheduled_reboot" if "scheduled" in str(marker.get("reason", ""))
+                      else "manual_reboot")
+        elif prev.get("clean_stop"):
+            reason = "system_restart"
+        else:
+            reason = "unexpected_restart" if prev else "unknown"
+        _last_boot = {"reason": reason, "at": _boot_time()}
+        if reason == "unexpected_restart":
+            logger.warning("device restarted UNEXPECTEDLY (power cut or system crash)")
+            call_log.record("event", False,
+                            label="Device restarted unexpectedly (power cut or system crash)")
+    _save_boot(current, clean_stop=False)
+
+
+def mark_clean_stop() -> None:
+    """The app is stopping in an orderly way (service stop, shutdown, reboot)."""
+    _save_boot(_read("/proc/sys/kernel/random/boot_id"), clean_stop=True)
+
+
+def last_boot() -> dict:
+    """{reason, at}: why and when the device last started."""
+    return dict(_last_boot)
+
+
+def _save_boot(boot_id: str, clean_stop: bool) -> None:
+    try:
+        write_json_atomic(_BOOT_FILE, {"boot_id": boot_id, "last_boot": _last_boot,
+                                       "clean_stop": clean_stop})
+    except Exception:
+        logger.exception("reboot: could not record this boot")
+
+
+def _boot_time() -> str | None:
+    try:
+        uptime = float(_read("/proc/uptime").split()[0])
+    except (IndexError, ValueError):
+        return None
+    return (clock.now() - timedelta(seconds=uptime)).isoformat(timespec="seconds")
+
+
+def _read(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def perform(reason: str, actor: str, *, delay_secs: float | None = None) -> None:

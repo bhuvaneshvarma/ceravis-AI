@@ -92,26 +92,99 @@ def configured_ssid() -> str:
     return out.strip() if code == 0 else ""
 
 
-def clients(device: str) -> list[dict]:
-    """Devices currently on the hotspot: MACs from the AP (`iw station dump`),
-    hostnames/IPs from NetworkManager's dnsmasq leases where available."""
-    macs: list[str] = []
+# `iw station dump` line -> the name it is reported under. Signal is what the
+# device hears from that station (dBm: -50 strong, -70 fair, -80 weak); retries
+# and failures are frames the radio had to resend or gave up on.
+_STATION_FIELDS = {
+    "signal": "signal_dbm", "signal avg": "signal_avg_dbm",
+    "tx retries": "tx_retries", "tx failed": "tx_failed",
+    "tx bitrate": "tx_bitrate_mbps", "rx bitrate": "rx_bitrate_mbps",
+    "connected time": "connected_secs", "inactive time": "inactive_ms",
+}
+
+
+def _number(text: str):
+    m = re.match(r"-?\d+(?:\.\d+)?", text.strip())
+    if not m:
+        return None
+    return float(m.group()) if "." in m.group() else int(m.group())
+
+
+def _stations(device: str) -> dict[str, dict]:
+    """{mac: radio facts} for every device associated with the hotspot."""
     code, out = _run(["iw", "dev", device, "station", "dump"], timeout=5)
-    if code == 0:
-        macs = re.findall(r"Station\s+([0-9a-f:]{17})", out, re.I)
-    leases: dict[str, dict] = {}
+    stations: dict[str, dict] = {}
+    current: dict | None = None
+    for line in out.splitlines() if code == 0 else []:
+        m = re.match(r"Station\s+([0-9a-f:]{17})", line, re.I)
+        if m:
+            current = stations.setdefault(m.group(1).lower(), {})
+            continue
+        key, sep, value = line.strip().partition(":")
+        name = _STATION_FIELDS.get(key.strip())
+        if current is not None and sep and name and _number(value) is not None:
+            current[name] = _number(value)
+    return stations
+
+
+def _addresses(device: str) -> dict[str, dict]:
+    """{mac: {ip, hostname}} from NetworkManager's DHCP leases, with the kernel's
+    neighbour table (/proc/net/arp) as the fallback for the IP."""
+    found: dict[str, dict] = {}
+    try:
+        for line in Path("/proc/net/arp").read_text().splitlines()[1:]:
+            f = line.split()
+            if len(f) >= 6 and f[5] == device and f[3] != "00:00:00:00:00:00":
+                found[f[3].lower()] = {"ip": f[0], "hostname": ""}
+    except OSError:
+        pass
     for lf in Path("/var/lib/NetworkManager").glob("dnsmasq-*.leases"):
         try:
             for line in lf.read_text().splitlines():
                 f = line.split()
                 if len(f) >= 4:
-                    leases[f[1].lower()] = {"ip": f[2], "hostname": f[3]}
+                    found[f[1].lower()] = {"ip": f[2], "hostname": "" if f[3] == "*" else f[3]}
         except OSError:
             continue
-    return [{"mac": m,
-             "ip": leases.get(m.lower(), {}).get("ip", ""),
-             "hostname": leases.get(m.lower(), {}).get("hostname", "")}
-            for m in macs]
+    return found
+
+
+def clients(device: str) -> list[dict]:
+    """Devices currently on the hotspot: each MAC the radio hears (`iw station
+    dump`) with its signal and link quality, and its IP and hostname."""
+    addresses = _addresses(device)
+    return [{"mac": mac, "ip": addresses.get(mac, {}).get("ip", ""),
+             "hostname": addresses.get(mac, {}).get("hostname", ""), **radio}
+            for mac, radio in _stations(device).items()]
+
+
+def radio(device: str) -> dict:
+    """The hotspot radio's own settings: name on air, channel, width, power and
+    whether power saving is on (it must be off: it delays every camera frame)."""
+    out: dict = {}
+    code, text = _run(["iw", "dev", device, "info"], timeout=5)
+    if code == 0:
+        for pattern, key in ((r"^\s*ssid (.+)$", "ssid"), (r"channel (\d+)", "channel"),
+                             (r"channel \d+ \((\d+) MHz\)", "frequency_mhz"),
+                             (r"width: (\d+) MHz", "width_mhz"), (r"txpower ([\d.]+) dBm", "tx_power_dbm")):
+            m = re.search(pattern, text, re.M)
+            if m:
+                out[key] = m.group(1).strip() if key == "ssid" else _number(m.group(1))
+    code, text = _run(["iw", "dev", device, "get", "power_save"], timeout=5)
+    m = re.search(r"Power save:\s*(\w+)", text) if code == 0 else None
+    out["power_save"] = m.group(1).lower() if m else None
+    return out
+
+
+def health() -> dict:
+    """Everything about the hotspot in one read: on or off, its radio, and every
+    device on it. Used by /api/v1/system/health (the fleet heartbeat and logs)."""
+    device = wifi_device()
+    if device is None:
+        return {"supported": False, "on": False, "devices": []}
+    on = is_active()
+    return {"supported": True, "interface": device, "on": on,
+            **(radio(device) if on else {}), "devices": clients(device) if on else []}
 
 
 def _own_the_radio() -> None:

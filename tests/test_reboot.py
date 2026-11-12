@@ -33,6 +33,7 @@ _TMP = Path(tempfile.mkdtemp(prefix="ceravis-reboot-test-"))
 reboot._DATA = _TMP
 reboot._AUTH_FILE = _TMP / "reboot_auth.json"
 reboot._MARKER_FILE = _TMP / "last_reboot.json"
+reboot._BOOT_FILE = _TMP / "boot_state.json"
 
 
 class _Outbox:

@@ -20,6 +20,7 @@ onboarding never fails and a manual frpc setup
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -109,17 +110,21 @@ def tunnel_status(edge_id: str | None = None) -> dict:
     want = (edge_id or effective_edge_id() or "").strip()
     out = {"edge_id": want or None, "config": _FRPC_CONF,
            "installed": _helper_present(), "readable": False,
-           "keyed": False, "reason": None}
-    if not want:
-        out["reason"] = "no edge_id on this device yet (not enrolled with the fleet)"
-        return out
+           "keyed": False, "connected": None, "reason": None}
     try:
         with open(_FRPC_CONF, encoding="utf-8") as fh:
             conf = fh.read()
     except OSError as exc:
+        conf = None
+        read_error = exc.__class__.__name__
+    out["connected"] = _server_connected(conf)
+    if not want:
+        out["reason"] = "no edge_id on this device yet (not enrolled with the fleet)"
+        return out
+    if conf is None:
         # Unreadable is NOT the same as wrong: the file is root-owned on some
         # installs, so say so plainly instead of reporting a false negative.
-        out["reason"] = f"cannot read {_FRPC_CONF} ({exc.__class__.__name__})"
+        out["reason"] = f"cannot read {_FRPC_CONF} ({read_error})"
         return out
     out["readable"] = True
     out["keyed"] = f'"/{want}"' in conf
@@ -127,6 +132,27 @@ def tunnel_status(edge_id: str | None = None) -> dict:
                      f"frpc.toml does not route /{want} — live links are dead "
                      f"until 'sudo {_HELPER} {want}' succeeds")
     return out
+
+
+def _server_connected(conf: str | None) -> bool | None:
+    """Does this device hold a live connection to the tunnel server right now?
+    Read from the kernel's socket table (/proc/net/tcp, tcp6): an ESTABLISHED
+    connection to the server's port (serverPort in frpc.toml, else frp's 7000).
+    A running frpc whose login the server refused holds none. None = the table
+    cannot be read (not Linux)."""
+    m = re.search(r"^\s*serverPort\s*=\s*(\d+)", conf or "", re.M)
+    port = f"{int(m.group(1)) if m else 7000:04X}"
+    rows: list[str] = []
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table, encoding="ascii") as fh:
+                rows += fh.read().splitlines()[1:]
+        except OSError:
+            continue
+    if not rows:
+        return None
+    return any(len(f) > 3 and f[2].endswith(":" + port) and f[3] == "01"
+               for f in (r.split() for r in rows))
 
 
 def apply_edge_id_verified(edge_id: str, attempts: int = 3,

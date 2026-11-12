@@ -85,8 +85,8 @@ def _timeout() -> tuple[float, float]:
 # ---------------------------------------------------------------------------
 _WIRE_FILE = "ceravis_api_wire.jsonl"
 _WIRE_LOCK = threading.Lock()
-_WIRE_MAX_BYTES = 4 * 1024 * 1024       # rotate past this…
-_WIRE_KEEP_LINES = 500                   # …down to the newest N records
+_WIRE_MAX_BYTES = 16 * 1024 * 1024      # rotate past this… (room for 1500 typical records)
+_WIRE_KEEP_LINES = 1500                  # …down to the newest N records
 # Request fields that are large base64 blobs — logged as a short marker, never
 # verbatim, so the wire log stays readable and small.
 # Big base64 fields to collapse to a size marker in the wire log. saveSnapshot no

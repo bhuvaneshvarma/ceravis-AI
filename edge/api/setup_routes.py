@@ -35,7 +35,7 @@ from config.settings import settings
 router = APIRouter(prefix="/api/v1/setup", tags=["setup"])
 
 _MIN_FREE_GB = 10.0
-_internet: tuple[float, bool] = (0.0, False)
+_internet: tuple[float, bool, float | None] = (0.0, False, None)   # (when, ok, connect ms)
 
 
 def commissioned() -> bool:
@@ -49,15 +49,23 @@ def _reachable() -> bool:
     if time.monotonic() - _internet[0] < 30:
         return _internet[1]
     u = urlsplit(settings.ceravis_api_base_url)
-    ok = False
+    ok, latency = False, None
     if u.hostname:
+        t0 = time.perf_counter()
         try:
             with socket.create_connection((u.hostname, u.port or 443), timeout=2):
-                ok = True
+                ok, latency = True, round((time.perf_counter() - t0) * 1000, 1)
         except OSError:
             ok = False
-    _internet = (time.monotonic(), ok)
+    _internet = (time.monotonic(), ok, latency)
     return ok
+
+
+def internet_latency_ms() -> float | None:
+    """How long the last reachability check took to connect to the app server
+    (DNS lookup + TCP handshake), in milliseconds; None when it failed."""
+    _reachable()
+    return _internet[2]
 
 
 def internet_problem() -> str | None:

@@ -374,7 +374,7 @@ def _warnings(g: dict) -> list[tuple[str, str | None, str]]:
     if (storage.get("disk_used_pct") or 0) >= 90:
         out.append(("hardware", None, f"recordings disk {storage.get('disk_used_pct')}% full"))
     if g["time"].get("ntp_synchronized") is False:
-        out.append(("hardware", None, "system clock is not NTP-synced"))
+        out.append(("time", None, "system clock is not NTP-synced"))
     if g["internet"]:
         out.append(("internet", None, g["internet"]))
     st = g["state"]
@@ -387,8 +387,8 @@ def _warnings(g: dict) -> list[tuple[str, str | None, str]]:
     # the device is not watching for falls, and status must say so plainly.
     gallery = getattr(st, "gallery", None)
     if gallery is not None and gallery.size == 0 and account_recipient():
-        out.append(("backend", None, "AI chain off — no enrolled embeddings, so tracking, "
-                                     "fall and no-motion detection are not running"))
+        out.append(("ai", None, "AI chain off — no enrolled embeddings, so tracking, "
+                                "fall and no-motion detection are not running"))
     cloud = g["cloud"]
     # Before the upload symptoms below: a missing key is their cause, and with
     # the old built-in key nothing fails YET — only this line says so.
@@ -460,21 +460,32 @@ def system_status(request: Request):
 _STARTED = time.monotonic()                  # this process's start, for its uptime
 
 
+# One vocabulary for the state of every part (edge/LOGS.md, the heartbeat):
+OPERATIONAL, DEGRADED, OUTAGE, DISABLED, UNKNOWN = (
+    "operational", "degraded", "outage", "disabled", "unknown")
+WEAK_WIFI_DBM = -75          # a camera heard weaker than this drops frames soon
+AI_STALE_SECS = 120          # detection runs at least every 10 s on every camera
+
+
 def _tunnel_health(t: dict) -> dict:
     """The tunnel's part: a warning only when it is KNOWN to be wrong. Not set
-    up (a LAN-only home), not enrolled yet, or a config this app may not read
-    are states, not faults."""
-    if not t.get("installed"):
-        state, warnings = "not_installed", []
-    elif not t.get("edge_id"):
-        state, warnings = "not_enrolled", []
+    up (a LAN-only home) or not enrolled yet are states, not faults; a config
+    this app may not read is unknown."""
+    warnings: list[str] = []
+    if not t.get("installed") or not t.get("edge_id"):
+        state = DISABLED
     elif not t.get("readable"):
-        state, warnings = "unknown", []
-    elif t.get("keyed"):
-        state, warnings = "ok", []
+        state = UNKNOWN
+    elif not t.get("keyed"):
+        state = OUTAGE
+        warnings.append(t.get("reason") or "the tunnel does not route this edge_id")
+    elif t.get("connected") is False:
+        state = OUTAGE
+        warnings.append("no connection to the tunnel server — live view and remote access "
+                        "are unavailable (check the internet; restart frpc)")
     else:
-        state, warnings = "warning", [t.get("reason") or "the tunnel does not route this edge_id"]
-    return {"state": state, "routes_edge_id": t.get("keyed"), "edge_id": t.get("edge_id"),
+        state = OPERATIONAL
+    return {"state": state, "routes_edge_id": t.get("keyed"), "connected": t.get("connected"),
             "detail": t.get("reason"), "warnings": warnings}
 
 
@@ -487,38 +498,128 @@ def _secs(value) -> int | None:
     return int(round(value)) if isinstance(value, (int, float)) else None
 
 
+def _judged(warnings: list[str], worst: str = DEGRADED) -> str:
+    return worst if warnings else OPERATIONAL
+
+
+def _network_part(internet_warnings: list[str]) -> dict:
+    """The device's two networks: the internet (by Ethernet cable) and the camera
+    hotspot it runs on its own Wi-Fi radio."""
+    from api.setup_routes import internet_latency_ms
+    from common import hotspot
+    from common.net import default_gateway, link_speed_mbps, wired_uplink
+    port = wired_uplink()
+    spot = hotspot.health()
+    spot_warn: list[str] = []
+    if spot.get("supported") and not spot.get("on"):
+        spot_warn.append("the camera hotspot is off — cameras cannot connect to this device")
+    if spot.get("power_save") == "on":
+        spot_warn.append("hotspot power saving is on — it delays camera video; switch it off "
+                         "(bash setup/install_hotspot.sh)")
+    spot["state"] = (UNKNOWN if not spot.get("supported") else
+                     OUTAGE if not spot.get("on") else _judged(spot_warn))
+    spot["warnings"] = spot_warn
+    connected = not internet_warnings
+    return {
+        "state": OUTAGE if internet_warnings else OPERATIONAL,
+        "internet": {"connected": connected,
+                     "latency_ms": internet_latency_ms() if connected else None},
+        "uplink": {"interface": port.iface, "cable": port.cable, "ip": port.ip,
+                   "gateway": default_gateway(), "speed_mbps": link_speed_mbps(port.iface)},
+        "hotspot": spot,
+        "warnings": internet_warnings,
+    }
+
+
+def _ai_part(st, cameras_running: bool, rule_warnings: list[str]) -> dict:
+    """Is the device really watching: the detector running and analysing frames,
+    and the chain behind it (tracking, pose, falls, no-motion) switched on."""
+    runner = getattr(st, "detection_runner", None)
+    gallery = getattr(st, "gallery", None)
+    metrics = getattr(st, "metrics_registry", None)
+    last = getattr(runner, "last_inference_time", None)
+    age = (clock.now() - last).total_seconds() if last else None
+    warnings = list(rule_warnings)
+    stopped = runner is None or not runner.is_running
+    stale = not stopped and cameras_running and (age is None or age > AI_STALE_SECS)
+    if stopped:
+        warnings.insert(0, "AI detection is not running — no person, fall or no-motion "
+                           "detection (restart the ceravis service)")
+    elif stale:
+        warnings.insert(0, f"AI detection has analysed no frame for "
+                           f"{(age or AI_STALE_SECS) / 60:.0f} min although cameras deliver video")
+    size = getattr(gallery, "size", None)
+    return {
+        "state": OUTAGE if stopped or stale else _judged(warnings),
+        "detector_running": not stopped,
+        "last_analysis_age_secs": _rounded(age),
+        "gallery_size": size,
+        "fall_detection": bool(getattr(st, "rule_engine", None) is not None and size),
+        "pipelines": metrics.snapshot_all() if metrics is not None else [],
+        "warnings": warnings,
+    }
+
+
+def _camera_hosts() -> dict[str, str]:
+    """camera_id -> the camera's IP/host, from its RTSP URL."""
+    from urllib.parse import urlsplit
+    out = {}
+    for cam in CameraConfig().get_all():
+        try:
+            out[cam.camera_id] = urlsplit(cam.rtsp_url).hostname or ""
+        except ValueError:
+            out[cam.camera_id] = ""
+    return out
+
+
 @router.get("/api/v1/system/health")
 def system_health(request: Request):
-    """The same facts as /system/status, grouped by PART, each with its own
-    `state` and `warnings` (empty = fine). The fleet agent builds its heartbeat
-    from this (edge/fleet, docs/fleet-heartbeat-api.md); it adds what only it can
-    measure — the hardware itself and the systemd services — so a device whose
-    app is down still reports. Loopback read, like /system/status."""
+    """Every part of this device in detail, each with its own `state` (one
+    vocabulary: operational / degraded / outage / disabled / unknown) and
+    `warnings` (empty = fine). The /system/status rules decide the shared
+    warnings, so the two reports can never disagree; the parts only this report
+    has (network, hotspot, AI, Wi-Fi signal) add their own.
+
+    The fleet agent records it in full every minute (logs/health.jsonl) and
+    sends a short summary as the heartbeat (edge/fleet, docs/fleet-heartbeat-
+    api.md, edge/LOGS.md); it adds what only it can measure — the hardware
+    and the systemd services — so a device whose app is down still reports.
+    Loopback read, like /system/status."""
     g = _gather(request)
     rules = _warnings(g)
 
     def part(name: str) -> list[str]:
         return [m for p, _, m in rules if p == name]
 
+    # ---- the networks: internet and the camera hotspot ----
+    network = _network_part(part("internet"))
+    by_ip = {d.get("ip"): d for d in network["hotspot"].get("devices") or [] if d.get("ip")}
+
     # ---- cameras: one entry each, with its own warnings ----
     live = g["live"]
     rec = {c["camera_id"]: c for c in g["recording"]["cameras"]}
+    hosts = _camera_hosts()
     cameras = []
     for c in g["cameras"]:
         cid = c["camera_id"]
         st = live.get(cid)
-        state = getattr(getattr(st, "health_state", None), "value", None) or "offline"
-        if not c["enabled"]:
-            state = "disabled"
+        stream = getattr(getattr(st, "health_state", None), "value", None) or "offline"
         warnings = [m for p, cam, m in rules if p == "camera" and cam == cid]
         last = getattr(st, "last_frame_time", None)
         last_age = (clock.now() - last).total_seconds() if last else None
-        if c["enabled"] and state != "running":
-            warnings.insert(0, f"{cid}: {state} — no video from this camera right now")
+        station = by_ip.get(hosts.get(cid)) or {}
+        signal = station.get("signal_avg_dbm", station.get("signal_dbm"))
+        if c["enabled"] and stream != "running":
+            warnings.insert(0, f"{cid}: {stream} — no video from this camera right now")
+        if c["enabled"] and signal is not None and signal < WEAK_WIFI_DBM:
+            warnings.append(f"{cid}: weak Wi-Fi signal ({signal} dBm) — move the camera "
+                            f"closer to the device or clear what is in between")
+        state = (DISABLED if not c["enabled"] else OUTAGE if stream != "running"
+                 else _judged(warnings))
         r = rec.get(cid, {})
         cameras.append({
             "camera_id": cid, "name": c["name"], "room": c["room"], "enabled": c["enabled"],
-            "state": state,
+            "state": state, "stream": stream,
             "fps": _rounded(getattr(st, "current_fps", None)),
             "resolution": c["resolution"], "codec": c["codec"], "profile": c["profile"],
             "uptime_secs": _secs(getattr(st, "connected_secs", None)),
@@ -531,6 +632,9 @@ def system_health(request: Request):
                           "segments_last_hour": r.get("segments_last_hour", 0)},
             "night_vision": bool((c.get("illumination") or {}).get("night_vision")),
             "ptz": c["ptz"],
+            "wifi": {"ip": hosts.get(cid) or None, "signal_dbm": signal,
+                     **{k: station.get(k) for k in ("tx_retries", "tx_failed", "tx_bitrate_mbps",
+                                                    "connected_secs")}},
             "warnings": warnings,
         })
 
@@ -543,13 +647,17 @@ def system_health(request: Request):
     cloud = g["cloud"]
     queue = cloud.get("outbox") or {}
     last_call = cloud.get("last_call") or {}
-    app_state = ("not_configured" if not cloud.get("configured") else
-                 "warning" if part("app_server") else
-                 "unreachable" if last_call and not last_call.get("ok", True) else "ok")
-    tunnel = _tunnel_status()
+    app_warn = part("app_server")
+    unreachable = cloud.get("configured") and network["state"] == OUTAGE
+    if unreachable:
+        app_warn.insert(0, "the CERAVIS app server cannot be reached — alerts wait on this "
+                           "device and go out as soon as it is back")
+    app_state = (DISABLED if not cloud.get("configured") else
+                 OUTAGE if unreachable else _judged(app_warn))
+    time_warn = part("time")
     services = {
         "mediamtx": {
-            "state": "running" if mtx_up else "down",
+            "state": OPERATIONAL if mtx_up else OUTAGE,
             "uptime_secs": _secs(getattr(mtx, "uptime_secs", None)),
             "restarts": getattr(mtx, "restarts", 0) if mtx else 0,
             "warnings": mtx_warn,
@@ -562,29 +670,27 @@ def system_health(request: Request):
             "last_call_ok": last_call.get("ok") if last_call else None,
             "uploads_pending": queue.get("pending", 0),
             "oldest_pending_secs": queue.get("oldest_pending_age_secs"),
-            "warnings": part("app_server"),
+            "warnings": app_warn,
         },
-        "internet": {"state": "down" if part("internet") else "ok",
-                     "warnings": part("internet")},
-        "tunnel": _tunnel_health(tunnel),
+        "tunnel": _tunnel_health(_tunnel_status()),
+        "time_sync": {"state": _judged(time_warn), **g["time"], "warnings": time_warn},
     }
 
-    # ---- this app ----
-    gallery = getattr(g["state"], "gallery", None)
+    # ---- this app, and its AI ----
+    running = any(c["stream"] == "running" for c in cameras)
+    ai = _ai_part(g["state"], running, part("ai"))
     storage = g["storage"]
     listed = {c["camera_id"] for c in cameras}
     # A camera warning for a camera not listed (removed meanwhile) is never lost.
     backend_warn = part("backend") + [m for p, cam, m in rules
                                       if p == "camera" and cam not in listed]
     backend = {
-        "state": "warning" if backend_warn else "running",
+        "state": _judged(backend_warn),
         "version": settings.app_version,
         "commit": g["code"].get("commit"),
         "restart_needed": g["code"].get("restart_needed"),
         "uptime_secs": round(time.monotonic() - _STARTED),
         "device_id": settings.device_id,
-        "edge_id": effective_edge_id(),
-        "ai": {"gallery_size": getattr(gallery, "size", None)},
         "recording": {"enabled": g["recording"]["enabled"],
                       "cameras_recording": len(g["recording"]["recording_now"])},
         "storage": {k: storage.get(k) for k in ("recordings_gb", "retention_hours",
@@ -598,17 +704,18 @@ def system_health(request: Request):
     snap = monitor.snapshot() if monitor is not None else {}
     hw_warn = part("hardware")
     hardware = {
-        "state": "warning" if hw_warn else "ok",
+        "state": _judged(hw_warn),
+        "last_boot": reboot.last_boot(),
         "gpu_load_pct": snap.get("gpu_pct"),
         "cpu_load_pct": snap.get("cpu_pct_avg"),
         "temperature_c": {k: snap[f] for k, f in (("cpu", "cpu_temp_c"), ("gpu", "gpu_temp_c"),
                                                   ("tj", "junction_temp_c")) if f in snap},
         "board_power_w": snap.get("power_in_w"),
         "over_current_events": snap.get("overcurrent_events"),
-        "clock": g["time"],
         "warnings": hw_warn,
     }
-    return {"backend": backend, "services": services, "cameras": cameras, "hardware": hardware}
+    return {"backend": backend, "hardware": hardware, "network": network, "ai": ai,
+            "services": services, "cameras": cameras}
 
 
 # ---- reboot ---------------------------------------------------------

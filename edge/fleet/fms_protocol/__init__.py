@@ -56,12 +56,18 @@ EDGE_ID_RE = re.compile(r"^[A-Za-z0-9._~-]{1,64}$")
 # security decision, not a convenience.
 RESTARTABLE_UNITS = ("ceravis", "frpc")
 LOG_UNITS = ("ceravis", "frpc", "ceravis-fleet-agent")
+# The device's own log files a `logs` order may read (edge/LOGS.md). Not
+# the app-server wire log nor the talk-back log: they carry personal data and
+# are read on the device only.
+LOG_FILES = ("health", "events", "fleet", "incoming", "cloud_calls", "mediamtx")
 MAX_LOG_LINES = 500
 
 COMMANDS = {
     "ping": "Round-trip test — proves the device receives orders and answers.",
     "restart_service": "Restart one allow-listed service on the device.",
-    "logs": "Return the latest journal lines of one allow-listed service.",
+    "logs": "Return the latest lines of one allow-listed service's journal (unit) "
+            "or of one of the device's own log files (file).",
+    "info": "Return what is installed: release, agent, versions, board and OS.",
 }
 
 
@@ -109,7 +115,7 @@ def normalize_command(kind: str, args: dict | None = None) -> dict:
     it again before running one — so an order the server would refuse can never
     execute on a device, whatever reaches it."""
     args = dict(args or {})
-    if kind == "ping":
+    if kind in ("ping", "info"):
         return {}
     if kind == "restart_service":
         return {"unit": _pick(args.get("unit"), RESTARTABLE_UNITS)}
@@ -118,12 +124,14 @@ def normalize_command(kind: str, args: dict | None = None) -> dict:
             lines = int(args.get("lines", 200))
         except (TypeError, ValueError):
             raise ValueError("lines must be a whole number") from None
-        return {"unit": _pick(args.get("unit"), LOG_UNITS),
-                "lines": max(1, min(lines, MAX_LOG_LINES))}
+        lines = max(1, min(lines, MAX_LOG_LINES))
+        if args.get("file") is not None:
+            return {"file": _pick(args.get("file"), LOG_FILES), "lines": lines}
+        return {"unit": _pick(args.get("unit"), LOG_UNITS), "lines": lines}
     raise ValueError(f"unknown command {kind!r}")
 
 
-def _pick(unit, allowed: tuple) -> str:
-    if unit not in allowed:
-        raise ValueError(f"unit must be one of: {', '.join(allowed)}")
-    return unit
+def _pick(value, allowed: tuple) -> str:
+    if value not in allowed:
+        raise ValueError(f"must be one of: {', '.join(allowed)}")
+    return value

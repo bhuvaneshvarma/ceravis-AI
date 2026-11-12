@@ -1,6 +1,10 @@
-"""The loop: (enroll once) → gather → exchange → act → sleep, forever.
+"""The loop: observe every minute (logs) · (enroll once) → check in → act, forever.
 
 Rules it lives by:
+  • Every minute it measures every part of the device and keeps the record on
+    the device (logs/health.jsonl, events.jsonl — fms_agent.logs), whether or
+    not a fleet server is configured or reachable. A check-in sends the short
+    summary of the newest record (fms_agent.health).
   • No per-device setup. With no identity yet it ENROLLS by itself, at once:
     it sends who this device is (its name, board, release, disk) and gets back
     its permanent edge_id — the FMS is the only place edge_ids come from — and
@@ -31,10 +35,13 @@ import fms_protocol as protocol
 from . import collect, commands, identity, transport
 from . import health as health_report
 from .config import Config
+from .logs import DeviceLogs
 
 log = logging.getLogger("fms_agent")
 
 MIN_WAIT, MAX_WAIT, MAX_BACKOFF = 5, 3600, 300
+OBSERVE_SECS = 60.0          # one full record of the device each minute
+FRESH_SECS = 10.0            # a check-in reuses a record younger than this
 
 
 class Waiting(transport.Rejected):
@@ -81,7 +88,22 @@ class Agent:
         self.rtt_ms: float | None = None
         self.results: list[dict] = []    # answers to orders, waiting to be delivered
         self.health = health_report.Health()
+        self.logs = DeviceLogs(collect.data_dir())
+        self.detail: dict | None = None  # the newest full record …
+        self.status: dict | None = None  # … and the heartbeat summary built from it
+        self._observed_at = -1e9
         self._last_problem: str | None = ""
+
+    # ---- each minute ------------------------------------------------------
+    def observe(self) -> None:
+        """Measure every part of the device; keep the record on the device."""
+        # Generous: the app's full report reads NetworkManager and the radio too.
+        app, app_error = collect.edge_status(self.cfg.health_url, timeout=20.0)
+        self.detail = self.health.observe(app, app_error, health_report.agent_facts(
+            self.rtt_ms, self.interval, self.cfg.enroll_key))
+        self.status = self.health.summary(self.detail)
+        self.logs.observation(self.detail, self.status)
+        self._observed_at = time.monotonic()
 
     # ---- one exchange ---------------------------------------------------
     def beat(self) -> float:
@@ -89,25 +111,36 @@ class Agent:
         if self.identity is None:
             status, _ = collect.edge_status(self.cfg.status_url)
             return self._enroll(status)
-        # Every part of the device, each with its state, uptime and warnings
-        # (fms_agent.health, docs/fleet-heartbeat-api.md).
-        app, app_error = collect.edge_status(self.cfg.health_url)
-        payload = {
-            "status": self.health.build(app, app_error, health_report.agent_facts(
-                self.rtt_ms, self.interval, self.cfg.enroll_key)),
-            "results": [],
-        }
+        # Every part of the device, each with its state and warnings
+        # (fms_agent.health, docs/fleet-heartbeat-api.md) — from a fresh record.
+        if time.monotonic() - self._observed_at > FRESH_SECS:
+            self.observe()
+        detail = self.detail
+        payload = {"status": self.status, "results": []}
         payload["results"] = carried = self._carry(payload)
         try:
             reply = self._post(protocol.HEARTBEAT_PATH, payload,
                                self.identity["edge_id"], self.identity["secret"])
         except transport.Rejected as exc:
+            self.logs.exchange("heartbeat", False, status=exc.status, error=str(exc))
             if exc.status == 401:        # key reset by an admin (or unknown here): enroll afresh
+                status, _ = collect.edge_status(self.cfg.status_url)
                 return self._enroll(status)
             raise
+        except Exception as exc:
+            self.logs.exchange("heartbeat", False, error=str(exc))
+            raise
+        self.health.delivered(detail)
         del self.results[:len(carried)]                       # delivered — drop them
         self.interval = min(max(float(reply.get("next_poll_after_secs", 60)), MIN_WAIT), MAX_WAIT)
-        self.results += [commands.run(order) for order in reply.get("commands") or []]
+        orders = reply.get("commands") or []
+        self.logs.exchange("heartbeat", True, rtt_ms=self.rtt_ms, state=self.status["state"],
+                           warning_count=self.status["warning_count"], results_sent=len(carried),
+                           orders=len(orders), next_secs=self.interval)
+        for order in orders:
+            result = commands.run(order)
+            self.logs.order(order, result)
+            self.results.append(result)
         # Report results straight away instead of making the admin wait a cycle.
         return 1.0 if self.results else self.interval
 
@@ -141,6 +174,7 @@ class Agent:
                 "status": status,
             }, None, self.cfg.enroll_key)            # None: the 4-line enroll signature
         except transport.Rejected as exc:
+            self.logs.exchange("enroll", False, status=exc.status, error=str(exc))
             if exc.status == 409:
                 raise Waiting("this device is already enrolled — an admin must press "
                               "Reset key in the fleet console to let it in again", 409) from None
@@ -159,6 +193,7 @@ class Agent:
                          "key_version": reply.get("key_version"), "origin": reply.get("origin"),
                          "enrolled_at": time.time()}
         identity.save(self.cfg.state_dir, self.identity)
+        self.logs.exchange("enroll", True, edge_id=edge_id, origin=reply.get("origin"))
         warnings = reply.get("warnings")
         for note in warnings if isinstance(warnings, list) else []:
             log.warning("fleet: %s", note)
@@ -173,32 +208,48 @@ class Agent:
         return reply
 
     # ---- forever ----------------------------------------------------------
-    def run_forever(self, exit_on_code_change: bool = False) -> None:
-        # A device still to enroll does so at once (the installer waits on it);
-        # an enrolled one staggers its first heartbeat.
-        wait = 0 if self.identity is None else int(self.fingerprint, 16) % 30
+    def run_forever(self, exit_on_code_change: bool = False, check_in: bool = True) -> None:
+        """Observe every minute; with `check_in`, also report to the fleet server.
+        A device still to enroll does so at once (the installer waits on it); an
+        enrolled one staggers its first heartbeat."""
+        now = time.monotonic()
+        next_beat = now + (0 if self.identity is None else int(self.fingerprint, 16) % 30)
         backoff, skewed = float(MIN_WAIT), False
         code = _code_stamp()
-        log.info("fleet agent started — reporting to %s", self.cfg.url)
-        while not self.stop.wait(wait):
+        log.info("fleet agent started — %s", f"reporting to {self.cfg.url}" if check_in
+                 else "keeping this device's health record (not in a fleet)")
+        while True:
+            next_look = self._observed_at + OBSERVE_SECS
+            due = min(next_beat, next_look) if check_in else next_look
+            if self.stop.wait(max(0.0, due - time.monotonic())):
+                break
             # Answers to orders go out first: a restart must not lose them.
             if exit_on_code_change and not self.results and _code_stamp() != code:
                 log.info("fleet agent code changed on disk — exiting so it restarts on the new version")
-                return
-            try:
-                wait = self.beat()
-                backoff, skewed = float(MIN_WAIT), False
-                self._report(None)
-            except transport.ClockSkew as exc:
-                self.clock_offset = exc.server_time - time.time()
-                if not skewed:
-                    log.warning("device clock is %.0fs off the server — correcting and retrying",
-                                -self.clock_offset)
-                wait, skewed = (1.0 if not skewed else backoff), True
-            except Exception as exc:                       # never let the loop die
-                self._report(exc)
-                wait = backoff * random.uniform(0.8, 1.2)
-                backoff = min(backoff * 2, MAX_BACKOFF)
+                break
+            if check_in and time.monotonic() >= next_beat:
+                try:
+                    wait = self.beat()
+                    backoff, skewed = float(MIN_WAIT), False
+                    self._report(None)
+                except transport.ClockSkew as exc:
+                    self.clock_offset = exc.server_time - time.time()
+                    if not skewed:
+                        log.warning("device clock is %.0fs off the server — correcting and retrying",
+                                    -self.clock_offset)
+                    wait, skewed = (1.0 if not skewed else backoff), True
+                except Exception as exc:                   # never let the loop die
+                    self._report(exc)
+                    wait = backoff * random.uniform(0.8, 1.2)
+                    backoff = min(backoff * 2, MAX_BACKOFF)
+                next_beat = time.monotonic() + wait
+            if time.monotonic() - self._observed_at >= OBSERVE_SECS:
+                try:
+                    self.observe()
+                except Exception:                          # a record lost, never the loop
+                    log.exception("health record failed")
+                    self._observed_at = time.monotonic()
+        self.logs.stopped()
         log.info("fleet agent stopped")
 
     def _report(self, exc: Exception | None) -> None:
