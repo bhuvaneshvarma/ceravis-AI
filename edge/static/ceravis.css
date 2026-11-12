@@ -515,10 +515,35 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   animation: cv-dialog-fade .15s ease; }
 .cv-dialog { width: 100%; max-width: 420px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow-lg);
-  padding: 22px 22px 18px; animation: cv-dialog-pop .18s cubic-bezier(.22,1,.36,1) both; }
+  padding: 22px 22px 18px; animation: cv-dialog-pop .18s cubic-bezier(.22,1,.36,1) both;
+  max-height: calc(100vh - 40px); overflow-y: auto; }
 .cv-dialog-title { font-size: 16px; font-weight: 800; color: var(--navy); }
 .cv-dialog-msg { font-size: 13.5px; color: var(--muted); line-height: 1.55; margin-top: 8px; }
 .cv-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.cv-dialog-actions .btn:disabled { opacity: .45; cursor: not-allowed; }
+/* lists under the message: what an action erases / keeps */
+.cv-dialog-sec { margin-top: 14px; padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--line-soft); background: var(--panel-2); }
+.cv-dialog-sec.bad { border-color: rgba(251,44,54,.28); background: rgba(251,44,54,.05); }
+.cv-dialog-sec.ok  { border-color: rgba(0,181,81,.28); background: rgba(0,181,81,.05); }
+.cv-dialog-sec-title { font-size: 11.5px; font-weight: 800; letter-spacing: .6px;
+  text-transform: uppercase; color: var(--navy); }
+.cv-dialog-sec.bad .cv-dialog-sec-title { color: var(--bad); }
+.cv-dialog-sec ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px;
+  color: var(--muted); line-height: 1.55; }
+.cv-dialog-type { display: flex; flex-direction: column; gap: 6px; margin-top: 14px;
+  font-size: 12.5px; font-weight: 700; color: var(--navy); }
+.cv-dialog-type input { width: 100%; box-sizing: border-box; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  color: var(--navy); font-size: 14px; letter-spacing: 2px; font-weight: 700; outline: none; }
+.cv-dialog-type input:focus { border-color: var(--bad); box-shadow: 0 0 0 3px rgba(251,44,54,.12); }
+.cv-dialog-type[hidden] { display: none; }
+/* cvBusy: a full-page wait while the device restarts */
+.cv-busy .cv-dialog { text-align: center; }
+.cv-busy-spin { width: 34px; height: 34px; margin: 4px auto 12px; border-radius: 50%;
+  border: 3px solid var(--line); border-top-color: var(--teal-dim);
+  animation: cv-busy-spin .9s linear infinite; }
+@keyframes cv-busy-spin { to { transform: rotate(360deg); } }
 @keyframes cv-dialog-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes cv-dialog-pop { from { opacity: 0; transform: translateY(10px) scale(.97); }
                            to   { opacity: 1; transform: none; } }

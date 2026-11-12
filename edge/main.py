@@ -128,6 +128,13 @@ def _listen_for_refresh() -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     local_key.ensure()                # this device's own tools prove themselves with it
+    # A care recipient removed (or replaced) before this start: their data is
+    # erased now, before any component opens a file (maintenance.recipient_reset).
+    try:
+        from maintenance import recipient_reset
+        recipient_reset.complete_pending()
+    except Exception:
+        logger.exception("care recipient removal did not finish — retried next start")
     refresh = _listen_for_refresh()
     _ensure_camera_labels_on_boot()   # cameras.json normalized before any read
     pipeline = Pipeline()

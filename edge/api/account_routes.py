@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
+import threading
 import time
 
 from fastapi import APIRouter, BackgroundTasks, Request
@@ -11,6 +13,7 @@ from config.account_config import (
     AccountConfig, canonical_edge_id, effective_edge_id,
 )
 from config.camera_config import CameraConfig
+from maintenance import recipient_reset
 from integration.ceravis_api import (
     CeravisApiError,
     get_user_details,
@@ -27,6 +30,43 @@ account_config = AccountConfig()
 logger = logging.getLogger("account")
 # When this process started: a page that waits out a restart polls until it changes.
 _BOOTED_AT = time.time()
+
+# A sign-in by ANOTHER care recipient than the one on this device: their code
+# checked out, but the device is only handed over once the person at the screen
+# confirms that the current recipient's data is erased. Held in memory for a few
+# minutes, by an unguessable token the sign-in page sends back with the yes.
+_SWITCH_TTL_SECS = 600.0
+_switches: dict[str, dict] = {}
+_switch_lock = threading.Lock()
+
+
+def _hold_switch(email: str, account: dict) -> str:
+    token = secrets.token_urlsafe(24)
+    now = time.time()
+    with _switch_lock:
+        for t in [t for t, v in _switches.items() if v["expires"] < now]:
+            _switches.pop(t)
+        _switches[token] = {"email": email.lower(), "account": account,
+                            "expires": now + _SWITCH_TTL_SECS}
+    return token
+
+
+def _take_switch(token: str, email: str) -> dict | None:
+    """The account held for this token and email (once), or None."""
+    with _switch_lock:
+        held = _switches.pop(token, None)
+    if not held or held["expires"] < time.time() or held["email"] != email.lower():
+        return None
+    return held["account"]
+
+
+def _hand_over(account: dict, actor: str, background_tasks: BackgroundTasks) -> None:
+    """This device now serves `account`; whatever it held of the care recipient
+    before is erased when the service restarts (maintenance.recipient_reset)."""
+    account_config.clear()
+    recipient_reset.request("handed over to another care recipient", actor)
+    account_config.save(account)
+    background_tasks.add_task(recipient_reset.restart_soon)
 
 
 def _keep_tunnel_keyed(background_tasks: BackgroundTasks) -> tuple[bool, dict | None]:
@@ -60,23 +100,6 @@ def _note_app_server_token(user: dict) -> str:
         call_log.record("event", False, label="App server uses another edge_id for this device",
                         error=f"app server: {token} — FMS: {mine}")
     return token
-
-
-def _restart_after_switch() -> None:
-    """A care-recipient switch changes who the whole device works for: the
-    recipient's galleries, alerts and cloud account. The steps queued before
-    this one apply first; then the service restarts cleanly through the nightly
-    refresh's own mechanism, so every component starts again on the new
-    recipient at once, not at the next manual or overnight restart. (The edge_id
-    does not change with the recipient: the FMS issued it to the device.) Not
-    under systemd (dev box): logged, and the in-place steps stand on their own."""
-    from maintenance.refresh import restart_service
-    time.sleep(1.0)
-    logger.warning("care-recipient switch applied — restarting the service so "
-                   "everything runs on the new recipient")
-    if not restart_service():
-        logger.warning("service restart NOT signalled (not running under systemd); "
-                       "the in-place updates stand")
 
 
 def _cloud_camera(c) -> dict:
@@ -159,6 +182,33 @@ class VerifyRequest(BaseModel):
     # The 5-digit login code the recipient typed; checked with the app server
     # (/v1/ai/verifyOtp) BEFORE the account is fetched.
     otp: str | None = None
+    # The yes to "erase the current care recipient's data": the token a
+    # verified sign-in by another recipient was answered with (in place of otp).
+    reset_token: str | None = None
+
+
+def _account_from(user: dict, email: str, phone: str | None) -> dict:
+    return {
+        "ceravisUserId": user.get("ceravisUserId"),
+        "firstName": user.get("firstName"),
+        "lastName": user.get("lastName"),
+        "email": user.get("email") or email,
+        "phone": (phone or "").strip(),
+        "gender": user.get("gender"),
+        "role": user.get("role"),
+        "tier": user.get("tier"),
+        # The app server's token, kept only as the fleet agent's enrollment hint.
+        "edgeId": _note_app_server_token(user) or None,
+    }
+
+
+def _signed_in_fresh(account: dict, background_tasks: BackgroundTasks,
+                     restarting: bool) -> dict:
+    provisioning, remote = _keep_tunnel_keyed(background_tasks)
+    return {"verified": True, "user": account, "fresh": True,
+            "edgeId": effective_edge_id() or None,
+            "provisioning": provisioning, "remote": remote,
+            "restarting": restarting, "bootedAt": _BOOTED_AT}
 
 
 @router.post("/verify")
@@ -173,10 +223,25 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     return it so the next screen can pre-fill. The edge_id is never taken from
     here: the FMS issued it to this device (config.account_config). Every
     app-server hit is recorded in the wire log.
+
+    ANOTHER care recipient than the one this device serves is not let in at
+    once: the answer asks to confirm (`confirmReset` + `resetToken`), and only
+    the same email sent back with that token hands the device over — the
+    current recipient's data is erased (maintenance.recipient_reset).
     """
     email = (req.email or "").strip()
     if not email:
         return {"verified": False, "reason": "Email is required"}
+    if req.reset_token:
+        account = _take_switch(req.reset_token, email)
+        if account is None:
+            return {"verified": False,
+                    "reason": "That confirmation has expired — sign in again."}
+        _hand_over(account, email, background_tasks)
+        logger.warning("device handed over to user #%s (%s); the previous care "
+                       "recipient's data is erased on restart",
+                       account["ceravisUserId"], account["email"])
+        return _signed_in_fresh(account, background_tasks, restarting=True)
     # 1) The one-time code must check out before we fetch anything — and only
     # a well-formed code is worth asking the server about.
     otp = re.sub(r"\s+", "", req.otp or "")
@@ -228,32 +293,57 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
         return {"verified": False,
                 "reason": "No CERAVIS account found for this email"}
 
-    account = {
-        "ceravisUserId": user.get("ceravisUserId"),
-        "firstName": user.get("firstName"),
-        "lastName": user.get("lastName"),
-        "email": user.get("email") or email,
-        "phone": (req.phone or "").strip(),
-        "gender": user.get("gender"),
-        "role": user.get("role"),
-        "tier": user.get("tier"),
-        # The app server's token, kept only as the fleet agent's enrollment hint.
-        "edgeId": _note_app_server_token(user) or None,
-    }
+    account = _account_from(user, email, req.phone)
+    # This device serves another care recipient: hand it over only on a yes.
+    if stored.get("ceravisUserId") and stored.get("ceravisUserId") != account["ceravisUserId"]:
+        logger.info("sign-in by user #%s while the device serves user #%s — asking to "
+                    "confirm the hand-over", account["ceravisUserId"], stored.get("ceravisUserId"))
+        return {"verified": False, "confirmReset": True,
+                "resetToken": _hold_switch(email, account),
+                "erased": recipient_reset.erased_labels(),
+                "kept": list(recipient_reset.KEPT),
+                "reason": "This device is set up for another care recipient."}
     account_config.save(account)
-    provisioning, remote = _keep_tunnel_keyed(background_tasks)
-    # A different recipient: restart once the steps above have run
-    # (BackgroundTasks run in order), so nothing keeps the previous identity.
-    restarting = stored.get("ceravisUserId") != account["ceravisUserId"]
-    if restarting:
-        background_tasks.add_task(_restart_after_switch)
-    logger.info("account verified (fresh): user #%s (%s)%s",
-                account["ceravisUserId"], account["email"],
-                " — service restart scheduled" if restarting else "")
-    return {"verified": True, "user": account, "fresh": True,
-            "edgeId": effective_edge_id() or None,
-            "provisioning": provisioning, "remote": remote,
-            "restarting": restarting, "bootedAt": _BOOTED_AT}
+    logger.info("account verified (fresh): user #%s (%s)",
+                account["ceravisUserId"], account["email"])
+    return _signed_in_fresh(account, background_tasks, restarting=False)
+
+
+@router.get("/recipient-data")
+def recipient_data():
+    """What this device holds of its care recipient — what removing them erases —
+    and what stays."""
+    acct = account_config.get()
+    name = " ".join(str(x) for x in (acct.get("firstName"), acct.get("lastName")) if x)
+    return {"recipient": ({"ceravisUserId": acct.get("ceravisUserId"), "name": name,
+                           "email": acct.get("email")} if acct.get("ceravisUserId") else None),
+            "parts": recipient_reset.inventory(),
+            "kept": list(recipient_reset.KEPT),
+            "pending": recipient_reset.pending() is not None}
+
+
+class RemoveRecipientRequest(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/remove-recipient")
+def remove_recipient(req: RemoveRecipientRequest, request: Request,
+                     background_tasks: BackgroundTasks):
+    """Remove the care recipient from this device before it goes to another
+    one: the account at once (every browser is signed out with it), the rest of
+    their data when the service restarts (maintenance.recipient_reset). The
+    device's cameras, fleet enrollment and settings stay. Needs {confirm: true}."""
+    if req.confirm is not True:
+        return {"removed": False, "reason": "Confirmation required"}
+    from api.auth import session_of
+    who = (session_of(request) or {}).get("email") or "this device"
+    acct = account_config.get()
+    account_config.clear()
+    recipient_reset.request("care recipient removed", who)
+    background_tasks.add_task(recipient_reset.restart_soon)
+    logger.warning("care recipient user #%s removed from this device by %s",
+                   acct.get("ceravisUserId"), who)
+    return {"removed": True, "restarting": True, "bootedAt": _BOOTED_AT}
 
 
 @router.post("/sync-cameras")

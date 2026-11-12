@@ -95,6 +95,14 @@
           padding: 10px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
   .prow b { text-align: right; word-break: break-all; color: var(--navy); }
   @media (max-width: 760px) { .rec-grid { grid-template-columns: 1fr; } }
+  /* removing the care recipient: set apart, deliberate */
+  .rec-remove { display: flex; justify-content: space-between; align-items: center; gap: 16px;
+                margin-top: 18px; padding: 14px 16px; border-radius: 12px;
+                border: 1px solid rgba(251,44,54,.25); background: rgba(251,44,54,.04); }
+  .rec-remove-t { font-weight: 700; color: var(--navy); font-size: 13.5px; }
+  .rec-remove-s { color: var(--muted); font-size: 12.5px; margin-top: 3px; line-height: 1.5; }
+  .rec-remove[hidden] { display: none; }
+  @media (max-width: 760px) { .rec-remove { flex-direction: column; align-items: stretch; } }
 
 </style>
 </head>
@@ -115,6 +123,15 @@
       <div class="hint mb">Your verified CERAVIS profile — registered as the care
         recipient on this device. Face/body enrollment is the final step.</div>
       <div id="r-profile"></div>
+      <div class="rec-remove" id="r-remove" hidden>
+        <div>
+          <div class="rec-remove-t">Remove this care recipient from the device</div>
+          <div class="rec-remove-s">Before the device goes to another care recipient: deletes
+            their account, enrollment, alerts, recordings and logs from this device. Cameras,
+            the fleet enrollment and device settings stay.</div>
+        </div>
+        <button class="btn btn-danger" id="r-remove-btn">Remove care recipient…</button>
+      </div>
     </div>
   </section>
 
@@ -321,9 +338,51 @@ async function initRecipient() {
     + profRow("CERAVIS user", "#" + (u.ceravisUserId ?? "—"))
     + profRow("Device edge id", ACCOUNT.edge_id || "not enrolled yet", true)   // the FMS edge_id, shown RAW
     + `</div>`;
+  document.getElementById("r-remove").hidden = false;
   await ensureRecipient(u);
   refreshRecipients();
 }
+// Remove the care recipient: say exactly what is deleted (with what this device
+// holds now) and what stays, ask for a typed yes, then wait out the restart.
+function sizeText(n) {
+  return n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB"
+       : n >= 1e3 ? Math.round(n / 1e3) + " KB" : n + " B";
+}
+document.getElementById("r-remove-btn").onclick = async () => {
+  let d;
+  try { d = await api("/api/v1/account/recipient-data"); }
+  catch (e) { return toast("Could not read this device's data — try again", "err"); }
+  const who = d.recipient ? (d.recipient.name || d.recipient.email) : "the care recipient";
+  const erased = [`The care account of ${who}, and every browser signed in for it`]
+    .concat(d.parts.map(p => p.files
+      ? `${p.label} — ${p.files} file${p.files === 1 ? "" : "s"}, ${sizeText(p.bytes)}`
+      : `${p.label} — none`));
+  const yes = await cvConfirm(
+    `Everything this device holds of ${who} is permanently deleted, and the device `
+    + "restarts. Use this before the device goes to another care recipient. "
+    + "This cannot be undone.",
+    { title: "Remove this care recipient?", danger: true, typeToConfirm: "REMOVE",
+      confirmText: "Remove and restart",
+      sections: [{ title: "Deleted from this device", tone: "bad", items: erased },
+                 { title: "Kept", tone: "ok", items: d.kept }] });
+  if (!yes) return;
+  let r;
+  try {
+    r = await api("/api/v1/account/remove-recipient",
+      { method: "POST", body: JSON.stringify({ confirm: true }) });
+  } catch (e) { return toast(e.detail || "Removal failed", "err"); }
+  if (!r.removed) return toast(r.reason || "Removal failed", "err");
+  cvBusy("Removing the care recipient",
+    "Their data is being deleted and the device restarts. This takes about 30 seconds.");
+  await cvWaitForRestart(window.CERAVIS_PREFIX || "", r.bootedAt);
+  try {
+    localStorage.removeItem(CV_SESSION_KEY);
+    sessionStorage.setItem("cv-signout-reason",
+      "The care recipient was removed from this device. Sign in with the next care recipient's email.");
+  } catch (_) {}
+  location.replace("login.html");
+};
+
 async function ensureRecipient(u) {
 
   const rid = String(u.ceravisUserId);

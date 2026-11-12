@@ -185,15 +185,21 @@ class _Account:                                    # account.json, kept in memor
     def save(self, account):
         self.data = dict(account)
 
+    def clear(self):
+        self.data = {}
 
-def _login(token):
-    """One sign-in whose verifyOtp confirmation carries `token` (None = no account)."""
+
+def _login(token, reset_token=None):
+    """One sign-in whose verifyOtp confirmation carries `token` (None = no account);
+    with `reset_token`, the yes to a hand-over instead of a code."""
     data = None if token is None else {
         "ceravisUserId": 5012, "deviceToken": token, "email": "user@example.com",
         "firstName": "Arnold ", "lastName": "Benner", "role": "CARE_RECIPIENT", "tier": "TIER_2"}
     answer(200, json.dumps({"code": 1, "data": data, "message": "OTP verified successfully"}))
     tasks = BackgroundTasks()
-    r = account_routes.verify(Verify(email="user@example.com", otp="12345"),
+    SESSION.calls.clear()
+    r = account_routes.verify(Verify(email="user@example.com", otp="12345",
+                                     reset_token=reset_token),
                               SimpleNamespace(headers={"host": "edge.test"},
                                               app=SimpleNamespace(state=SimpleNamespace())), tasks)
     return r, [t.func.__name__ for t in tasks.tasks], [u.rsplit("/", 1)[-1] for u, _ in SESSION.calls]
@@ -276,12 +282,36 @@ r, tasks, calls = _login(None)
 check("...but with NO account anywhere it still refuses, with the server's reason (as before)",
       not r["verified"] and "try again" in r["reason"], str(r))
 account_routes.get_user_details = _real_details
-account_routes.account_config = _Account({"ceravisUserId": 4000, "email": "other@example.com",
-                                           "edgeId": "VzspNew"})
+from maintenance import recipient_reset                            # noqa: E402
+OTHER = {"ceravisUserId": 4000, "email": "other@example.com", "edgeId": "VzspNew"}
+account_routes.account_config = _Account(OTHER)
 r, tasks, calls = _login("ce7k2m9xq4w8n3")
-check("a DIFFERENT recipient restarts the service (galleries, alerts follow) — edge_id unchanged",
-      r["fresh"] is True and r["restarting"] is True and tasks[-1] == "_restart_after_switch"
-      and r["edgeId"] == "ce7k2m9xq4w8n3", str(tasks))
+check("a DIFFERENT recipient is NOT let in at once: asked to confirm the hand-over",
+      r["verified"] is False and r["confirmReset"] is True and r["resetToken"]
+      and tasks == [] and account_routes.account_config.get() == OTHER
+      and recipient_reset.pending() is None, str(r)[:200])
+check("...the question says what is deleted and what stays, and names nobody",
+      recipient_reset.ACCOUNT_LABEL in r["erased"] and r["kept"] == list(recipient_reset.KEPT)
+      and "other@example.com" not in json.dumps(r) and "4000" not in json.dumps(r))
+token = r["resetToken"]
+r2, tasks, calls = _login(None, reset_token="not-the-token")
+check("a wrong confirmation hands nothing over",
+      r2["verified"] is False and account_routes.account_config.get() == OTHER
+      and recipient_reset.pending() is None)
+r2, tasks, calls = _login(None, reset_token=token)
+saved = account_routes.account_config.get()
+check("the yes hands the device over: new account, removal marked, restart queued",
+      r2["verified"] is True and r2["fresh"] is True and r2["restarting"] is True
+      and saved.get("ceravisUserId") == 5012 and recipient_reset.pending() is not None
+      and tasks[-1] == "restart_soon" and r2["edgeId"] == "ce7k2m9xq4w8n3", str(tasks))
+check("...without asking the server again (the code was already used)", calls == [], str(calls))
+r3, tasks, calls = _login(None, reset_token=token)
+check("...and that confirmation works once only", r3["verified"] is False)
+(Path(settings.data_dir) / recipient_reset.MARKER).unlink()
+account_routes.account_config = _Account({"ceravisUserId": 5012, "email": "old@example.com"})
+r, tasks, calls = _login("ce7k2m9xq4w8n3")
+check("the SAME recipient under a new email is no hand-over: no question, no restart",
+      r["verified"] is True and r["restarting"] is False and recipient_reset.pending() is None)
 settings.edge_id = ""
 account_routes.account_config = _Account(STORED)
 noted.clear()
@@ -296,13 +326,17 @@ account_routes.account_config = _real_account
 from maintenance import refresh as _refresh                       # noqa: E402
 _signalled: list[bool] = []
 _real_restart, _refresh.restart_service = _refresh.restart_service, lambda: _signalled.append(True) or True
-account_routes._restart_after_switch()
+recipient_reset.restart_soon()
 _refresh.restart_service = _real_restart
 check("the restart goes through the nightly refresh's own clean self-restart", _signalled == [True])
 page = (ROOT / "edge/static/login.html").read_text(encoding="utf-8")
+shared = (ROOT / "edge/static/ceravis.js").read_text(encoding="utf-8")
 check("the login page waits for the NEW process, then opens the new edge_id address",
-      "waitForRestart(prefix, r.bootedAt)" in page and "a.bootedAt !== bootedAt" in page
+      "cvWaitForRestart(prefix, r.bootedAt)" in page and "a.bootedAt !== bootedAt" in shared
       and "`${prefix}/ui/${next}`" in page)
+check("the login page asks before a hand-over, with a typed yes, and sends the token back",
+      "r.confirmReset" in page and 'typeToConfirm: "DELETE"' in page
+      and "reset_token: r.resetToken" in page)
 
 
 # --------------------------------------------------------------------------

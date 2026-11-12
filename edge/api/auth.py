@@ -204,6 +204,20 @@ class SessionStore:
             if self._sessions.pop(_digest(token), None) is not None:
                 self._save()
 
+    def revoke_all(self, keep_email: str | None = None) -> int:
+        """End every sign-in except those of `keep_email` (the care account now on
+        the device); the number ended."""
+        keep = (keep_email or "").strip().lower()
+        with self._lock:
+            self._load()
+            before = len(self._sessions)
+            self._sessions = {k: v for k, v in self._sessions.items()
+                              if keep and (v.get("email") or "").strip().lower() == keep}
+            ended = before - len(self._sessions)
+            if ended:
+                self._save()
+            return ended
+
 
 sessions = SessionStore()
 

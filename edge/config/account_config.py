@@ -48,6 +48,10 @@ class AccountConfig:
     def save(self, account: dict) -> None:
         self.store.save(self.FILE, account)
 
+    def clear(self) -> None:
+        """No care account on this device any more (maintenance.recipient_reset)."""
+        (self.store.base_path / self.FILE).unlink(missing_ok=True)
+
     def app_server_edge_id(self) -> str:
         """The app server's own token for this device (its deviceToken), as it
         handed it back at account verification. Not this device's edge_id."""

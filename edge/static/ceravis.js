@@ -48,7 +48,10 @@ function prettyValue(s) {
 
 /* Premium in-app confirm dialog (replaces the browser confirm()). Returns a
    Promise<boolean>. `message` is plain text; opts: {title, confirmText,
-   cancelText, danger}. Esc / click-outside = cancel, Enter = confirm. */
+   cancelText, danger, sections, typeToConfirm}. `sections` = [{title, items,
+   tone: "bad"|"ok"}] lists shown under the message (plain text). With
+   `typeToConfirm` the confirm button stays off until that word is typed — for
+   what cannot be undone. Esc / click-outside = cancel, Enter = confirm. */
 function cvConfirm(message, opts = {}) {
   return new Promise(resolve => {
     document.querySelectorAll(".cv-dialog-scrim").forEach(d => d.remove());
@@ -58,6 +61,8 @@ function cvConfirm(message, opts = {}) {
       <div class="cv-dialog" role="dialog" aria-modal="true">
         <div class="cv-dialog-title"></div>
         <div class="cv-dialog-msg"></div>
+        <div class="cv-dialog-sections"></div>
+        <label class="cv-dialog-type" hidden><span></span><input autocomplete="off" spellcheck="false" /></label>
         <div class="cv-dialog-actions">
           <button class="btn btn-ghost" data-cv="cancel"></button>
           <button class="btn ${opts.danger ? "btn-danger" : "btn-primary"}" data-cv="ok"></button>
@@ -67,9 +72,34 @@ function cvConfirm(message, opts = {}) {
     scrim.querySelector(".cv-dialog-msg").textContent = message;
     scrim.querySelector('[data-cv="cancel"]').textContent = opts.cancelText || "Cancel";
     scrim.querySelector('[data-cv="ok"]').textContent = opts.confirmText || "Confirm";
+    const box = scrim.querySelector(".cv-dialog-sections");
+    (opts.sections || []).forEach(sec => {
+      const wrap = document.createElement("div");
+      wrap.className = "cv-dialog-sec " + (sec.tone || "");
+      const head = document.createElement("div");
+      head.className = "cv-dialog-sec-title";
+      head.textContent = sec.title;
+      const list = document.createElement("ul");
+      (sec.items || []).forEach(t => {
+        const li = document.createElement("li");
+        li.textContent = t;
+        list.appendChild(li);
+      });
+      wrap.append(head, list);
+      box.appendChild(wrap);
+    });
+    const okBtn = scrim.querySelector('[data-cv="ok"]');
+    const typed = scrim.querySelector(".cv-dialog-type input");
+    if (opts.typeToConfirm) {
+      const row = scrim.querySelector(".cv-dialog-type");
+      row.hidden = false;
+      row.querySelector("span").textContent = `Type ${opts.typeToConfirm} to confirm`;
+      okBtn.disabled = true;
+      typed.oninput = () => { okBtn.disabled = typed.value.trim() !== opts.typeToConfirm; };
+    }
     document.body.appendChild(scrim);
     const done = (v) => { scrim.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
-    scrim.querySelector('[data-cv="ok"]').onclick = () => done(true);
+    okBtn.onclick = () => { if (!okBtn.disabled) done(true); };
     scrim.querySelector('[data-cv="cancel"]').onclick = () => done(false);
     scrim.addEventListener("click", e => { if (e.target === scrim) done(false); });
     const onKey = (e) => {
@@ -79,8 +109,38 @@ function cvConfirm(message, opts = {}) {
       else if (e.key === "Enter" && !opts.danger) { e.preventDefault(); done(true); }
     };
     document.addEventListener("keydown", onKey);
-    scrim.querySelector(opts.danger ? '[data-cv="cancel"]' : '[data-cv="ok"]').focus();
+    (opts.typeToConfirm ? typed
+      : scrim.querySelector(opts.danger ? '[data-cv="cancel"]' : '[data-cv="ok"]')).focus();
   });
+}
+
+/* Wait until the device's service answers from a NEW process (its bootedAt moved
+   on) — after a restart it asked for. Gives up after two minutes, so a slow
+   restart never strands the page. `prefix` = the fleet path ("" on the LAN). */
+async function cvWaitForRestart(prefix, bootedAt) {
+  const until = Date.now() + 120000;
+  while (Date.now() < until) {
+    await new Promise(res => setTimeout(res, 2000));
+    try {
+      const a = await (await fetch(`${prefix}/api/v1/account`, { cache: "no-store" })).json();
+      if (a && a.bootedAt && a.bootedAt !== bootedAt) return true;
+    } catch (_) { /* restarting, or the tunnel is re-keying — keep waiting */ }
+  }
+  return false;
+}
+
+/* A full-page "please wait" while the device does something that takes it away
+   for a moment (a restart). Returns a function that removes it. */
+function cvBusy(title, text) {
+  const scrim = document.createElement("div");
+  scrim.className = "cv-dialog-scrim cv-busy";
+  scrim.innerHTML = `<div class="cv-dialog" role="alertdialog" aria-busy="true">
+      <div class="cv-busy-spin" aria-hidden="true"></div>
+      <div class="cv-dialog-title"></div><div class="cv-dialog-msg"></div></div>`;
+  scrim.querySelector(".cv-dialog-title").textContent = title;
+  scrim.querySelector(".cv-dialog-msg").textContent = text;
+  document.body.appendChild(scrim);
+  return () => scrim.remove();
 }
 
 /* Sign-in. The SERVER decides (api/auth): the session is an HttpOnly cookie it
