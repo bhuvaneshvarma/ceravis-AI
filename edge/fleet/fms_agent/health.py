@@ -118,7 +118,7 @@ class Health:
         names = [u for _, u, _ in SERVICES if u] + list(DETAIL_UNITS) + list(SWITCHED_OFF)
         detail = {
             "kind": "snapshot",
-            "hardware": self._hardware(),
+            "hardware": self._hardware(answered),
             "units": {u: _unit_detail(p) for u, p in _systemd(names).items()},
             "updates": _updates(),
             "versions": _versions(),
@@ -129,7 +129,7 @@ class Health:
         self._track(detail)
         return detail
 
-    def _hardware(self) -> dict:
+    def _hardware(self, app_answered: bool) -> dict:
         l4t = collect._read("/etc/nv_tegra_release")
         return {
             "model": collect.hardware()["model"],
@@ -150,7 +150,10 @@ class Health:
             "read_only": _read_only(["/", str(collect.data_dir())]),
             "oom_kills": _oom_kills(),
             "journal_mb": _journal_mb(),
-            "clock": {"unix_time": round(time.time(), 3), "ntp_synchronized": _ntp_synchronized(),
+            # The app reports the clock's sync (services.time_sync); the agent asks
+            # timedatectl itself only when the app is not answering.
+            "clock": {"unix_time": round(time.time(), 3),
+                      "ntp_synchronized": None if app_answered else _ntp_synchronized(),
                       "timezone": clock.now().tzname()},
         }
 

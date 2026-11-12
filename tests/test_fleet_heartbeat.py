@@ -19,6 +19,9 @@ The device's health — measured each minute, kept on the device, summarised in 
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -429,6 +432,15 @@ check("...the cameras stay listed (last known), each unknown — tiles grey, not
       and all(c["state"] == "unknown" for c in down["cameras"]), down["cameras"])
 check("...the systemd services are still measured (NetworkManager, SSH, …)",
       dsv["edge_hotspot"]["state"] == "operational" and dsv["ssh_access"]["state"] == "operational")
+asked: list[int] = []
+agent_health._ntp_synchronized = lambda: asked.append(1) or False
+up_again = h.observe(APP_HEALTH, None, facts)
+down2 = h.summary(h.observe(None, "not answering", facts))
+agent_health._ntp_synchronized = lambda: True
+check("timedatectl runs only while the app is not answering (the app reports the clock otherwise)",
+      len(asked) == 1 and up_again["hardware"]["clock"]["ntp_synchronized"] is None
+      and "system clock is not NTP-synced" in down2["services"]["time_sync"]["warnings"],
+      (asked, down2["services"]["time_sync"]))
 size = len(transport.encode({"status": s1, "results": []}))
 check("the heartbeat is small: under 3 KB for three cameras and 16 services", size < 3072, size)
 
@@ -532,9 +544,15 @@ orders = [[{"id": "cmd_81", "kind": "ping"}, {"id": "cmd_82", "kind": "info"},
 def fms_post(req):
     body = req.rfile.read(int(req.headers.get("Content-Length") or 0))
     h_ = req.headers
-    message = protocol.request_message(h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""),
-                                       body)
-    fms_seen.append({"signed": protocol.verify(SECRET, message, h_.get(protocol.HDR_SIGNATURE)),
+    message = protocol.request_message("POST", req.path, h_.get(protocol.HDR_TIMESTAMP, ""),
+                                       h_.get(protocol.HDR_NONCE, ""), body)
+    # The FMS's side, written from the spec alone (as the Java team will): the
+    # enrollment call's lines plus the nonce, one Base64 of the HMAC.
+    by_hand = "\n".join(("POST", req.path, h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""),
+                         hashlib.sha256(body).hexdigest())).encode()
+    independent = base64.b64encode(hmac.new(SECRET.encode(), by_hand, hashlib.sha256).digest()).decode()
+    fms_seen.append({"signed": protocol.verify(SECRET, message, h_.get(protocol.HDR_SIGNATURE))
+                     and independent == h_.get(protocol.HDR_SIGNATURE),
                      "path": req.path, "device": h_.get(protocol.HDR_DEVICE),
                      "lines": message.decode().split("\n"), "body": json.loads(body)})
     raw = json.dumps({"server_time": 1793795400.73, "next_poll_after_secs": 60,
@@ -565,11 +583,11 @@ check("the body is exactly {status, results}", list(b1["body"]) == ["status", "r
 check("status: state, warning_count, hardware, network, services, cameras",
       list(b1["body"]["status"]) == ["state", "warning_count", "hardware", "network", "services", "cameras"],
       list(b1["body"]["status"]))
-import hashlib                                                    # noqa: E402
-check("signed with the DEVICE key over 3 lines: timestamp, nonce, sha256 of the raw body",
+check("signed with the DEVICE key over the enrollment call's lines plus the nonce: "
+      "POST, path, timestamp, nonce, sha256 of the raw body",
       b1["signed"] and b1["path"] == protocol.HEARTBEAT_PATH and b1["device"] == EDGE_ID
-      and len(b1["lines"]) == 3
-      and b1["lines"][2] == hashlib.sha256(transport.encode(b1["body"])).hexdigest(), b1["lines"])
+      and b1["lines"][:2] == ["POST", protocol.HEARTBEAT_PATH] and len(b1["lines"]) == 5
+      and b1["lines"][4] == hashlib.sha256(transport.encode(b1["body"])).hexdigest(), b1["lines"])
 check("the reply is verified over RESPONSE, the request's timestamp and nonce, sha256 of the raw reply",
       protocol.response_message("1.0", "ab", b"{}").decode().split("\n")[:3] == ["RESPONSE", "1.0", "ab"])
 check("the cameras arrive with fps and Wi-Fi signal, as the app measured them",

@@ -156,9 +156,11 @@ stop working once the app server uses the new edge_id. Recordings are kept
 ## Heartbeat
 
 After enrolling, the device checks in every ~60 s: `POST /v1/device/heartbeat`,
-signed with the **device key** over 6 lines. Its body is the health of every part
-of the device (hardware, backend, services, cameras), each with its own
-warnings. Specified in **`docs/fleet-heartbeat-api.md`**.
+signed with the **device key** the same way as this call, with the nonce added
+after the timestamp (`POST`, path, timestamp, nonce, sha256 of the raw body).
+Its body is the health of every part of the device (hardware, network,
+services, cameras), each with its own warnings. Specified in
+**`docs/fleet-heartbeat-api.md`**.
 
 ## Test FMS on the local network
 

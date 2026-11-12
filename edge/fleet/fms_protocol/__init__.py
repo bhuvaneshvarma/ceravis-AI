@@ -12,16 +12,17 @@ server returns the edge_id and the device's own signing key. From then on every
 heartbeat is signed with that key. The enroll call is specified in
 docs/fleet-enrollment-api.md.
 
-Signing (HMAC-SHA256, Base64 — the same shape as the edge<->app-server design):
+Signing: Base64( HMAC-SHA256(key, lines joined by \\n) ), the body's sha256 in
+lowercase hex. A heartbeat is signed exactly as the enrollment is, with the
+request's nonce added after the timestamp:
 
-    heartbeat request  = timestamp \\n nonce \\n sha256hex(body)              (the DEVICE key)
+    enroll request     = METHOD \\n path \\n timestamp \\n sha256hex(body)          (fleet enrollment key)
+    enroll response    = RESPONSE \\n request_timestamp \\n sha256hex(body)
+    heartbeat request  = METHOD \\n path \\n timestamp \\n nonce \\n sha256hex(body) (the DEVICE key)
     heartbeat response = RESPONSE \\n request_timestamp \\n request_nonce \\n sha256hex(body)
 
-Enrollment is signed with the fleet enrollment key over FOUR lines, and sends
-no X-Ceravis-Device and no X-Ceravis-Nonce header (the agreed v2 call):
-
-    enroll request     = METHOD \\n path \\n timestamp \\n sha256hex(body)
-    enroll response    = RESPONSE \\n request_timestamp \\n sha256hex(body)
+Enrollment sends no X-Ceravis-Device and no X-Ceravis-Nonce header (the agreed
+v2 call); a heartbeat sends both (the edge_id picks the key to check with).
 
 Replies are signed too, bound to the request (its nonce, or for enrollment its
 timestamp), so a device only ever acts on what the real server said to it.
@@ -79,10 +80,10 @@ def _sha256_hex(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
-def request_message(timestamp: str, nonce: str, body: bytes) -> bytes:
-    """A heartbeat: the enroll call's shape with the nonce added — the timestamp
-    and nonce exactly as sent in their headers, then the raw body's sha256."""
-    return "\n".join((timestamp, nonce, _sha256_hex(body))).encode("utf-8")
+def request_message(method: str, path: str, timestamp: str, nonce: str, body: bytes) -> bytes:
+    """A heartbeat: the enrollment call's lines with the nonce added after the
+    timestamp (both exactly as sent in their headers)."""
+    return "\n".join((method.upper(), path, timestamp, nonce, _sha256_hex(body))).encode("utf-8")
 
 
 def response_message(request_timestamp: str, request_nonce: str, body: bytes) -> bytes:

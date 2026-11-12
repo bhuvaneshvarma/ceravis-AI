@@ -27,7 +27,7 @@ User-Agent: ceravis-fleet-agent
 X-Ceravis-Device: ce7k2m9xq4w8n3
 X-Ceravis-Timestamp: 1793795400.512
 X-Ceravis-Nonce: 4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
-X-Ceravis-Signature: pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=
+X-Ceravis-Signature: 4OBm9saFL0pIP/z7J65e921TTwig49iUpITIFNmVtKg=
 ```
 
 | Header | Meaning |
@@ -37,22 +37,31 @@ X-Ceravis-Signature: pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=
 | `X-Ceravis-Nonce` | 32 random lowercase hex characters, new for every call; reject one already seen (keep each for 10 minutes) |
 | `X-Ceravis-Signature` | see below |
 
-### Signature (request) — 3 lines, the DEVICE key
+### Signature (request) — the enrollment call's lines plus the nonce, the DEVICE key
 
-Built like the enrollment call's signature (`docs/fleet-enrollment-api.md`:
-HMAC-SHA256, Base64, the timestamp and the raw body's sha256) with the nonce
-added. Unlike enrollment, the method and path are not among the signed lines
-(the endpoint is fixed).
+Signed **exactly as the enrollment call is** (`docs/fleet-enrollment-api.md`),
+with one line added: the nonce, right after the timestamp.
 
 ```
 X-Ceravis-Signature = Base64( HMAC-SHA256( device key, M ) )
 
-M = <X-Ceravis-Timestamp, exactly as sent>
+M = POST
+    /v1/device/heartbeat
+    <X-Ceravis-Timestamp, exactly as sent>
     <X-Ceravis-Nonce, exactly as sent>
     <sha256 of the raw body bytes, 64 lowercase hex characters>
 ```
 
-- `M` is those 3 lines joined by a single `\n` (line feed), **no trailing newline**.
+| Line | Enrollment (fleet enrollment key) | Heartbeat (device key) |
+|---|---|---|
+| 1 | `POST` | `POST` |
+| 2 | `/v1/device/enroll` | `/v1/device/heartbeat` |
+| 3 | `X-Ceravis-Timestamp` | `X-Ceravis-Timestamp` |
+| 4 | sha256 of the raw body (hex) | **`X-Ceravis-Nonce`** |
+| 5 | — | sha256 of the raw body (hex) |
+| reply | `RESPONSE`, request timestamp, sha256 of the raw reply | `RESPONSE`, request timestamp, **request nonce**, sha256 of the raw reply |
+
+- `M` is those 5 lines joined by a single `\n` (line feed), **no trailing newline**.
 - **device key** = the `secret` the FMS returned in this device's enrollment
   reply (not the fleet enrollment key). The key string's UTF-8 bytes are the
   HMAC key, as given — not decoded from Base64.
@@ -65,12 +74,14 @@ M = <X-Ceravis-Timestamp, exactly as sent>
 Worked example (the test vector below):
 
 ```
-M (3 lines):
+M (5 lines):
+POST
+/v1/device/heartbeat
 1793795400.512
 4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
 54d02321c2d969476e1c1ec0d93439e8d81a56819b5b18ce07e580694bd3ca87
 
-X-Ceravis-Signature = pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=
+X-Ceravis-Signature = 4OBm9saFL0pIP/z7J65e921TTwig49iUpITIFNmVtKg=
 ```
 
 ## Body
@@ -848,7 +859,7 @@ Content-Length: 1837
 X-Ceravis-Device: ce7k2m9xq4w8n3
 X-Ceravis-Timestamp: 1793795400.512
 X-Ceravis-Nonce: 4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
-X-Ceravis-Signature: pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=
+X-Ceravis-Signature: 4OBm9saFL0pIP/z7J65e921TTwig49iUpITIFNmVtKg=
 
 {"status":{"state":"operational","warning_count":0,"hardware":{"state":"operational","uptime_secs":86412,"last_boot":"scheduled_reboot","cpu_pct":38,"gpu_pct":64,"ram_used_gb":4.9,"ram_total_gb":7.4,"disk_used_gb":52.3,"disk_total_gb":116.4,"temperature_c":53.4,"fan_pct":38,"power_w":7.8,"power_mode":"25W","warnings":[]},"network":{"state":"operational","internet":"connected","latency_ms":41.6,"hotspot":"on","hotspot_devices":3,"warnings":[]},"services":{"edge_application":{"state":"operational","version":"1.3.0","warnings":[]},"mediamtx":{"state":"operational","warnings":[]},"ai_detection":{"state":"operational","warnings":[]},"cloud_connection":{"state":"operational","pending_uploads":0,"warnings":[]},"frpc":{"state":"operational","warnings":[]},"fleet_agent":{"state":"operational","version":"0.7.0","warnings":[]},"nightly_reboot":{"state":"operational","warnings":[]},"edge_hotspot":{"state":"operational","warnings":[]},"ssh_access":{"state":"operational","warnings":[]},"time_sync":{"state":"operational","warnings":[]},"dns_resolver":{"state":"operational","warnings":[]},"local_discovery":{"state":"operational","warnings":[]},"fan_control":{"state":"operational","warnings":[]},"system_logging":{"state":"operational","warnings":[]},"security_updates":{"state":"operational","pending_security":2,"warnings":[]},"os_hardening":{"state":"operational","warnings":[]}},"cameras":[{"camera_id":"LOUNGE","room":"LOUNGE","state":"operational","fps":14.8,"reconnects":0,"recording":true,"night_vision":false,"ptz":true,"wifi_signal_dbm":-53,"warnings":[]},{"camera_id":"KITCHEN","room":"KITCHEN","state":"operational","fps":15.0,"reconnects":0,"recording":true,"night_vision":true,"ptz":false,"wifi_signal_dbm":-61,"warnings":[]}]},"results":[{"id":"cmd_80","ok":true,"output":"pong from ceravis-acg08mbv3","duration_ms":2}]}
 ```
@@ -895,7 +906,7 @@ Content-Type: application/json
 | edge_id / timestamp / nonce | `ce7k2m9xq4w8n3` / `1793795400.512` / `4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b` |
 | request body | the 1837 bytes in "The exact bytes signed" above |
 | request body sha256 | `54d02321c2d969476e1c1ec0d93439e8d81a56819b5b18ce07e580694bd3ca87` |
-| request `X-Ceravis-Signature` | `pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=` |
+| request `X-Ceravis-Signature` | `4OBm9saFL0pIP/z7J65e921TTwig49iUpITIFNmVtKg=` |
 | reply body | `{"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"file":"events","lines":100}}]}` |
 | reply sha256 | `1280ef69d546e07d4fefaa6c33954ef2610293fb3164556510838a8e9a57f7eb` |
 | reply `X-Ceravis-Signature` | `E41GTcfiGzsn0g0L3SDgl+GGS40qaQGKXbCqm7mr4T0=` |
@@ -937,7 +948,7 @@ Content-Type: application/json
 | `services.internet` | `status.network` (internet + hotspot) |
 | `services.edge_id_watch` | gone (the edge_id is fixed for a device's life) |
 | `services.app_server`, `reboot_timer` | `cloud_connection`, `nightly_reboot` (`mediamtx` and `frpc` keep their names) |
-| signature: 6 lines (edge_id, POST, path, sha256, timestamp, nonce); reply 4 lines (edge_id, RESPONSE, nonce, sha256) | 3 lines (timestamp, nonce, sha256); reply 4 lines (RESPONSE, timestamp, nonce, sha256) — the enrollment call's way, plus the nonce |
+| signature: 6 lines (edge_id, POST, path, sha256, timestamp, nonce); reply 4 lines (edge_id, RESPONSE, nonce, sha256) | the enrollment call's lines plus the nonce: POST, path, timestamp, nonce, sha256; reply RESPONSE, timestamp, nonce, sha256 |
 | — | new: `ai_detection`, `edge_hotspot`, `ssh_access`, `time_sync`, `dns_resolver`, `local_discovery`, `fan_control`, `system_logging`, `security_updates`, `os_hardening`; `fan_pct`, `power_mode`, `last_boot`, `latency_ms`, `hotspot`, `hotspot_devices`, camera `wifi_signal_dbm` |
 | per service `unit`, `uptime_secs`, `restarts`, `memory_bytes`; per camera `name`, `resolution`, `codec`, `profile`, `uptime_secs`, `last_frame_age_secs`, `frames_captured`, `stream_ready`, `viewers`, recording detail | gone from the heartbeat, kept in the device's log every minute |
 | orders `ping`, `restart_service`, `logs` (journal) | + `info`; `logs` also reads the device's log files |

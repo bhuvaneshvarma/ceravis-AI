@@ -51,17 +51,26 @@ def _run(args: list[str], timeout: float = 15.0) -> tuple[int, str]:
         return 124, "timed out"
 
 
+_wifi_device: str | None = None      # found once: the board's radio never changes name
+
+
 def wifi_device() -> str | None:
-    """The AP-capable Wi-Fi interface (override via HOTSPOT_INTERFACE)."""
+    """The AP-capable Wi-Fi interface (override via HOTSPOT_INTERFACE). Asked of
+    NetworkManager once, then remembered: the health report reads it every
+    minute. Not finding one is not remembered — the next call asks again."""
+    global _wifi_device
     if settings.hotspot_interface.strip():
         return settings.hotspot_interface.strip()
+    if _wifi_device:
+        return _wifi_device
     code, out = _run(["nmcli", "-t", "-f", "DEVICE,TYPE", "device"])
     if code != 0:
         return None
     for line in out.splitlines():
         parts = line.split(":")
         if len(parts) >= 2 and parts[1] == "wifi":
-            return parts[0]
+            _wifi_device = parts[0]
+            return _wifi_device
     return None
 
 
