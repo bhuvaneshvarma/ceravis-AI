@@ -276,6 +276,19 @@ check("...and the board's sensors from the app fill the hardware part (GPU, powe
       and up["hardware"]["temperature_c"]["cpu"] == 90.5, up["hardware"]["gpu"])
 collect.disk, agent_health._temperatures = real
 os.environ.pop("NTP")
+
+
+class _NoData(type(Path())):
+    """A sysfs file whose driver gives nothing: Python's decoder raises TypeError
+    (the bench Jetson's thermal zone, 2026-11-12 — it crashed every heartbeat)."""
+    def read_text(self, *a, **k):
+        raise TypeError("can't concat NoneType to bytes")
+
+
+_real_path, collect.Path = collect.Path, _NoData
+check("a sysfs file that gives no data reads as '' — never a crashed heartbeat",
+      collect._read("/sys/class/thermal/thermal_zone9/temp") == "")
+collect.Path = _real_path
 mem = agent_health._memory()
 check("memory, CPU and uptime read from the kernel here",
       (mem["total_bytes"] or 0) > 0 and isinstance(up["hardware"]["cpu"]["cores"], int)

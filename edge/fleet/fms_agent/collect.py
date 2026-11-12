@@ -172,9 +172,13 @@ def _commit() -> str:
 
 
 def _read(path: str) -> str:
+    """A small file's text, or "" when it cannot be read. A sysfs value whose
+    driver has nothing to give reads as "" too: on the bench Jetson one thermal
+    zone's `temp` returns no data at all, which Python's decoder turns into a
+    TypeError — that crashed every heartbeat (2026-11-12)."""
     try:
         return Path(path).read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
+    except (OSError, TypeError):
         return ""
 
 
