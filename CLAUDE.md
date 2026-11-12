@@ -76,11 +76,13 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   FMS issues a new one and the device switches to it by itself (identity.json
   → `ceravis-edge-id.path` → `sync_edge_id.sh` → restart → frpc re-keyed,
   MediaMTX paths, status beat to the app server).
-- The heartbeat (`POST /v1/device/heartbeat`, 6 signed lines, device key) is
+- The heartbeat (`POST /v1/device/heartbeat`, signed over 3 lines: timestamp,
+  nonce, sha256 of the raw body; device key; reply over RESPONSE, timestamp,
+  nonce, sha256) is
   specified in **`docs/fleet-heartbeat-api.md`** (version 2, agent 0.7.0): body =
   `{status, results}`; `status` = `state`, `warning_count`, `hardware`,
-  `network`, `services` (16, plain names: `edge_application`, `video_server`,
-  `ai_detection`, `cloud_connection`, `remote_access`, `edge_hotspot` …),
+  `network`, `services` (16: `edge_application`, `mediamtx`,
+  `ai_detection`, `cloud_connection`, `frpc`, `edge_hotspot` …),
   `cameras` (with `wifi_signal_dbm`). ONE state vocabulary everywhere:
   `operational` / `degraded` / `outage` / `disabled` / `unknown`; every part has
   `warnings` (empty = fine). It is a SHORT summary (~2 KB): the agent measures

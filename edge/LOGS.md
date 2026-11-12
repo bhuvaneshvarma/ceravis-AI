@@ -88,10 +88,10 @@ when there is any warning, and `operational` when there is none.
 | Name | What it is | Checked through |
 |---|---|---|
 | `edge_application` | the CERAVIS application: web API, AI, recording, cloud uploads, talk-back | `ceravis.service`, and the app answering |
-| `video_server` | the video server inside the application (MediaMTX): live view and recording | the app |
+| `mediamtx` | the video server inside the application (MediaMTX): live view and recording | the app |
 | `ai_detection` | person, fall and no-motion detection — the safety function | the app: the detector running and analysing frames |
 | `cloud_connection` | uploads to the CERAVIS app server: alerts, snapshots, clips | the app |
-| `remote_access` | the secure tunnel for live view and remote support (frpc) | `frpc.service`, its route, its live connection to the tunnel server |
+| `frpc` | the tunnel for live view and remote support (frpc) | `frpc.service`, its route, its live connection to the tunnel server |
 | `fleet_agent` | the program that records this health and checks in with the fleet server | `ceravis-fleet-agent.service` |
 | `nightly_reboot` | the safety-checked nightly reboot | `ceravis-reboot.timer`, and its last run |
 | `edge_hotspot` | the camera hotspot (NetworkManager), the cameras' only network | `NetworkManager.service`, and the hotspot on |

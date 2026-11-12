@@ -52,10 +52,10 @@ _SEVERITY = {DISABLED: 0, OPERATIONAL: 1, UNKNOWN: 2, DEGRADED: 3, OUTAGE: 4}
 SERVICES = (
     # name               unit                           kind
     ("edge_application", "ceravis.service",             "service"),
-    ("video_server",     None,                          ""),
+    ("mediamtx",         None,                          ""),
     ("ai_detection",     None,                          ""),
     ("cloud_connection", None,                          ""),
-    ("remote_access",    "frpc.service",                "service"),
+    ("frpc",             "frpc.service",                "service"),
     ("fleet_agent",      "ceravis-fleet-agent.service", "service"),
     ("nightly_reboot",   "ceravis-reboot.timer",        "timer"),
     ("edge_hotspot",     "NetworkManager.service",      "service"),
@@ -78,7 +78,7 @@ SWITCHED_OFF = ("bluetooth.service", "docker.service", "containerd.service", "sn
                 "kerneloops.service", "packagekit.service", "fwupd.service",
                 "nvargus-daemon.service")
 # The parts that make the whole device an outage: it cannot watch over the person.
-CRITICAL = ("edge_application", "video_server", "ai_detection", "edge_hotspot")
+CRITICAL = ("edge_application", "mediamtx", "ai_detection", "edge_hotspot")
 
 MEMORY_WARN_PCT = 90.0
 DISK_WARN_PCT = 90.0
@@ -292,7 +292,7 @@ class Health:
                         f"the CERAVIS app on this device is not answering ({d['app_error']})"]}
                 part["version"] = ((backend or {}).get("version")
                                    or collect.software()["edge_version"])
-            elif name == "video_server":
+            elif name == "mediamtx":
                 part = _app_part(app_services.get("mediamtx"), answered)
             elif name == "ai_detection":
                 part = _app_part(app.get("ai"), answered)
@@ -300,7 +300,7 @@ class Health:
                 link = app_services.get("app_server") if answered else None
                 part = _app_part(link, answered)
                 part["pending_uploads"] = (link or {}).get("uploads_pending")
-            elif name == "remote_access":
+            elif name == "frpc":
                 part = _combine(part, app_services.get("tunnel") if answered else None)
             elif name == "fleet_agent":
                 part["version"] = __version__

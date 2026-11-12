@@ -14,8 +14,8 @@ docs/fleet-enrollment-api.md.
 
 Signing (HMAC-SHA256, Base64 — the same shape as the edge<->app-server design):
 
-    heartbeat request  = edge_id \\n METHOD \\n path \\n sha256hex(body) \\n timestamp \\n nonce
-    heartbeat response = edge_id \\n RESPONSE \\n request_nonce \\n sha256hex(body)
+    heartbeat request  = timestamp \\n nonce \\n sha256hex(body)              (the DEVICE key)
+    heartbeat response = RESPONSE \\n request_timestamp \\n request_nonce \\n sha256hex(body)
 
 Enrollment is signed with the fleet enrollment key over FOUR lines, and sends
 no X-Ceravis-Device and no X-Ceravis-Nonce header (the agreed v2 call):
@@ -79,14 +79,15 @@ def _sha256_hex(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
-def request_message(principal: str, method: str, path: str, body: bytes,
-                    timestamp: str, nonce: str) -> bytes:
-    return "\n".join((principal, method.upper(), path, _sha256_hex(body),
-                      timestamp, nonce)).encode("utf-8")
+def request_message(timestamp: str, nonce: str, body: bytes) -> bytes:
+    """A heartbeat: the enroll call's shape with the nonce added — the timestamp
+    and nonce exactly as sent in their headers, then the raw body's sha256."""
+    return "\n".join((timestamp, nonce, _sha256_hex(body))).encode("utf-8")
 
 
-def response_message(principal: str, request_nonce: str, body: bytes) -> bytes:
-    return "\n".join((principal, "RESPONSE", request_nonce,
+def response_message(request_timestamp: str, request_nonce: str, body: bytes) -> bytes:
+    """A heartbeat reply: the enroll reply's shape with the request's nonce added."""
+    return "\n".join(("RESPONSE", request_timestamp, request_nonce,
                       _sha256_hex(body))).encode("utf-8")
 
 

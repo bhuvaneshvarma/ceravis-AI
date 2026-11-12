@@ -42,8 +42,8 @@ def post(url: str, path: str, payload: dict, principal: str | None, secret: str,
         expect = lambda raw: protocol.enroll_response_message(stamp, raw)    # noqa: E731
     else:
         nonce = secrets.token_hex(16)
-        message = protocol.request_message(principal, "POST", path, body, stamp, nonce)
-        expect = lambda raw: protocol.response_message(principal, nonce, raw)  # noqa: E731
+        message = protocol.request_message(stamp, nonce, body)
+        expect = lambda raw: protocol.response_message(stamp, nonce, raw)      # noqa: E731
         headers.update({protocol.HDR_DEVICE: principal, protocol.HDR_NONCE: nonce})
     headers[protocol.HDR_SIGNATURE] = protocol.sign(secret, message)
     request = urllib.request.Request(url + path, data=body, method="POST", headers=headers)

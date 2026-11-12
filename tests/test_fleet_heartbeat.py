@@ -335,7 +335,7 @@ check("the summary: state, warning_count, hardware, network, services, cameras �
       list(s1) == ["state", "warning_count", "hardware", "network", "services", "cameras"], list(s1))
 check("services under names anyone understands, in a fixed order (no edge_id watcher)",
       list(s1["services"]) == [n for n, _, _ in agent_health.SERVICES] and "edge_id_watch" not in s1["services"]
-      and list(s1["services"])[:4] == ["edge_application", "video_server", "ai_detection", "cloud_connection"],
+      and list(s1["services"])[:4] == ["edge_application", "mediamtx", "ai_detection", "cloud_connection"],
       list(s1["services"]))
 check("every part in the summary: a state from the vocabulary and a warnings list",
       all(p["state"] in VOCAB and isinstance(p["warnings"], list) for p in
@@ -356,8 +356,8 @@ sv = s1["services"]
 check("edge_application: running and answering, with the release version",
       sv["edge_application"] == {"state": "operational", "version": settings.app_version, "warnings": []},
       sv["edge_application"])
-check("remote_access disabled on a LAN-only home (frpc not installed): a state, not a warning",
-      sv["remote_access"] == {"state": "disabled", "warnings": []}, sv["remote_access"])
+check("frpc disabled on a LAN-only home (frpc not installed): a state, not a warning",
+      sv["frpc"] == {"state": "disabled", "warnings": []}, sv["frpc"])
 check("nightly_reboot: a failed timer is an outage with systemd's reason",
       sv["nightly_reboot"]["state"] == "outage" and "resources" in sv["nightly_reboot"]["warnings"][0],
       sv["nightly_reboot"])
@@ -422,7 +422,7 @@ check("app not answering: OUTAGE — the reason under edge_application",
       down["state"] == "outage" and dsv["edge_application"]["state"] == "outage"
       and "not answering" in dsv["edge_application"]["warnings"][-1], dsv["edge_application"])
 check("...what only the app can see is unknown: video server, AI, cloud, network",
-      all(dsv[k]["state"] == "unknown" for k in ("video_server", "ai_detection", "cloud_connection"))
+      all(dsv[k]["state"] == "unknown" for k in ("mediamtx", "ai_detection", "cloud_connection"))
       and down["network"]["state"] == "unknown" and down["network"]["hotspot"] == "unknown")
 check("...the cameras stay listed (last known), each unknown — tiles grey, not gone",
       [c["camera_id"] for c in down["cameras"]] == [lounge, kitchen, bedroom]
@@ -532,8 +532,8 @@ orders = [[{"id": "cmd_81", "kind": "ping"}, {"id": "cmd_82", "kind": "info"},
 def fms_post(req):
     body = req.rfile.read(int(req.headers.get("Content-Length") or 0))
     h_ = req.headers
-    message = protocol.request_message(h_.get(protocol.HDR_DEVICE, ""), "POST", req.path, body,
-                                       h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""))
+    message = protocol.request_message(h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""),
+                                       body)
     fms_seen.append({"signed": protocol.verify(SECRET, message, h_.get(protocol.HDR_SIGNATURE)),
                      "path": req.path, "device": h_.get(protocol.HDR_DEVICE),
                      "lines": message.decode().split("\n"), "body": json.loads(body)})
@@ -542,7 +542,8 @@ def fms_post(req):
     req.send_response(200)
     req.send_header("Content-Type", "application/json")
     req.send_header(protocol.HDR_SIGNATURE, protocol.sign(
-        SECRET, protocol.response_message(h_.get(protocol.HDR_DEVICE, ""), h_.get(protocol.HDR_NONCE, ""), raw)))
+        SECRET, protocol.response_message(h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""),
+                                          raw)))
     req.end_headers()
     req.wfile.write(raw)
 
@@ -564,9 +565,13 @@ check("the body is exactly {status, results}", list(b1["body"]) == ["status", "r
 check("status: state, warning_count, hardware, network, services, cameras",
       list(b1["body"]["status"]) == ["state", "warning_count", "hardware", "network", "services", "cameras"],
       list(b1["body"]["status"]))
-check("signed with the DEVICE key over the 6 lines (edge_id, POST, path, sha256, timestamp, nonce)",
+import hashlib                                                    # noqa: E402
+check("signed with the DEVICE key over 3 lines: timestamp, nonce, sha256 of the raw body",
       b1["signed"] and b1["path"] == protocol.HEARTBEAT_PATH and b1["device"] == EDGE_ID
-      and len(b1["lines"]) == 6 and b1["lines"][0] == EDGE_ID, b1["lines"][:3])
+      and len(b1["lines"]) == 3
+      and b1["lines"][2] == hashlib.sha256(transport.encode(b1["body"])).hexdigest(), b1["lines"])
+check("the reply is verified over RESPONSE, the request's timestamp and nonce, sha256 of the raw reply",
+      protocol.response_message("1.0", "ab", b"{}").decode().split("\n")[:3] == ["RESPONSE", "1.0", "ab"])
 check("the cameras arrive with fps and Wi-Fi signal, as the app measured them",
       [c["fps"] for c in b1["body"]["status"]["cameras"]] == [14.8, 0.0, None]
       and b1["body"]["status"]["cameras"][0]["wifi_signal_dbm"] == -53, b1["body"]["status"]["cameras"])

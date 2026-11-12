@@ -27,29 +27,50 @@ User-Agent: ceravis-fleet-agent
 X-Ceravis-Device: ce7k2m9xq4w8n3
 X-Ceravis-Timestamp: 1793795400.512
 X-Ceravis-Nonce: 4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
-X-Ceravis-Signature: DoiVlI5v3JEpysLZ51z51jZyAS2GbE6kgF88XO4z2GE=
+X-Ceravis-Signature: pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=
 ```
 
 | Header | Meaning |
 |---|---|
-| `X-Ceravis-Device` | the device's **edge_id** (from enrollment): tells the FMS whose key to check with |
-| `X-Ceravis-Timestamp` | send time, Unix seconds; reject if more than ~±300 s off (`401 clock_skew`) |
-| `X-Ceravis-Nonce` | 32 random hex characters, new for every call; reject one already seen |
+| `X-Ceravis-Device` | the device's **edge_id** (from enrollment): tells the FMS whose key to check the signature with. Not part of the signed lines |
+| `X-Ceravis-Timestamp` | send time, Unix seconds with 3 decimals; reject if more than ±300 s off (`401 clock_skew`) |
+| `X-Ceravis-Nonce` | 32 random lowercase hex characters, new for every call; reject one already seen (keep each for 10 minutes) |
 | `X-Ceravis-Signature` | see below |
 
-### Signature (request) — 6 lines, the DEVICE key
+### Signature (request) — 3 lines, the DEVICE key
 
-`X-Ceravis-Signature = Base64( HMAC-SHA256( device key, M ) )`, `M` = these 6 lines
-joined by `\n` (no trailing newline). The device key is the `secret` the FMS
-returned at enrollment.
+Built like the enrollment call's signature (`docs/fleet-enrollment-api.md`:
+HMAC-SHA256, Base64, the timestamp and the raw body's sha256) with the nonce
+added. Unlike enrollment, the method and path are not among the signed lines
+(the endpoint is fixed).
 
 ```
-<X-Ceravis-Device: the edge_id>
-POST
-/v1/device/heartbeat
-<sha256 of the raw body bytes, 64 lowercase hex>
-<X-Ceravis-Timestamp, exactly as sent>
-<X-Ceravis-Nonce>
+X-Ceravis-Signature = Base64( HMAC-SHA256( device key, M ) )
+
+M = <X-Ceravis-Timestamp, exactly as sent>
+    <X-Ceravis-Nonce, exactly as sent>
+    <sha256 of the raw body bytes, 64 lowercase hex characters>
+```
+
+- `M` is those 3 lines joined by a single `\n` (line feed), **no trailing newline**.
+- **device key** = the `secret` the FMS returned in this device's enrollment
+  reply (not the fleet enrollment key). The key string's UTF-8 bytes are the
+  HMAC key, as given — not decoded from Base64.
+- **raw body bytes** = the request body exactly as received, byte for byte —
+  never parsed, re-serialised or pretty-printed before hashing.
+- The body hash is **hex** (64 lowercase characters) inside `M`; the HMAC result
+  (32 bytes) is **Base64-encoded once** (standard alphabet, with `=` padding,
+  44 characters) into the header. Nothing is hashed or encoded twice.
+
+Worked example (the test vector below):
+
+```
+M (3 lines):
+1793795400.512
+4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
+54d02321c2d969476e1c1ec0d93439e8d81a56819b5b18ce07e580694bd3ca87
+
+X-Ceravis-Signature = pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=
 ```
 
 ## Body
@@ -84,7 +105,7 @@ what the part is.
 
 | `status.state` | When |
 |---|---|
-| `outage` | the device cannot watch over the person: `edge_application`, `video_server`, `ai_detection` or `edge_hotspot` is in `outage`, or every camera that is switched on is in `outage` |
+| `outage` | the device cannot watch over the person: `edge_application`, `mediamtx`, `ai_detection` or `edge_hotspot` is in `outage`, or every camera that is switched on is in `outage` |
 | `degraded` | otherwise, at least one warning anywhere |
 | `operational` | no warnings anywhere |
 
@@ -128,7 +149,7 @@ heartbeat arrives (see [What the FMS does](#what-the-fms-does)).
         "version": "1.3.0",
         "warnings": []
       },
-      "video_server": {
+      "mediamtx": {
         "state": "operational",
         "warnings": []
       },
@@ -141,7 +162,7 @@ heartbeat arrives (see [What the FMS does](#what-the-fms-does)).
         "pending_uploads": 0,
         "warnings": []
       },
-      "remote_access": {
+      "frpc": {
         "state": "operational",
         "warnings": []
       },
@@ -275,7 +296,7 @@ send it while offline.
           "ceravis.service restarted 1 time since the last heartbeat"
         ]
       },
-      "video_server": {
+      "mediamtx": {
         "state": "operational",
         "warnings": []
       },
@@ -288,7 +309,7 @@ send it while offline.
         "pending_uploads": 0,
         "warnings": []
       },
-      "remote_access": {
+      "frpc": {
         "state": "operational",
         "warnings": []
       },
@@ -420,7 +441,7 @@ grey them out instead of dropping them.
           "ceravis.service restarted 4 times since the last heartbeat"
         ]
       },
-      "video_server": {
+      "mediamtx": {
         "state": "unknown",
         "warnings": []
       },
@@ -433,7 +454,7 @@ grey them out instead of dropping them.
         "pending_uploads": null,
         "warnings": []
       },
-      "remote_access": {
+      "frpc": {
         "state": "operational",
         "warnings": []
       },
@@ -515,7 +536,7 @@ grey them out instead of dropping them.
 }
 ```
 
-### Sample 4 — disabled parts (a LAN-only home without the tunnel, a camera switched off)
+### Sample 4 — disabled parts (a LAN-only home without the tunnel (`frpc` not installed), a camera switched off)
 
 `disabled` is never a warning: this device is `operational`.
 
@@ -554,7 +575,7 @@ grey them out instead of dropping them.
         "version": "1.3.0",
         "warnings": []
       },
-      "video_server": {
+      "mediamtx": {
         "state": "operational",
         "warnings": []
       },
@@ -567,7 +588,7 @@ grey them out instead of dropping them.
         "pending_uploads": 0,
         "warnings": []
       },
-      "remote_access": {
+      "frpc": {
         "state": "disabled",
         "warnings": []
       },
@@ -649,10 +670,10 @@ grey them out instead of dropping them.
 }
 ```
 
-<details><summary>The exact bytes signed in sample 1 (1850 bytes) — the test vector body</summary>
+<details><summary>The exact bytes signed in sample 1 (1837 bytes) — the test vector body</summary>
 
 ```json
-{"status":{"state":"operational","warning_count":0,"hardware":{"state":"operational","uptime_secs":86412,"last_boot":"scheduled_reboot","cpu_pct":38,"gpu_pct":64,"ram_used_gb":4.9,"ram_total_gb":7.4,"disk_used_gb":52.3,"disk_total_gb":116.4,"temperature_c":53.4,"fan_pct":38,"power_w":7.8,"power_mode":"25W","warnings":[]},"network":{"state":"operational","internet":"connected","latency_ms":41.6,"hotspot":"on","hotspot_devices":3,"warnings":[]},"services":{"edge_application":{"state":"operational","version":"1.3.0","warnings":[]},"video_server":{"state":"operational","warnings":[]},"ai_detection":{"state":"operational","warnings":[]},"cloud_connection":{"state":"operational","pending_uploads":0,"warnings":[]},"remote_access":{"state":"operational","warnings":[]},"fleet_agent":{"state":"operational","version":"0.7.0","warnings":[]},"nightly_reboot":{"state":"operational","warnings":[]},"edge_hotspot":{"state":"operational","warnings":[]},"ssh_access":{"state":"operational","warnings":[]},"time_sync":{"state":"operational","warnings":[]},"dns_resolver":{"state":"operational","warnings":[]},"local_discovery":{"state":"operational","warnings":[]},"fan_control":{"state":"operational","warnings":[]},"system_logging":{"state":"operational","warnings":[]},"security_updates":{"state":"operational","pending_security":2,"warnings":[]},"os_hardening":{"state":"operational","warnings":[]}},"cameras":[{"camera_id":"LOUNGE","room":"LOUNGE","state":"operational","fps":14.8,"reconnects":0,"recording":true,"night_vision":false,"ptz":true,"wifi_signal_dbm":-53,"warnings":[]},{"camera_id":"KITCHEN","room":"KITCHEN","state":"operational","fps":15.0,"reconnects":0,"recording":true,"night_vision":true,"ptz":false,"wifi_signal_dbm":-61,"warnings":[]}]},"results":[{"id":"cmd_80","ok":true,"output":"pong from ceravis-acg08mbv3","duration_ms":2}]}
+{"status":{"state":"operational","warning_count":0,"hardware":{"state":"operational","uptime_secs":86412,"last_boot":"scheduled_reboot","cpu_pct":38,"gpu_pct":64,"ram_used_gb":4.9,"ram_total_gb":7.4,"disk_used_gb":52.3,"disk_total_gb":116.4,"temperature_c":53.4,"fan_pct":38,"power_w":7.8,"power_mode":"25W","warnings":[]},"network":{"state":"operational","internet":"connected","latency_ms":41.6,"hotspot":"on","hotspot_devices":3,"warnings":[]},"services":{"edge_application":{"state":"operational","version":"1.3.0","warnings":[]},"mediamtx":{"state":"operational","warnings":[]},"ai_detection":{"state":"operational","warnings":[]},"cloud_connection":{"state":"operational","pending_uploads":0,"warnings":[]},"frpc":{"state":"operational","warnings":[]},"fleet_agent":{"state":"operational","version":"0.7.0","warnings":[]},"nightly_reboot":{"state":"operational","warnings":[]},"edge_hotspot":{"state":"operational","warnings":[]},"ssh_access":{"state":"operational","warnings":[]},"time_sync":{"state":"operational","warnings":[]},"dns_resolver":{"state":"operational","warnings":[]},"local_discovery":{"state":"operational","warnings":[]},"fan_control":{"state":"operational","warnings":[]},"system_logging":{"state":"operational","warnings":[]},"security_updates":{"state":"operational","pending_security":2,"warnings":[]},"os_hardening":{"state":"operational","warnings":[]}},"cameras":[{"camera_id":"LOUNGE","room":"LOUNGE","state":"operational","fps":14.8,"reconnects":0,"recording":true,"night_vision":false,"ptz":true,"wifi_signal_dbm":-53,"warnings":[]},{"camera_id":"KITCHEN","room":"KITCHEN","state":"operational","fps":15.0,"reconnects":0,"recording":true,"night_vision":true,"ptz":false,"wifi_signal_dbm":-61,"warnings":[]}]},"results":[{"id":"cmd_80","ok":true,"output":"pong from ceravis-acg08mbv3","duration_ms":2}]}
 ```
 </details>
 
@@ -707,10 +728,10 @@ Each entry: `state`, `warnings`, and (some) one or two details.
 | Key | What it is | Checked through | Details |
 |---|---|---|---|
 | `edge_application` | the CERAVIS application: web API, AI, recording, cloud uploads, talk-back | systemd `ceravis.service` + the app answering | `version` |
-| `video_server` | the video server (MediaMTX) inside the application: live view, recording | the app | — |
+| `mediamtx` | the video server (MediaMTX) inside the application: live view, recording | the app | — |
 | `ai_detection` | person, fall and no-motion detection — the safety function | the app: detector running and analysing frames | — |
 | `cloud_connection` | uploads to the CERAVIS app server (alerts, snapshots, clips) | the app | `pending_uploads` (waiting to be sent) |
-| `remote_access` | the secure tunnel for live view and remote support (frpc) | systemd `frpc.service` + route + live connection to the tunnel server | — |
+| `frpc` | the tunnel (frpc) for live view and remote support | systemd `frpc.service` + its route for this edge_id + its live connection to the tunnel server | — |
 | `fleet_agent` | this heartbeat's sender | systemd `ceravis-fleet-agent.service` | `version` |
 | `nightly_reboot` | the safety-checked nightly reboot | systemd `ceravis-reboot.timer` + its last run | — |
 | `edge_hotspot` | the camera hotspot (NetworkManager) | systemd `NetworkManager.service` + the hotspot on | — |
@@ -758,7 +779,7 @@ failed check-in.
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/json
-X-Ceravis-Signature: Xb1232YwGUdBeQ9exMTTLT5exY0tpGmgysqMpFlWDzE=
+X-Ceravis-Signature: E41GTcfiGzsn0g0L3SDgl+GGS40qaQGKXbCqm7mr4T0=
 
 {"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"file":"events","lines":100}}]}
 ```
@@ -771,14 +792,34 @@ X-Ceravis-Signature: Xb1232YwGUdBeQ9exMTTLT5exY0tpGmgysqMpFlWDzE=
 
 ### Signature (response) — 4 lines, the DEVICE key
 
+Built like the enrollment reply's signature (`RESPONSE`, the request's
+timestamp, the reply's sha256), with the request's nonce added:
+
 ```
-<the edge_id>
-RESPONSE
-<the REQUEST's X-Ceravis-Nonce>
-<sha256 of the raw reply bytes>
+X-Ceravis-Signature = Base64( HMAC-SHA256( device key, R ) )
+
+R = RESPONSE
+    <the REQUEST's X-Ceravis-Timestamp, exactly as the device sent it>
+    <the REQUEST's X-Ceravis-Nonce>
+    <sha256 of the raw reply body bytes, 64 lowercase hex characters>
 ```
 
-A reply with a missing or wrong signature is ignored: no order runs.
+The word `RESPONSE` keeps a reply's signature from ever passing as a request's.
+The raw reply bytes are exactly the bytes sent — sign after serialising, and
+never change the body afterwards. A reply with a missing or wrong signature is
+ignored: no order runs.
+
+Worked example (the test vector below):
+
+```
+R (4 lines):
+RESPONSE
+1793795400.512
+4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
+1280ef69d546e07d4fefaa6c33954ef2610293fb3164556510838a8e9a57f7eb
+
+X-Ceravis-Signature = E41GTcfiGzsn0g0L3SDgl+GGS40qaQGKXbCqm7mr4T0=
+```
 
 ### Orders (the only ones a device runs)
 
@@ -794,6 +835,50 @@ Anything else is refused (`ok: false, output: "refused: …"`). The app-server
 wire log and the talk-back log carry personal data and are never sent: they are
 read on the device only.
 
+## The complete exchange (sample 1)
+
+**Request** — headers and the exact body bytes:
+
+```http
+POST /v1/device/heartbeat HTTP/1.1
+Host: fms.ceravishealth.in
+Content-Type: application/json
+User-Agent: ceravis-fleet-agent
+Content-Length: 1837
+X-Ceravis-Device: ce7k2m9xq4w8n3
+X-Ceravis-Timestamp: 1793795400.512
+X-Ceravis-Nonce: 4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b
+X-Ceravis-Signature: pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=
+
+{"status":{"state":"operational","warning_count":0,"hardware":{"state":"operational","uptime_secs":86412,"last_boot":"scheduled_reboot","cpu_pct":38,"gpu_pct":64,"ram_used_gb":4.9,"ram_total_gb":7.4,"disk_used_gb":52.3,"disk_total_gb":116.4,"temperature_c":53.4,"fan_pct":38,"power_w":7.8,"power_mode":"25W","warnings":[]},"network":{"state":"operational","internet":"connected","latency_ms":41.6,"hotspot":"on","hotspot_devices":3,"warnings":[]},"services":{"edge_application":{"state":"operational","version":"1.3.0","warnings":[]},"mediamtx":{"state":"operational","warnings":[]},"ai_detection":{"state":"operational","warnings":[]},"cloud_connection":{"state":"operational","pending_uploads":0,"warnings":[]},"frpc":{"state":"operational","warnings":[]},"fleet_agent":{"state":"operational","version":"0.7.0","warnings":[]},"nightly_reboot":{"state":"operational","warnings":[]},"edge_hotspot":{"state":"operational","warnings":[]},"ssh_access":{"state":"operational","warnings":[]},"time_sync":{"state":"operational","warnings":[]},"dns_resolver":{"state":"operational","warnings":[]},"local_discovery":{"state":"operational","warnings":[]},"fan_control":{"state":"operational","warnings":[]},"system_logging":{"state":"operational","warnings":[]},"security_updates":{"state":"operational","pending_security":2,"warnings":[]},"os_hardening":{"state":"operational","warnings":[]}},"cameras":[{"camera_id":"LOUNGE","room":"LOUNGE","state":"operational","fps":14.8,"reconnects":0,"recording":true,"night_vision":false,"ptz":true,"wifi_signal_dbm":-53,"warnings":[]},{"camera_id":"KITCHEN","room":"KITCHEN","state":"operational","fps":15.0,"reconnects":0,"recording":true,"night_vision":true,"ptz":false,"wifi_signal_dbm":-61,"warnings":[]}]},"results":[{"id":"cmd_80","ok":true,"output":"pong from ceravis-acg08mbv3","duration_ms":2}]}
+```
+
+**Reply** — `200`, signed:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Ceravis-Signature: E41GTcfiGzsn0g0L3SDgl+GGS40qaQGKXbCqm7mr4T0=
+
+{"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"file":"events","lines":100}}]}
+```
+
+**Refusals** (not signed; the device acts on the status code):
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+
+{"error":"clock_skew","server_time":1793795712.204}
+```
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+
+{"error":"invalid_signature"}
+```
+
 ## Errors
 
 | Answer | Device does |
@@ -808,12 +893,12 @@ read on the device only.
 |---|---|
 | device key | `nHuchkxLPFxmobs_7wDbrWz5hmIcx7J5ymFohvnDpyE` |
 | edge_id / timestamp / nonce | `ce7k2m9xq4w8n3` / `1793795400.512` / `4b1f0c9e7a2d6e5f8c3b1a0d9e8f7c6b` |
-| request body | the 1850 bytes in "The exact bytes signed" above |
-| request body sha256 | `937b2b35d7a1f2b722d8334843fb40c70df909c2b4414fd406e86bebfcc00457` |
-| request `X-Ceravis-Signature` | `DoiVlI5v3JEpysLZ51z51jZyAS2GbE6kgF88XO4z2GE=` |
+| request body | the 1837 bytes in "The exact bytes signed" above |
+| request body sha256 | `54d02321c2d969476e1c1ec0d93439e8d81a56819b5b18ce07e580694bd3ca87` |
+| request `X-Ceravis-Signature` | `pC9xqS5/B1kUIYupszoc4nCW0TXj5+m4QQCzweLDUmY=` |
 | reply body | `{"server_time":1793795400.73,"next_poll_after_secs":60,"commands":[{"id":"cmd_81","kind":"logs","args":{"file":"events","lines":100}}]}` |
 | reply sha256 | `1280ef69d546e07d4fefaa6c33954ef2610293fb3164556510838a8e9a57f7eb` |
-| reply `X-Ceravis-Signature` | `Xb1232YwGUdBeQ9exMTTLT5exY0tpGmgysqMpFlWDzE=` |
+| reply `X-Ceravis-Signature` | `E41GTcfiGzsn0g0L3SDgl+GGS40qaQGKXbCqm7mr4T0=` |
 
 ## What the FMS does
 
@@ -838,7 +923,7 @@ read on the device only.
 |---|---|
 | `hardware` | the agent (`edge/fleet/fms_agent/health.py`: /proc, /sys, statvfs, nvpmodel) + the app's tegrastats (GPU load, board power) |
 | systemd services, `os_hardening`, `security_updates` | the agent (`systemctl show`, Ubuntu's update notifier) |
-| `network`, `video_server`, `ai_detection`, `cloud_connection`, the tunnel route and connection, `time_sync`, `cameras` | the app: `GET /api/v1/system/health` (loopback), built from the same warning rules as `/api/v1/system/status` |
+| `network`, `mediamtx`, `ai_detection`, `cloud_connection`, the tunnel route and connection, `time_sync`, `cameras` | the app: `GET /api/v1/system/health` (loopback), built from the same warning rules as `/api/v1/system/status` |
 
 ## Changes from version 1
 
@@ -848,10 +933,11 @@ read on the device only.
 | `status.backend` | gone: it is `services.edge_application` (the same service, `ceravis.service`) |
 | `hardware.model`, `os`, `boot_id`, `cpu.cores`, `load_avg`, every temperature sensor, swap, root + data disks, `clock`, `network.hostname` | gone from the heartbeat (kept in the device's log; `info` order); `boot_id` replaced by `last_boot` |
 | bytes (`memory.total_bytes` …), nested `cpu`/`gpu`/`memory`/`power` objects | flat numbers in GB and whole % (`ram_used_gb`, `cpu_pct` …) |
-| `services.frpc` + `services.tunnel` (with the edge_id) | one `services.remote_access`, no edge_id |
+| `services.frpc` + `services.tunnel` (with the edge_id) | one `services.frpc`, no edge_id |
 | `services.internet` | `status.network` (internet + hotspot) |
 | `services.edge_id_watch` | gone (the edge_id is fixed for a device's life) |
-| `services.mediamtx`, `app_server`, `reboot_timer` | `video_server`, `cloud_connection`, `nightly_reboot` |
+| `services.app_server`, `reboot_timer` | `cloud_connection`, `nightly_reboot` (`mediamtx` and `frpc` keep their names) |
+| signature: 6 lines (edge_id, POST, path, sha256, timestamp, nonce); reply 4 lines (edge_id, RESPONSE, nonce, sha256) | 3 lines (timestamp, nonce, sha256); reply 4 lines (RESPONSE, timestamp, nonce, sha256) — the enrollment call's way, plus the nonce |
 | — | new: `ai_detection`, `edge_hotspot`, `ssh_access`, `time_sync`, `dns_resolver`, `local_discovery`, `fan_control`, `system_logging`, `security_updates`, `os_hardening`; `fan_pct`, `power_mode`, `last_boot`, `latency_ms`, `hotspot`, `hotspot_devices`, camera `wifi_signal_dbm` |
 | per service `unit`, `uptime_secs`, `restarts`, `memory_bytes`; per camera `name`, `resolution`, `codec`, `profile`, `uptime_secs`, `last_frame_age_secs`, `frames_captured`, `stream_ready`, `viewers`, recording detail | gone from the heartbeat, kept in the device's log every minute |
 | orders `ping`, `restart_service`, `logs` (journal) | + `info`; `logs` also reads the device's log files |
