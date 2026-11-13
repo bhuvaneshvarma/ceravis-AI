@@ -6,7 +6,8 @@
                    warning raised or cleared, a device joining or leaving the
                    hotspot, the agent starting or stopping, a check-in problem
                    appearing or clearing
-    fleet.jsonl    every exchange with the fleet server and every order it sent
+    fleet.jsonl    every exchange with the fleet server — each check-in in full: the
+                   request body as sent and the reply — and every order it sent
 
 Written whether or not the fleet server can be reached — a device that is
 offline keeps its own record. What every field means: edge/LOGS.md.
@@ -26,7 +27,7 @@ class DeviceLogs:
         folder = log_dir(data_dir)
         self.health = Logbook(folder / "health.jsonl", max_bytes=25 * MB, backups=10)
         self.events = Logbook(folder / "events.jsonl", max_bytes=5 * MB, backups=4)
-        self.fleet = Logbook(folder / "fleet.jsonl", max_bytes=5 * MB, backups=4)
+        self.fleet = Logbook(folder / "fleet.jsonl", max_bytes=10 * MB, backups=4)   # ≈ 2 weeks of check-ins
         self._summary: dict | None = None
         self._devices: dict[str, dict] | None = None
 

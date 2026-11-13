@@ -30,6 +30,7 @@ Rules it lives by:
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
@@ -49,6 +50,7 @@ log = logging.getLogger("fms_agent")
 MIN_WAIT, MAX_WAIT, MAX_BACKOFF = 5, 3600, 300
 OBSERVE_SECS = 60.0          # one full record of the device each minute
 FRESH_SECS = 10.0            # a check-in reuses a record younger than this
+LOG_OUTPUT_CHARS = 2000      # of an order's output, in fleet.jsonl's copy of a check-in
 _NOT_AGAIN = ("the FMS may have registered this device anyway, so it is not enrolled again — "
               "check the FMS, then restart this agent (sudo systemctl restart ceravis-fleet-agent)")
 
@@ -89,6 +91,29 @@ def _shorten(result: dict, room: int) -> dict:
             return shorter
         per_char = _size(tail) / len(tail)    # JSON escaping makes some characters cost more
         tail = tail[math.ceil(excess / per_char):]
+
+
+def _logged(payload: dict) -> dict:
+    """A check-in's body as sent, for fleet.jsonl. Only an order's long output (a
+    `logs` order returns whole log files) is cut to its end here — copied whole,
+    the log would copy itself into itself; the FMS got it whole."""
+    results = []
+    for result in payload["results"]:
+        output = result.get("output") or ""
+        if len(output) > LOG_OUTPUT_CHARS:
+            result = {**result, "output": f"…({len(output)} characters sent; the last "
+                                          f"{LOG_OUTPUT_CHARS} here)\n" + output[-LOG_OUTPUT_CHARS:]}
+        results.append(result)
+    return {**payload, "results": results}
+
+
+def _readable(answer: str | None):
+    """The server's answer as JSON when it is a JSON object, else the text itself."""
+    try:
+        value = json.loads(answer) if answer else None
+    except ValueError:
+        return answer
+    return value if isinstance(value, dict) else answer
 
 
 class Agent:
@@ -168,7 +193,8 @@ class Agent:
             reply = self._post(protocol.HEARTBEAT_PATH, payload,
                                self.identity["edge_id"], self.identity["heartbeat_key"])
         except Exception as exc:    # refused, unreachable or untrusted: logged; the loop backs off
-            self.logs.exchange("heartbeat", False, status=getattr(exc, "status", None), error=str(exc))
+            self.logs.exchange("heartbeat", False, status=getattr(exc, "status", None), error=str(exc),
+                               request=_logged(payload), reply=_readable(getattr(exc, "reply", None)))
             raise
         self.health.delivered(detail)
         del self.results[:len(carried)]                       # delivered — drop them
@@ -176,7 +202,8 @@ class Agent:
         orders = reply.get("commands") or []
         self.logs.exchange("heartbeat", True, rtt_ms=self.rtt_ms, state=self.status["state"],
                            warning_count=self.status["warning_count"], results_sent=len(carried),
-                           orders=len(orders), next_secs=self.interval)
+                           orders=len(orders), next_secs=self.interval,
+                           request=_logged(payload), reply=reply)
         for order in orders:
             result = commands.run(order)
             self.logs.order(order, result)

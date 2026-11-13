@@ -655,6 +655,19 @@ check("fleet.jsonl: every check-in and every order, with its outcome",
       [r["kind"] for r in fleet_rows].count("heartbeat") == 3
       and {r.get("order") for r in fleet_rows if r["kind"] == "order"} == {"ping", "info", "logs"},
       fleet_rows[:2])
+from fms_agent.agent import _logged                               # noqa: E402
+
+beats = [r for r in fleet_rows if r["kind"] == "heartbeat"]
+check("...each check-in in full: the request body exactly as the FMS received it, and its whole reply",
+      beats[0]["request"] == b1["body"] and beats[1]["request"] == _logged(b2["body"])
+      and [c["id"] for c in beats[0]["reply"]["commands"]] == ["cmd_81", "cmd_82", "cmd_83"]
+      and beats[1]["reply"] == {"server_time": 1793795400.73, "next_poll_after_secs": 60, "commands": []},
+      (beats[0].get("reply"), beats[1].get("reply")))
+long_run = {"status": {}, "results": [{"id": "cmd_9", "ok": True, "output": "x" * 4000 + "END"}]}
+kept = _logged(long_run)["results"][0]["output"]
+check("...an order's long output is cut to its end in that copy only (the FMS got it whole)",
+      kept.endswith("END") and len(kept) < 2100 and "4003 characters sent" in kept
+      and long_run["results"][0]["output"] == "x" * 4000 + "END", kept[:60])
 fms.server.shutdown()
 edge_app.server.shutdown()
 
@@ -719,6 +732,11 @@ except transport.Rejected as exc:
     waited = exc
 check("a refused heartbeat (401) is never answered with an enrollment",
       waited is not None and waited.status == 401 and calls == {"enroll": 0, "heartbeat": 1}, calls)
+row = json.loads(refused.logs.fleet.tail(1)[0])
+check("...and fleet.jsonl keeps that check-in whole: the request as sent, the server's answer",
+      row["kind"] == "heartbeat" and row["ok"] is False and row["status"] == 401
+      and list(row["request"]) == ["status", "results"]
+      and row["reply"] == {"success": False, "error": "bad_signature"}, row.get("reply"))
 
 calls.update(enroll=0, heartbeat=0)
 looping = flood_agent({"heartbeat_key": "k" * 64})
@@ -760,6 +778,10 @@ check("an enrollment reply that cannot be trusted STOPS check-ins: one enrollmen
 check("...said once and loudly (events.jsonl), carried as an outage of services.fleet_agent, health kept",
       [e["event"] for e in events].count("fleet_check_in_stopped") == 1
       and fresh.status["services"]["fleet_agent"]["state"] == "outage", events)
+logged = [json.loads(r) for r in fresh.logs.fleet.tail(50)]
+check("...and an enrollment's answer is never kept in the log (it carries the secret)",
+      not any("secret-" in json.dumps(r) for r in logged)
+      and all("reply" not in r for r in logged if r["kind"] == "enroll"), logged[-1:])
 flood.server.shutdown()
 health_app.server.shutdown()
 

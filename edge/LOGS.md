@@ -18,7 +18,7 @@ The data folder is `/var/lib/ceravis` on an installed device, or
 |---|---|---|---|---|
 | `health.jsonl` | `logs/` | fleet agent | **every minute**: every part of the device in full detail, and the heartbeat summary built from it | 25 MB × 11 files ≈ 2 weeks |
 | `events.jsonl` | `logs/` | fleet agent | **only what changed**: a part's state, a warning raised or cleared, a device joining or leaving the hotspot, the agent starting or stopping | 5 MB × 5 files (months) |
-| `fleet.jsonl` | `logs/` | fleet agent | every check-in with the fleet server (accepted or failed, why), every order received and its result | 5 MB × 5 files |
+| `fleet.jsonl` | `logs/` | fleet agent | every check-in with the fleet server **in full** — the request body as sent and the reply — accepted or failed (why); every order received and its result | 10 MB × 5 files ≈ 2 weeks |
 | `incoming.jsonl` | `logs/` | edge app | every request **into** the device: writes and failures one line each, routine reads counted per minute | 10 MB × 6 files |
 | `cloud_calls.jsonl` | data folder | edge app | every call **to** the CERAVIS app server (one line each) and every detection | the newest 300, past 1 MB |
 | `ceravis_api_wire.jsonl` | data folder | edge app | the exact request and response of every app-server call (personal data: read on the device only) | the newest 1,500 calls, past 16 MB |
@@ -192,9 +192,12 @@ agent: `sudo systemctl restart ceravis-fleet-agent`.
 
 | `kind` | Fields |
 |---|---|
-| `heartbeat` | `ok`; accepted: `rtt_ms`, `state`, `warning_count`, `results_sent`, `orders`, `next_secs`; failed: `status` (HTTP), `error` |
-| `enroll` | `ok`; `edge_id` and `origin`, or `status` and `error` |
+| `heartbeat` | `ok`; accepted: `rtt_ms`, `state`, `warning_count`, `results_sent`, `orders`, `next_secs`; failed: `status` (HTTP), `error`. Always the whole exchange: **`request`** — the body exactly as sent (`status` + `results`; an order's output over 2,000 characters is cut to its end here, the FMS got it whole) — and **`reply`**: accepted, the whole reply (`server_time`, `next_poll_after_secs`, `commands`); failed, what the server answered, if anything (its first 2,000 characters) |
+| `enroll` | `ok`; `edge_id` and `origin`, or `status` and `error` — never the reply: it carries the device's secret |
 | `order` | `id`, `order` (its kind), `args`, `ok`, `duration_ms`, `output_chars` |
+
+The last check-in, in full and readable:
+`tail -n 1 <data>/logs/fleet.jsonl | python3 -m json.tool`
 
 ## `incoming.jsonl` — requests into the device
 
