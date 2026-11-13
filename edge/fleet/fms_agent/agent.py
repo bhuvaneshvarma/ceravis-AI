@@ -123,14 +123,16 @@ class Agent:
                                self.identity["edge_id"], self.identity["secret"])
         except transport.Rejected as exc:
             self.logs.exchange("heartbeat", False, status=exc.status, error=str(exc))
-            if exc.status == 401:        # key reset by an admin (or unknown here): enroll afresh
-                status, _ = collect.edge_status(self.cfg.status_url)
-                return self._enroll(status)
+            if exc.status == 401:
+                return self._refused(exc)
             raise
         except Exception as exc:
             self.logs.exchange("heartbeat", False, error=str(exc))
             raise
         self.health.delivered(detail)
+        if not self.identity.get("heartbeat_accepted"):     # this key works: a later 401 is a reset
+            self.identity["heartbeat_accepted"] = True
+            identity.save(self.cfg.state_dir, self.identity)
         del self.results[:len(carried)]                       # delivered — drop them
         self.interval = min(max(float(reply.get("next_poll_after_secs", 60)), MIN_WAIT), MAX_WAIT)
         orders = reply.get("commands") or []
@@ -159,6 +161,20 @@ class Agent:
                 break
             carried.append(result)
         return carried
+
+    def _refused(self, exc: transport.Rejected) -> float:
+        """A heartbeat answered 401. Enrolling again is right only when this key
+        WORKED before and is refused now (an admin's Reset key, or an FMS that lost
+        this device) — and then once: the new key must be accepted before another
+        refusal can lead to enrolling again. A key the FMS never accepted means it
+        cannot verify this device's heartbeats at all; enrolling again only repeats
+        that, every second, with a new device on the FMS each time (seen on the
+        bench 2026-11-13). So the agent waits, backing off up to 5 minutes."""
+        if self.identity.get("heartbeat_accepted"):
+            status, _ = collect.edge_status(self.cfg.status_url)
+            return self._enroll(status)
+        raise Waiting(f"the FMS refuses this device's heartbeats ({exc}) and has never accepted "
+                      "its key — not enrolling again; retrying with back-off", 401) from None
 
     def _enroll(self, status: dict | None) -> float:
         if not self.cfg.enroll_key:

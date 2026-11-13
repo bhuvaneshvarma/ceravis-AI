@@ -90,8 +90,15 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   every part each minute (`fms_agent/health.py`: hardware + systemd; the app
   reports the rest from `GET /api/v1/system/health`, built from the SAME warning
   rules as `/api/v1/system/status`, whose output must not change) and keeps the
-  full detail on the device. Not built on the Java side yet: the agent logs one
-  404 warning and backs off.
+  full detail on the device. The Java side built it 2026-11-13 (`aebb3e4`) but
+  verifies with the stored secret HASH as the key, signs its reply without the
+  nonce, and enrolls a NEW device per call (random UUID) — fixes owed there.
+- **A device must never loop enrollments** (bench flood 2026-11-13: heartbeat
+  401 → enroll → 1 s → 401 …, 165 new edge_ids, app restarted to start-limit).
+  A heartbeat 401 re-enrolls ONLY a key the FMS accepted before
+  (`identity.json` `heartbeat_accepted`), and then once; otherwise it backs off.
+  The agent's FMS address comes from root-only `enroll.env` (it overrides
+  `jetson.env`); stopping the agent needs `sudo systemctl stop ceravis-fleet-agent`.
 - Device logs: ONE folder `<data>/logs/` (`health.jsonl` each minute,
   `events.jsonl` changes only, `fleet.jsonl`, `incoming.jsonl`), one writer
   (`edge/common/logbook.py`), one rotation rule; the older app logs stay in the

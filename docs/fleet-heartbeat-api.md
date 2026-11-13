@@ -895,7 +895,7 @@ Content-Type: application/json
 | Answer | Device does |
 |---|---|
 | `401 {"error":"clock_skew","server_time":…}` | corrects its clock, retries after 1 s |
-| `401` (any other) | its key is no longer valid (admin reset): enrolls again |
+| `401` (any other) | if this key was **accepted before** (an admin pressed Reset key, or the FMS lost the device): enrolls again — **once**; the new key must be accepted before a refusal can lead to enrolling again. A key the FMS **never accepted**: no enrollment — it backs off 5, 10, 20 … up to 300 s, so a device can never flood the FMS with enrollments |
 | `404`, `5xx`, no network | logs once, retries after 5, 10, 20 … up to 300 s — and keeps its minute-by-minute record on the device meanwhile |
 
 ## Test vector (sample device key, not real)

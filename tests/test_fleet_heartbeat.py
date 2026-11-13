@@ -603,6 +603,8 @@ check("`info`: release, agent version, board, OS — what is installed",
 check("`logs` of a log file: the device's own events, newest last",
       res["cmd_83"]["ok"] and "agent_started" in res["cmd_83"]["output"], res["cmd_83"]["output"][-200:])
 check("...and once delivered they are not sent again", second == 60.0 and agent.results == [])
+check("an accepted heartbeat marks this key as working (identity.json: heartbeat_accepted)",
+      (identity.load(state_dir) or {}).get("heartbeat_accepted") is True)
 fleet_rows = [json.loads(r) for r in agent.logs.fleet.tail(20)]
 check("fleet.jsonl: every check-in and every order, with its outcome",
       [r["kind"] for r in fleet_rows].count("heartbeat") == 2
@@ -610,6 +612,81 @@ check("fleet.jsonl: every check-in and every order, with its outcome",
       fleet_rows[:2])
 fms.server.shutdown()
 edge_app.server.shutdown()
+
+# --------------------------------------------------------------------------
+print("\n5b. a refused heartbeat never becomes an enrollment loop (the bench, 2026-11-13)")
+# The FMS that flooded: every heartbeat 401 bad_signature, every enrollment
+# accepted with a brand-new edge_id.
+ENROLL_KEY = "k"
+calls = {"enroll": 0, "heartbeat": 0}
+
+
+def flood_fms(req):
+    req.rfile.read(int(req.headers.get("Content-Length") or 0))          # consume the request
+    if req.path == protocol.ENROLL_PATH:
+        calls["enroll"] += 1
+        raw = json.dumps({"result": "enrolled", "edge_id": f"loop{calls['enroll']:04d}edge",
+                          "secret": f"key-{calls['enroll']}", "warnings": [], "config": None}).encode()
+        stamp = req.headers.get(protocol.HDR_TIMESTAMP, "")
+        req.send_response(200)
+        req.send_header(protocol.HDR_SIGNATURE,
+                        protocol.sign(ENROLL_KEY, protocol.enroll_response_message(stamp, raw)))
+    else:
+        calls["heartbeat"] += 1
+        raw = b'{"success":false,"error":"bad_signature"}'
+        req.send_response(401)
+    req.send_header("Content-Type", "application/json")
+    req.end_headers()
+    req.wfile.write(raw)
+
+
+flood = Server(flood_fms)
+health_app = Server(lambda req: None)
+
+
+def flood_agent(accepted: bool) -> Agent:
+    sd = Path(tempfile.mkdtemp(prefix="ceravis-flood-", dir=DATA))
+    identity.save(sd, {"edge_id": EDGE_ID, "secret": SECRET, "device_id": "ceravis-acg08mbv3",
+                       **({"heartbeat_accepted": True} if accepted else {})})
+    a = Agent(Config(url=flood.url, enroll_key=ENROLL_KEY, status_url=health_app.url + "/s", state_dir=sd,
+                     fingerprint="1424622063459", health_url=health_app.url + "/api/v1/system/health"))
+    a.fingerprint = "0"                                   # no start-up stagger in run_forever
+    return a
+
+
+never = flood_agent(accepted=False)
+try:
+    never.beat()
+    refused_quietly = False
+except transport.Rejected as exc:
+    refused_quietly = exc.status == 401 and "not enrolling again" in str(exc)
+check("a key the FMS never accepted: a 401 is waited out, NOT answered with an enrollment",
+      refused_quietly and calls == {"enroll": 0, "heartbeat": 1}, calls)
+
+calls.update(enroll=0, heartbeat=0)
+worked = flood_agent(accepted=True)
+first_wait = worked.beat()                                 # 401 on a key that worked: an admin reset
+again = None
+try:
+    worked.beat()                                          # the NEW key is refused too
+except transport.Rejected as exc:
+    again = exc
+check("a key that worked and is refused now: enrolls again ONCE (an admin's Reset key)",
+      first_wait == 1.0 and calls["enroll"] == 1 and worked.identity["edge_id"] == "loop0001edge", calls)
+check("...and when the new key is refused as well, it does not enroll a second time",
+      again is not None and calls == {"enroll": 1, "heartbeat": 2}, calls)
+
+calls.update(enroll=0, heartbeat=0)
+looping = flood_agent(accepted=True)
+runner = threading.Thread(target=looping.run_forever, daemon=True)
+runner.start()
+looping.stop.wait(4.0)                                     # the old agent made ~4 enrollments here
+looping.stop.set()
+runner.join(5)
+check("the agent's own loop against that FMS: at most one enrollment, then back-off (no flood)",
+      calls["enroll"] <= 1 and calls["heartbeat"] <= 2, calls)
+flood.server.shutdown()
+health_app.server.shutdown()
 
 # --------------------------------------------------------------------------
 print("\n6. why the device last started")
