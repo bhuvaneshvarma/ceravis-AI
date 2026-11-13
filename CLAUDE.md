@@ -94,9 +94,11 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   every part each minute (`fms_agent/health.py`: hardware + systemd; the app
   reports the rest from `GET /api/v1/system/health`, built from the SAME warning
   rules as `/api/v1/system/status`, whose output must not change) and keeps the
-  full detail on the device. The Java side built it 2026-11-13 (`aebb3e4`);
-  fixes owed there: the reply signed without the nonce, the path from
-  `getRequestURI()`, and a NEW device per enrollment (random UUID).
+  full detail on the device. The Java side built it 2026-11-13 (`aebb3e4`) and
+  fixed it the same day: one device per device_id with a stable edge_id
+  (`99c09a7`), the reply signed over the nonce and the request checked against
+  the fixed path (`4223e35`). Verified on the bench 2026-11-13 18:25 IST: a
+  heartbeat every 60 s, accepted both ways.
 - **The agent NEVER enrolls again by itself** (bench flood 2026-11-13,
   16:20–16:27: heartbeat 401 → enroll → 1 s → 401 …, 201 new edge_ids, app
   restarted until systemd's start limit; the old agent's 401 path crashed and so
@@ -105,9 +107,11 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   heartbeat (`services.fleet_agent`) and retried with back-off up to 5 min. An
   enrollment reply it cannot trust or use STOPS check-ins until a restart (the
   FMS may have registered the device anyway). Enrolling again is a person's
-  decision: remove `identity.json`, restart the agent. The agent's FMS address
-  comes from root-only `enroll.env` (it overrides `jetson.env`); stopping the
-  agent needs `sudo systemctl stop ceravis-fleet-agent`.
+  decision at both ends: the FMS answers `409` to a device_id it already has
+  (so one copied fleet key cannot take over another device) until someone
+  clears that device there; then remove `identity.json`, restart the agent. The
+  agent's FMS address comes from root-only `enroll.env` (it overrides
+  `jetson.env`); stopping the agent needs `sudo systemctl stop ceravis-fleet-agent`.
 - Device logs: ONE folder `<data>/logs/` (`health.jsonl` each minute,
   `events.jsonl` changes only, `fleet.jsonl`, `incoming.jsonl`), one writer
   (`edge/common/logbook.py`), one rotation rule; the older app logs stay in the
