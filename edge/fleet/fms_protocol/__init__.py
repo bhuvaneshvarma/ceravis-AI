@@ -18,8 +18,12 @@ request's nonce added after the timestamp:
 
     enroll request     = METHOD \\n path \\n timestamp \\n sha256hex(body)          (fleet enrollment key)
     enroll response    = RESPONSE \\n request_timestamp \\n sha256hex(body)
-    heartbeat request  = METHOD \\n path \\n timestamp \\n nonce \\n sha256hex(body) (the DEVICE key)
+    heartbeat request  = METHOD \\n path \\n timestamp \\n nonce \\n sha256hex(body) (the HEARTBEAT key)
     heartbeat response = RESPONSE \\n request_timestamp \\n request_nonce \\n sha256hex(body)
+
+The heartbeat key is derived, never sent: heartbeat_key(enrollment key, the
+enroll reply's secret). The FMS stores exactly this value; the device keeps it
+in place of the secret.
 
 Enrollment sends no X-Ceravis-Device and no X-Ceravis-Nonce header (the agreed
 v2 call); a heartbeat sends both (the edge_id picks the key to check with).
@@ -98,6 +102,14 @@ def enroll_request_message(method: str, path: str, timestamp: str, body: bytes) 
 
 def enroll_response_message(request_timestamp: str, body: bytes) -> bytes:
     return "\n".join(("RESPONSE", request_timestamp, _sha256_hex(body))).encode("utf-8")
+
+
+def heartbeat_key(enrollment_key: str, secret: str) -> str:
+    """The key a device signs its heartbeats with, and the FMS checks them with:
+    HMAC-SHA256(key = the fleet enrollment key, message = the enroll reply's
+    `secret`), as 64 lowercase hex characters. Neither side ever sends it."""
+    return hmac.new(enrollment_key.strip().encode("utf-8"), secret.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
 
 
 def sign(secret: str, message: bytes) -> str:

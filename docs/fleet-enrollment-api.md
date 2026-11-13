@@ -8,15 +8,21 @@ the code in `edge/fleet/` win. Agent version: **0.5.0** (`edge/fleet/fms_agent/_
 
 At install time the fleet agent (`ceravis-fleet-agent.service`, code in
 `edge/fleet/`) calls the FMS **once**. The FMS answers with the device's
-**edge_id** and its own **device key** (`secret`). The edge_id comes **only**
+**edge_id** and a **`secret`**. The edge_id comes **only**
 from the FMS; the edge never makes one up and never reads it from
 `account.json`.
 
 - The device enrolls only when `/var/lib/ceravis-fleet-agent/identity.json` is
   missing. Install, `update.sh`, `upgrade.sh` and reboots keep that file, so an
   update **never** enrolls again. Only `setup/seal.sh` (golden image) removes it.
-- After enrolling, every heartbeat is signed with the device key, not the
-  enrollment key.
+- From the secret and the fleet enrollment key the device derives its
+  **heartbeat key** = hex(HMAC-SHA256(enrollment key, secret)) — the value the
+  FMS stores — keeps only that, and signs every heartbeat with it
+  (`docs/fleet-heartbeat-api.md`). The secret itself is not kept.
+- The device **never enrolls again by itself**. An enrollment reply it cannot
+  trust or use (wrong signature, no valid `edge_id` and `secret`, another
+  device's) stops its check-ins until the agent is restarted: the FMS may have
+  registered the device anyway.
 
 ## Request
 
@@ -92,7 +98,7 @@ A reply with a missing or wrong signature is **ignored** and nothing is saved.
 | Field | Required | What the device does |
 |---|---|---|
 | `edge_id` | **yes** | Must match `^[A-Za-z0-9_-]{3,64}$`, else the reply is refused. Saved in `identity.json`, handed to the app as the root-only credential `/etc/ceravis/credstore/edge_id` (`setup/sync_edge_id.sh`), used for every route (`/<edge_id>/…`, frpc). |
-| `secret` | **yes** | The device key. Must be a non-empty string. Saved in `identity.json` (0600). Signs every heartbeat. Never logged. |
+| `secret` | **yes** | Must be a non-empty string. Turned into the heartbeat key (HMAC-SHA256 with the enrollment key, hex) — only that is saved, in `identity.json` (0600); the secret itself is not kept. Never logged. |
 | `device_id` | recommended | Must equal the device's own `device_id`, else refused. If absent, accepted. |
 | `server_time` | recommended | The device stores (server_time − its clock) and adds it to later timestamps, so a Jetson with a wrong clock is not rejected. |
 | `warnings` | optional | Each string is written to the agent log as a warning. Must be a list. |
@@ -156,7 +162,7 @@ stop working once the app server uses the new edge_id. Recordings are kept
 ## Heartbeat
 
 After enrolling, the device checks in every ~60 s: `POST /v1/device/heartbeat`,
-signed with the **device key** the same way as this call, with the nonce added
+signed with the **heartbeat key** the same way as this call, with the nonce added
 after the timestamp (`POST`, path, timestamp, nonce, sha256 of the raw body).
 Its body is the health of every part of the device (hardware, network,
 services, cameras), each with its own warnings. Specified in
@@ -173,7 +179,7 @@ FMS_URL=default FMS_ALLOW_HTTP_LAN=0 bash setup/install_fleet_agent.sh   # back 
 ```
 
 Both values live beside the key in `/etc/ceravis-fleet-agent/enroll.env`;
-`seal.sh` removes them. Over http the reply (with the device key) crosses the
+`seal.sh` removes them. Over http the reply (with the secret) crosses the
 network unencrypted: a test bench only.
 
 ## Open points on the Java side (security)

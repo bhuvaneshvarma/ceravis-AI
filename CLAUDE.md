@@ -78,11 +78,15 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   MediaMTX paths, status beat to the app server).
 - The heartbeat (`POST /v1/device/heartbeat`) is signed exactly like the enroll
   call plus the nonce after the timestamp — `POST`, path, timestamp, nonce,
-  sha256 of the raw body — with the per-device key (the enroll reply's `secret`;
-  owner decided 2026-11-13 to keep it, not the fleet key); the reply over
-  RESPONSE, timestamp, nonce, sha256. It is specified in **`docs/fleet-heartbeat-api.md`** (version 2, agent 0.7.0): body =
+  sha256 of the raw body — with the per-device **heartbeat key** =
+  hex(HMAC-SHA256(fleet enrollment key, the enroll reply's `secret`)): the
+  Java FMS's `secret_hash` (owner + Java decision 2026-11-13). The device keeps
+  only the heartbeat key in `identity.json`, never the secret (an older identity
+  is upgraded once). The reply is signed over RESPONSE, timestamp, nonce, sha256
+  with the same key. It is specified in **`docs/fleet-heartbeat-api.md`** (version 2, agent 0.8.0): body =
   `{status, results}`; `status` = `state`, `warning_count`, `hardware`,
-  `network`, `services` (16: `edge_application`, `mediamtx`,
+  `network`, `setup` (care recipient assigned / enrolled, cameras added),
+  `services` (16: `edge_application`, `mediamtx`,
   `ai_detection`, `cloud_connection`, `frpc`, `edge_hotspot` …),
   `cameras` (with `wifi_signal_dbm`). ONE state vocabulary everywhere:
   `operational` / `degraded` / `outage` / `disabled` / `unknown`; every part has
@@ -90,17 +94,20 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   every part each minute (`fms_agent/health.py`: hardware + systemd; the app
   reports the rest from `GET /api/v1/system/health`, built from the SAME warning
   rules as `/api/v1/system/status`, whose output must not change) and keeps the
-  full detail on the device. The Java side built it 2026-11-13 (`aebb3e4`) but
-  verifies with the stored secret HASH as the key, signs its reply without the
-  nonce, and enrolls a NEW device per call (random UUID) — fixes owed there.
-- **A device must never loop enrollments** (bench flood 2026-11-13, 16:20–16:27:
-  heartbeat 401 → enroll → 1 s → 401 …, 201 new edge_ids, app restarted until
-  systemd's start limit). The old agent's 401 path crashed (`status` unset) and
-  so never looped; the heartbeat-v2 rewrite fixed that crash and un-masked it.
-  A heartbeat 401 re-enrolls ONLY a key the FMS accepted before
-  (`identity.json` `heartbeat_accepted`), and then once; otherwise it backs off.
-  The agent's FMS address comes from root-only `enroll.env` (it overrides
-  `jetson.env`); stopping the agent needs `sudo systemctl stop ceravis-fleet-agent`.
+  full detail on the device. The Java side built it 2026-11-13 (`aebb3e4`);
+  fixes owed there: the reply signed without the nonce, the path from
+  `getRequestURI()`, and a NEW device per enrollment (random UUID).
+- **The agent NEVER enrolls again by itself** (bench flood 2026-11-13,
+  16:20–16:27: heartbeat 401 → enroll → 1 s → 401 …, 201 new edge_ids, app
+  restarted until systemd's start limit; the old agent's 401 path crashed and so
+  hid the loop until the heartbeat-v2 rewrite fixed that crash). A refused or
+  failed check-in is logged (journal, `events.jsonl`), carried in the next
+  heartbeat (`services.fleet_agent`) and retried with back-off up to 5 min. An
+  enrollment reply it cannot trust or use STOPS check-ins until a restart (the
+  FMS may have registered the device anyway). Enrolling again is a person's
+  decision: remove `identity.json`, restart the agent. The agent's FMS address
+  comes from root-only `enroll.env` (it overrides `jetson.env`); stopping the
+  agent needs `sudo systemctl stop ceravis-fleet-agent`.
 - Device logs: ONE folder `<data>/logs/` (`health.jsonl` each minute,
   `events.jsonl` changes only, `fleet.jsonl`, `incoming.jsonl`), one writer
   (`edge/common/logbook.py`), one rotation rule; the older app logs stay in the

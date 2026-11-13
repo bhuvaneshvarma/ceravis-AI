@@ -194,16 +194,17 @@ class Health:
         answered = d["app"] is not None
         hardware = self._hardware_part(d, app, answered)
         network = self._network_part(app, answered)
+        setup = self._setup_part(app, answered)
         services = self._services_part(d, app, answered)
         cameras = self._cameras_part(app, answered)
-        parts = [hardware, network, *services.values(), *cameras]
+        parts = [hardware, network, setup, *services.values(), *cameras]
         count = sum(len(p["warnings"]) for p in parts)
         watched = [c for c in cameras if c["state"] != DISABLED]
         outage = (any(services[k]["state"] == OUTAGE for k in CRITICAL)
                   or (watched and all(c["state"] == OUTAGE for c in watched)))
         self._sent = list(self._notices)
         return {"state": OUTAGE if outage else DEGRADED if count else OPERATIONAL,
-                "warning_count": count, "hardware": hardware, "network": network,
+                "warning_count": count, "hardware": hardware, "network": network, "setup": setup,
                 "services": services, "cameras": cameras}
 
     def delivered(self, detail: dict) -> None:
@@ -261,6 +262,17 @@ class Health:
             "warnings": warnings,
         }
 
+    def _setup_part(self, app: dict, answered: bool) -> dict:
+        """Is the device set up to watch over someone: a care recipient assigned
+        (and enrolled), cameras added. Reported by the app; unknown without it."""
+        setup = app.get("setup") if answered else None
+        if not isinstance(setup, dict):
+            return {"state": UNKNOWN, "care_recipient": UNKNOWN, "cameras_added": None, "warnings": []}
+        return {"state": setup.get("state") or UNKNOWN,
+                "care_recipient": setup.get("care_recipient") or UNKNOWN,
+                "cameras_added": setup.get("cameras_added"),
+                "warnings": list(setup.get("warnings") or [])}
+
     def _network_part(self, app: dict, answered: bool) -> dict:
         notes = self._notes("network")
         net = app.get("network") if answered else None
@@ -307,6 +319,12 @@ class Health:
                 part = _combine(part, app_services.get("tunnel") if answered else None)
             elif name == "fleet_agent":
                 part["version"] = __version__
+                agent = d.get("agent") or {}
+                if agent.get("check_in_problem"):        # the last exchange with the FMS
+                    stopped = bool(agent.get("check_in_stopped"))
+                    part["warnings"].append(("stopped checking in: " if stopped else
+                                             "the last check-in failed: ") + agent["check_in_problem"])
+                    part["state"] = worst(part["state"], OUTAGE if stopped else DEGRADED)
             elif name == "nightly_reboot":
                 last = units.get("ceravis-reboot.service") or {}
                 if last.get("result") not in (None, "", "success"):
@@ -384,10 +402,12 @@ class Health:
         return cameras
 
 
-def agent_facts(rtt_ms: float | None, interval: float, enroll_key: str) -> dict:
-    """What only the agent knows about its own link to the FMS."""
+def agent_facts(rtt_ms: float | None, interval: float, enroll_key: str,
+                problem: str | None = None, stopped: bool = False) -> dict:
+    """What only the agent knows about its own link to the FMS: the last
+    check-in's problem (None = fine), and whether check-ins stopped."""
     return {"version": __version__, "fms_rtt_ms": rtt_ms, "interval_secs": interval,
-            "can_enroll": bool(enroll_key)}
+            "can_enroll": bool(enroll_key), "check_in_problem": problem, "check_in_stopped": stopped}
 
 
 def _app_part(part, answered: bool) -> dict:

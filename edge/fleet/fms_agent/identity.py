@@ -1,5 +1,7 @@
 """Who this device is to the fleet: its hardware fingerprint, and the edge_id +
-signing key it received when it enrolled."""
+heartbeat key it holds since it enrolled (identity.json, 0600). An identity
+written before agent 0.8.0 holds the enrollment's raw `secret` instead; the
+agent derives the heartbeat key from it once (Agent._adopt_heartbeat_key)."""
 from __future__ import annotations
 
 import hashlib
@@ -34,7 +36,7 @@ def load(state_dir: Path) -> dict | None:
         data = json.loads((state_dir / "identity.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return data if data.get("edge_id") and data.get("secret") else None
+    return data if data.get("edge_id") and (data.get("heartbeat_key") or data.get("secret")) else None
 
 
 def save(state_dir: Path, identity: dict) -> None:

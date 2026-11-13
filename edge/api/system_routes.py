@@ -560,6 +560,27 @@ def _ai_part(st, cameras_running: bool, rule_warnings: list[str]) -> dict:
     }
 
 
+def _setup_part(st, cameras: list[dict]) -> dict:
+    """Is this device set up to watch over someone? A care recipient assigned
+    (and their pictures enrolled — the AI part warns when not), and cameras
+    added. Says so in a line, so a fleet shows at once which devices run but
+    serve nobody yet. Never names the person."""
+    gallery = getattr(st, "gallery", None)
+    if account_recipient() is None:
+        recipient = "not_assigned"
+    elif not getattr(gallery, "size", 0):
+        recipient = "not_enrolled"
+    else:
+        recipient = "assigned"
+    warnings = []
+    if recipient == "not_assigned":
+        warnings.append("no care recipient assigned yet — sign in on this device and assign one")
+    if not cameras:
+        warnings.append("no cameras added yet — add the home's cameras in this device's setup")
+    return {"state": _judged(warnings), "care_recipient": recipient,
+            "cameras_added": len(cameras), "warnings": warnings}
+
+
 def _camera_hosts() -> dict[str, str]:
     """camera_id -> the camera's IP/host, from its RTSP URL."""
     from urllib.parse import urlsplit
@@ -679,6 +700,7 @@ def system_health(request: Request):
     # ---- this app, and its AI ----
     running = any(c["stream"] == "running" for c in cameras)
     ai = _ai_part(g["state"], running, part("ai"))
+    setup = _setup_part(g["state"], g["cameras"])
     storage = g["storage"]
     listed = {c["camera_id"] for c in cameras}
     # A camera warning for a camera not listed (removed meanwhile) is never lost.
@@ -714,8 +736,8 @@ def system_health(request: Request):
         "over_current_events": snap.get("overcurrent_events"),
         "warnings": hw_warn,
     }
-    return {"backend": backend, "hardware": hardware, "network": network, "ai": ai,
-            "services": services, "cameras": cameras}
+    return {"backend": backend, "hardware": hardware, "network": network, "setup": setup,
+            "ai": ai, "services": services, "cameras": cameras}
 
 
 # ---- reboot ---------------------------------------------------------

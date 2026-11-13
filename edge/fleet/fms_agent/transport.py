@@ -24,6 +24,11 @@ class Rejected(Exception):
         self.status = status
 
 
+
+class UntrustedReply(Rejected):
+    """The server answered, but its reply cannot be trusted or read: whatever it
+    did on its side, this device must not act on the reply."""
+
 def encode(payload) -> bytes:
     """The exact request-body bytes for `payload` (what is signed and what the
     server's size limit counts)."""
@@ -61,10 +66,10 @@ def post(url: str, path: str, payload: dict, principal: str | None, secret: str,
         raise Rejected(f"cannot reach {url} ({getattr(exc, 'reason', exc)})") from None
     rtt_ms = round((time.monotonic() - started) * 1000, 1)
     if not protocol.verify(secret, expect(raw), signature):
-        raise Rejected("reply signature invalid — ignoring it")
+        raise UntrustedReply("reply signature invalid — ignoring it")
     reply = _json(raw)
     if not reply:
-        raise Rejected("reply was not valid JSON")
+        raise UntrustedReply("reply was not valid JSON")
     return reply, rtt_ms
 
 

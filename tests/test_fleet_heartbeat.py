@@ -151,9 +151,9 @@ request = types.SimpleNamespace(app=types.SimpleNamespace(state=state))
 status = sr.system_status(request)
 health = sr.system_health(request)
 
-check("six parts: backend, hardware, network, ai, services, cameras",
-      list(health) == ["backend", "hardware", "network", "ai", "services", "cameras"], list(health))
-parts = [health["backend"], health["hardware"], health["network"], health["ai"],
+check("seven parts: backend, hardware, network, setup, ai, services, cameras",
+      list(health) == ["backend", "hardware", "network", "setup", "ai", "services", "cameras"], list(health))
+parts = [health["backend"], health["hardware"], health["network"], health["setup"], health["ai"],
          *health["services"].values(), *health["cameras"]]
 check("EVERY part: a state from the one vocabulary, and a warnings list",
       all(isinstance(p.get("warnings"), list) and p.get("state") in VOCAB for p in parts),
@@ -195,6 +195,23 @@ check("hardware: why it last started, tegrastats GPU, temperatures, board power"
 flat = [w for p in parts for w in p["warnings"]]
 check("every /system/status problem is in /system/health, under its part",
       all(p in flat for p in status["problems"]) and len(status["problems"]) == 2, status["problems"])
+check("setup: no care recipient assigned yet — said in a line; the cameras added are counted",
+      health["setup"] == {"state": "degraded", "care_recipient": "not_assigned", "cameras_added": 3,
+                          "warnings": ["no care recipient assigned yet — sign in on this device and assign one"]},
+      health["setup"])
+real_recipient = sr.account_recipient
+sr.account_recipient = lambda: {"recipient_id": "5012"}
+assigned = sr._setup_part(state, health["cameras"])
+state.gallery.size = 0
+not_enrolled = sr._setup_part(state, health["cameras"])
+state.gallery.size = 3
+bare = sr._setup_part(state, [])
+sr.account_recipient = real_recipient
+check("setup: assigned / assigned but not enrolled (the AI part warns) / no cameras added yet",
+      assigned == {"state": "operational", "care_recipient": "assigned", "cameras_added": 3, "warnings": []}
+      and not_enrolled["care_recipient"] == "not_enrolled" and not_enrolled["warnings"] == []
+      and bare["cameras_added"] == 0 and bare["warnings"][-1].startswith("no cameras added yet"),
+      (assigned, not_enrolled, bare))
 check("/system/status is unchanged: the same 2 problems, the same keys (weak Wi-Fi is health-only)",
       status["status"] == "degraded" and set(status) >= {"problems", "cameras", "recording", "storage",
                                                          "cloud", "tunnel", "media_backbone"}
@@ -335,7 +352,7 @@ h = agent_health.Health()
 d1 = h.observe(APP_HEALTH, None, facts)
 s1 = h.summary(d1)
 check("the summary: state, warning_count, hardware, network, services, cameras — nothing else",
-      list(s1) == ["state", "warning_count", "hardware", "network", "services", "cameras"], list(s1))
+      list(s1) == ["state", "warning_count", "hardware", "network", "setup", "services", "cameras"], list(s1))
 check("services under names anyone understands, in a fixed order (no edge_id watcher)",
       list(s1["services"]) == [n for n, _, _ in agent_health.SERVICES] and "edge_id_watch" not in s1["services"]
       and list(s1["services"])[:4] == ["edge_application", "mediamtx", "ai_detection", "cloud_connection"],
@@ -374,6 +391,19 @@ check("os_hardening: a switched-off service running again is drift (bluetooth)",
 check("cloud_connection carries the uploads waiting; security_updates the security updates waiting",
       sv["cloud_connection"]["pending_uploads"] == 0 and sv["security_updates"]["pending_security"] == 1)
 cams = {c["camera_id"]: c for c in s1["cameras"]}
+check("setup in the heartbeat: which devices run without a care recipient (or cameras)",
+      s1["setup"] == {"state": "degraded", "care_recipient": "not_assigned", "cameras_added": 3,
+                      "warnings": ["no care recipient assigned yet — sign in on this device and assign one"]},
+      s1["setup"])
+failed = h.summary(h.observe(APP_HEALTH, None, agent_health.agent_facts(41.3, 60.0, "k", "HTTP 401: bad_signature")))
+stopped = h.summary(h.observe(APP_HEALTH, None, agent_health.agent_facts(41.3, 60.0, "k", "reply signature invalid",
+                                                                          stopped=True)))
+check("the last check-in's problem rides in the next heartbeat (services.fleet_agent)",
+      failed["services"]["fleet_agent"]["state"] == "degraded"
+      and failed["services"]["fleet_agent"]["warnings"] == ["the last check-in failed: HTTP 401: bad_signature"]
+      and stopped["services"]["fleet_agent"]["state"] == "outage"
+      and stopped["services"]["fleet_agent"]["warnings"] == ["stopped checking in: reply signature invalid"],
+      (failed["services"]["fleet_agent"], stopped["services"]["fleet_agent"]))
 check("cameras: id, room, state, fps, reconnects, recording, night vision, PTZ, Wi-Fi signal — nothing else",
       list(cams[lounge]) == ["camera_id", "room", "state", "fps", "reconnects", "recording", "night_vision",
                              "ptz", "wifi_signal_dbm", "warnings"]
@@ -381,7 +411,7 @@ check("cameras: id, room, state, fps, reconnects, recording, night vision, PTZ, 
       and cams[bedroom]["state"] == "disabled", cams[lounge])
 check("device state: degraded (warnings, the watch still works); the count adds every part's warnings",
       s1["state"] == "degraded" and s1["warning_count"] == sum(
-          len(p["warnings"]) for p in [s1["hardware"], s1["network"], *s1["services"].values(),
+          len(p["warnings"]) for p in [s1["hardware"], s1["network"], s1["setup"], *s1["services"].values(),
                                        *s1["cameras"]]), (s1["state"], s1["warning_count"]))
 UNITS["ceravis.service"] = ("loaded", "active", "3")
 s2 = h.summary(h.observe(APP_HEALTH, None, facts))
@@ -427,6 +457,9 @@ check("app not answering: OUTAGE — the reason under edge_application",
 check("...what only the app can see is unknown: video server, AI, cloud, network",
       all(dsv[k]["state"] == "unknown" for k in ("mediamtx", "ai_detection", "cloud_connection"))
       and down["network"]["state"] == "unknown" and down["network"]["hotspot"] == "unknown")
+check("...setup is unknown too (only the app knows the care recipient and cameras)",
+      down["setup"] == {"state": "unknown", "care_recipient": "unknown", "cameras_added": None, "warnings": []},
+      down["setup"])
 check("...the cameras stay listed (last known), each unknown — tiles grey, not gone",
       [c["camera_id"] for c in down["cameras"]] == [lounge, kitchen, bedroom]
       and all(c["state"] == "unknown" for c in down["cameras"]), down["cameras"])
@@ -511,7 +544,12 @@ check("...the wire and talk-back logs (personal data), any path and any other un
 
 # --------------------------------------------------------------------------
 print("\n5. the heartbeat against a stand-in FMS")
-SECRET = "nHuchkxLPFxmobs_7wDbrWz5hmIcx7J5ymFohvnDpyE"           # the SAMPLE device key
+SECRET = "nHuchkxLPFxmobs_7wDbrWz5hmIcx7J5ymFohvnDpyE"           # the SAMPLE enroll-reply secret
+ENROLL_SAMPLE = "SAMPLE-enroll-key-NOT-REAL-0123456789abcdef"     # docs/fleet-enrollment-api.md's SAMPLE key
+HB_KEY = protocol.heartbeat_key(ENROLL_SAMPLE, SECRET)
+check("heartbeat key = hex(HMAC-SHA256(fleet enrollment key, secret)) — the FMS's own formula",
+      HB_KEY == hmac.new(ENROLL_SAMPLE.encode(), SECRET.encode(), hashlib.sha256).hexdigest()
+      and len(HB_KEY) == 64, HB_KEY)
 EDGE_ID = "ce7k2m9xq4w8n3"
 
 
@@ -550,8 +588,8 @@ def fms_post(req):
     # enrollment call's lines plus the nonce, one Base64 of the HMAC.
     by_hand = "\n".join(("POST", req.path, h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""),
                          hashlib.sha256(body).hexdigest())).encode()
-    independent = base64.b64encode(hmac.new(SECRET.encode(), by_hand, hashlib.sha256).digest()).decode()
-    fms_seen.append({"signed": protocol.verify(SECRET, message, h_.get(protocol.HDR_SIGNATURE))
+    independent = base64.b64encode(hmac.new(HB_KEY.encode(), by_hand, hashlib.sha256).digest()).decode()
+    fms_seen.append({"signed": protocol.verify(HB_KEY, message, h_.get(protocol.HDR_SIGNATURE))
                      and independent == h_.get(protocol.HDR_SIGNATURE),
                      "path": req.path, "device": h_.get(protocol.HDR_DEVICE),
                      "lines": message.decode().split("\n"), "body": json.loads(body)})
@@ -560,7 +598,7 @@ def fms_post(req):
     req.send_response(200)
     req.send_header("Content-Type", "application/json")
     req.send_header(protocol.HDR_SIGNATURE, protocol.sign(
-        SECRET, protocol.response_message(h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""),
+        HB_KEY, protocol.response_message(h_.get(protocol.HDR_TIMESTAMP, ""), h_.get(protocol.HDR_NONCE, ""),
                                           raw)))
     req.end_headers()
     req.wfile.write(raw)
@@ -568,11 +606,11 @@ def fms_post(req):
 
 fms = Server(fms_post)
 edge_app = Server(lambda req: None)
-from fms_agent.agent import Agent                                 # noqa: E402
+from fms_agent.agent import Agent, Halted                         # noqa: E402
 from fms_agent.config import Config                               # noqa: E402
 
 state_dir = DATA / "state"
-identity.save(state_dir, {"edge_id": EDGE_ID, "secret": SECRET, "device_id": "ceravis-acg08mbv3"})
+identity.save(state_dir, {"edge_id": EDGE_ID, "heartbeat_key": HB_KEY, "device_id": "ceravis-acg08mbv3"})
 agent = Agent(Config(url=fms.url, enroll_key="k", status_url=edge_app.url + "/api/v1/system/status",
                      state_dir=state_dir, fingerprint="1424622063459",
                      health_url=edge_app.url + "/api/v1/system/health"))
@@ -580,8 +618,8 @@ first = agent.beat()
 second = agent.beat()
 b1, b2 = fms_seen[0], fms_seen[1]
 check("the body is exactly {status, results}", list(b1["body"]) == ["status", "results"], list(b1["body"]))
-check("status: state, warning_count, hardware, network, services, cameras",
-      list(b1["body"]["status"]) == ["state", "warning_count", "hardware", "network", "services", "cameras"],
+check("status: state, warning_count, hardware, network, setup, services, cameras",
+      list(b1["body"]["status"]) == ["state", "warning_count", "hardware", "network", "setup", "services", "cameras"],
       list(b1["body"]["status"]))
 check("signed with the DEVICE key over the enrollment call's lines plus the nonce: "
       "POST, path, timestamp, nonce, sha256 of the raw body",
@@ -603,22 +641,30 @@ check("`info`: release, agent version, board, OS — what is installed",
 check("`logs` of a log file: the device's own events, newest last",
       res["cmd_83"]["ok"] and "agent_started" in res["cmd_83"]["output"], res["cmd_83"]["output"][-200:])
 check("...and once delivered they are not sent again", second == 60.0 and agent.results == [])
-check("an accepted heartbeat marks this key as working (identity.json: heartbeat_accepted)",
-      (identity.load(state_dir) or {}).get("heartbeat_accepted") is True)
+agent.problem = "HTTP 502: Bad Gateway"                    # as the loop records a failed check-in
+agent.beat()                                               # sent on the record of a moment ago
+carried = fms_seen[-1]["body"]["status"]["services"]["fleet_agent"]
+check("a check-in sent on a reused record still carries the agent's problem as it is now",
+      carried["warnings"] == ["the last check-in failed: HTTP 502: Bad Gateway"]
+      and carried["state"] == "degraded", carried)
+check("identity.json keeps the heartbeat key, never the enrollment's secret",
+      (identity.load(state_dir) or {}).get("heartbeat_key") == HB_KEY
+      and "secret" not in (identity.load(state_dir) or {}))
 fleet_rows = [json.loads(r) for r in agent.logs.fleet.tail(20)]
 check("fleet.jsonl: every check-in and every order, with its outcome",
-      [r["kind"] for r in fleet_rows].count("heartbeat") == 2
+      [r["kind"] for r in fleet_rows].count("heartbeat") == 3
       and {r.get("order") for r in fleet_rows if r["kind"] == "order"} == {"ping", "info", "logs"},
       fleet_rows[:2])
 fms.server.shutdown()
 edge_app.server.shutdown()
 
 # --------------------------------------------------------------------------
-print("\n5b. a refused heartbeat never becomes an enrollment loop (the bench, 2026-11-13)")
+print("\n5b. never a loop: refused check-ins wait, untrusted enrollments stop (the bench, 2026-11-13)")
 # The FMS that flooded: every heartbeat 401 bad_signature, every enrollment
-# accepted with a brand-new edge_id.
+# accepted with a brand-new edge_id — and, when asked, an enroll reply signed wrongly.
 ENROLL_KEY = "k"
 calls = {"enroll": 0, "heartbeat": 0}
+flood_mode = {"bad_enroll_signature": False}
 
 
 def flood_fms(req):
@@ -626,11 +672,11 @@ def flood_fms(req):
     if req.path == protocol.ENROLL_PATH:
         calls["enroll"] += 1
         raw = json.dumps({"result": "enrolled", "edge_id": f"loop{calls['enroll']:04d}edge",
-                          "secret": f"key-{calls['enroll']}", "warnings": [], "config": None}).encode()
-        stamp = req.headers.get(protocol.HDR_TIMESTAMP, "")
+                          "secret": f"secret-{calls['enroll']}", "warnings": [], "config": None}).encode()
+        key = "not-the-fleet-key" if flood_mode["bad_enroll_signature"] else ENROLL_KEY
         req.send_response(200)
-        req.send_header(protocol.HDR_SIGNATURE,
-                        protocol.sign(ENROLL_KEY, protocol.enroll_response_message(stamp, raw)))
+        req.send_header(protocol.HDR_SIGNATURE, protocol.sign(
+            key, protocol.enroll_response_message(req.headers.get(protocol.HDR_TIMESTAMP, ""), raw)))
     else:
         calls["heartbeat"] += 1
         raw = b'{"success":false,"error":"bad_signature"}'
@@ -644,47 +690,76 @@ flood = Server(flood_fms)
 health_app = Server(lambda req: None)
 
 
-def flood_agent(accepted: bool) -> Agent:
+def flood_agent(ident: dict | None, enroll_key: str = ENROLL_KEY) -> Agent:
     sd = Path(tempfile.mkdtemp(prefix="ceravis-flood-", dir=DATA))
-    identity.save(sd, {"edge_id": EDGE_ID, "secret": SECRET, "device_id": "ceravis-acg08mbv3",
-                       **({"heartbeat_accepted": True} if accepted else {})})
-    a = Agent(Config(url=flood.url, enroll_key=ENROLL_KEY, status_url=health_app.url + "/s", state_dir=sd,
+    if ident is not None:
+        identity.save(sd, {"edge_id": EDGE_ID, "device_id": "ceravis-acg08mbv3", **ident})
+    a = Agent(Config(url=flood.url, enroll_key=enroll_key, status_url=health_app.url + "/s", state_dir=sd,
                      fingerprint="1424622063459", health_url=health_app.url + "/api/v1/system/health"))
     a.fingerprint = "0"                                   # no start-up stagger in run_forever
     return a
 
 
-never = flood_agent(accepted=False)
+def run_for(a: Agent, secs: float) -> list[dict]:
+    """The agent's own loop for `secs`; the events it wrote meanwhile."""
+    before = len(a.logs.events.tail(10_000))
+    runner = threading.Thread(target=a.run_forever, daemon=True)
+    runner.start()
+    a.stop.wait(secs)
+    a.stop.set()
+    runner.join(5)
+    return [json.loads(r) for r in a.logs.events.tail(10_000)[before:]]
+
+
+refused = flood_agent({"heartbeat_key": "k" * 64})
+waited = None
 try:
-    never.beat()
-    refused_quietly = False
+    refused.beat()
 except transport.Rejected as exc:
-    refused_quietly = exc.status == 401 and "not enrolling again" in str(exc)
-check("a key the FMS never accepted: a 401 is waited out, NOT answered with an enrollment",
-      refused_quietly and calls == {"enroll": 0, "heartbeat": 1}, calls)
+    waited = exc
+check("a refused heartbeat (401) is never answered with an enrollment",
+      waited is not None and waited.status == 401 and calls == {"enroll": 0, "heartbeat": 1}, calls)
 
 calls.update(enroll=0, heartbeat=0)
-worked = flood_agent(accepted=True)
-first_wait = worked.beat()                                 # 401 on a key that worked: an admin reset
-again = None
+looping = flood_agent({"heartbeat_key": "k" * 64})
+events = run_for(looping, 3.0)                             # the 0.7.0 agent enrolled ~3 times here
+looping.observe()                                          # what the next heartbeat carries
+fa = looping.status["services"]["fleet_agent"]
+check("the agent's own loop against that FMS: no enrollment at all — one refused heartbeat, then back-off",
+      calls == {"enroll": 0, "heartbeat": 1}, calls)
+check("...the refusal is logged (events.jsonl) and rides in the next heartbeat (services.fleet_agent)",
+      any(e["event"] == "fleet_check_in_failed" and "bad_signature" in e.get("problem", "") for e in events)
+      and fa["state"] == "degraded" and fa["warnings"] == ["the last check-in failed: HTTP 401: bad_signature"],
+      (events, fa))
+
+older = flood_agent({"secret": SECRET})
+saved = json.loads((older.cfg.state_dir / "identity.json").read_text(encoding="utf-8"))
+check("an identity from an older agent: its heartbeat key is derived once, the secret dropped (file too)",
+      older.identity["heartbeat_key"] == protocol.heartbeat_key(ENROLL_KEY, SECRET)
+      and "secret" not in older.identity and "secret" not in saved
+      and saved["heartbeat_key"] == older.identity["heartbeat_key"], sorted(saved))
+calls.update(enroll=0, heartbeat=0)
+keyless = flood_agent({"secret": SECRET}, enroll_key="")
+halted = None
 try:
-    worked.beat()                                          # the NEW key is refused too
-except transport.Rejected as exc:
-    again = exc
-check("a key that worked and is refused now: enrolls again ONCE (an admin's Reset key)",
-      first_wait == 1.0 and calls["enroll"] == 1 and worked.identity["edge_id"] == "loop0001edge", calls)
-check("...and when the new key is refused as well, it does not enroll a second time",
-      again is not None and calls == {"enroll": 1, "heartbeat": 2}, calls)
+    keyless.beat()
+except Halted as exc:
+    halted = exc
+check("...without the fleet enrollment key to derive it: check-ins stop with the reason, nothing sent",
+      halted is not None and "no heartbeat key" in str(halted) and calls == {"enroll": 0, "heartbeat": 0},
+      (str(halted), calls))
 
 calls.update(enroll=0, heartbeat=0)
-looping = flood_agent(accepted=True)
-runner = threading.Thread(target=looping.run_forever, daemon=True)
-runner.start()
-looping.stop.wait(4.0)                                     # the old agent made ~4 enrollments here
-looping.stop.set()
-runner.join(5)
-check("the agent's own loop against that FMS: at most one enrollment, then back-off (no flood)",
-      calls["enroll"] <= 1 and calls["heartbeat"] <= 2, calls)
+flood_mode["bad_enroll_signature"] = True
+fresh = flood_agent(None)                                    # not enrolled yet
+events = run_for(fresh, 4.0)
+flood_mode["bad_enroll_signature"] = False
+check("an enrollment reply that cannot be trusted STOPS check-ins: one enrollment call, never a second",
+      calls == {"enroll": 1, "heartbeat": 0} and fresh.identity is None
+      and "signature invalid" in (fresh.halted or ""), (calls, fresh.halted))
+check("...said once and loudly (events.jsonl), carried as an outage of services.fleet_agent, health kept",
+      [e["event"] for e in events].count("fleet_check_in_stopped") == 1
+      and fresh.status["services"]["fleet_agent"]["state"] == "outage", events)
 flood.server.shutdown()
 health_app.server.shutdown()
 

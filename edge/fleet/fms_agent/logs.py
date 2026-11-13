@@ -4,7 +4,8 @@
                    with the heartbeat summary built from it
     events.jsonl   only what CHANGED since the minute before: a part's state, a
                    warning raised or cleared, a device joining or leaving the
-                   hotspot, the agent starting or stopping
+                   hotspot, the agent starting or stopping, a check-in problem
+                   appearing or clearing
     fleet.jsonl    every exchange with the fleet server and every order it sent
 
 Written whether or not the fleet server can be reached — a device that is
@@ -74,6 +75,14 @@ class DeviceLogs:
     def stopped(self) -> None:
         self.events.write({"event": "agent_stopped", "version": __version__})
 
+    def check_in(self, problem: str | None, stopped: bool = False) -> None:
+        """The check-in with the fleet server changed: a problem, or fine again."""
+        if problem is None:
+            self.events.write({"event": "fleet_check_in_ok"})
+        else:
+            self.events.write({"event": "fleet_check_in_stopped" if stopped else "fleet_check_in_failed",
+                               "problem": problem})
+
     # ---- the fleet server ---------------------------------------------------
     def exchange(self, kind: str, ok: bool, **facts) -> None:
         self.fleet.write({"kind": kind, "ok": ok, **facts})
@@ -90,6 +99,7 @@ def _parts(summary: dict):
     yield "device", {"state": summary["state"], "warnings": []}
     yield "hardware", summary["hardware"]
     yield "network", summary["network"]
+    yield "setup", summary["setup"]
     for name, part in summary["services"].items():
         yield f"services.{name}", part
     for camera in summary["cameras"]:

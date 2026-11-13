@@ -25,6 +25,7 @@ The data folder is `/var/lib/ceravis` on an installed device, or
 | `talkback_log.jsonl` | data folder | edge app | every talk-back session: who, which room, how long, audio quality (personal data: on the device only) | 5 MB + 1 older file |
 | `mediamtx.log` | data folder | video server | the video server's own log | started fresh past 5 MB |
 | `boot_state.json` | data folder | edge app | this boot's id, why the device started, whether the app stopped cleanly | — |
+| `identity.json` | `/var/lib/ceravis-fleet-agent` | fleet agent | this device's `edge_id`, `device_id` and **heartbeat key** (it signs every check-in; the enrollment's secret is not kept). Readable by the agent alone — never print it | for the device's life |
 | system journal | `journalctl` | every service | text logs: the app, the agent, frpc, NetworkManager, the kernel | 500 MB |
 
 The four files in `logs/` share one rule: past their size a file becomes `.1`,
@@ -92,7 +93,7 @@ when there is any warning, and `operational` when there is none.
 | `ai_detection` | person, fall and no-motion detection — the safety function | the app: the detector running and analysing frames |
 | `cloud_connection` | uploads to the CERAVIS app server: alerts, snapshots, clips | the app |
 | `frpc` | the tunnel for live view and remote support (frpc) | `frpc.service`, its route, its live connection to the tunnel server |
-| `fleet_agent` | the program that records this health and checks in with the fleet server | `ceravis-fleet-agent.service` |
+| `fleet_agent` | the program that records this health and checks in with the fleet server; warns when the last check-in failed, `outage` when check-ins stopped | `ceravis-fleet-agent.service`, and its last check-in |
 | `nightly_reboot` | the safety-checked nightly reboot | `ceravis-reboot.timer`, and its last run |
 | `edge_hotspot` | the camera hotspot (NetworkManager), the cameras' only network | `NetworkManager.service`, and the hotspot on |
 | `ssh_access` | secure shell, for support engineers | `ssh.service` |
@@ -149,6 +150,7 @@ Recorded in the detail only: `ceravis-edge-id.path`, `ceravis-reboot.service`,
 |---|---|
 | `backend` | `version`, `commit`, `restart_needed` (newer code waits for a restart), `uptime_secs`, `device_id`, `recording` (`enabled`, `cameras_recording`), `storage` (`recordings_gb`, `retention_hours`, `oldest_segment`, `event_snapshots_gb`, `event_retention_days`) |
 | `hardware` | from tegrastats: `gpu_load_pct`, `cpu_load_pct`, `temperature_c`, `board_power_w`, `over_current_events` (times the board slowed itself for drawing too much power), `last_boot` |
+| `setup` | `care_recipient` (`assigned`, `not_enrolled` = assigned but pictures not enrolled, `not_assigned`), `cameras_added`; warns "no care recipient assigned yet", "no cameras added yet" — never names the person |
 | `network.internet` | `connected`, `latency_ms` (to connect to the app server) |
 | `network.uplink` | the Ethernet port: `interface`, `cable` (plugged in), `ip`, `gateway` (the router), `speed_mbps` |
 | `network.hotspot` | `on`, `ssid`, `channel`, `frequency_mhz`, `width_mhz`, `tx_power_dbm`, `power_save` (must be `off`: on, it delays camera video), `devices` |
@@ -163,10 +165,28 @@ Recorded in the detail only: `ceravis-edge-id.path`, `ceravis-reboot.service`,
 |---|---|
 | `agent_started` | `version`, `boot_id`, `uptime_secs`, `last_boot`, `state` — after a boot, an update or an agent restart |
 | `agent_stopped` | `version` — an orderly stop |
+| `fleet_check_in_failed` | `problem` — a check-in failed (refused, unreachable, an untrusted reply); retried with back-off |
+| `fleet_check_in_stopped` | `problem` — check-ins STOPPED until the agent is restarted (an enrollment reply that cannot be trusted, or no heartbeat key) |
+| `fleet_check_in_ok` | check-ins work again |
 | `state_changed` | `part` (`device`, `hardware`, `network`, `services.<name>`, `cameras.<id>`), `from`, `to` |
 | `warning_raised` / `warning_cleared` | `part`, `warning` |
 | `hotspot_device_joined` | `mac`, `ip`, `hostname`, `signal_dbm` |
 | `hotspot_device_left` | `mac`, `ip` |
+
+## Enrolling again — a person's decision
+
+The agent never enrolls again by itself: a refused check-in is logged, reported
+in the next heartbeat and retried with back-off (up to every 5 minutes). Only
+when the FMS has really lost this device or reset its key, enroll it again by
+hand:
+
+```bash
+sudo rm /var/lib/ceravis-fleet-agent/identity.json
+sudo systemctl restart ceravis-fleet-agent
+```
+
+After `fleet_check_in_stopped`, fix the cause (see `problem`), then restart the
+agent: `sudo systemctl restart ceravis-fleet-agent`.
 
 ## `fleet.jsonl` — the fleet server
 

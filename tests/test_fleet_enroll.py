@@ -205,9 +205,11 @@ check("account.json's edgeId (the app server's token) appears nowhere in the enr
 # --------------------------------------------------------------------------
 print("\n3. the reply: kept only when plainly this device's")
 kept = identity.load(state) or {}
-check("edge_id, key and device_id kept in identity.json (from the Java FMS's final reply)",
-      kept.get("edge_id") == "ce7k2m9xq4w8n3" and kept.get("secret") == good_reply()["secret"]
-      and kept.get("device_id") == device_identity().name, str({k: v for k, v in kept.items() if k != "secret"}))
+check("edge_id, heartbeat key and device_id kept in identity.json — never the reply's secret",
+      kept.get("edge_id") == "ce7k2m9xq4w8n3"
+      and kept.get("heartbeat_key") == protocol.heartbeat_key(KEY, good_reply()["secret"])
+      and "secret" not in kept and kept.get("device_id") == device_identity().name,
+      str(sorted(kept)))
 check("...readable by the agent alone (0600)",
       stat.S_IMODE((state / "identity.json").stat().st_mode) == 0o600)
 
