@@ -93,8 +93,10 @@ Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
   full detail on the device. The Java side built it 2026-11-13 (`aebb3e4`) but
   verifies with the stored secret HASH as the key, signs its reply without the
   nonce, and enrolls a NEW device per call (random UUID) — fixes owed there.
-- **A device must never loop enrollments** (bench flood 2026-11-13: heartbeat
-  401 → enroll → 1 s → 401 …, 165 new edge_ids, app restarted to start-limit).
+- **A device must never loop enrollments** (bench flood 2026-11-13, 16:20–16:27:
+  heartbeat 401 → enroll → 1 s → 401 …, 201 new edge_ids, app restarted until
+  systemd's start limit). The old agent's 401 path crashed (`status` unset) and
+  so never looped; the heartbeat-v2 rewrite fixed that crash and un-masked it.
   A heartbeat 401 re-enrolls ONLY a key the FMS accepted before
   (`identity.json` `heartbeat_accepted`), and then once; otherwise it backs off.
   The agent's FMS address comes from root-only `enroll.env` (it overrides
