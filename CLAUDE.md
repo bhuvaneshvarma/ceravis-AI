@@ -45,6 +45,22 @@ A small fix for an installed client can go out as a patch of a few files
 
 Hardware: Jetson Orin Nano, JetPack 6 (L4T R36), Python 3.10, systemd 249.
 
+## Updating a device (decided 2026-11-16)
+
+No update ever enrolls again or changes an edge_id: an enrolled device keeps
+`/var/lib/ceravis-fleet-agent/identity.json`, and the agent never enrolls by
+itself. Pick the lightest path that carries the change:
+
+| Device | Change | Command |
+|---|---|---|
+| bench (a clone) | code only — the usual case | `bash setup/dev_update.sh` — pulls, restarts ceravis only if its Python changed; never touches the fleet side, keys, units, apt or engines (`--dry-run` first to see) |
+| bench (a clone) | units, setup, dependencies, models | `bash setup/upgrade.sh` — the full re-setup (apt, engines, keys asked if missing, units, agent re-installed) |
+| client / prodtest (a release) | a few files | `setup/patch_device.sh` (pinned FROM/TO commits) |
+| client / prodtest (a release) | a new release | `setup/update.sh` (switches with rollback) |
+
+Pages under `edge/static` need no restart at all (served from disk); the fleet
+agent restarts itself when its own code changes.
+
 ## Layout
 
 - `edge/` the FastAPI edge app (`ceravis.service`); `edge/fleet/` the fleet

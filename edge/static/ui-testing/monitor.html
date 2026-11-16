@@ -10,6 +10,7 @@
 <style>
   /* Standalone dark diagnostics console — its own theme (monitor.css), no login
      gate, no app sidebar. Reachable directly at .../ui-testing/monitor.html. */
+  [hidden] { display: none !important; }      /* over .btn / .card display rules */
   .mon-topbar { display: flex; align-items: center; gap: 12px; padding: 12px 22px;
     border-bottom: 1px solid var(--line); background: var(--panel);
     position: sticky; top: 0; z-index: 20; }
@@ -19,8 +20,35 @@
     padding: 3px 10px; border-radius: 999px; }
   .mon-topbar .sp { flex: 1; }
   .mon-clock { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .mon { display: grid; grid-template-columns: 1fr 400px; gap: 16px; align-items: start; }
-  @media (max-width: 1100px) { .mon { grid-template-columns: 1fr; } }
+  .mon { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: stretch; }
+  /* The other cameras, beside the main one and never taller than it: the column
+     takes the main picture's height and its tiles scroll inside it. */
+  .mon-side { position: relative; min-height: 0; }
+  .mon-thumbs { position: absolute; inset: 0; overflow-y: auto; display: flex;
+                flex-direction: column; gap: 12px; padding-right: 2px; }
+  @media (max-width: 1100px) {
+    .mon { grid-template-columns: minmax(0, 1fr); }     /* the tile row scrolls, the page does not */
+    .mon-side { position: static; }
+    .mon-thumbs { position: static; flex-direction: row; overflow-x: auto; }
+    .mon-thumbs > .mon-thumb { flex: 0 0 260px; }
+  }
+  .mon-thumb { position: relative; flex: 0 0 auto; aspect-ratio: 16/9; background: #000;
+               border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
+               cursor: pointer; transition: border-color .15s, transform .15s; }
+  .mon-thumb:hover { border-color: var(--teal-dim); transform: translateY(-1px); }
+  .mon-thumb.target { border-color: rgba(52,211,153,.7); box-shadow: 0 0 0 1px rgba(52,211,153,.35); }
+  .mon-thumb video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .mon-thumb .cap { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center;
+                    gap: 7px; padding: 6px 9px; font-size: 11.5px;
+                    background: linear-gradient(0deg, rgba(0,0,0,.78), transparent); }
+  .mon-thumb .cap b { font-weight: 650; letter-spacing: .4px; }
+  .mon-thumb .cap span { margin-left: auto; color: #cbd5e1; font-size: 10.5px; }
+  .mon-thumb .cap i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .mon-thumb.live .cap i { background: var(--ok); }
+  .mon-thumb .nosig { position: absolute; inset: 0; display: flex; align-items: center;
+                      justify-content: center; color: var(--faint); font-size: 11px; letter-spacing: 1.2px; }
+  .mon-thumb.live .nosig { display: none; }
+  .mon-empty { color: var(--faint); font-size: 12px; padding: 10px 4px; }
   .mon-stage { position: relative; background: #000; border-radius: 12px;
                overflow: hidden; border: 1px solid var(--line); aspect-ratio: 16/9; }
   /* The video is the picture; the canvas is a transparent overlay sitting
@@ -44,11 +72,13 @@
   .track-chip.fallen { border-color: rgba(248,113,113,.5);
                        background: rgba(248,113,113,.1); animation: blink 1.2s infinite; }
 
-  /* ---- device health (right of the video) ---- */
+  /* ---- device health (the first card of the dashboard) ---- */
   .hc h2 { display: flex; align-items: center; gap: 9px; }
   .hc h2 .faint { margin-left: auto; font-weight: 400; font-size: 11px; letter-spacing: .3px;
                   text-transform: none; }
-  .hc-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .hc-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 26px; }
+  @media (max-width: 900px) { .hc-cols { grid-template-columns: 1fr; } }
+  .hc-metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
   .hc-m { background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 10px;
           padding: 8px 10px; min-width: 0; }
   .hc-m .k { font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
@@ -94,7 +124,7 @@
                      animation: blink 2s infinite; }
   .lg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 14px; }
   @media (max-width: 600px) { .lg-grid { grid-template-columns: 1fr; } }
-  .lg-grid.single .card:not([hidden]) { grid-column: 1 / -1; }
+  .lg-grid.single .card:not([hidden]), .lg-grid .card.wide { grid-column: 1 / -1; }
   .lg-grid.single .cs-log { max-height: 72vh; }
   .lg-grid .card { padding: 16px 16px 14px; min-width: 0; }
   .lg-grid .card h2 { margin-bottom: 4px; }
@@ -178,14 +208,17 @@
 <div class="page">
   <div class="page-head">
     <h1>AI monitor</h1>
-    <div class="sub">Live detection and posture on the left, the device's own health on the
-      right, and below, every log by category — each call with its request and response.</div>
+    <div class="sub">The camera the person is on, large, with every other camera beside it
+      (click one to watch it); below, the device's health and every log by category — each
+      call with its request and response.</div>
   </div>
 
   <div class="row mb" style="align-items:center; gap:10px">
     <span class="pill pill-mute" id="m-mode">SEARCHING</span>
     <span id="m-active" class="faint"></span>
     <span id="m-state" class="faint"></span>
+    <button id="m-follow" class="btn btn-ghost btn-sm" hidden
+            title="Go back to following the person across cameras">↺ Follow the person</button>
     <button id="snap-btn" class="btn btn-ghost btn-sm" style="margin-left:auto"
             title="Capture a still of the camera in view at this instant. Sends the
 current timestamp, so even with network latency the edge picks the frame for the
@@ -205,11 +238,8 @@ moment you clicked.">📸 Snapshot</button>
       <div class="track-chips" id="m-chips"></div>
     </div>
 
-    <div class="card hc" id="hc">
-      <h2><span id="hc-dot" class="cs-dot"></span> Device health
-        <span class="faint" id="hc-when"></span></h2>
-      <div id="hc-body" class="faint" style="font-size:12px">Waiting for the first minute's
-        record (logs/health.jsonl, written by the fleet agent).</div>
+    <div class="mon-side">
+      <div class="mon-thumbs" id="m-thumbs"></div>
     </div>
   </div>
 
@@ -221,6 +251,12 @@ moment you clicked.">📸 Snapshot</button>
         <span class="led"></span><span id="lg-live-txt">Live</span></span>
     </div>
     <div class="lg-grid" id="lg-grid">
+      <div class="card hc wide" data-cat="health" id="hc">
+        <h2><span id="hc-dot" class="cs-dot"></span> Device health
+          <span class="faint" id="hc-when"></span></h2>
+        <div id="hc-body" class="faint" style="font-size:12px">Waiting for the first minute's
+          record (logs/health.jsonl, written by the fleet agent).</div>
+      </div>
       <div class="card" data-cat="fleet">
         <h2 class="cs-head"><span id="fleet-dot" class="cs-dot"></span> Fleet server
           <span class="faint" id="fleet-stats"></span></h2>
@@ -307,7 +343,7 @@ let CAM_NAMES = {};          // camera_id -> "Name (Room)"
 async function initCamNames() {
   const cams = await api("/api/v1/cameras").catch(() => []);
   CAM_NAMES = Object.fromEntries(
-    cams.map(c => [c.camera_id, `${prettyLabel(c.camera_name)} (${prettyLabel(c.room_name)})`]));
+    cams.filter(c => c.is_enabled !== false).map(c => [c.camera_id, `${prettyLabel(c.camera_name)} (${prettyLabel(c.room_name)})`]));
   // This device's edge_id — the snapshot/control endpoints verify it matches
   // (control_auth). Fetched once; empty on an unverified dev box (then accepted).
   try { const a = await api("/api/v1/account"); M.edgeId = (a && a.edge_id) || ""; }
@@ -360,6 +396,9 @@ function bestTarget(camState) {
   return ts.reduce((a, b) => (sc(b) > sc(a) ? b : a));
 }
 function pickCamera(state) {
+  // A camera the operator clicked stays the main picture until "Follow the person".
+  if (M.pinned && CAM_NAMES[M.pinned])
+    return { cam: M.pinned, searching: !camsWithTarget(state).includes(M.pinned) };
   const cams = Object.keys(state);
   // The AI has no frame from ANY camera: still show a registered camera's live
   // video. Live view comes from MediaMTX, not the AI — blanking it because the
@@ -383,6 +422,7 @@ function pickCamera(state) {
 }
 function setCamera(camId, searching) {
   M.searching = searching;
+  syncThumbs(camId);
   if (camId === M.cam) return;                   // no change — keep the stream
   if (M.stream) { M.stream.stop(); M.stream = null; }
   M.cam = camId;
@@ -399,6 +439,64 @@ function setCamera(camId, searching) {
     },
   });
 }
+
+/* ---- every other camera, as a tile beside the main one ---------------
+   One live stream per tile, straight from the video server (WebRTC, nothing
+   re-encoded on the device). A tile is opened once and kept while its camera
+   is not the main one; the camera that becomes the main picture gives its tile
+   up, so each camera is streamed to this page once. */
+const THUMBS = new Map();                        // camera_id -> { el, stream }
+
+function syncThumbs(mainCam) {
+  const box = document.getElementById("m-thumbs");
+  const want = Object.keys(CAM_NAMES).filter(c => c !== mainCam);
+  for (const [cam, t] of THUMBS) {
+    if (!want.includes(cam)) { t.stream.stop(); t.el.remove(); THUMBS.delete(cam); }
+  }
+  box.querySelector(".mon-empty")?.remove();
+  want.forEach((cam, i) => {
+    if (!THUMBS.has(cam)) {
+      const el = document.createElement("div");
+      el.className = "mon-thumb";
+      el.title = `Watch ${CAM_NAMES[cam]} large`;
+      el.innerHTML = `<video muted playsinline></video><div class="nosig">CONNECTING…</div>
+        <div class="cap"><i></i><b></b><span></span></div>`;
+      el.querySelector("b").textContent = CAM_NAMES[cam];
+      el.onclick = () => followCamera(cam);
+      const stream = liveView(el.querySelector("video"), cam, { onState: s => {
+        el.classList.toggle("live", s === "live");
+        el.querySelector(".nosig").textContent =
+          s === "stalled" ? "SIGNAL STALLED" : s === "connecting" ? "CONNECTING…" : "NO SIGNAL";
+      } });
+      THUMBS.set(cam, { el, stream });
+    }
+    const el = THUMBS.get(cam).el;
+    if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);   // registration order
+  });
+  if (!want.length) box.innerHTML = `<div class="mon-empty">${
+    mainCam ? "No other camera on this device." : "No cameras registered."}</div>`;
+}
+
+/* The tile of the camera the person is on is marked. */
+function markThumbs() {
+  const withTarget = camsWithTarget(M.state);
+  for (const [cam, t] of THUMBS) {
+    const here = withTarget.includes(cam);
+    t.el.classList.toggle("target", here);
+    t.el.querySelector(".cap span").textContent = here ? "● person here" : "";
+  }
+}
+
+/* A click makes a camera the main picture until "Follow the person". */
+function followCamera(cam) {
+  M.pinned = cam;
+  document.getElementById("m-follow").hidden = !cam;
+  const pick = pickCamera(M.state);
+  setCamera(pick.cam, pick.searching);
+  updateHeader();
+  markThumbs();
+}
+document.getElementById("m-follow").onclick = () => followCamera(null);
 
 /* ---- overlay -------------------------------------------------------
    Only the target marker is drawn — the picture itself is the <video> beneath.
@@ -458,6 +556,7 @@ async function pollState() {
   const pick = pickCamera(state);
   setCamera(pick.cam, pick.searching);
   updateHeader();
+  markThumbs();
 
   // Exactly one target (highest ReID score); everyone else is ignored.
   const best = M.searching ? null : bestTarget(M.state[M.cam]);
@@ -496,7 +595,10 @@ function updateHeader() {
   const modeEl = document.getElementById("m-mode");
   const activeEl = document.getElementById("m-active");
   const camName = CAM_NAMES[M.cam] || M.cam || "—";
-  if (M.searching) {
+  if (M.pinned) {
+    modeEl.className = "pill pill-info"; modeEl.textContent = "CHOSEN CAMERA";
+    activeEl.textContent = `${camName}${M.searching ? "" : " · the person is here"}`;
+  } else if (M.searching) {
     modeEl.className = "pill pill-warn"; modeEl.textContent = "SEARCHING";
     activeEl.textContent = !M.cam ? "No cameras registered"
       : !M.state[M.cam] ? `${camName} — the AI is not receiving video yet`
@@ -550,7 +652,7 @@ function row(e) {
 }
 
 const CATS = {
-  fleet: "Fleet server", out: "App server · sent", in: "App server · received",
+  health: "Device health", fleet: "Fleet server", out: "App server · sent", in: "App server · received",
   incoming: "Into the device", talk: "Talk-back", events: "Events", video: "Video server",
 };
 const EMPTY = {
@@ -654,6 +756,8 @@ async function pollHealth() {
   if (!s) return;
   const hw = s.hardware || {}, nw = s.network || {}, sv = s.services || {};
   $("hc-dot").className = "cs-dot" + (s.state === "operational" ? " ok" : s.state ? " err" : "");
+  TAB.health = { n: s.warning_count || 0, bad: s.state === "outage" };
+  renderTabs();
   $("hc-when").textContent = `as of ${hhmmss(rec.ts)}`;
   const warnings = [["hardware", hw], ["network", nw], ...Object.entries(sv),
                     ...(s.cameras || []).map(c => [c.camera_id, c])]
@@ -664,6 +768,7 @@ async function pollHealth() {
       <span class="pill ${STATE_PILL[s.state] || "pill-mute"}">${csEsc((s.state || "unknown").toUpperCase())}</span>
       <span class="faint" style="font-size:12px">${s.warning_count || 0} warning${s.warning_count === 1 ? "" : "s"}</span>
     </div>
+    <div class="hc-cols"><div>
     <div class="hc-metrics">
       ${metric("CPU", hw.cpu_pct, "%")}${metric("GPU", hw.gpu_pct, "%")}
       ${metric("Temperature", hw.temperature_c, "°C")}
@@ -674,7 +779,10 @@ async function pollHealth() {
       ${metric("Fan", hw.fan_pct, "%")}${metric("Mode", hw.power_mode)}
       ${metric("Up", uptime(hw.uptime_secs))}
     </div>
-    <div class="hc-sec">Network</div>
+    ${warnings.length ? `<div class="hc-sec">Warnings</div>${warnings.map(([p, w]) =>
+      `<div class="hc-warn">${w.startsWith(p) ? "" : `<b>${csEsc(p)}</b> · `}${csEsc(w)}</div>`).join("")}` : ""}
+    </div><div>
+    <div class="hc-sec" style="margin-top:0">Network</div>
     <div class="hc-chips">
       ${chip(`Internet ${nw.internet || "unknown"}${nw.latency_ms != null ? ` · ${Math.round(nw.latency_ms)} ms` : ""}`,
              nw.internet === "connected" ? "operational" : nw.internet === "disconnected" ? "outage" : "unknown")}
@@ -692,8 +800,7 @@ async function pollHealth() {
       `${c.room || c.camera_id}${c.fps != null ? ` · ${c.fps} fps` : ""}${
         c.wifi_signal_dbm != null ? ` · ${c.wifi_signal_dbm} dBm` : ""}`,
       c.state, [c.state, ...(c.warnings || [])].join(" — "))).join("")}</div>` : ""}
-    ${warnings.length ? `<div class="hc-sec">Warnings</div>${warnings.map(([p, w]) =>
-      `<div class="hc-warn">${w.startsWith(p) ? "" : `<b>${csEsc(p)}</b> · `}${csEsc(w)}</div>`).join("")}` : ""}`;
+    </div></div>`;
 }
 
 /* ---- fleet server: check-ins and orders (logs/fleet.jsonl) ---- */

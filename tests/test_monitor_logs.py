@@ -119,6 +119,18 @@ check("each fed by its source",
                               'deviceLog("mediamtx"', 'deviceLog("health"', "/api/v1/cloud/activity",
                               "/api/v1/talkback/log")))
 check("every request and response opens from its entry", page.count("ioPanel(e.req, e.res") == 1)
+check("device health is the dashboard's first card, not beside the video",
+      page.index('data-cat="health"') < page.index('data-cat="fleet"')
+      and page.index('id="lg-grid"') < page.index('id="hc"') and 'health: "Device health"' in page)
+side = page[page.index('class="mon-side"'):page.index('<section class="lg">')]
+check("beside the main camera: only the other cameras' tiles",
+      'id="m-thumbs"' in side and "hc-body" not in side, side[:120])
+check("each other camera streams once: the main camera's tile is given up, a gone camera's stopped",
+      "filter(c => c !== mainCam)" in page and "t.stream.stop()" in page and "syncThumbs(camId)" in page)
+check("a click watches a camera large until 'Follow the person'",
+      "el.onclick = () => followCamera(cam)" in page and 'followCamera(null)' in page
+      and "M.pinned && CAM_NAMES[M.pinned]" in page)
+check("switched-off cameras get no tile", "cams.filter(c => c.is_enabled !== false)" in page)
 
 shutil.rmtree(DATA, ignore_errors=True)
 print()
