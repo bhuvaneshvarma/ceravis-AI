@@ -98,7 +98,8 @@ _LOCAL_READ = [("GET", r"/api/v1/system/(status|health)"),
 _TESTING = [("GET", r"/api/v1/cameras(/status)?"),
             ("GET", r"/api/v1/system/status"),
             ("GET", r"/api/v1/(ai|recordings)/state"),
-            ("GET", r"/api/v1/cloud/activity")]
+            ("GET", r"/api/v1/cloud/activity"),
+            ("GET", r"/api/v1/logs/(health|events|fleet|incoming|mediamtx)")]
 _PUBLIC_RE = [(m, re.compile(p + r"/?")) for m, p in _PUBLIC]
 _TESTING_RE = [(m, re.compile(p + r"/?")) for m, p in _TESTING]
 _LOCAL_READ_RE = [(m, re.compile(p + r"/?")) for m, p in _LOCAL_READ]

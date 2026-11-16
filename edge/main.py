@@ -34,6 +34,7 @@ from api.network_routes import router as network_router
 from api.recording_routes import router as recording_router
 from api.system_routes import router as system_router
 from api.talkback_routes import router as talkback_router
+from api.log_routes import router as log_router
 
 
 logging.basicConfig(
@@ -369,7 +370,7 @@ for _router in (session_router, setup_router,
                 account_router, camera_router, zone_router, recipient_router,
                 metrics_router, event_router, ai_router, recording_router,
                 discovery_router, network_router, system_router,
-                talkback_router):
+                talkback_router, log_router):
     app.include_router(_router)
 
 # Static UI (dashboard, cameras, zones) served same-origin.

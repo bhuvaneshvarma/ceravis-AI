@@ -33,6 +33,12 @@ The four files in `logs/` share one rule: past their size a file becomes `.1`,
 
 ## How to read them
 
+On a bench or test device, the monitor console shows every log live, by
+category, each call with its request and response:
+`http://<device>:8000/ui/ui-testing/monitor.html` (it reads
+`GET /api/v1/logs/{health|events|fleet|incoming|mediamtx}`, the app-server call
+log and the talk-back log). On the device itself:
+
 ```bash
 cd /var/lib/ceravis/logs                    # a development clone: <repository>/edge/data/logs
 tail -n 40 events.jsonl                     # what changed, newest last

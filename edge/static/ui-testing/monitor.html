@@ -8,8 +8,8 @@
 <link rel="icon" type="image/png" href="../favicon.png" />
 <link rel="stylesheet" href="monitor.css" />
 <style>
-  /* Standalone dark diagnostics console — its own black/green theme (monitor.css),
-     no login gate, no app sidebar. Reachable directly at .../monitor.html. */
+  /* Standalone dark diagnostics console — its own theme (monitor.css), no login
+     gate, no app sidebar. Reachable directly at .../ui-testing/monitor.html. */
   .mon-topbar { display: flex; align-items: center; gap: 12px; padding: 12px 22px;
     border-bottom: 1px solid var(--line); background: var(--panel);
     position: sticky; top: 0; z-index: 20; }
@@ -19,7 +19,7 @@
     padding: 3px 10px; border-radius: 999px; }
   .mon-topbar .sp { flex: 1; }
   .mon-clock { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .mon { display: grid; grid-template-columns: 1fr 360px; gap: 16px; align-items: start; }
+  .mon { display: grid; grid-template-columns: 1fr 400px; gap: 16px; align-items: start; }
   @media (max-width: 1100px) { .mon { grid-template-columns: 1fr; } }
   .mon-stage { position: relative; background: #000; border-radius: 12px;
                overflow: hidden; border: 1px solid var(--line); aspect-ratio: 16/9; }
@@ -43,23 +43,82 @@
   .track-chip b { text-transform: uppercase; letter-spacing: .5px; }
   .track-chip.fallen { border-color: rgba(248,113,113,.5);
                        background: rgba(248,113,113,.1); animation: blink 1.2s infinite; }
-  .sidecol .card { margin-bottom: 14px; }
-  /* Cloud sync console — live saveAlert/saveSnapshot call status */
-  .cs-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b;
-            flex: 0 0 auto; }
+
+  /* ---- device health (right of the video) ---- */
+  .hc h2 { display: flex; align-items: center; gap: 9px; }
+  .hc h2 .faint { margin-left: auto; font-weight: 400; font-size: 11px; letter-spacing: .3px;
+                  text-transform: none; }
+  .hc-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .hc-m { background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 10px;
+          padding: 8px 10px; min-width: 0; }
+  .hc-m .k { font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
+  .hc-m .v { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hc-m .v small { font-size: 11px; color: var(--muted); font-weight: 500; }
+  .hc-sec { font-size: 9.5px; letter-spacing: 1.2px; text-transform: uppercase;
+            color: var(--faint); margin: 14px 0 7px; }
+  .hc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hc-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px;
+             padding: 3px 9px; border-radius: 8px; background: var(--panel-2);
+             border: 1px solid var(--line-soft); cursor: default; }
+  .hc-chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .st-operational i, i.st-operational { background: var(--ok); }
+  .st-degraded i, i.st-degraded { background: var(--warn); }
+  .st-outage i, i.st-outage { background: var(--bad); animation: blink 1.2s infinite; }
+  .st-disabled i, .st-unknown i { background: var(--faint); }
+  .hc-chip.st-degraded { border-color: rgba(251,191,36,.4); }
+  .hc-chip.st-outage { border-color: rgba(248,113,113,.5); }
+  .hc-warn { font-size: 11.5px; color: var(--warn); padding: 5px 8px; border-radius: 7px;
+             background: rgba(251,191,36,.06); border: 1px solid rgba(251,191,36,.22);
+             margin-top: 5px; word-break: break-word; }
+  .hc-warn b { color: var(--muted); font-weight: 600; }
+
+  /* ---- logs dashboard ---- */
+  .lg { margin-top: 22px; }
+  .lg-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  .lg-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
+  .lg-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .lg-tab { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+            font: inherit; font-size: 12px; color: var(--muted); padding: 6px 12px;
+            border-radius: 999px; background: var(--panel); border: 1px solid var(--line);
+            transition: all .15s; }
+  .lg-tab:hover { color: var(--text); border-color: var(--muted); }
+  .lg-tab.on { color: #03110f; background: var(--teal); border-color: var(--teal); font-weight: 650; }
+  .lg-tab .n { font-size: 10.5px; font-variant-numeric: tabular-nums; opacity: .8; }
+  .lg-tab .bad-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--bad);
+                     box-shadow: 0 0 6px rgba(248,113,113,.8); }
+  .lg-live { margin-left: auto; display: inline-flex; align-items: center; gap: 8px;
+             font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+  .lg-live .led { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  .lg-live.on .led { background: var(--ok); box-shadow: 0 0 8px rgba(52,211,153,.8);
+                     animation: blink 2s infinite; }
+  .lg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 14px; }
+  @media (max-width: 600px) { .lg-grid { grid-template-columns: 1fr; } }
+  .lg-grid.single .card:not([hidden]) { grid-column: 1 / -1; }
+  .lg-grid.single .cs-log { max-height: 72vh; }
+  .lg-grid .card { padding: 16px 16px 14px; min-width: 0; }
+  .lg-grid .card h2 { margin-bottom: 4px; }
+
+  /* entries — shared by every log */
+  .cs-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; flex: 0 0 auto; }
   .cs-dot.ok  { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.7); }
   .cs-dot.err { background: #f87171; box-shadow: 0 0 8px rgba(248,113,113,.7);
                 animation: blink 1.2s infinite; }
-  .cs-log { max-height: 340px; overflow-y: auto; margin-top: 10px;
-            display: flex; flex-direction: column; gap: 8px; }
+  .cs-log { max-height: 420px; overflow-y: auto; margin-top: 10px;
+            display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
   .cs-head { display: flex; align-items: center; gap: 9px; }
-  .cs-head .faint { margin-left: auto; font-weight: 400; font-size: 11.5px; }
+  .cs-head .faint { margin-left: auto; font-weight: 400; font-size: 11.5px;
+                    text-transform: none; letter-spacing: .2px; }
   .cs-entry { border: 1px solid var(--line); border-left: 3px solid #34d399;
               border-radius: 9px; padding: 8px 10px; background: var(--panel-2);
               font-size: 12px; }
   .cs-entry.err { border-left-color: #f87171; background: rgba(248,113,113,.06); }
   .cs-entry.queued { border-left-color: #fbbf24; background: rgba(251,191,36,.05); }
-  .cs-top { display: flex; align-items: center; gap: 7px; }
+  .cs-entry.info { border-left-color: #60a5fa; }
+  .cs-entry.fresh { animation: fresh 2.4s ease; }
+  @keyframes fresh { 0% { box-shadow: 0 0 0 2px rgba(45,212,191,.55); transform: translateY(-3px); }
+                     100% { box-shadow: none; transform: none; } }
+  .cs-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
   .cs-ep { font-size: 10px; font-weight: 700; letter-spacing: .6px;
            padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
            background: var(--panel); }
@@ -72,18 +131,21 @@
   .cs-warn { margin-top: 4px; color: #fbbf24; font-size: 11px; }
   .cs-ok  { font-weight: 700; color: #34d399; font-size: 11px; }
   .cs-wait { font-weight: 700; color: #fbbf24; font-size: 11px; }
+  .cs-bad { font-weight: 700; color: #f87171; font-size: 11px; }
+  .cs-info { font-weight: 700; color: #60a5fa; font-size: 11px; }
   .cs-queue { margin-top: 8px; padding: 7px 9px; border-radius: 9px; font-size: 11.5px;
               border: 1px solid rgba(251,191,36,.4); background: rgba(251,191,36,.08);
               color: #fbbf24; }
   .cs-queue.attn { border-color: rgba(248,113,113,.55); background: rgba(248,113,113,.1);
                    color: #f87171; font-weight: 700; }
-  .cs-bad { font-weight: 700; color: #f87171; font-size: 11px; }
-  .cs-time { margin-left: auto; color: var(--muted); font-size: 10.5px; }
-  .cs-label { margin-top: 4px; word-break: break-word; white-space: pre-line; }  /* what/where, then when */
-  .cs-meta { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 10px;
+  .cs-time { margin-left: auto; color: var(--muted); font-size: 10.5px;
+             font-variant-numeric: tabular-nums; }
+  .cs-label { margin-top: 4px; word-break: break-word; white-space: pre-line; }
+  .cs-meta { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 10px;
              color: var(--muted); font-size: 10.5px; }
   .cs-meta a { color: #60a5fa; }
   .cs-alertid { color: #fbbf24; font-weight: 600; }
+  .cs-empty { padding: 6px 2px; font-size: 12px; }
   /* expandable full exchange — request (blue) vs response (green) */
   .cs-io { margin-top: 6px; }
   .cs-io > summary { cursor: pointer; font-size: 10.5px; color: var(--muted);
@@ -95,9 +157,15 @@
                letter-spacing: .6px; color: var(--muted); margin: 6px 0 2px; }
   .cs-io pre { margin: 0; padding: 7px 9px; border-radius: 7px; font-size: 10.5px;
                line-height: 1.45; white-space: pre-wrap; word-break: break-word;
-               overflow-x: auto; max-height: 220px; }
+               overflow-x: auto; max-height: 320px; }
   .cs-req pre { background: rgba(96,165,250,.08); border: 1px solid rgba(96,165,250,.25); color: #bfdbfe; }
   .cs-res pre { background: rgba(52,211,153,.08); border: 1px solid rgba(52,211,153,.25); color: #bbf7d0; }
+  .lg-line { font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: #cbd5e1;
+             padding: 3px 8px; border-radius: 6px; background: rgba(255,255,255,.02);
+             word-break: break-word; white-space: pre-wrap; }
+  .lg-line.err { color: #fca5a5; background: rgba(248,113,113,.07); }
+  .lg-line.wrn { color: #fcd34d; background: rgba(251,191,36,.06); }
+  .cs-log.mono { gap: 3px; }
 </style>
 </head>
 <body>
@@ -110,8 +178,8 @@
 <div class="page">
   <div class="page-head">
     <h1>AI monitor</h1>
-    <div class="sub">Live detection, tracking and posture recognition — boxes are drawn
-      from the edge pipeline in real time; every recognized movement is logged on the right.</div>
+    <div class="sub">Live detection and posture on the left, the device's own health on the
+      right, and below, every log by category — each call with its request and response.</div>
   </div>
 
   <div class="row mb" style="align-items:center; gap:10px">
@@ -137,48 +205,76 @@ moment you clicked.">📸 Snapshot</button>
       <div class="track-chips" id="m-chips"></div>
     </div>
 
-    <div class="sidecol">
-      <div class="card">
-        <h2 class="cs-head"><span id="cs-dot" class="cs-dot"></span> App server calls
-          <span class="faint" id="cs-stats"></span></h2>
-        <div class="hint" style="margin-top:2px">↑ What this device sends to
-          app.ceravishealth.in — alerts, snapshots, clips, cameras, account — and the
-          AI events that cause them, with the HTTP result, latency and alertId. An
-          amber EVENT with “not sent” says why a detection never reached the cloud;
-          with the internet down, uploads show as QUEUED and send themselves when
-          the link is back.</div>
-        <div class="cs-queue" id="cs-queue" hidden></div>
-        <div class="cs-log" id="cs-log">
-          <div class="faint cs-empty">Nothing yet — trigger a test (fall, room
-            change, stillness) and the detection plus each cloud call lands here.</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="cs-head"><span id="in-dot" class="cs-dot"></span> Calls received
-          <span class="faint" id="in-stats"></span></h2>
-        <div class="hint" style="margin-top:2px">↓ What the app server asks of this
-          device through the fleet tunnel — playback, timeline, snapshot, PTZ and
-          camera control — with what it asked and what the device answered.</div>
-        <div class="cs-log" id="in-log">
-          <div class="faint cs-empty">No calls received yet.</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="cs-head"><span id="tb-dot" class="cs-dot"></span> Talk-back
-          <span class="faint" id="tb-stats"></span></h2>
-        <div class="hint" style="margin-top:2px">Every talk-back socket — this
-          device's live wall and every app — as a call and its answer: who
-          connected to which camera, whether the edge said <b>open</b> or refused
-          and why, how it closed, and what audio arrived. Amber lines are what an
-          app must fix (wrong frame size, not 8 kHz, audio missing).</div>
-        <div class="cs-log" id="tb-log">
-          <div class="faint cs-empty">No talk-back connections yet.</div>
-        </div>
-      </div>
+    <div class="card hc" id="hc">
+      <h2><span id="hc-dot" class="cs-dot"></span> Device health
+        <span class="faint" id="hc-when"></span></h2>
+      <div id="hc-body" class="faint" style="font-size:12px">Waiting for the first minute's
+        record (logs/health.jsonl, written by the fleet agent).</div>
     </div>
   </div>
+
+  <section class="lg">
+    <div class="lg-head">
+      <h2>Logs &amp; live calls</h2>
+      <div class="lg-tabs" id="lg-tabs"></div>
+      <span class="lg-live on" id="lg-live" title="Pause or resume every log on this page">
+        <span class="led"></span><span id="lg-live-txt">Live</span></span>
+    </div>
+    <div class="lg-grid" id="lg-grid">
+      <div class="card" data-cat="fleet">
+        <h2 class="cs-head"><span id="fleet-dot" class="cs-dot"></span> Fleet server
+          <span class="faint" id="fleet-stats"></span></h2>
+        <div class="hint">Every check-in with the Fleet Management Server — heartbeat,
+          enrollment, the orders it sent — with the body as sent and its reply.</div>
+        <div class="cs-log" id="fleet-log"></div>
+      </div>
+      <div class="card" data-cat="out">
+        <h2 class="cs-head"><span id="out-dot" class="cs-dot"></span> App server · sent
+          <span class="faint" id="out-stats"></span></h2>
+        <div class="hint">↑ What this device sends to the CERAVIS app server — alerts,
+          snapshots, clips, cameras, account — and the AI events that cause them. With the
+          internet down, uploads show as QUEUED and send themselves when it is back.</div>
+        <div class="cs-queue" id="cs-queue" hidden></div>
+        <div class="cs-log" id="out-log"></div>
+      </div>
+      <div class="card" data-cat="in">
+        <h2 class="cs-head"><span id="in-dot" class="cs-dot"></span> App server · received
+          <span class="faint" id="in-stats"></span></h2>
+        <div class="hint">↓ What the app server asks of this device — playback, timeline,
+          snapshot, PTZ, camera control — and what the device answered.</div>
+        <div class="cs-log" id="in-log"></div>
+      </div>
+      <div class="card" data-cat="incoming">
+        <h2 class="cs-head"><span id="incoming-dot" class="cs-dot"></span> Requests into the device
+          <span class="faint" id="incoming-stats"></span></h2>
+        <div class="hint">Every request to this device's API from the home network, this
+          device and the tunnel: changes and failures one by one, routine reads counted per
+          minute. Paths and parameter names only — never bodies or values.</div>
+        <div class="cs-log" id="incoming-log"></div>
+      </div>
+      <div class="card" data-cat="talk">
+        <h2 class="cs-head"><span id="talk-dot" class="cs-dot"></span> Talk-back
+          <span class="faint" id="talk-stats"></span></h2>
+        <div class="hint">Every talk-back socket: who connected to which camera, whether the
+          edge said <b>open</b> or refused and why, how it closed, and what audio arrived.</div>
+        <div class="cs-log" id="talk-log"></div>
+      </div>
+      <div class="card" data-cat="events">
+        <h2 class="cs-head"><span id="events-dot" class="cs-dot"></span> Device events
+          <span class="faint" id="events-stats"></span></h2>
+        <div class="hint">Only what changed: a part's state, a warning raised or cleared, a
+          device joining or leaving the hotspot, the fleet agent starting or stopping.</div>
+        <div class="cs-log" id="events-log"></div>
+      </div>
+      <div class="card" data-cat="video">
+        <h2 class="cs-head"><span id="video-dot" class="cs-dot"></span> Video server (MediaMTX)
+          <span class="faint" id="video-stats"></span></h2>
+        <div class="hint">The video server's own log, newest first: camera connections,
+          viewers, recording, errors.</div>
+        <div class="cs-log mono" id="video-log"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script src="../ceravis.js"></script>
@@ -413,99 +509,266 @@ function updateHeader() {
   }
 }
 
-/* ---- The three logs: app server calls, calls received, talk-back ---------
-   Each panel polls its own slice and re-renders only when its newest entry
-   changes, so a log being read does not jump. Every entry opens to the full
-   request and response. */
+
+/* ==== Logs & live calls ===================================================
+   One card per category. Every card is built from the same pieces: row() draws
+   an entry (tags, status, time, label, facts, and the request/response it
+   opens to), paint() redraws a card only when its entries changed and marks
+   the new ones. Polling pauses while the page is hidden or paused, and the
+   device's own logs answer "unchanged" without being read (api/log_routes). */
+const $ = id => document.getElementById(id);
 const csEsc = s => String(s).replace(/[&<>"]/g,
   m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
-// Pretty-print a body (JSON-string or object) for the expandable panel.
 const fmtBody = v => {
   if (v == null) return "";
   let s = typeof v === "string" ? v : JSON.stringify(v, null, 2);
   if (typeof v === "string") { try { s = JSON.stringify(JSON.parse(v), null, 2); } catch (_) {} }
   return csEsc(s);
 };
-const ioPanel = (req, res) => (req || res) ? `
+const hhmmss = ts => ts ? new Date(ts).toLocaleTimeString([], { hour12: false }) : "";
+const fact = v => (typeof v === "string" && v) ? `<span>${v}</span>` : "";   // a fact, or nothing
+const ioPanel = (req, res, [reqTag, resTag] = ["REQUEST", "RESPONSE"]) => (req || res) ? `
   <details class="cs-io">
-    <summary>request &amp; response</summary>
-    ${req ? `<div class="cs-req"><span class="cs-io-tag">REQUEST</span><pre>${fmtBody(req)}</pre></div>` : ""}
-    ${res ? `<div class="cs-res"><span class="cs-io-tag">RESPONSE</span><pre>${fmtBody(res)}</pre></div>` : ""}
+    <summary>${req && res ? "request &amp; response" : req ? reqTag.toLowerCase() : resTag.toLowerCase()}</summary>
+    ${req ? `<div class="cs-req"><span class="cs-io-tag">${reqTag}</span><pre>${fmtBody(req)}</pre></div>` : ""}
+    ${res ? `<div class="cs-res"><span class="cs-io-tag">${resTag}</span><pre>${fmtBody(res)}</pre></div>` : ""}
   </details>` : "";
-const hhmmss = ts => new Date(ts).toLocaleTimeString([], { hour12: false });
-const LAST = {};                       // panel -> newest entry it has drawn
 
-function setDot(id, list, bad) {
-  document.getElementById(id).className = "cs-dot"
-    + (bad ? " err" : list.length ? (list[0].bad ? " err" : " ok") : "");
+function row(e) {
+  return `
+  <div class="cs-entry ${e.tone || ""}${e.fresh ? " fresh" : ""}">
+    <div class="cs-top">
+      ${(e.tags || []).filter(Boolean).map(([t, c]) => `<span class="cs-ep ${c || ""}">${csEsc(t)}</span>`).join("")}
+      ${e.status ? `<span class="${e.status[1]}">${e.status[0]}</span>` : ""}
+      <span class="cs-time" title="${csEsc(e.ts || "")}">${hhmmss(e.ts)}</span>
+    </div>
+    ${e.label ? `<div class="cs-label">${csEsc(e.label)}</div>` : ""}
+    ${(e.facts || []).some(Boolean) ? `<div class="cs-meta">${e.facts.join("")}</div>` : ""}
+    ${e.extra || ""}
+    ${ioPanel(e.req, e.res, e.io)}
+  </div>`;
 }
 
-/* App server calls and calls received: the same record, two directions. */
-function renderCalls(logId, calls) {
-  const epCls = e => e === "saveAlert" ? "alert"
-    : e === "saveSnapshot" ? "snap" : e === "event" ? "evt"
-    : (e === "ptz" || e === "playback" || e === "timeline") ? "evt" : "cam";
-  const epTxt = e => ({ saveAlert: "ALERT", saveSnapshot: "SNAPSHOT",
-    saveCamera: "CAMERA", userDetails: "ACCOUNT", event: "EVENT",
-    getPatientPostures: "POSTURES", uploadEmbeddingFile: "UPLOAD",
-    ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE",
-    "camera-control": "CAMERA CTRL", recordingEvent: "REC EVENT" }[e]
-    || (e || "?").toUpperCase());
-  // Pipeline detections aren't HTTP calls — word their status accordingly.
-  // An upload has three states, not two: QUEUED the moment the event fires,
-  // then CALL HIT when it actually reaches the server (a second line, so an
-  // outage reads as a gap between the two), or DROPPED if it was given up on.
-  const okTxt = c => c.state === "queued" ? "⏳ QUEUED"
-    : c.state === "dropped" ? "✗ DROPPED"
-    : c.endpoint === "event" && /^INFO ·/.test(c.label || "") ? "ℹ INFO"
-    : c.endpoint === "event" ? (c.ok ? "✓ DETECTED" : "✗ NOT SENT")
-    : c.direction === "in" ? (c.ok ? "✓ ANSWERED" : "✗ FAILED")
-    : (c.ok ? "✓ CALL HIT" : "✗ FAILED");
-  const stateCls = c => c.state === "queued" ? "cs-wait" : c.ok ? "cs-ok" : "cs-bad";
-  document.getElementById(logId).innerHTML = calls.map(c => `
-    <div class="cs-entry ${c.state === "queued" ? "queued" : c.ok ? "" : "err"}">
-      <div class="cs-top">
-        <span class="cs-ep ${epCls(c.endpoint)}">${epTxt(c.endpoint)}</span>
-        ${c.source === "test" ? `<span class="cs-ep test">TEST</span>` : ""}
-        <span class="${stateCls(c)}">${okTxt(c)}</span>
-        <span class="cs-time">${hhmmss(c.ts)}</span>
-      </div>
-      ${c.label ? `<div class="cs-label">${csEsc(c.label)}</div>` : ""}
-      <div class="cs-meta">
-        ${c.status != null ? `<span>HTTP ${c.status}</span>` : ""}
-        ${c.latency_ms != null ? `<span>${Math.round(c.latency_ms)} ms</span>` : ""}
-        ${c.alert_id != null ? `<span class="cs-alertid">alertId ${csEsc(c.alert_id)}</span>` : ""}
-        ${c.link ? `<a href="${csEsc(c.link)}" target="_blank" rel="noopener">view snapshot ↗</a>` : ""}
-        ${c.error ? `<span class="cs-bad">${csEsc(c.error)}</span>` : ""}
-      </div>
-      ${ioPanel(c.request, c.response)}
-    </div>`).join("");
+const CATS = {
+  fleet: "Fleet server", out: "App server · sent", in: "App server · received",
+  incoming: "Into the device", talk: "Talk-back", events: "Events", video: "Video server",
+};
+const EMPTY = {
+  fleet: "No check-ins yet (the fleet agent writes logs/fleet.jsonl).",
+  out: "Nothing yet — trigger a test (fall, room change, stillness) and the detection plus each cloud call lands here.",
+  in: "No calls received yet.", incoming: "No requests recorded yet.",
+  talk: "No talk-back connections yet.", events: "No changes recorded yet.",
+  video: "The video server has not written its log yet.",
+};
+const SEEN = {}, TAB = {};
+let VIEW = "all";
+try { VIEW = localStorage.getItem("mon.view") || "all"; } catch (_) {}
+
+/* Redraw a card only when its entries changed; entries new since the last
+   draw get a short highlight. What the reader opened stays open, and the line
+   they are reading stays where it is. `alarm` = the newest entry failed: the
+   card's dot and its tab turn red; the counts still say how many failed. */
+function paint(cat, items, keyOf, render, stats, alarm) {
+  const keys = items.map(keyOf), sig = keys.join("|");
+  TAB[cat] = { n: items.length, bad: !!alarm };
+  $(`${cat}-stats`).textContent = stats || "";
+  $(`${cat}-dot`).className = "cs-dot" + (alarm ? " err" : items.length ? " ok" : "");
+  renderTabs();
+  if (SEEN[cat] && SEEN[cat].sig === sig) return;
+  const before = SEEN[cat] ? new Set(SEEN[cat].keys) : null;
+  SEEN[cat] = { sig, keys };
+  const box = $(`${cat}-log`), top = box.scrollTop, height = box.scrollHeight;
+  const opened = new Set([...box.querySelectorAll("details[open]")]
+    .map(d => d.closest("[data-k]")?.dataset.k));
+  box.innerHTML = items.length
+    ? items.map((x, i) => render(x, !!before && !before.has(keys[i]))).join("")
+    : `<div class="faint cs-empty">${EMPTY[cat]}</div>`;
+  if (items.length) [...box.children].forEach((el, i) => {
+    el.dataset.k = keys[i];
+    if (opened.has(keys[i])) el.querySelector("details")?.setAttribute("open", "");
+  });
+  if (top > 0) box.scrollTop = top + box.scrollHeight - height;   // new lines arrive above
 }
+
+function renderTabs() {
+  const tab = (id, label, n, bad) => `<button class="lg-tab${VIEW === id ? " on" : ""}" data-v="${id}">
+      ${bad ? `<span class="bad-dot"></span>` : ""}${label}${n != null ? ` <span class="n">${n}</span>` : ""}</button>`;
+  $("lg-tabs").innerHTML = tab("all", "All") + Object.entries(CATS)
+    .map(([id, label]) => tab(id, label, (TAB[id] || {}).n, (TAB[id] || {}).bad)).join("");
+}
+$("lg-tabs").onclick = ev => {
+  const b = ev.target.closest(".lg-tab");
+  if (!b) return;
+  VIEW = b.dataset.v;
+  try { localStorage.setItem("mon.view", VIEW); } catch (_) {}
+  applyView(); renderTabs();
+};
+function applyView() {
+  $("lg-grid").classList.toggle("single", VIEW !== "all");
+  document.querySelectorAll("#lg-grid > .card").forEach(c => {
+    c.hidden = VIEW !== "all" && c.dataset.cat !== VIEW;
+  });
+}
+
+const LIVE = { on: true };
+$("lg-live").onclick = () => {
+  LIVE.on = !LIVE.on;
+  $("lg-live").classList.toggle("on", LIVE.on);
+  $("lg-live-txt").textContent = LIVE.on ? "Live" : "Paused";
+};
+/* Run fn now and every `ms`, skipped while the page is hidden (and, for the
+   logs, while paused) — nothing is asked of the device that nobody sees. */
+function every(ms, fn, pausable = true) {
+  const run = async () => {
+    if (!document.hidden && (!pausable || LIVE.on)) { try { await fn(); } catch (_) {} }
+    setTimeout(run, ms);
+  };
+  run();
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) renderTabs(); });
+
+/* The device's own logs (api/log_routes): `since` = nothing changed, nothing read. */
+const VER = {};
+async function deviceLog(name, limit) {
+  const r = await api(`/api/v1/logs/${name}?limit=${limit}`
+                      + (VER[name] ? `&since=${encodeURIComponent(VER[name])}` : ""));
+  if (r.unchanged) return null;
+  VER[name] = r.version;
+  return r.entries || [];
+}
+
+/* ---- device health: the newest minute of logs/health.jsonl ---- */
+const STATE_PILL = { operational: "pill-ok", degraded: "pill-warn", outage: "pill-bad" };
+const chip = (label, st, title) =>
+  `<span class="hc-chip st-${st || "unknown"}" title="${csEsc(title || st || "")}"><i></i>${csEsc(label)}</span>`;
+const metric = (k, v, unit) =>
+  `<div class="hc-m"><div class="k">${k}</div><div class="v">${v == null ? "—" : csEsc(v)}${
+    v != null && unit ? ` <small>${unit}</small>` : ""}</div></div>`;
+const uptime = s => s == null ? null : s >= 86400 ? `${Math.floor(s / 86400)} d ${Math.floor(s % 86400 / 3600)} h`
+  : `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min`;
+
+async function pollHealth() {
+  const list = await deviceLog("health", 1);
+  if (!list) return;
+  const rec = list[0], s = rec && rec.summary;
+  if (!s) return;
+  const hw = s.hardware || {}, nw = s.network || {}, sv = s.services || {};
+  $("hc-dot").className = "cs-dot" + (s.state === "operational" ? " ok" : s.state ? " err" : "");
+  $("hc-when").textContent = `as of ${hhmmss(rec.ts)}`;
+  const warnings = [["hardware", hw], ["network", nw], ...Object.entries(sv),
+                    ...(s.cameras || []).map(c => [c.camera_id, c])]
+    .flatMap(([part, p]) => (p.warnings || []).map(w => [part, w]));
+  $("hc-body").className = "";
+  $("hc-body").innerHTML = `
+    <div class="row" style="gap:8px;margin-bottom:12px">
+      <span class="pill ${STATE_PILL[s.state] || "pill-mute"}">${csEsc((s.state || "unknown").toUpperCase())}</span>
+      <span class="faint" style="font-size:12px">${s.warning_count || 0} warning${s.warning_count === 1 ? "" : "s"}</span>
+    </div>
+    <div class="hc-metrics">
+      ${metric("CPU", hw.cpu_pct, "%")}${metric("GPU", hw.gpu_pct, "%")}
+      ${metric("Temperature", hw.temperature_c, "°C")}
+      ${metric("Memory", hw.ram_used_gb != null ? `${hw.ram_used_gb} / ${hw.ram_total_gb}` : null, "GB")}
+      ${metric("Disk", hw.disk_used_gb != null
+        ? `${Math.round(hw.disk_used_gb)} / ${Math.round(hw.disk_total_gb)}` : null, "GB")}
+      ${metric("Power", hw.power_w, "W")}
+      ${metric("Fan", hw.fan_pct, "%")}${metric("Mode", hw.power_mode)}
+      ${metric("Up", uptime(hw.uptime_secs))}
+    </div>
+    <div class="hc-sec">Network</div>
+    <div class="hc-chips">
+      ${chip(`Internet ${nw.internet || "unknown"}${nw.latency_ms != null ? ` · ${Math.round(nw.latency_ms)} ms` : ""}`,
+             nw.internet === "connected" ? "operational" : nw.internet === "disconnected" ? "outage" : "unknown")}
+      ${chip(`Hotspot ${nw.hotspot || "unknown"}${nw.hotspot_devices != null ? ` · ${nw.hotspot_devices} devices` : ""}`,
+             nw.hotspot === "on" ? "operational" : nw.hotspot === "off" ? "outage" : "unknown")}
+      ${chip(`Last start: ${(hw.last_boot || "unknown").replace(/_/g, " ")}`,
+             hw.last_boot === "unexpected_restart" ? "degraded" : "operational")}
+    </div>
+    <div class="hc-sec">Services</div>
+    <div class="hc-chips">${Object.entries(sv).map(([k, p]) =>
+      chip(k.replace(/_/g, " ") + (p.version ? ` ${p.version}` : ""), p.state,
+           [p.state, ...(p.warnings || [])].join(" — "))).join("")}</div>
+    ${(s.cameras || []).length ? `<div class="hc-sec">Cameras</div>
+    <div class="hc-chips">${s.cameras.map(c => chip(
+      `${c.room || c.camera_id}${c.fps != null ? ` · ${c.fps} fps` : ""}${
+        c.wifi_signal_dbm != null ? ` · ${c.wifi_signal_dbm} dBm` : ""}`,
+      c.state, [c.state, ...(c.warnings || [])].join(" — "))).join("")}</div>` : ""}
+    ${warnings.length ? `<div class="hc-sec">Warnings</div>${warnings.map(([p, w]) =>
+      `<div class="hc-warn">${w.startsWith(p) ? "" : `<b>${csEsc(p)}</b> · `}${csEsc(w)}</div>`).join("")}` : ""}`;
+}
+
+/* ---- fleet server: check-ins and orders (logs/fleet.jsonl) ---- */
+async function pollFleet() {
+  const list = await deviceLog("fleet", 60);
+  if (!list) return;
+  const bad = list.filter(x => !x.ok).length;
+  paint("fleet", list, x => `${x.ts}|${x.kind}|${x.id || ""}`, (x, fresh) => {
+    if (x.kind === "order") return row({
+      fresh, ts: x.ts, tone: x.ok ? "info" : "err",
+      tags: [["ORDER", "evt"], [String(x.order || "?").toUpperCase(), ""]],
+      status: x.ok ? ["✓ DONE", "cs-ok"] : ["✗ FAILED", "cs-bad"],
+      facts: [fact(x.id && `id ${csEsc(x.id)}`), fact(x.duration_ms != null && `${x.duration_ms} ms`),
+              fact(x.output_chars != null && `${x.output_chars} characters of output`)],
+      req: x.args ? { args: x.args } : null, io: ["ORDER", ""],
+    });
+    const beat = x.kind === "heartbeat";
+    return row({
+      fresh, ts: x.ts, tone: x.ok ? "" : "err",
+      tags: [[beat ? "HEARTBEAT" : String(x.kind || "?").toUpperCase(), beat ? "cam" : "snap"]],
+      status: x.ok ? [beat ? "✓ ACCEPTED" : "✓ ENROLLED", "cs-ok"]
+                   : [`✗ ${x.status ? "HTTP " + x.status : "FAILED"}`, "cs-bad"],
+      label: x.ok ? "" : x.error,
+      facts: [fact(x.rtt_ms != null && `${Math.round(x.rtt_ms)} ms`),
+              fact(x.state && `device ${csEsc(x.state)}`),
+              fact(x.warning_count != null && `${x.warning_count} warning${x.warning_count === 1 ? "" : "s"}`),
+              fact(x.orders && `${x.orders} order${x.orders > 1 ? "s" : ""}`),
+              fact(x.results_sent && `${x.results_sent} answer${x.results_sent > 1 ? "s" : ""} sent`),
+              fact(x.next_secs != null && `next in ${Math.round(x.next_secs)} s`),
+              fact(x.edge_id && `edge_id ${csEsc(x.edge_id)}`)],
+      req: x.request, res: x.reply, io: ["REQUEST BODY (as sent)", "REPLY"],
+    });
+  }, list.length ? `${list.length - bad} ✓ · ${bad} ✗` : "", list.length && !list[0].ok);
+}
+
+/* ---- app server: sent and received (the call log, two directions) ---- */
+const EP_TXT = { saveAlert: "ALERT", saveSnapshot: "SNAPSHOT", saveCamera: "CAMERA",
+  userDetails: "ACCOUNT", event: "EVENT", getPatientPostures: "POSTURES",
+  uploadEmbeddingFile: "UPLOAD", ptz: "PTZ", playback: "PLAYBACK", timeline: "TIMELINE",
+  "camera-control": "CAMERA CTRL", recordingEvent: "REC EVENT" };
+const epCls = e => e === "saveAlert" ? "alert" : e === "saveSnapshot" ? "snap"
+  : ["event", "ptz", "playback", "timeline"].includes(e) ? "evt" : "cam";
+// Pipeline detections aren't HTTP calls — word their status accordingly. An
+// upload has three states: QUEUED when the event fires, then CALL HIT when it
+// reaches the server (a second line, so an outage reads as a gap), or DROPPED.
+const callStatus = c => c.state === "queued" ? ["⏳ QUEUED", "cs-wait"]
+  : c.state === "dropped" ? ["✗ DROPPED", "cs-bad"]
+  : c.endpoint === "event" && /^INFO ·/.test(c.label || "") ? ["ℹ INFO", "cs-info"]
+  : c.endpoint === "event" ? (c.ok ? ["✓ DETECTED", "cs-ok"] : ["✗ NOT SENT", "cs-bad"])
+  : c.direction === "in" ? (c.ok ? ["✓ ANSWERED", "cs-ok"] : ["✗ FAILED", "cs-bad"])
+  : (c.ok ? ["✓ CALL HIT", "cs-ok"] : ["✗ FAILED", "cs-bad"]);
+const callRow = (c, fresh) => row({
+  fresh, ts: c.ts, tone: c.state === "queued" ? "queued" : c.ok ? "" : "err",
+  tags: [[EP_TXT[c.endpoint] || String(c.endpoint || "?").toUpperCase(), epCls(c.endpoint)],
+         c.source === "test" && ["TEST", "test"]],
+  status: callStatus(c), label: c.label,
+  facts: [fact(c.status != null && `HTTP ${c.status}`),
+          fact(c.latency_ms != null && `${Math.round(c.latency_ms)} ms`),
+          c.alert_id != null ? `<span class="cs-alertid">alertId ${csEsc(c.alert_id)}</span>` : "",
+          c.link ? `<a href="${csEsc(c.link)}" target="_blank" rel="noopener">view snapshot ↗</a>` : "",
+          c.error ? `<span class="cs-bad">${csEsc(c.error)}</span>` : ""],
+  req: c.request, res: c.response,
+});
+const callKey = c => `${c.ts}|${c.endpoint}|${c.state || ""}`;
 
 async function pollOut() {
-  let r;
-  try { r = await api("/api/v1/cloud/activity?limit=80&direction=out"); } catch { return; }
-  const calls = r.calls || [];
-  const okN = calls.filter(c => c.ok).length;
-  document.getElementById("cs-stats").textContent =
-    calls.length ? `${okN} ✓ · ${calls.length - okN} ✗` : "";
-  // Red while the queue is stuck retrying — a green dot over a backlog would
-  // say "cloud fine" during an outage.
+  const r = await api("/api/v1/cloud/activity?limit=80&direction=out");
+  const calls = r.calls || [], bad = calls.filter(c => !c.ok).length;
   const q = r.outbox || {};
-  setDot("cs-dot", calls.map(c => ({ bad: !c.ok })), q.pending && q.last_error);
-
-  // The upload queue. Depth 0 = everything raised has been delivered; anything
-  // else names the backlog and how long the head has been waiting, so a network
-  // outage is legible as "held, not lost" while it is happening.
-  const qEl = document.getElementById("cs-queue");
-  const attn = q.attention;
+  // The upload queue: depth 0 = everything raised was delivered; anything else
+  // names the backlog and its age — "held, not lost" during an outage.
+  const qEl = $("cs-queue"), attn = q.attention;
   if (q.pending || attn) {
-    const mins = Math.round((q.oldest_pending_age_secs || 0) / 60);
-    const mb = (q.pending_bytes || 0) / 1e6;
+    const mins = Math.round((q.oldest_pending_age_secs || 0) / 60), mb = (q.pending_bytes || 0) / 1e6;
     qEl.hidden = false;
-    // A needs-attention rejection (bad key / wrong patient / clip too big) is
-    // worded distinctly — the data is NOT lost, it keeps retrying, but a human
-    // should fix the cause.
     qEl.className = attn ? "cs-queue attn" : "cs-queue";
     qEl.textContent = attn
       ? `⚠ NEEDS ATTENTION — server rejecting with HTTP ${attn.code}`
@@ -516,78 +779,131 @@ async function pollOut() {
         + (mb >= 0.1 ? ` · ${mb.toFixed(1)} MB held` : "")
         + ` · ${q.last_error ? "retrying — " + q.last_error.slice(0, 70) : "sending"}`;
   } else { qEl.hidden = true; }
-
-  if (!calls.length || calls[0].ts === LAST.out) return;   // nothing new — keep scroll
-  LAST.out = calls[0].ts;
-  renderCalls("cs-log", calls);
+  // Red while the queue is stuck retrying — a green dot over a backlog would lie.
+  paint("out", calls, callKey, callRow, calls.length ? `${calls.length - bad} ✓ · ${bad} ✗` : "",
+        (calls.length && !calls[0].ok && calls[0].state !== "queued") || !!(q.pending && q.last_error));
 }
 
 async function pollIn() {
-  let r;
-  try { r = await api("/api/v1/cloud/activity?limit=60&direction=in"); } catch { return; }
-  const calls = r.calls || [];
-  const okN = calls.filter(c => c.ok).length;
-  document.getElementById("in-stats").textContent =
-    calls.length ? `${okN} ✓ · ${calls.length - okN} ✗` : "";
-  setDot("in-dot", calls.map(c => ({ bad: !c.ok })));
-  if (!calls.length || calls[0].ts === LAST.in) return;
-  LAST.in = calls[0].ts;
-  renderCalls("in-log", calls);
+  const r = await api("/api/v1/cloud/activity?limit=60&direction=in");
+  const calls = r.calls || [], bad = calls.filter(c => !c.ok).length;
+  paint("in", calls, callKey, callRow, calls.length ? `${calls.length - bad} ✓ · ${bad} ✗` : "",
+        calls.length && !calls[0].ok);
 }
 
-/* Talk-back: each socket as a call (who, which camera) and its answer. */
+/* ---- every request into the device (logs/incoming.jsonl) ---- */
+async function pollIncoming() {
+  const list = await deviceLog("incoming", 80);
+  if (!list) return;
+  const failed = x => x.kind === "request" && x.status >= 400;
+  const bad = list.filter(failed).length;
+  paint("incoming", list, x => `${x.ts}|${x.kind}|${x.path || ""}`, (x, fresh) => {
+    if (x.kind === "polling") {
+      const reqs = Object.entries(x.requests || {}).sort((a, b) => b[1] - a[1]);
+      const total = reqs.reduce((n, [, k]) => n + k, 0);
+      return row({
+        fresh, ts: x.ts, tone: "info", tags: [["READS", "snap"]],
+        status: [`✓ ${total} OK`, "cs-ok"],
+        label: `${reqs.length} path${reqs.length === 1 ? "" : "s"} read over ${x.window_secs} s`
+          + (reqs.length ? ` — busiest ${reqs[0][0]} (${reqs[0][1]}×)` : ""),
+        res: x.requests, io: ["", "READS PER PATH"],
+      });
+    }
+    return row({
+      fresh, ts: x.ts, tone: failed(x) ? "err" : "",
+      tags: [[x.method || "?", x.method === "GET" ? "snap" : "evt"], [String(x.origin || "?").toUpperCase(), "cam"]],
+      status: [`${failed(x) ? "✗" : "✓"} HTTP ${x.status}`, failed(x) ? "cs-bad" : "cs-ok"],
+      label: x.path,
+      facts: [fact(x.duration_ms != null && `${x.duration_ms} ms`), fact(x.client && `from ${csEsc(x.client)}`),
+              fact((x.query || []).length && `parameters: ${csEsc(x.query.join(", "))}`)],
+      req: { method: x.method, path: x.path, query: x.query, origin: x.origin, client: x.client },
+      res: { status: x.status, duration_ms: x.duration_ms },
+    });
+  }, list.length ? `${list.length} lines${bad ? ` · ${bad} failed` : ""}` : "", list.length && failed(list[0]));
+}
+
+/* ---- talk-back: each socket as a call and its answer ---- */
 async function pollTalk() {
-  let r;
-  try {
-    const edge = typeof cvEdgeId === "function" ? await cvEdgeId() : "";
-    r = await api("/api/v1/talkback/log?event=session&limit=40"
-                  + (edge ? "&edge_id=" + encodeURIComponent(edge) : ""));
-  } catch { return; }
+  const edge = typeof cvEdgeId === "function" ? await cvEdgeId() : "";
+  const r = await api("/api/v1/talkback/log?event=session&limit=40"
+                      + (edge ? "&edge_id=" + encodeURIComponent(edge) : ""));
   const list = r.entries || [];
   const refused = x => (x.response || {}).type !== "open";
-  const nRef = list.filter(refused).length;
-  const nWarn = list.filter(x => (x.warnings || []).length).length;
-  document.getElementById("tb-stats").textContent = list.length
-    ? `${list.length - nRef} open · ${nRef} refused` + (nWarn ? ` · ${nWarn} ⚠` : "") : "";
-  setDot("tb-dot", list.map(x => ({ bad: refused(x) })));
-  if (!list.length || list[0].ended_at === LAST.talk) return;
-  LAST.talk = list[0].ended_at;
-  document.getElementById("tb-log").innerHTML = list.map(x => {
+  const nRef = list.filter(refused).length, nWarn = list.filter(x => (x.warnings || []).length).length;
+  paint("talk", list, x => `${x.started_at}|${x.camera_id}`, (x, fresh) => {
     const res = x.response || {}, a = x.audio || {}, cl = x.close || {};
-    const status = res.type === "open" ? `<span class="cs-ok">✓ OPEN</span>`
-      : `<span class="cs-bad">✗ ${csEsc((res.code || "no answer").toUpperCase())}</span>`;
-    const who = [x.name || "unnamed", x.user_id ? `user ${x.user_id}` : "", x.holder]
-      .filter(Boolean).join(" · ");
     const warn = (x.warnings || []).map(w => `<div class="cs-warn">⚠ ${csEsc(w)}</div>`).join("");
-    const answer = { response: res, ...(x.error ? { later_error: x.error } : {}),
-                     close: cl, audio: a, ...(x.warnings ? { warnings: x.warnings } : {}) };
-    return `
-    <div class="cs-entry ${refused(x) ? "err" : warn ? "queued" : ""}">
-      <div class="cs-top">
-        <span class="cs-ep talk">${csEsc(x.camera_id || "?")}</span>
-        ${status}
-        <span class="cs-time">${hhmmss(x.started_at)}</span>
-      </div>
-      <div class="cs-label">${csEsc(who)}</div>
-      <div class="cs-meta">
-        ${x.duration_secs != null ? `<span>${x.duration_secs} s connected</span>` : ""}
-        ${a.held_secs ? `<span>held ${a.held_secs} s · ${a.speech_secs || 0} s of speech</span>` : ""}
-        ${a.received_hz != null ? `<span class="${a.realtime_rate >= 0.8 && a.realtime_rate <= 1.3 ? "cs-ok" : "cs-bad"}"
-             >received ${a.received_hz.toLocaleString()} Hz of ${(a.expected_hz || 8000).toLocaleString()}</span>` : ""}
-        ${(x.request || {}).query && x.request.query.mic_rate ? `<span>app says mic ${csEsc(x.request.query.mic_rate)} Hz</span>` : ""}
-        ${a.longest_gap_ms >= 200 ? `<span class="cs-bad">longest gap ${a.longest_gap_ms} ms</span>` : ""}
-        ${a.first_audio_ms != null ? `<span>first audio ${a.first_audio_ms} ms after open</span>` : ""}
-        ${cl.code != null ? `<span>closed ${cl.code} by ${csEsc(cl.by)}</span>`
-                          : cl.by ? `<span>closed by ${csEsc(cl.by)}</span>` : ""}
-        ${x.error ? `<span class="cs-bad">${csEsc(x.error.message || x.error.code)}</span>` : ""}
-      </div>
-      ${refused(x) && res.message ? `<div class="cs-warn">${csEsc(res.message)}</div>` : ""}
-      ${warn}
-      ${ioPanel(x.request, answer)}
-    </div>`;
-  }).join("");
+    return row({
+      fresh, ts: x.started_at, tone: refused(x) ? "err" : warn ? "queued" : "",
+      tags: [[x.camera_id || "?", "talk"]],
+      status: res.type === "open" ? ["✓ OPEN", "cs-ok"]
+                                  : [`✗ ${csEsc((res.code || "no answer").toUpperCase())}`, "cs-bad"],
+      label: [x.name || "unnamed", x.user_id ? `user ${x.user_id}` : "", x.holder].filter(Boolean).join(" · "),
+      facts: [fact(x.duration_secs != null && `${x.duration_secs} s connected`),
+              fact(a.held_secs && `held ${a.held_secs} s · ${a.speech_secs || 0} s of speech`),
+              a.received_hz != null ? `<span class="${a.realtime_rate >= 0.8 && a.realtime_rate <= 1.3 ? "cs-ok" : "cs-bad"}"
+                >received ${a.received_hz.toLocaleString()} Hz of ${(a.expected_hz || 8000).toLocaleString()}</span>` : "",
+              fact((x.request || {}).query && x.request.query.mic_rate && `app says mic ${csEsc(x.request.query.mic_rate)} Hz`),
+              a.longest_gap_ms >= 200 ? `<span class="cs-bad">longest gap ${a.longest_gap_ms} ms</span>` : "",
+              fact(a.first_audio_ms != null && `first audio ${a.first_audio_ms} ms after open`),
+              fact(cl.code != null ? `closed ${cl.code} by ${csEsc(cl.by)}` : cl.by && `closed by ${csEsc(cl.by)}`),
+              x.error ? `<span class="cs-bad">${csEsc(x.error.message || x.error.code)}</span>` : ""],
+      extra: (refused(x) && res.message ? `<div class="cs-warn">${csEsc(res.message)}</div>` : "") + warn,
+      req: x.request,
+      res: { response: res, ...(x.error ? { later_error: x.error } : {}), close: cl, audio: a,
+             ...(x.warnings ? { warnings: x.warnings } : {}) },
+    });
+  }, list.length ? `${list.length - nRef} open · ${nRef} refused` + (nWarn ? ` · ${nWarn} ⚠` : "") : "",
+     list.length && refused(list[0]));
 }
 
+/* ---- device events: only what changed (logs/events.jsonl) ---- */
+const EVENT = {
+  state_changed: "STATE", warning_raised: "WARNING", warning_cleared: "CLEARED",
+  hotspot_device_joined: "HOTSPOT +", hotspot_device_left: "HOTSPOT −",
+  agent_started: "AGENT START", agent_stopped: "AGENT STOP",
+  fleet_check_in_ok: "CHECK-IN OK", fleet_check_in_failed: "CHECK-IN FAILED",
+  fleet_check_in_stopped: "CHECK-IN STOPPED",
+};
+function eventView(x) {
+  switch (x.event) {
+    case "state_changed":
+      return { tone: x.to === "outage" ? "err" : x.to === "degraded" ? "queued" : x.to === "operational" ? "" : "info",
+               label: `${x.part}: ${x.from || "—"} → ${x.to}`, cls: x.to === "outage" ? "alert" : "evt" };
+    case "warning_raised": return { tone: "queued", label: `${x.part}: ${x.warning}`, cls: "evt" };
+    case "warning_cleared": return { tone: "", label: `${x.part}: ${x.warning}`, cls: "cam" };
+    case "hotspot_device_joined": case "hotspot_device_left":
+      return { tone: "info", cls: "snap", label: [x.mac, x.ip, x.hostname,
+               x.signal_dbm != null ? `${x.signal_dbm} dBm` : ""].filter(Boolean).join(" · ") };
+    case "fleet_check_in_failed": case "fleet_check_in_stopped":
+      return { tone: "err", cls: "alert", label: x.reason || x.error || "" };
+    default: return { tone: "info", cls: "test", label: "" };
+  }
+}
+async function pollEvents() {
+  const list = await deviceLog("events", 80);
+  if (!list) return;
+  const isBad = x => (x.event === "state_changed" && x.to === "outage")
+    || x.event === "fleet_check_in_failed" || x.event === "fleet_check_in_stopped";
+  const bad = list.filter(isBad).length;
+  paint("events", list, x => `${x.ts}|${x.event}|${x.part || ""}|${x.warning || ""}`, (x, fresh) => {
+    const v = eventView(x);
+    return row({ fresh, ts: x.ts, tone: v.tone, tags: [[EVENT[x.event] || x.event, v.cls]],
+                 label: v.label, res: x, io: ["", "RECORD"] });
+  }, list.length ? `${list.length} recent` + (bad ? ` · ${bad} ✗` : "") : "", list.length && isBad(list[0]));
+}
+
+/* ---- the video server's own log (mediamtx.log) ---- */
+async function pollVideo() {
+  const list = await deviceLog("mediamtx", 120);
+  if (!list) return;
+  const lvl = l => /\bERR\b|error|failed/i.test(l) ? "err" : /\bWAR\b|warn/i.test(l) ? "wrn" : "";
+  const bad = list.filter(x => lvl(x.line) === "err").length;
+  paint("video", list, x => x.line, x =>
+    `<div class="lg-line ${lvl(x.line)}">${csEsc(x.line)}</div>`,
+    list.length ? `${list.length} lines` + (bad ? ` · ${bad} errors` : "") : "",
+    list.length && lvl(list[0].line) === "err");
+}
 /* ---- recording on/off (disk saver) --------------------------------- */
 async function refreshRec() {
   let s;
@@ -617,14 +933,21 @@ document.getElementById("rec-toggle").onclick = async () => {
   refreshRec();
 };
 
+
+/* ---- start ---- */
+renderTabs();
+applyView();
 initCamNames();
-setInterval(pollState, 400);
-setInterval(pollOut, 2000);
-setInterval(pollIn, 3000);
-setInterval(pollTalk, 3000);
-pollOut(); pollIn(); pollTalk();
-setInterval(refreshRec, 5000);
-refreshRec();
+every(400, pollState, false);          // the AI overlay keeps up even while logs are paused
+every(5000, refreshRec, false);
+every(15000, pollHealth);
+every(2000, pollOut);
+every(3000, pollIn);
+every(3000, pollFleet);
+every(3000, pollIncoming);
+every(3000, pollTalk);
+every(3000, pollEvents);
+every(5000, pollVideo);
 </script>
 </body>
 </html>

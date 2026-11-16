@@ -48,6 +48,7 @@ class Logbook:
         self.backups = backups
         self._lock = threading.Lock()
         self._failed = False                 # a write failure is logged once, not every line
+        self._started = False                # first write of this process: end a cut line
 
     def write(self, record: dict) -> None:
         """Append one record, stamped with `ts` first when it has none."""
@@ -58,6 +59,9 @@ class Logbook:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 if self.path.exists() and self.path.stat().st_size >= self.max_bytes:
                     self._rotate()
+                if not self._started:
+                    line = _after_cut_line(self.path) + line
+                    self._started = True
                 with open(self.path, "a", encoding="utf-8") as fh:
                     fh.write(line)
             self._failed = False
@@ -67,17 +71,22 @@ class Logbook:
             self._failed = True
 
     def tail(self, lines: int) -> list[str]:
-        """The newest `lines` lines, oldest first, across the rotated files."""
+        """The newest `lines` lines, oldest first, across the rotated files. Reads
+        only the end of each file, so a full 25 MB log costs a few kilobytes."""
         out: list[str] = []
         for path in [self.path] + [self._numbered(n) for n in range(1, self.backups + 1)]:
             if len(out) >= lines:
                 break
-            try:
-                rows = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                continue
-            out = rows[-(lines - len(out)):] + out
+            out = _last_lines(path, lines - len(out)) + out
         return out
+
+    def version(self) -> str | None:
+        """Changes whenever the log is written: its size and modification time."""
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return f"{st.st_size}-{st.st_mtime_ns}"
 
     def _numbered(self, n: int) -> Path:
         return self.path.with_name(f"{self.path.name}.{n}")
@@ -90,3 +99,38 @@ class Logbook:
             elif older.exists():
                 os.replace(older, self._numbered(n + 1))
         os.replace(self.path, self._numbered(1))
+
+
+_BLOCK = 64 * 1024
+
+
+def _after_cut_line(path: Path) -> str:
+    """A newline when the file ends mid-line (a crash during a write), so the
+    next record starts on its own line instead of being glued to the cut one."""
+    try:
+        with open(path, "rb") as fh:
+            if fh.seek(0, os.SEEK_END) == 0:
+                return ""
+            fh.seek(-1, os.SEEK_END)
+            return "" if fh.read(1) == b"\n" else "\n"
+    except OSError:
+        return ""
+
+
+def _last_lines(path: Path, n: int) -> list[str]:
+    """The last `n` lines of a file, read backwards in blocks from its end."""
+    if n <= 0:
+        return []
+    try:
+        with open(path, "rb") as fh:
+            pos = fh.seek(0, os.SEEK_END)
+            data = b""
+            while pos > 0 and data.count(b"\n") <= n:
+                step = min(_BLOCK, pos)
+                pos -= step
+                fh.seek(pos)
+                data = fh.read(step) + data
+    except OSError:
+        return []
+    rows = data.decode("utf-8", errors="replace").splitlines()
+    return (rows[1:] if pos > 0 else rows)[-n:]      # a block's first line may be cut
