@@ -2,8 +2,8 @@
 # =============================================================
 # CERAVIS developer update — pull the code, restart only what changed
 # =============================================================
-# For a DEVELOPMENT CLONE (the bench, ~/ceravis) when you only want to try new
-# code. It never touches the fleet side: no enrollment, no edge_id hand-over,
+# For a DEVELOPMENT CLONE (the bench, ~/ceravis, on bench_ceravis1.1 — the only
+# branch it updates) when you only want to try new code. It never touches the fleet side: no enrollment, no edge_id hand-over,
 # no keys, no systemd units, no sudoers, no apt/pip, no AI engine builds, and
 # it never restarts the fleet agent (the agent restarts ITSELF when its own
 # code changes, keeping its identity — the edge_id cannot change).
@@ -28,8 +28,15 @@ DRY=0
 [ -d "$REPO/.git" ] || { echo "Not a development clone ($REPO): use setup/update.sh on a release." >&2; exit 2; }
 cd "$REPO"
 
+# The bench runs bench_ceravis1.1 and nothing else (CLAUDE.md, "Branches").
+BRANCH=bench_ceravis1.1
+ON="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$ON" != "$BRANCH" ]; then
+    echo "This clone is on '$ON', not $BRANCH — nothing done. The bench runs $BRANCH only:" >&2
+    echo "    git switch $BRANCH && bash setup/dev_update.sh" >&2
+    exit 2
+fi
 FROM="$(git rev-parse HEAD)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 git fetch -q origin "$BRANCH"
 TO="$(git rev-parse "origin/$BRANCH")"
 if [ "$FROM" = "$TO" ]; then

@@ -10,6 +10,7 @@ bench), stand-ins for sudo and curl that record what they were asked to do.
 3. fleet agent code: pulled, the agent is NOT restarted (it restarts itself)
 4. units / setup files: named for the full upgrade, not applied
 5. --dry-run changes nothing; already up to date says so
+6. it updates bench_ceravis1.1 only: on any other branch it does nothing
 
     python tests/test_dev_update.py
 """
@@ -80,23 +81,23 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
     STUBBED = ('S="$STUBS"; command -v cygpath >/dev/null && S="$(cygpath -u "$STUBS")"; '
                'PATH="$S:$PATH" exec bash setup/dev_update.sh "$@"')
 
-    git("init", "-q", "--bare", "-b", "dev_ceravis1.1", str(origin))
+    git("init", "-q", "--bare", "-b", "bench_ceravis1.1", str(origin))
     git("clone", "-q", str(origin), str(dev))
-    git("switch", "-q", "-c", "dev_ceravis1.1", cwd=dev)
+    git("switch", "-q", "-c", "bench_ceravis1.1", cwd=dev)
     write(dev / "setup" / "dev_update.sh", (ROOT / "setup" / "dev_update.sh").read_text(encoding="utf-8"))
     write(dev / "edge" / "main.py", "x = 1\n")
     write(dev / "edge" / "static" / "page.html", "<p>1</p>\n")
     write(dev / "edge" / "fleet" / "fms_agent" / "agent.py", "a = 1\n")
     git("add", "-A", cwd=dev)
     git("commit", "-q", "-m", "start", cwd=dev)
-    git("push", "-q", "origin", "dev_ceravis1.1", cwd=dev)
-    git("clone", "-q", "-b", "dev_ceravis1.1", str(origin), str(bench))
+    git("push", "-q", "origin", "bench_ceravis1.1", cwd=dev)
+    git("clone", "-q", "-b", "bench_ceravis1.1", str(origin), str(bench))
 
     def publish(path: str, text: str) -> None:
         write(dev / path, text)
         git("add", "-A", cwd=dev)
         git("commit", "-q", "-m", f"change {path}", cwd=dev)
-        git("push", "-q", "origin", "dev_ceravis1.1", cwd=dev)
+        git("push", "-q", "origin", "bench_ceravis1.1", cwd=dev)
 
     def update(*args) -> tuple[str, str]:
         calls.write_text("")
@@ -145,6 +146,14 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
     update()
     out, did = update()
     check("already up to date: says so, does nothing", "Already up to date" in out and did == "", out)
+
+    print("\n6. the bench runs bench_ceravis1.1 only")
+    git("switch", "-q", "-c", "dev_ceravis1.1", cwd=bench)
+    publish("edge/main.py", "x = 4\n")
+    out, did = update()
+    check("on any other branch: nothing pulled, nothing restarted, says how to switch back",
+          "nothing done" in out and "git switch bench_ceravis1.1" in out and did == ""
+          and (bench / "edge/main.py").read_text() == "x = 3\n", out)
 
 print()
 if failures:

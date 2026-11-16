@@ -53,7 +53,7 @@ itself. Pick the lightest path that carries the change:
 
 | Device | Change | Command |
 |---|---|---|
-| bench (a clone) | code only — the usual case | `bash setup/dev_update.sh` — pulls, restarts ceravis only if its Python changed; never touches the fleet side, keys, units, apt or engines (`--dry-run` first to see) |
+| bench (a clone) | code only — the usual case | `bash setup/dev_update.sh` — updates `bench_ceravis1.1` only (on any other branch it does nothing), pulls, restarts ceravis only if its Python changed; never touches the fleet side, keys, units, apt or engines (`--dry-run` first to see) |
 | bench (a clone) | units, setup, dependencies, models | `bash setup/upgrade.sh` — the full re-setup (apt, engines, keys asked if missing, units, agent re-installed) |
 | client / prodtest (a release) | a few files | `setup/patch_device.sh` (pinned FROM/TO commits) |
 | client / prodtest (a release) | a new release | `setup/update.sh` (switches with rollback) |
