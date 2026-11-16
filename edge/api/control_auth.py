@@ -7,9 +7,9 @@ start/stop/restart, recording playback): how their body is READ (`field`,
 control endpoint parses and authenticates identically.
 
 Every control request carries this device's `edgeId`, and we verify it MATCHES
-the edge_id provisioned for this device — the `deviceToken` from the userDetails
-response, saved to account.json and also used for the live-link
-first segment and the frp routing `locations`. Only the app server that
+the edge_id provisioned for this device — issued by the Fleet Management Server
+at enrollment (config.account_config.effective_edge_id), and also used for the
+live-link first segment and the frp routing `locations`. Only the app server that
 provisioned the device knows that value, so the match IS the authentication.
 
 There is NO token here (the legacy X-Ceravis-Control-Token was removed for good):
@@ -42,8 +42,8 @@ FLEET_EDGE_KEY = "ceravis.fleet_edge_id"
 
 
 def check_edge_id(req_edge_id: str | None, scope: dict | None = None) -> None:
-    """The request must target THIS device. When the device has an edge_id (a
-    verified account / jetson.env EDGE_ID), the request MUST carry a matching
+    """The request must target THIS device. When the device has an edge_id (the
+    one the FMS issued it, or a bench's EDGE_ID pin), the request MUST carry a matching
     one — missing => 401, wrong => 409. No edge_id on the device = LAN dev, so
     accept anything (nothing provisioned to check against yet).
 

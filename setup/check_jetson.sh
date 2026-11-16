@@ -203,7 +203,9 @@ if systemctl list-unit-files 2>/dev/null | grep -q "^frpc.service"; then
     fi
     # A tunnel that lost its edge_id routing looks healthy from here right up
     # until every live link is dead, so check what the config actually carries.
-    EID="$("$PY" -c 'from config.account_config import effective_edge_id; print(effective_edge_id())' 2>/dev/null)"
+    # The edge_id the FMS issued: root's credential file, else a bench's pin.
+    EID="$(sudo -n cat "$CERAVIS_CREDSTORE/edge_id" 2>/dev/null \
+           || "$PY" -c 'from config.account_config import effective_edge_id; print(effective_edge_id())' 2>/dev/null)"
     if [ -n "${EID:-}" ]; then
         if sudo -n grep -q "\"/$EID\"" /etc/frp/frpc.toml 2>/dev/null; then
             ok "frpc routes /$EID"
@@ -211,7 +213,7 @@ if systemctl list-unit-files 2>/dev/null | grep -q "^frpc.service"; then
             warn "frpc.toml does not route /$EID - live links will be dead" "sudo /usr/local/bin/ceravis-apply-edge-id $EID"
         fi
     else
-        ok "no edge_id yet (LAN-only until an account is verified)"
+        ok "no edge_id yet (LAN-only until the fleet agent enrolls this device)"
     fi
 else
     ok "frpc not installed (LAN-only device)"

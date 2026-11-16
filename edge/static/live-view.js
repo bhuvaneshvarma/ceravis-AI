@@ -21,7 +21,7 @@
       edgePromise = fetch("/api/v1/account")
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (a) {
-          EDGE = (a && (a.edge_id || (a.user && a.user.edgeId))) || "";
+          EDGE = (a && a.edge_id) || "";
           return EDGE;
         })
         .catch(function () { EDGE = ""; return EDGE; });

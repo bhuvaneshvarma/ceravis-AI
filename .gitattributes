@@ -19,6 +19,7 @@ VERSION   text eol=lf
 /edge/static/ui-testing/         export-ignore
 /setup/diagnose_reboot.sh        export-ignore
 /setup/upgrade.sh                export-ignore
+/setup/dev_update.sh             export-ignore
 /setup/setup.sh                  export-ignore
 /setup/make_release.sh           export-ignore
 /setup/send_to_device.sh         export-ignore

@@ -1,12 +1,17 @@
-# Vendored from github.com/bhuvaneshvarma/ceravis-FMS — DO NOT EDIT here.
-# source commit: b26e235  (re-vendor with tools/vendor_agent.py)
+# The fleet agent's source is THIS folder now (dev_ceravis1.1). It was vendored
+# from github.com/bhuvaneshvarma/ceravis-FMS (last: b26e235); the FMS server is
+# being rebuilt by the Java team, so the agent is changed here and never
+# re-vendored over — a re-vendor from ceravis-FMS would undo the FMS-issued
+# edge_id enrollment. The hashes below are of this folder's files.
 
-838fa9faa491fb6dd34cd227f9ca49e0b3d8d51281549432f52872a79e549b6e  fms_agent/__init__.py
-753c1ce1187a1a0c25e74fed30688e23d8b8a0615a420037ef46a01b36491772  fms_agent/__main__.py
-5c0e0218d9831e8ee9ba0ec177a0bbf19bc0977873a85b755da7d30e6ad5e028  fms_agent/agent.py
-822f26a08bf9d77c82511ef2b36fd69735bab255aab180997e55bb3419d9efb0  fms_agent/collect.py
-f02feefe25fb61127fc37bab15d2cc85683c8ec78b31d82eec24a03eacfe594e  fms_agent/commands.py
-9d54097be1b7ed613bd183dcf1b87e86f1faba280aa18eeafd2695241a56b9c4  fms_agent/config.py
-f36f7c82bcaa1117cae3559466f298e334ed256972d980d8b251d7c936ad4d03  fms_agent/identity.py
-1ad3816905e5f6598b6a49dcbb1d02df22dca312767aff65b2be0383a067abd4  fms_agent/transport.py
-a25880be02de5bc1386cbab38daeb8d8448cb7ef8ddafe3ee13cbb4265280c02  fms_protocol/__init__.py
+bfbf0827a2782d463faa0da907ee3327478a7aa86f0b8fbf56481c32b6417051  fms_agent/__init__.py
+ec10d06ac65a2070667e8994a73fb27d6fc8e26a8b0f39712405b27c4f06e975  fms_agent/__main__.py
+8dd4ee8a8bc6596c22cd47f7f4359f976ce02447420cb978a5b654aaafcbd1a0  fms_agent/agent.py
+70cb6103d6d72b8b93babfb22f54aa384517cfb4b554a8c45141888885ee7d52  fms_agent/collect.py
+30ff80d01845667c4476fc1df12afd2722de28de898be47521d067c3befd65e9  fms_agent/commands.py
+0efba0cdd3b88cf324cbd6b7ff1144210f6c01793eeeb4e67b2efeeb81b699d7  fms_agent/config.py
+a8bec8a6f50f474d15a3eddb73e87768ef6c6cf372691f4885d15496743b8598  fms_agent/health.py
+3c6d3a3ee203005201a33079f13b4a0ad3527fbc54a6345a9edc1c4f384e12d9  fms_agent/identity.py
+9de494b9b105244ade2de680a8cbf6525b434e292329076db782cb47c954b9fa  fms_agent/logs.py
+befd88436563058e02e68948ddc40e9e879a13630c6ef940e0c370fa83f3fd9b  fms_agent/transport.py
+6737c3441a20541f490c1bf281662044dd13b499e90cd4dc87b7010cf4863830  fms_protocol/__init__.py

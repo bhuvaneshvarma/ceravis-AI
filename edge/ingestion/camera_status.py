@@ -45,6 +45,8 @@ class CameraStatus:
     # fraction of the pixels. Nothing reported it, so nothing caught it.
     frame_width: int = 0
     frame_height: int = 0
+    # How long the current connection has delivered video (None = not running).
+    connected_secs: float | None = None
 
     @property
     def is_stale(self) -> bool:

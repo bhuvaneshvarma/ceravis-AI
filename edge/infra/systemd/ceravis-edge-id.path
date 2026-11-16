@@ -1,0 +1,12 @@
+# Watches the fleet agent's identity: when the FMS issues this device its
+# edge_id (or a new one), ceravis-edge-id.service hands it to the edge app.
+# Installed by setup/install_fleet_agent.sh.
+[Unit]
+Description=CERAVIS edge_id hand-over: watch the fleet agent's identity
+
+[Path]
+PathChanged=/var/lib/ceravis-fleet-agent/identity.json
+Unit=ceravis-edge-id.service
+
+[Install]
+WantedBy=multi-user.target

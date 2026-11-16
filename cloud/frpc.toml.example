@@ -9,8 +9,8 @@
 # off; the AI pipeline is untouched.
 #
 # Fleet model: EVERY house uses the identical file below. Its own edge_id is
-# written in by machine (ceravis-apply-edge-id, at account verify and on every
-# boot) — leave the EDGE_ID placeholders as they are. frps routes by URL path,
+# written in by machine (ceravis-apply-edge-id: the edge_id the FMS issued, at
+# every start of the service) — leave the EDGE_ID placeholders as they are. frps routes by URL path,
 # everything under the house's own /<edge_id> prefix. Public links:
 #   live : https://<DOMAIN>/<edge_id>/<ROOM>/         (MediaMTX player page)
 #   API  : https://<DOMAIN>/<edge_id>/api/v1/…        (edgeId in request = 2nd check)
@@ -43,7 +43,7 @@ localPort = 8889                               # MediaMTX WebRTC signaling (WHEP
 customDomains = ["edgeai.ceravishealth.in"]    # the shared fleet DOMAIN
 # Leave the marker comment intact: verifying the account rewrites THIS line
 # automatically (ceravis-apply-edge-id) to the device's real edge_id.
-locations = ["/EDGE_ID"]  # ceravis:edge-id — set automatically at account verify
+locations = ["/EDGE_ID"]  # ceravis:edge-id — set automatically from the FMS enrollment
 
 # Edge uvicorn — the API + admin pages routed PER EDGE under the ONE
 # /<edge_id> path prefix, the SAME per-device key the live links use. frps
@@ -65,9 +65,9 @@ localIP = "127.0.0.1"
 localPort = 8000                               # uvicorn (edge API + admin pages)
 customDomains = ["edgeai.ceravishealth.in"]
 # Leave the marker comment intact: ceravis-apply-edge-id rewrites THIS line to
-# ["/<edge_id>/api", "/<edge_id>/ui"] automatically at
-# account verify + on every boot.
-locations = ["/EDGE_ID/api", "/EDGE_ID/ui"]  # ceravis:edge-id — set automatically at account verify
+# ["/<edge_id>/api", "/<edge_id>/ui"] automatically on every start
+# (the edge_id the FMS issued).
+locations = ["/EDGE_ID/api", "/EDGE_ID/ui"]  # ceravis:edge-id — set automatically from the FMS enrollment
 
 # ---------------------------------------------------------------------------
 # ⚠ Do NOT tunnel port 80 to the edge for Let's Encrypt. The cloud Caddy runs
@@ -100,6 +100,6 @@ multiplexer = "httpconnect"
 localIP = "127.0.0.1"
 localPort = 22
 # Leave the marker comment intact: ceravis-apply-edge-id rewrites THIS line to the
-# device's real edge_id at account verify + on every boot, exactly like the two
+# device's real edge_id (from the FMS) on every start, exactly like the two
 # proxies above. NO leading slash here — a CONNECT host is a hostname, not a path.
-customDomains = ["EDGE_ID"]  # ceravis:ssh-edge-id — set automatically at account verify
+customDomains = ["EDGE_ID"]  # ceravis:ssh-edge-id — set automatically from the FMS enrollment

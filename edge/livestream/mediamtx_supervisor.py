@@ -110,6 +110,8 @@ class MediaMTXSupervisor:
         self._config_file = _abs(settings.data_path) / "mediamtx.yml"
         self._log_file = log_path()
         self._down_since: float | None = None    # monotonic start of an open outage
+        self._started_at: float | None = None    # monotonic start of the running process
+        self.restarts = 0                        # unplanned restarts since the app started
         self.available = False
 
     # ---- lifecycle ---------------------------------------------------
@@ -143,6 +145,14 @@ class MediaMTXSupervisor:
         if self._thread:
             self._thread.join(timeout)
 
+    @property
+    def uptime_secs(self) -> float | None:
+        """How long the current MediaMTX process has run (None = not running)."""
+        proc, since = self._proc, self._started_at
+        if proc is None or since is None or proc.poll() is not None:
+            return None
+        return time.monotonic() - since
+
     def wait_ready(self, timeout: float = 15.0) -> bool:
         """Block until the control API answers (or timeout). Cameras get their
         readers started after this so the localhost restreams exist."""
@@ -170,6 +180,7 @@ class MediaMTXSupervisor:
                 return
             backoff = 1.0
             started_at = time.monotonic()
+            self._started_at = started_at
             while self._running and proc.poll() is None:
                 time.sleep(1.0)
                 if (self._down_since is not None
@@ -179,6 +190,7 @@ class MediaMTXSupervisor:
             if not self._running:          # our own stop() — not an outage
                 return
             cause = _exit_cause(proc.returncode)
+            self.restarts += 1
             logger.warning("MediaMTX %s after %.0fs — restarting",
                            cause, time.monotonic() - started_at)
             self._outage(cause)

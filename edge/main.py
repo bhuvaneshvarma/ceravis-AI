@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from config.settings import APP_DIR, settings
 from bootstrap.pipeline import Pipeline
 from maintenance import reboot
+from monitoring.request_log import requests as request_log
 
 from api.auth import SessionGate, router as session_router
 from common.local_key import local_key
@@ -33,6 +34,7 @@ from api.network_routes import router as network_router
 from api.recording_routes import router as recording_router
 from api.system_routes import router as system_router
 from api.talkback_routes import router as talkback_router
+from api.log_routes import router as log_router
 
 
 logging.basicConfig(
@@ -65,8 +67,8 @@ logging.getLogger("uvicorn.access").addFilter(_QuietPolling())
 
 def _apply_edge_id_on_boot() -> None:
     """(Re)apply this device's edge_id to the frp tunnel on startup, so a
-    `systemctl restart ceravis` reliably points frpc at the LATEST verified
-    device token (from account.json / jetson.env). Runs in a daemon thread — the
+    `systemctl restart ceravis` reliably points frpc at the edge_id the FMS
+    issued (config.account_config.effective_edge_id). Runs in a daemon thread — the
     privileged helper restarts frpc, which must not block the API coming up.
     Best-effort: no account or no installed helper just logs (see
     integration.edge_provision — install it with `bash cloud/install_frpc.sh`)."""
@@ -128,6 +130,13 @@ def _listen_for_refresh() -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     local_key.ensure()                # this device's own tools prove themselves with it
+    # A care recipient removed (or replaced) before this start: their data is
+    # erased now, before any component opens a file (maintenance.recipient_reset).
+    try:
+        from maintenance import recipient_reset
+        recipient_reset.complete_pending()
+    except Exception:
+        logger.exception("care recipient removal did not finish — retried next start")
     refresh = _listen_for_refresh()
     _ensure_camera_labels_on_boot()   # cameras.json normalized before any read
     pipeline = Pipeline()
@@ -158,6 +167,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("talk-back did not stop cleanly", exc_info=True)
     pipeline.stop()
+    request_log.flush(force=True)
+    reboot.mark_clean_stop()          # an orderly stop: the next boot is not a power cut
     if refresh["requested"]:
         logger.info("CERAVIS edge refreshed — systemd starts it again now")
         logging.shutdown()
@@ -322,9 +333,34 @@ async def _log_inbound_calls(request, call_next):
     return response
 
 
+async def _log_requests(request, call_next):
+    """Every request into the device -> logs/incoming.jsonl (monitoring/
+    request_log): writes and failures one line each, successful reads counted
+    per minute. Path and query NAMES only — never bodies or values. Registered
+    outside the session gate, so a refused call (401/403) is logged too."""
+    t0 = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        if request.method != "OPTIONS":
+            try:
+                client = request.client.host if request.client else None
+                origin = ("fleet" if request.scope.get(FLEET_EDGE_KEY)
+                          else "local" if client in ("127.0.0.1", "::1") else "lan")
+                request_log.record(request.method, request.url.path, status,
+                                   (time.perf_counter() - t0) * 1000, origin, client,
+                                   sorted(request.query_params.keys()))
+            except Exception:             # the log must never break a response
+                logger.debug("request log failed", exc_info=True)
+
+
 # Who may call /api — inside the prefix strip, so it sees the real route and
 # whether the request came through the tunnel (api/auth).
 app.add_middleware(SessionGate)
+app.middleware("http")(_log_requests)
 # Added LAST so it wraps everything — the per-edge prefix must be stripped (for
 # http AND websocket) before any routing or the other middleware run.
 app.add_middleware(_FleetEdgePrefix)
@@ -334,7 +370,7 @@ for _router in (session_router, setup_router,
                 account_router, camera_router, zone_router, recipient_router,
                 metrics_router, event_router, ai_router, recording_router,
                 discovery_router, network_router, system_router,
-                talkback_router):
+                talkback_router, log_router):
     app.include_router(_router)
 
 # Static UI (dashboard, cameras, zones) served same-origin.

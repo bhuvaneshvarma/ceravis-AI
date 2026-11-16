@@ -82,7 +82,7 @@ function mountCameras(root, opts = {}) {
 
   async function edgeId() {
     if (_edgeId !== null) return _edgeId;
-    try { const a = await api("/api/v1/account"); _edgeId = (a && a.user && a.user.edgeId) || ""; }
+    try { const a = await api("/api/v1/account"); _edgeId = (a && a.edge_id) || ""; }
     catch { _edgeId = ""; }
     return _edgeId;
   }

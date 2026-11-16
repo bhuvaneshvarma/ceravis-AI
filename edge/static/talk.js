@@ -47,7 +47,7 @@
     if (!edgePromise) {
       edgePromise = fetch("/api/v1/account")
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (a) { return (a && (a.edge_id || (a.user && a.user.edgeId))) || ""; })
+        .then(function (a) { return (a && a.edge_id) || ""; })
         .catch(function () { return ""; });
     }
     return edgePromise;

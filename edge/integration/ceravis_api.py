@@ -7,12 +7,16 @@ Only the calls the edge device needs. Everything goes through here so the
 server address lives in ONE place (device config) and never in the browser.
 
 Endpoint used during setup:
-    POST {base}/v1/ai/userDetails   body {"email": "..."}
+    POST {base}/v1/ai/userDetails   body {"email": "...", "deviceId": "ceravis-<code>"}
+    deviceId is THIS device's name (common/device_identity) — the same device_id
+    the fleet agent enrolls with, so the server finds the device's FMS record
+    (edge_id, …) in the shared DB and maps the account's cameras and live links.
     -> ApiResponse<UserDetailsResponse>
        { ceravisUserId, firstName, lastName, email, gender, role, tier,
          deviceToken }
-    deviceToken is this device's edge_id — the fleet routing token used as the
-    first segment of every live link and in cloud/frpc.toml locations.
+    deviceToken is the app server's own token for this device. The edge routes
+    on the edge_id the Fleet Management Server issued instead; the token is kept
+    only to notice a mismatch (the status beat tells the server the real one).
 A user that exists in the server's DB is what "verifies" the operator; if the
 email isn't found, onboarding is blocked.
 """
@@ -30,6 +34,7 @@ import requests
 from config.settings import resolve_path, settings
 from integration import call_log
 from common import clock
+from common.device_identity import identity
 
 
 logger = logging.getLogger("integration")
@@ -80,8 +85,8 @@ def _timeout() -> tuple[float, float]:
 # ---------------------------------------------------------------------------
 _WIRE_FILE = "ceravis_api_wire.jsonl"
 _WIRE_LOCK = threading.Lock()
-_WIRE_MAX_BYTES = 4 * 1024 * 1024       # rotate past this…
-_WIRE_KEEP_LINES = 500                   # …down to the newest N records
+_WIRE_MAX_BYTES = 16 * 1024 * 1024      # rotate past this… (room for 1500 typical records)
+_WIRE_KEEP_LINES = 1500                  # …down to the newest N records
 # Request fields that are large base64 blobs — logged as a short marker, never
 # verbatim, so the wire log stays readable and small.
 # Big base64 fields to collapse to a size marker in the wire log. saveSnapshot no
@@ -367,8 +372,11 @@ def get_user_details(email: str) -> dict | None:
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/userDetails"
-    request_body = {"email": email}
-    logger.info("userDetails -> POST %s  email=%s", url, email)
+    # identity().name, never settings.device_id (DEVICE_ID may override that):
+    # it must equal the device_id the FMS stored at enrollment.
+    device_id = identity().name
+    request_body = {"email": email, "deviceId": device_id}
+    logger.info("userDetails -> POST %s  email=%s  deviceId=%s", url, email, device_id)
     t0 = time.perf_counter()
     try:
         resp = _session().post(url, json=request_body, headers=_headers(),
@@ -472,7 +480,7 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     Fails CLOSED: returns (True, None, account) only for the server's one
     confirmation (_otp_confirmed: HTTP 2xx, code 1, "OTP verified successfully"),
     `account` being the user it confirmed — its `data`: ceravisUserId,
-    deviceToken (this device's edge_id), names, role, tier — or None when the
+    deviceToken (the app server's token for it), names, role, tier — or None when the
     reply carries none. Any other reply gives (False, reason, None), the reason
     being the server's message exactly as sent ("No OTP found…", …).
     Raises CeravisApiError on config/transport/5xx errors. The full request +

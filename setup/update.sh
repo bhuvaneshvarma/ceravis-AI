@@ -47,6 +47,9 @@ while [ $# -gt 0 ]; do
 done
 
 CURRENT="$(readlink -f "$APP/current")"
+# The units an update re-writes from the release it switches to.
+UNITS="ceravis.service ceravis-reboot.service ceravis-reboot.timer ceravis-fleet-agent.service
+       ceravis-firstboot.service ceravis-edge-id.service ceravis-edge-id.path"
 OLD_VERSION="$(basename "$CURRENT")"
 log() { echo "update: $*"; }
 history() {     # <result> <version> <detail>
@@ -58,6 +61,24 @@ switch_to() {   # <release dir>
     systemctl daemon-reload
     systemctl restart ceravis
     systemctl restart ceravis-fleet-agent 2>/dev/null || true
+    # What is installed now (/etc/ceravis/versions.json) — after a rollback too,
+    # so it reads THIS release, not the one this run exported for the update.
+    if [ -f "$1/setup/record_versions.sh" ]; then
+        local py="$1/venv/bin/python"; [ -x "$py" ] || py=/usr/bin/python3
+        CERAVIS_ROOT="$1" CERAVIS_PYTHON="$py" bash "$1/setup/record_versions.sh" >/dev/null 2>&1 \
+            || log "WARNING: versions file not written"
+    fi
+}
+units_of() {    # <release dir>: its units re-written; one it does not have goes
+    local u
+    for u in $UNITS; do
+        if [ -f "$1/edge/infra/systemd/$u" ]; then
+            install_unit "$1/edge/infra/systemd/$u"
+        else
+            systemctl disable --now "$u" >/dev/null 2>&1 || true
+            rm -f "/etc/systemd/system/$u"
+        fi
+    done
 }
 healthy() {
     local until=$((SECONDS + CHECK_SECS)) body
@@ -78,6 +99,9 @@ if [ "$ROLLBACK" = 1 ]; then
     [ -n "$PREV" ] || { log "no previous release to go back to"; exit 1; }
     PREV="${PREV%/}"
     log "rolling back $OLD_VERSION -> $(basename "$PREV")"
+    # shellcheck source=setup/lib.sh
+    . "$PREV/setup/lib.sh"          # the release's own units, for the layout's paths
+    units_of "$PREV"
     switch_to "$PREV"
     if healthy; then history rolled-back "$(basename "$PREV")" "on request"; log "done"; exit 0; fi
     history rollback-unhealthy "$(basename "$PREV")" "previous release also unhealthy"
@@ -150,13 +174,19 @@ log "built"
 # a changed template applies.
 unset "${LAYOUT_KEYS[@]}"
 . "$NEW/setup/lib.sh"
-for u in ceravis.service ceravis-reboot.service ceravis-reboot.timer \
-         ceravis-fleet-agent.service ceravis-firstboot.service; do
+# The edge_id first (a home not yet enrolled keeps the one it routes on), so the
+# unit written next loads it.
+bash "$NEW/setup/sync_edge_id.sh" --migrate --store-only \
+    || log "WARNING: the edge_id was not handed over — see the line above"
+for u in $UNITS; do
     install_unit "$NEW/edge/infra/systemd/$u"
 done
 install_unit "$NEW/cloud/systemd/frpc.service"
 log "switching to $NEW_VERSION"
 switch_to "$NEW"
+# The edge_id hand-over (setup/sync_edge_id.sh): on at boot and on every change.
+systemctl enable ceravis-edge-id.service >/dev/null 2>&1 || true
+systemctl enable --now ceravis-edge-id.path >/dev/null 2>&1 || true
 
 # ---- 6-7. check, keep or roll back -----------------------------------------------------------
 if healthy; then
@@ -169,10 +199,7 @@ if healthy; then
 fi
 log "$NEW_VERSION is NOT healthy within ${CHECK_SECS}s — rolling back to $OLD_VERSION"
 journalctl -u ceravis -n 30 --no-pager > "$WORK/fail.log" 2>&1 || true
-for u in ceravis.service ceravis-reboot.service ceravis-reboot.timer \
-         ceravis-fleet-agent.service ceravis-firstboot.service; do
-    install_unit "$CURRENT/edge/infra/systemd/$u"
-done
+units_of "$CURRENT"
 install_unit "$CURRENT/cloud/systemd/frpc.service"
 switch_to "$CURRENT"
 mv "$NEW" "$NEW.failed"

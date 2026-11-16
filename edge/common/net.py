@@ -7,6 +7,8 @@ subnets do I own".
     local_ipv4s()          -> EVERY non-loopback IPv4 the host owns (all NICs)
     local_ipv4_networks()  -> the subnet(s) the host sits on, for a targeted sweep
     wired_uplink()         -> the Ethernet cable to the router: plugged? address?
+    default_gateway()      -> the router internet traffic goes through
+    link_speed_mbps()      -> the speed the Ethernet port negotiated
     home_ipv4s()           -> the addresses a person on the home network uses
 
 ONVIF discovery is the demanding consumer: the probe must go out every interface
@@ -64,6 +66,31 @@ def wired_uplink(sys_net: Path = Path("/sys/class/net")) -> WiredUplink:
         if plugged or not found.iface:
             found = port
     return found
+
+
+def default_gateway(route_table: Path = Path("/proc/net/route")) -> str | None:
+    """The router this device sends internet traffic to (the default route's
+    gateway), from the kernel's routing table. None when there is none."""
+    try:
+        rows = route_table.read_text().splitlines()[1:]
+    except OSError:
+        return None
+    for row in rows:
+        f = row.split()
+        if len(f) > 3 and f[1] == "00000000" and int(f[3], 16) & 0x2:      # RTF_GATEWAY
+            return socket.inet_ntoa(bytes.fromhex(f[2])[::-1])
+    return None
+
+
+def link_speed_mbps(iface: str, sys_net: Path = Path("/sys/class/net")) -> int | None:
+    """The Ethernet link speed the port negotiated (100, 1000 …), or None."""
+    if not iface:
+        return None
+    try:
+        speed = int((sys_net / iface / "speed").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return speed if speed > 0 else None
 
 
 def lan_ip() -> str | None:

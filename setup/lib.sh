@@ -49,8 +49,9 @@ CERAVIS_CREDSTORE="${CERAVIS_CREDSTORE-/etc/ceravis/credstore}"
 EDGE_DIR="$CERAVIS_ROOT/edge"
 
 # The secret files the app reads as systemd credentials (pydantic secrets_dir:
-# the file name is the setting name).
-CREDENTIALS=(ceravis_api_key)
+# the file name is the setting name). edge_id: issued by the FMS at enrollment,
+# stored by setup/sync_edge_id.sh.
+CREDENTIALS=(ceravis_api_key edge_id)
 
 data_dir()   { if [ -n "$CERAVIS_DATA_DIR" ];   then echo "$CERAVIS_DATA_DIR";   else echo "$EDGE_DIR/data";   fi; }
 models_dir() { if [ -n "$CERAVIS_MODELS_DIR" ]; then echo "$CERAVIS_MODELS_DIR"; else echo "$EDGE_DIR/models"; fi; }

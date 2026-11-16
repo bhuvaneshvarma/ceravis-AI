@@ -60,9 +60,20 @@ def _mtx_remove(request: Request, camera_id: str) -> None:
 # STATIC PATHS FIRST (required so they don't collide with /{camera_id})
 # =====================================================================
 
+# What a caller that is NOT signed in may see of a camera — only UI_TESTING_OPEN
+# lets one here (api/auth). An allowlist: the RTSP URLs (their user:password)
+# and the ONVIF login are never in it, nor any field added later.
+_OPEN_FIELDS = ("camera_id", "camera_name", "room_name", "device_label",
+                "ptz_supported", "is_enabled")
+
+
 @router.get("")
-def list_cameras():
-    return camera_config.get_all()
+def list_cameras(request: Request):
+    from api.auth import signed_in
+    cameras = camera_config.get_all()
+    if signed_in(request):
+        return cameras
+    return [c.model_dump(include=set(_OPEN_FIELDS)) for c in cameras]
 
 
 def _normalize_urls(camera: Camera) -> None:
