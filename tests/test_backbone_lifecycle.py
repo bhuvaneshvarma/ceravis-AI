@@ -400,6 +400,96 @@ try:
     check("stop(): the capture is released after read() returns, never during it",
           SlowCap.bad and not any(SlowCap.bad), str(SlowCap.bad))
     check("...and the reader has ended", not slow._thread.is_alive())
+
+    # A STALLED read (bench + prodtest SIGSEGVs, 2026-11-16..18): the watchdog
+    # must never release a capture whose read() is running. It abandons the
+    # stuck reader; a new generation takes over at once; the stuck one releases
+    # its OWN capture when read() finally returns.
+    class StallCap(FakeCap):
+        gate = threading.Event()
+        bad: list = []
+        n = 0
+
+        def __init__(self, src, *a, **k):
+            super().__init__(src)
+            StallCap.n += 1
+            self.stalls = StallCap.n == 1          # only the first capture hangs
+            self.reading = False
+
+        def read(self):
+            self.reading = True
+            try:
+                if self.stalls:
+                    StallCap.gate.wait()
+                    return False, None
+                time.sleep(0.02)
+                return True, np.zeros((36, 64, 3), np.uint8)
+            finally:
+                self.reading = False
+
+        def release(self):
+            StallCap.bad.append(self.reading)
+            self.released = True
+    real_stall = rr.settings.camera_stall_reconnect_secs
+    object.__setattr__(rr.settings, "camera_stall_reconnect_secs", 1.0)
+    rr.cv2.VideoCapture = lambda src, *a: StallCap(src)
+    fb = FrameBuffer()
+    st = rr.RTSPReader(cam, fb, source_url="rtsp://127.0.0.1:8554/edgeXYZ/LOUNGE",
+                       target_fps=50)
+    st.start()
+    first = None
+    for _ in range(60):
+        time.sleep(0.1)
+        if StallCap.n >= 2 and st.frames_captured > 0:
+            break
+    first = next(c for c in CAPS if isinstance(c, StallCap))
+    check("a stalled read: a NEW reader takes over and the AI gets frames again",
+          StallCap.n >= 2 and st.frames_captured > 0 and fb.get(cam.camera_id) is not None,
+          f"captures={StallCap.n} frames={st.frames_captured}")
+    check("…the stuck capture is NOT released while its read() runs",
+          not first.released and not any(StallCap.bad), str(StallCap.bad))
+    StallCap.gate.set()                          # the stuck read finally returns
+    time.sleep(0.5)
+    check("…and once read() returns, the stuck thread releases its OWN capture",
+          first.released and not any(StallCap.bad), str(StallCap.bad))
+    st.stop()
+    st.join(2)
+    check("stop(): no capture ever released during a read", not any(StallCap.bad))
+
+    # Reads that never come back: bounded — a clean service restart is asked
+    # for (SIGUSR1, the nightly refresh), never an endless pile of stuck threads.
+    class DeadCap(FakeCap):
+        forever = threading.Event()
+
+        def read(self):
+            DeadCap.forever.wait()
+            return False, None
+    kills: list = []
+    real_kill, real_max = rr.os.kill, rr._MAX_STUCK_READS
+    rr.os.kill = lambda pid, sig: kills.append(sig)
+    rr._MAX_STUCK_READS = 2
+    rr.cv2.VideoCapture = lambda src, *a: DeadCap(src)
+    dead = rr.RTSPReader(cam, FrameBuffer(), source_url="rtsp://127.0.0.1:8554/edgeXYZ/LOUNGE",
+                         target_fps=50)
+    try:
+        dead.start()
+        usr1 = getattr(rr.signal, "SIGUSR1", None)     # none on a Windows dev box
+        want = [usr1] if usr1 is not None else []
+        for _ in range(80):
+            time.sleep(0.1)
+            if dead._restart_asked:
+                break
+        check(f"{rr._MAX_STUCK_READS} reads stuck -> ONE clean restart asked (SIGUSR1)",
+              dead._restart_asked and kills == want, str(kills))
+        time.sleep(1.5)
+        check("…asked once, and no further readers are piled up",
+              kills == want and len(dead._stuck_reads) == rr._MAX_STUCK_READS,
+              f"kills={kills} stuck={len(dead._stuck_reads)}")
+    finally:
+        dead.stop()
+        DeadCap.forever.set()
+        rr.os.kill, rr._MAX_STUCK_READS = real_kill, real_max
+        object.__setattr__(rr.settings, "camera_stall_reconnect_secs", real_stall)
 finally:
     rr.cv2.VideoCapture, rr._OPEN_TIMEOUT_SECS = real_vc, real_timeout
     rr._READY_POLL_SECS = real_poll

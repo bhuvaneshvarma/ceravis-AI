@@ -27,6 +27,7 @@ got no frame, so nothing was detected or recorded, silently).
 
 import logging
 import os
+import signal
 import threading
 import time
 from datetime import datetime
@@ -64,16 +65,21 @@ _SW_RETRY_SECS = 120.0
 def _ai_fps() -> float:
     """The most frames per second any AI stage takes from a camera."""
     return max(settings.detection_fps, settings.pose_fps, 1.0)
-# Longest any caller waits on a capture release. Releasing is also the only way
-# to unblock a read() stuck on a silent stream, so it has to happen from another
-# thread — and a GStreamer capture torn down while its reader is inside read()
-# can block in release() itself. On the bench (2026-09-23 19:20) that pinned the
-# shutdown thread until systemd SIGKILLed the service, MediaMTX and the
-# recorders 90 s later. Past this bound the release is abandoned, not awaited.
+# Longest a reader waits on releasing ITS OWN capture (a wedged GStreamer
+# pipeline can block in release()). Past this bound the release is abandoned.
 _RELEASE_TIMEOUT_SECS = 3.0
-# How long stop() lets the reader thread leave read() and release its own
-# capture before releasing it from outside (see RTSPReader.stop).
+# How long stop() waits for the reader thread to leave read() on its own.
 _STOP_WAIT_SECS = 2.0
+# ONE RULE: a capture is released only by the thread that reads it. Releasing it
+# from another thread while read() runs frees the decoder under that read — the
+# process dies with SIGSEGV (bench + prodtest, 2026-11-16..18: every crash came
+# right after "STALLED — forcing a reader reconnect", which did exactly that).
+# So a stalled read is ABANDONED instead: a new reader generation takes over at
+# once, and the stuck thread releases its own capture whenever read() returns
+# (MediaMTX closing the session does that). Reads still stuck past this count
+# for one camera ask for a clean service restart (the nightly refresh's SIGUSR1,
+# exit 75) — one ordered restart, never a hard crash, never a pile-up.
+_MAX_STUCK_READS = 3
 
 
 class RTSPReader:
@@ -103,10 +109,14 @@ class RTSPReader:
         self._software = False                  # connected via plain FFmpeg (stop-gap)
 
         self._capture: cv2.VideoCapture | None = None
-        # The capture already handed to _release — held so stop(), the watchdog
-        # and the read loop never release the same one twice, concurrently.
+        # The capture already handed to _release — never released twice.
         self._released_cap: cv2.VideoCapture | None = None
         self._release_lock = threading.Lock()
+        # Reader generation: a thread whose generation is no longer current has
+        # been abandoned (stalled read, stop) and only cleans up after itself.
+        self._gen = 0
+        self._stuck_reads: list[threading.Thread] = []
+        self._restart_asked = False
         self._thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
         self._running = False
@@ -172,30 +182,34 @@ class RTSPReader:
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name=f"rtsp-{self.camera_id}")
-        self._thread.start()
+        self._spawn_reader()
         self._watchdog_thread = threading.Thread(
             target=self._watchdog, daemon=True, name=f"rtsp-wd-{self.camera_id}")
         self._watchdog_thread.start()
 
+    def _spawn_reader(self) -> None:
+        """Start a reader thread for the CURRENT generation."""
+        self._thread = threading.Thread(
+            target=self._run, args=(self._gen,), daemon=True,
+            name=f"rtsp-{self.camera_id}-{self._gen}")
+        self._thread.start()
+
     def stop(self) -> None:
-        """Stop the reader. The reader thread itself leaves read() (a frame
-        arrives within a fraction of a second) and releases its own capture.
-        Releasing it from HERE while that thread was still inside read() freed
-        the capture under it — a use-after-free that corrupted the heap and
-        aborted the process at a later thread exit (`tcache_thread_shutdown():
-        unaligned tcache chunk detected`, 2026-09-24 and at the 2026-09-25 16:30
-        refresh). Only a reader still stuck after _STOP_WAIT_SECS (a silent
-        stream) has its capture released from here, to unblock it."""
+        """Stop the reader. Its thread leaves read() (a frame arrives within a
+        fraction of a second) and releases its own capture. Never released from
+        here (see _MAX_STUCK_READS): a reader still inside read() after
+        _STOP_WAIT_SECS is left to release it when read() returns — it is a
+        daemon thread, so it never holds the process at exit."""
         self._running = False
+        self._gen += 1
         self._health_state = CameraHealthState.OFFLINE
         t = self._thread
         if t is not None and t is not threading.current_thread():
             t.join(_STOP_WAIT_SECS)
-            if not t.is_alive():
-                return
-        self._release(self._capture, "stop")
+            if t.is_alive():
+                logger.warning("camera=%s reader still inside read() at stop — it "
+                               "releases its capture when the read returns",
+                               self.camera_id)
 
     def _release(self, cap: cv2.VideoCapture | None, why: str) -> None:
         """Release `cap` once — whichever of stop / watchdog / the read loop gets
@@ -228,14 +242,12 @@ class RTSPReader:
 
     def _watchdog(self) -> None:
         """Self-heal the SILENT stall: a loopback session that stops delivering
-        frames while cv2.read() stays blocked (no error, no EOS) — so the read
-        loop is stuck INSIDE read() and its post-read timeout never runs, and the
-        live view keeps working (MediaMTX still serves the path) while the AI
-        starves. This independent thread notices frames have stopped and releases
-        the capture; that unblocks the hung read(), the main loop sees the failed
-        read and reconnects on its own. No manual restart. Armed only while
-        RUNNING and after the first connection, so a normal first-frame wait is
-        never cut short."""
+        frames while cv2.read() stays blocked (no error, no EOS) — the read loop
+        is stuck INSIDE read() and its post-read timeout never runs, while the AI
+        starves. This thread notices frames have stopped and hands the camera to
+        a NEW reader generation (_abandon_stuck_read); the stuck one is never
+        touched from here. Armed only while RUNNING and after the first
+        connection, so a normal first-frame wait is never cut short."""
         timeout = max(1.0, settings.camera_stall_reconnect_secs)
         while self._running:
             time.sleep(1.0)
@@ -252,7 +264,39 @@ class RTSPReader:
                 "serves the path; forcing a reader reconnect", self.camera_id, idle)
             # Re-arm the window first so we don't fire again during the reconnect.
             self._last_frame_monotonic = time.monotonic()
-            self._release(self._capture, "stall")   # unblocks the hung read()
+            self._abandon_stuck_read()
+
+    def _abandon_stuck_read(self) -> None:
+        """Leave the stuck reader to finish (and release its own capture) on its
+        own; a new generation reconnects now. Too many still stuck for this
+        camera: one clean service restart instead of a growing pile."""
+        stuck = self._thread
+        self._stuck_reads = [t for t in self._stuck_reads if t.is_alive()]
+        if stuck is not None and stuck.is_alive():
+            self._stuck_reads.append(stuck)
+        self._frame_buffer.clear(self.camera_id)
+        self._gen += 1
+        self._capture = None                  # the stuck thread holds its own copy
+        self._reconnect_count += 1
+        self._health_state = CameraHealthState.RECONNECTING
+        if len(self._stuck_reads) >= _MAX_STUCK_READS:
+            self._request_restart()
+            return
+        self._spawn_reader()
+
+    def _request_restart(self) -> None:
+        """Ask the service for the nightly refresh's clean restart (main.py:
+        SIGUSR1 -> ordered shutdown -> exit 75 -> systemd starts it again)."""
+        if self._restart_asked:
+            return
+        self._restart_asked = True
+        logger.error("camera=%s %d reads stuck inside the decoder — restarting the "
+                     "service cleanly", self.camera_id, len(self._stuck_reads))
+        try:
+            os.kill(os.getpid(), signal.SIGUSR1)
+        except (AttributeError, OSError, ValueError):   # no SIGUSR1 (dev PC)
+            logger.error("camera=%s clean restart unavailable here — the camera "
+                         "stays off until the service restarts", self.camera_id)
 
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
@@ -406,7 +450,13 @@ class RTSPReader:
         return ready, codec
 
     # ---- main loop ---------------------------------------------------------
-    def _run(self) -> None:
+    def _run(self, gen: int = 0) -> None:
+        """One reader generation. It owns every capture it opens and is the only
+        thread that ever releases one; once abandoned (a newer generation, or
+        stop) it releases what it holds when read() returns, and leaves."""
+        def current() -> bool:
+            return self._running and self._gen == gen
+
         reconnect_delay = settings.reconnect_delay_secs
         # target_fps <= 0 => UNCAPPED: drain the decoder at the camera's native
         # rate and publish every frame to the latest-frame buffer, so consumers
@@ -417,7 +467,7 @@ class RTSPReader:
         # value re-imposes a soft ceiling for weak / many-camera boxes.
         frame_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.0
 
-        while self._running:
+        while current():
             ready, codec = self._wait_for_source()
             if not ready:
                 self._health_state = CameraHealthState.RECONNECTING
@@ -433,6 +483,10 @@ class RTSPReader:
                                       settings.max_reconnect_delay_secs)
                 continue
 
+            cap = self._capture                  # THIS generation's capture
+            if not current():                    # abandoned while connecting
+                self._release(cap, "abandoned")
+                return
             reconnect_delay = settings.reconnect_delay_secs
             next_frame_time = time.perf_counter()
             logged_size = False        # announce the real resolution once per connect
@@ -443,7 +497,7 @@ class RTSPReader:
             connected_at = time.monotonic()
             self._connected_at = connected_at
 
-            while self._running and self._capture is not None:
+            while current() and cap is not None:
                 if frame_interval:                       # 0 => uncapped, no pacing
                     now = time.perf_counter()
                     if now < next_frame_time:
@@ -451,7 +505,9 @@ class RTSPReader:
                     next_frame_time += frame_interval
 
                 read_started = time.perf_counter()
-                success, frame = self._capture.read()
+                success, frame = cap.read()
+                if not current():                        # abandoned during read()
+                    break
                 if time.perf_counter() - read_started > settings.read_timeout_secs:
                     logger.warning("Read timeout camera=%s", self.camera_id)
                     break
@@ -506,12 +562,14 @@ class RTSPReader:
                 )
                 self._log_stats()
 
+            if not current():                    # abandoned: clean up our own, leave
+                self._release(cap, "abandoned")
+                return
             self._frame_buffer.clear(self.camera_id)
-            self._release(self._capture, "reconnect")
+            self._release(cap, "reconnect")
             self._capture = None
-            if self._running:
-                self._reconnect_count += 1
-                self._health_state = CameraHealthState.RECONNECTING
+            self._reconnect_count += 1
+            self._health_state = CameraHealthState.RECONNECTING
 
     # ---- metrics -------------------------------------------------------
     def _update_fps(self) -> None:
