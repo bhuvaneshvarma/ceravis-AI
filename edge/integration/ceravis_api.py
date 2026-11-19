@@ -275,14 +275,16 @@ def _headers() -> dict[str, str]:
 # its reply the same way, so neither side acts on a message the other did not
 # send, and no secret ever crosses the network:
 #
-#   request  X-Ceravis-Device     this device's deviceId (common/device_identity)
-#            X-Ceravis-Timestamp  Unix seconds, three decimals: 1793361045.218
+#   request  X-Ceravis-Timestamp  Unix seconds, three decimals: 1793361045.218
 #            X-Ceravis-Signature  Base64( HMAC-SHA256(key, timestamp "\n" sha256hex(payload)) )
 #   reply    X-Ceravis-Signature  Base64( HMAC-SHA256(key, request timestamp "\n" sha256hex(reply body)) )
 #
 # `payload` is the request body exactly as sent (compact UTF-8 JSON); verifyOtp
 # sends no body at all, and its payload is the code the person typed. sha256hex
 # is lowercase hex. A 2xx reply is acted on only when its signature matches.
+# The device is named only by the deviceId in the sendOtp and userDetails
+# bodies; verifyOtp names nothing, so the server finds its code by the
+# signature alone.
 #
 # The key. A device signs its FIRST sendOtp with the API key; that reply's
 # randomId makes the device's own key, HMAC-SHA256(API key, randomId) as 64
@@ -293,7 +295,6 @@ def _headers() -> dict[str, str]:
 # setup/seal.sh removes it. The randomId, the code and the key never reach a
 # log.
 # ---------------------------------------------------------------------------
-HDR_DEVICE = "X-Ceravis-Device"
 HDR_TIMESTAMP = "X-Ceravis-Timestamp"
 HDR_SIGNATURE = "X-Ceravis-Signature"
 EDGE_KEY_FILE = "edge_api.key"
@@ -379,8 +380,7 @@ def _post_signed(endpoint: str, key: str, body: bytes, *, payload: bytes | None 
     CeravisApiError when the server cannot be reached."""
     url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/" + endpoint
     timestamp = f"{time.time():.3f}"
-    headers = {"Accept": "application/json", HDR_DEVICE: identity().name,
-               HDR_TIMESTAMP: timestamp,
+    headers = {"Accept": "application/json", HDR_TIMESTAMP: timestamp,
                HDR_SIGNATURE: _signature(key, timestamp, body if payload is None else payload)}
     if body:
         headers["Content-Type"] = "application/json"

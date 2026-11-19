@@ -142,12 +142,14 @@ agent restarts itself when its own code changes.
 ## App-server sign-in is signed (decided 2026-11-19)
 
 - `sendOtp`, `verifyOtp` and `userDetails` carry **no API key**. Each request is
-  signed (`edge/integration/ceravis_api.py`, "Signed sign-in"):
-  `X-Ceravis-Device` (deviceId), `X-Ceravis-Timestamp` (Unix seconds, three
-  decimals), `X-Ceravis-Signature` = Base64(HMAC-SHA256(key, timestamp "\n"
-  sha256hex(payload))). The server signs its reply the same way over the
-  request's timestamp and the reply's exact bytes; a 2xx reply is acted on only
-  when its signature matches.
+  signed (`edge/integration/ceravis_api.py`, "Signed sign-in") with two
+  headers only: `X-Ceravis-Timestamp` (Unix seconds, three decimals) and
+  `X-Ceravis-Signature` = Base64(HMAC-SHA256(key, timestamp "\n"
+  sha256hex(payload))). No device header (the Java app refuses one): the
+  device is named by `deviceId` in the sendOtp / userDetails bodies, and the
+  server finds a verifyOtp's open code by its signature alone. The server
+  signs its reply the same way over the request's timestamp and the reply's
+  exact bytes; a 2xx reply is acted on only when its signature matches.
 - The first `sendOtp` is signed with the API key. Its reply's `randomId` makes
   the **device key** = hex(HMAC-SHA256(API key, randomId)). It is held in
   memory, and kept in `<data>/edge_api.key` (0600) only once `verifyOtp`

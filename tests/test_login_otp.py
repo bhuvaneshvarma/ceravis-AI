@@ -399,7 +399,13 @@ check("...and the code is in no header either",
 check("...only its signature over the code, with this device's key",
       headers[ceravis_api.HDR_SIGNATURE] == ceravis_api._signature(
           DEVICE_KEY, headers[ceravis_api.HDR_TIMESTAMP], b"97531"))
-check("...and no API key", "X-API-Key" not in headers)
+check("...and no API key, no device header: timestamp and signature only",
+      "X-API-Key" not in headers and "X-Ceravis-Device" not in headers
+      and set(headers) == {"Accept", ceravis_api.HDR_TIMESTAMP, ceravis_api.HDR_SIGNATURE},
+      str(sorted(headers)))
+_, sent_headers, _ = next(s for s in SESSION.sent if s[0].endswith("/userDetails"))
+check("sendOtp / userDetails name the device only in the body (no device header)",
+      "X-Ceravis-Device" not in sent_headers, str(sorted(sent_headers)))
 check("code '97531' absent from the wire log", "97531" not in wire)
 check("the device key absent from the wire log", DEVICE_KEY not in wire)
 
@@ -469,7 +475,9 @@ ACCOUNT = {"ceravisUserId": 5012, "firstName": "Care", "lastName": "Recipient",
 class AppServer:
     """The Java side of the signed sign-in, as specified: the reference the
     real server is held to. Signatures are checked over the raw bytes received;
-    a request older or newer than 300 s, or one already used, is refused."""
+    a request older or newer than 300 s, or one already used, is refused. No
+    request names its device in a header: sendOtp and userDetails by the body's
+    deviceId, verifyOtp not at all — its code is found by the signature alone."""
 
     def __init__(self) -> None:
         self.bound: dict[str, str] = {}       # deviceId -> its key (after a confirmed code)
@@ -478,12 +486,24 @@ class AppServer:
         self.calls: list[tuple[str, str]] = []   # (endpoint, which key / verdict)
         self.tamper = self.unsigned = False
 
+    def _match_code(self, ts: str, sig: str):
+        """verifyOtp carries no deviceId: the open code whose expected signature
+        equals the one received — (deviceId, key) or None. The key is in the
+        signature, so two devices' equal codes can never be confused."""
+        for device, p in self.pending.items():
+            key = self.bound.get(device) or (
+                p["random_id"] and ceravis_api._derive_edge_key(API_KEY, p["random_id"]))
+            if key and ceravis_api._signed_by(key, ts, p["otp"].encode(), sig):
+                return device, key
+        return None
+
     def handle(self, endpoint: str, headers, raw: bytes):
-        device = headers.get(ceravis_api.HDR_DEVICE) or ""
         ts = headers.get(ceravis_api.HDR_TIMESTAMP) or ""
         sig = headers.get(ceravis_api.HDR_SIGNATURE) or ""
         if headers.get("X-API-Key"):
             return 400, None, {"code": 0, "message": "sign-in calls carry no API key"}
+        if headers.get("X-Ceravis-Device"):
+            return 400, None, {"code": 0, "message": "X-Ceravis-Device is not accepted"}
         try:
             fresh = abs(time.time() - float(ts)) <= 300
         except ValueError:
@@ -491,15 +511,13 @@ class AppServer:
         if not fresh or sig in self.used:
             return 401, None, {"code": 0, "message": "Request expired or already used"}
         if endpoint == "verifyOtp":
-            p = self.pending.get(device)
-            if p is None:
-                return 401, None, {"code": 0, "message": "No OTP found. Please request OTP again"}
-            key = self.bound.get(device) or ceravis_api._derive_edge_key(API_KEY, p["random_id"])
             if raw:
-                return 400, key, {"code": 0, "message": "verifyOtp takes no body"}
-            if not ceravis_api._signed_by(key, ts, p["otp"].encode(), sig):
-                self.calls.append((endpoint, "wrong code or key"))
-                return 200, key, {"code": 0, "data": None, "message": "Invalid OTP"}
+                return 400, None, {"code": 0, "message": "verifyOtp takes no body"}
+            found = self._match_code(ts, sig)
+            if found is None:                         # no device known: nothing to sign with
+                self.calls.append((endpoint, "no open code matches"))
+                return 401, None, {"code": 0, "data": None, "message": "Invalid OTP"}
+            device, key = found
             self.used.add(sig)
             del self.pending[device]
             self.bound[device] = key                  # the device key is bound here
@@ -509,8 +527,9 @@ class AppServer:
             body = json.loads(raw)
         except ValueError:
             return 400, None, {"code": 0, "message": "bad body"}
-        if body.get("deviceId") != device:
-            return 400, None, {"code": 0, "message": "deviceId does not match the header"}
+        device = body.get("deviceId") or ""
+        if not device:
+            return 400, None, {"code": 0, "message": "deviceId required"}
         key = self.bound.get(device) or (API_KEY if endpoint == "sendOtp" else None)
         if key is None or not ceravis_api._signed_by(key, ts, raw, sig):
             self.calls.append((endpoint, "signature does not match"))
@@ -584,11 +603,18 @@ check("...the reply's randomId makes the device key — held, NOT saved before t
 code = APP.pending[DEVICE]["otp"]
 wrong = f"{(int(code) + 1) % 100000:05d}"
 r = _verify(wrong)
-check("a wrong code: refused with the server's own words, still no key saved",
-      r == {"verified": False, "reason": "Invalid OTP"} and not KEY_FILE.exists(), str(r))
+check("a wrong code: no open code matches its signature -> 401 'Invalid OTP', shown as sent; no key saved",
+      r == {"verified": False, "reason": "Invalid OTP"} and not KEY_FILE.exists()
+      and APP.calls[-1] == ("verifyOtp", "no open code matches"), str(r))
+APP.pending = {"ceravis-otherhome": {"email": "other@example.com", "otp": code,   # same code,
+                                     "random_id": str(uuid.uuid4())},       # another device,
+               **APP.pending}                                                # tried FIRST
 r = _verify(code)
+other = APP.pending.pop("ceravis-otherhome", None)
 check("the right code: signed in as a new device", r["verified"] is True and r["fresh"] is True,
       str(r)[:160])
+check("...found by its signature alone, never confused with another device holding the SAME code",
+      DEVICE in APP.bound and "ceravis-otherhome" not in APP.bound and other is not None)
 check("...the device key is saved, exactly HMAC-SHA256(API key, randomId)",
       KEY_FILE.read_text(encoding="utf-8") == ceravis_api._derive_edge_key(API_KEY, random_id)
       and APP.bound[DEVICE] == KEY_FILE.read_text(encoding="utf-8"))
@@ -657,7 +683,7 @@ check("...cleared on the server too, the device signs up again with the API key"
 url = settings.ceravis_api_base_url + "/v1/ai/userDetails"
 body = ceravis_api._json_bytes({"email": "care@example.com", "deviceId": DEVICE})
 ts = f"{time.time():.3f}"
-hdr = {ceravis_api.HDR_DEVICE: DEVICE, ceravis_api.HDR_TIMESTAMP: ts,
+hdr = {ceravis_api.HDR_TIMESTAMP: ts,
        ceravis_api.HDR_SIGNATURE: ceravis_api._signature(KEY_FILE.read_text(), ts, body),
        "Content-Type": "application/json"}
 first = requests.post(url, data=body, headers=hdr, timeout=5)
