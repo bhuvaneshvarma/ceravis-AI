@@ -242,14 +242,22 @@ def api_key_problem() -> str | None:
     if not is_configured():
         return None
     key = settings.ceravis_api_key.strip()
-    fix = "run setup/install_api_key.sh, then restart ceravis"
     if not key:
         return ("app-server API key not installed — the app server refuses this "
-                f"device's alerts and snapshots (queued, not lost); {fix}")
-    if key == type(settings).model_fields["ceravis_api_key"].default:
-        return ("app-server API key is the old built-in one (public, to be "
-                f"revoked) — {fix}")
+                "device's sign-in, alerts and snapshots (uploads queued, not lost); "
+                "run setup/install_api_key.sh")
+    if hashlib.sha256(key.encode("utf-8")).hexdigest() in _REVOKED_API_KEYS_SHA256:
+        return ("app-server API key is the old revoked one (it was public) — the app "
+                "server refuses this device's sign-in; install the new key: "
+                "setup/install_api_key.sh --replace")
     return None
+
+
+# Keys the app server no longer accepts, by their SHA-256 only (the old one was
+# public: it used to be this repository's built-in default, retired 2026-11-19).
+_REVOKED_API_KEYS_SHA256 = frozenset({
+    "b4dee005f91e1641f1b557b20f2945e2d593d5dcb4a24cc05a30c15f8b2989c7",
+})
 
 
 def _with_key(headers: dict[str, str], idempotency_key: str | None) -> dict[str, str]:

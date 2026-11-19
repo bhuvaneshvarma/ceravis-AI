@@ -391,7 +391,7 @@ def _warnings(g: dict) -> list[tuple[str, str | None, str]]:
                                 "fall and no-motion detection are not running"))
     cloud = g["cloud"]
     # Before the upload symptoms below: a missing key is their cause, and with
-    # the old built-in key nothing fails YET — only this line says so.
+    # the old revoked key only sign-in fails at first — this line says why.
     if cloud.get("api_key_problem"):
         out.append(("app_server", None, cloud["api_key_problem"]))
     queue = cloud.get("outbox") or {}

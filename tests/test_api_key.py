@@ -60,13 +60,23 @@ check("no key: reported, naming the fix",
       "not installed" in p and "setup/install_api_key.sh" in p, p)
 check("...and no empty X-API-Key header is sent", "X-API-Key" not in ceravis_api._headers())
 
-if BUILT_IN:
-    settings.ceravis_api_key = BUILT_IN
-    p = ceravis_api.api_key_problem() or ""
-    check("the old built-in key: reported, naming the fix",
-          "old built-in" in p and "setup/install_api_key.sh" in p, p)
-else:
-    check("no built-in key left in settings.py: the missing case covers it", True)
+check("no key is built into the code: the setting's default is empty", BUILT_IN == "",
+      f"{len(BUILT_IN)} characters")
+code = "\n".join(p.read_text(encoding="utf-8") for p in (ROOT / "edge").rglob("*.py"))
+check("...and no API-key literal (sk-…) is left anywhere in the edge code",
+      not re.search(r"""["']sk-[A-Za-z0-9]{20,}""", code))
+check("the old public key is on the revoked list, by its SHA-256 only",
+      "b4dee005f91e1641f1b557b20f2945e2d593d5dcb4a24cc05a30c15f8b2989c7"
+      in ceravis_api._REVOKED_API_KEYS_SHA256)
+import hashlib                                   # noqa: E402
+real_revoked = ceravis_api._REVOKED_API_KEYS_SHA256
+ceravis_api._REVOKED_API_KEYS_SHA256 = real_revoked | {
+    hashlib.sha256(b"sk-test-revoked-key").hexdigest()}
+settings.ceravis_api_key = "sk-test-revoked-key"
+p = ceravis_api.api_key_problem() or ""
+check("a device still on a revoked key: reported, naming the fix (--replace)",
+      "old revoked" in p and "setup/install_api_key.sh --replace" in p, p)
+ceravis_api._REVOKED_API_KEYS_SHA256 = real_revoked
 
 settings.ceravis_api_base_url = ""
 settings.ceravis_api_key = ""
@@ -122,6 +132,71 @@ for script in ("setup.sh", "upgrade.sh"):
     check(f"{script} installs the key before (re)starting ceravis",
           at != -1 and at < text.find("install_service.sh")
           and (script == "setup.sh" or at < text.find("systemctl restart ceravis")))
+
+
+
+print("\n5. replacing the key: install_api_key.sh --replace")
+import shutil                                    # noqa: E402
+import subprocess                                # noqa: E402
+
+
+def real_bash():
+    """A real bash. On Windows the `bash` on PATH is usually WSL's launcher, so take Git's."""
+    if os.name != "nt":
+        return shutil.which("bash") or "bash"
+    git = shutil.which("git")
+    for folder in Path(git).resolve().parents if git else ():
+        if (folder / "bin" / "bash.exe").exists():
+            return str(folder / "bin" / "bash.exe")
+    return "bash"
+
+
+box = Path(tempfile.mkdtemp(prefix="ceravis-keyreplace-"))
+(box / "bin").mkdir()
+store = box / "credstore"
+store.mkdir()
+(store / "ceravis_api_key").write_text("sk-test-old-key")
+log = box / "sudo.log"
+layout = box / "layout.env"
+layout.write_text("")
+# sudo runs only what touches the stand-in credstore (test, cat, sh); anything else
+# (unit files, systemctl, rm, chown) is only LOGGED, so nothing on this machine changes.
+(box / "bin" / "sudo").write_text(
+    "#!/bin/sh\n"
+    'case "$1" in test|cat|sh) exec "$@" ;; esac\n'
+    f'echo "$*" >> "{log.as_posix()}"\n'
+    '[ "$1" = tee ] && cat >/dev/null\n'
+    "exit 0\n")
+(box / "bin" / "sudo").chmod(0o755)
+STUBBED = 'S="$STUBS"; command -v cygpath >/dev/null && S="$(cygpath -u "$STUBS")"; PATH="$S:$PATH"; '
+key_env = {**{k: v for k, v in os.environ.items() if k != "CERAVIS_API_KEY"},
+           "STUBS": str(box / "bin"), "CERAVIS_CREDSTORE": store.as_posix(),
+           "CERAVIS_LAYOUT_FILE": layout.as_posix()}
+
+
+def replace(stdin_text):
+    return subprocess.run([real_bash(), "-c", STUBBED + "exec bash "
+                           f'"{(ROOT / "setup" / "install_api_key.sh").as_posix()}" --replace'],
+                          input=stdin_text, capture_output=True, text=True, env=key_env)
+
+
+r = replace("sk-test-NEW-key-123\n")
+stored = (store / "ceravis_api_key").read_text()
+check("--replace with the key on standard input: the stored key is the new one",
+      r.returncode == 0 and stored == "sk-test-NEW-key-123" and "API key saved" in r.stdout,
+      (r.stdout + r.stderr)[-300:])
+check("...and the key itself is never echoed", "sk-test-NEW-key-123" not in r.stdout + r.stderr)
+if os.name == "posix":
+    check("...root-only (0600)", (store / "ceravis_api_key").stat().st_mode & 0o777 == 0o600)
+r = replace("\n")
+check("--replace with nothing given: refused, the stored key unchanged",
+      r.returncode == 2 and (store / "ceravis_api_key").read_text() == "sk-test-NEW-key-123",
+      (r.stdout + r.stderr)[-200:])
+r = replace("sk-bad key!\n")
+check("--replace with a malformed key: refused, the stored key unchanged",
+      r.returncode != 0 and (store / "ceravis_api_key").read_text() == "sk-test-NEW-key-123",
+      (r.stdout + r.stderr)[-200:])
+shutil.rmtree(box, ignore_errors=True)
 
 
 settings.ceravis_api_key, settings.ceravis_api_base_url = prev_key, prev_url

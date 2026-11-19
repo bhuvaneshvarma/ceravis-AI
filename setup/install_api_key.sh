@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Install the CERAVIS app-server API key: the X-API-Key header on EVERY call the
-# edge makes to the app server (sign-in, cameras, alerts, snapshots, status).
+# Install the CERAVIS app-server API key: it signs a device's first sign-in
+# (sendOtp) and is the X-API-Key header on every other call the edge makes to
+# the app server (cameras, alerts, snapshots, status).
 # It is the same for every device, but a SECRET — and this repository is public
 # — so it is never in the repo. It lives in ONE root-only file, the same on a
 # development clone and a production release:
@@ -16,8 +17,10 @@
 # restarted — the new key is in use when this returns.
 #
 # Run:  bash setup/install_api_key.sh      (asks for the key once; idempotent)
-#       CERAVIS_API_KEY=<key> bash setup/install_api_key.sh   (unattended, or to
-#       REPLACE a stored key — e.g. after the key is rotated on the app server)
+#       bash setup/install_api_key.sh --replace   (REPLACE the stored key, e.g. after
+#       the key is rotated on the app server: asked for without echo, or read from
+#       standard input — never typed on the command line, so never in the history)
+#       CERAVIS_API_KEY=<key> bash setup/install_api_key.sh   (unattended)
 set -euo pipefail
 
 # shellcheck source=setup/lib.sh
@@ -28,6 +31,16 @@ LEGACY=/etc/ceravis/secrets.env
 
 # The key: given once, kept across re-runs. On disk only root can read it.
 KEY="${CERAVIS_API_KEY:-}"
+if [ "${1:-}" = "--replace" ] && [ -z "$KEY" ]; then
+    if [ -t 0 ]; then
+        read -r -s -p "The NEW CERAVIS app-server API key (not shown): " KEY || KEY=""
+        echo
+    else
+        read -r KEY || [ -n "$KEY" ] || KEY=""
+    fi
+    KEY="$(printf '%s' "$KEY" | tr -d '\r"'"'"' ' || true)"
+    [ -n "$KEY" ] || { echo "refusing: no key given — the stored key is unchanged" >&2; exit 2; }
+fi
 if [ -z "$KEY" ] && ! sudo test -s "$KEY_FILE" && sudo test -s "$LEGACY"; then
     KEY="$(sudo sed -n 's/^[[:space:]]*CERAVIS_API_KEY[[:space:]]*=[[:space:]]*//p' "$LEGACY" \
            | tail -1 | tr -d '\r"'"'"' ')"
@@ -61,7 +74,7 @@ if [ -n "$KEY" ]; then
         sudo rm -f "$LEGACY"
     fi
 elif sudo test -s "$KEY_FILE"; then
-    echo "Keeping the API key in $KEY_FILE (to replace it: CERAVIS_API_KEY=<key> bash $0)."
+    echo "Keeping the API key in $KEY_FILE (to replace it: bash $0 --replace)."
 else
     echo "NOTE: no API key given, and /api/v1/system/status will say so. Without a valid"
     echo "      key the app server refuses this device's calls (alerts stay queued, not"

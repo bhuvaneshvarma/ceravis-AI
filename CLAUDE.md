@@ -172,6 +172,15 @@ agent restarts itself when its own code changes.
   key for. Re-keying is a person's decision: clear the device on the app
   server, then remove `edge_api.key`. Removing the care recipient keeps the
   key; `seal.sh` removes it.
+- **The old public API key is retired** (2026-11-19; the Java team issued a new
+  one).
+  - `settings.py` has no default key any more.
+  - The old key is known only by its SHA-256 (`_REVOKED_API_KEYS_SHA256`), and
+    `/system/status` names it.
+  - The new key lives only in the device credstore and, on the release PC, in
+    `~/.ceravis/ceravis-secrets.env` (release packages).
+  - On a device: `bash setup/install_api_key.sh --replace` (hidden prompt or
+    stdin, restarts ceravis).
 - Every other app-server call still sends `X-API-Key` (moving them is the next
   step). Fixed known answers and a reference server: `tests/test_login_otp.py`
   sections 6–7.

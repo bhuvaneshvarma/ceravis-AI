@@ -181,7 +181,7 @@ def _service_runs_on() -> str | None:
     if not starts:
         return None
     window = out[max(0, starts[-1] - 40):starts[-1]]
-    if any("API key is the old built-in one" in l for l in window):
+    if any("API key is the old revoked one" in l for l in window):
         return "builtin"
     if any("API key not installed" in l for l in window):
         return "none"

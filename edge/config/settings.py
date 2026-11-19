@@ -969,16 +969,13 @@ class Settings(BaseSettings):
     # against it before onboarding continues. Configure the server's address +
     # the API key. Leave base_url empty to run the device standalone.
     ceravis_api_base_url: str = "https://app.ceravishealth.in/ch"
-    # API key sent as the "X-API-Key" header on EVERY app-server call. A secret:
-    # It comes from the root-only credential /etc/ceravis/credstore/ceravis_api_key
-    # (setup/install_api_key.sh), never from this public repo. The value below is
-    # the OLD key, public because it is written here, and the app server will
-    # revoke it: it is only the fallback for devices that do not have the file
-    # yet — the edge logs that and /system/status reports it
-    # (ceravis_api.api_key_problem) — and it is deleted once every device has
-    # the file.
-    ceravis_api_key: str = ("sk-0r1g6k7j8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7"
-                            "e8f9g0h1i2j3k4l5m6n7o8p9q0r1s2t3u4v5w6x7y8z9")
+    # The app-server API key: it signs a device's first sign-in and is sent as the
+    # "X-API-Key" header on every other app-server call. A SECRET: it comes only
+    # from the root-only credential /etc/ceravis/credstore/ceravis_api_key
+    # (setup/install_api_key.sh), never from this public repo. No default: a
+    # device without the file has no key, and /system/status says so
+    # (ceravis_api.api_key_problem, which also recognises the old revoked key).
+    ceravis_api_key: str = ""
     # READ timeout (connect stays ~3 s, so an unreachable server still fails
     # fast). 20 s, not 8: the app server took 7-8 s to create an alert on
     # 2026-09-23, so an 8 s read abandoned a FALL alert the server was still
