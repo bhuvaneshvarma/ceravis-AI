@@ -175,7 +175,14 @@ if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis.service'; then
 else
     warn "ceravis.service not installed" "bash setup/install_service.sh"
 fi
-if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis-fleet-agent.service'; then
+if ! fleet_agent_enabled; then
+    # Off on purpose (jetson.env): the device keeps the edge_id it was issued.
+    if systemctl list-unit-files 2>/dev/null | grep -q '^ceravis-fleet-agent.service'; then
+        warn "fleet agent is switched off but still installed" "bash setup/install_fleet_agent.sh"
+    else
+        ok "fleet agent off (FLEET_AGENT_ENABLED=false) - the edge_id it issued is kept"
+    fi
+elif systemctl list-unit-files 2>/dev/null | grep -q '^ceravis-fleet-agent.service'; then
     [ "$(systemctl is-active ceravis-fleet-agent 2>/dev/null)" = "active" ]         && ok "ceravis-fleet-agent.service active"         || warn "fleet agent installed but not running" "journalctl -u ceravis-fleet-agent -n 30"
     [ -e /var/lib/ceravis-fleet-agent/identity.json ]         && ok "enrolled with the Fleet Management Server"         || warn "not enrolled with the fleet yet" "journalctl -u ceravis-fleet-agent -n 20 says why"
     # Kept after enrolling: re-enrolling (after a Reset key) needs it. A unit from

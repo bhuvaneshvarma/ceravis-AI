@@ -308,6 +308,10 @@ class Settings(BaseSettings):
     #      edgeId matches this, so a misrouted command can't touch the wrong home.
     # Empty = single LAN device: no live-link prefix and no control check.
     edge_id: str = ""
+    # The fleet agent (a separate unit; jetson.env FLEET_AGENT_ENABLED, read by the
+    # installers too). Off: it is not installed or run, and the setup checks do
+    # not ask for it; the edge_id above stays as it was issued.
+    fleet_agent_enabled: bool = True
     # Hard ceiling on a single PTZ move (ms). The edge always auto-stops after
     # this even if no stop/duration arrives, so a lost command can never leave a
     # motor spinning — which is why the cloud PTZ call has no stop action at all.

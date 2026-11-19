@@ -508,6 +508,104 @@ sw = sw[:sw.index("\n}\n")]
 check("update.sh records the release it switched to — after a rollback, the one it went back to",
       'CERAVIS_ROOT="$1"' in sw and "record_versions.sh" in sw)
 
+# --------------------------------------------------------------------------
+print("\n8. FLEET_AGENT_ENABLED=false: the agent is never installed or run; the edge_id stays")
+box = Path(tempfile.mkdtemp(prefix="ceravis-agentoff-"))
+(box / "bin").mkdir()
+(box / "root" / "edge" / "infra" / "env").mkdir(parents=True)
+no_layout = box / "layout.env"
+no_layout.write_text("")
+sudo_log = box / "sudo.log"
+# sudo and systemctl only LOG here: nothing on this machine is stopped or removed.
+(box / "bin" / "sudo").write_text(f'#!/bin/sh\necho "$*" >> "{sudo_log.as_posix()}"\n')
+(box / "bin" / "systemctl").write_text(f'#!/bin/sh\necho "systemctl $*" >> "{sudo_log.as_posix()}"\n')
+for f in (box / "bin").iterdir():
+    f.chmod(0o755)
+env_file = box / "root" / "edge" / "infra" / "env" / "jetson.env"
+agent_env = {**os.environ, "CERAVIS_ROOT": box.joinpath("root").as_posix(),
+             "CERAVIS_LAYOUT_FILE": no_layout.as_posix(), "STUBS": str(box / "bin")}
+agent_env.pop("FLEET_AGENT_ENABLED", None)
+
+
+def real_bash():
+    """A real bash. On Windows the `bash` on PATH is usually WSL's launcher, so take Git's."""
+    if os.name != "nt":
+        return shutil.which("bash") or "bash"
+    git = shutil.which("git")
+    for folder in Path(git).resolve().parents if git else ():
+        if (folder / "bin" / "bash.exe").exists():
+            return str(folder / "bin" / "bash.exe")
+    return "bash"
+
+
+# The stand-ins go first INSIDE bash (Git for Windows' bash puts its own folders first).
+STUBBED = 'S="$STUBS"; command -v cygpath >/dev/null && S="$(cygpath -u "$STUBS")"; PATH="$S:$PATH"; '
+
+
+def switch(line, override=None):
+    env_file.write_text(f"FMS_URL=https://fms.example\n{line}\n")
+    e = dict(agent_env, **({"FLEET_AGENT_ENABLED": override} if override is not None else {}))
+    r = subprocess.run([real_bash(), "-c", STUBBED + f'. "{(ROOT / "setup" / "lib.sh").as_posix()}"; '
+                        'fleet_agent_enabled && echo on || echo off'],
+                       capture_output=True, text=True, env=e)
+    return r.stdout.strip() or r.stderr.strip()
+
+
+cases = [("FLEET_AGENT_ENABLED=false", None, "off"), ("FLEET_AGENT_ENABLED=False", None, "off"),
+         ("FLEET_AGENT_ENABLED = off", None, "off"), ('FLEET_AGENT_ENABLED="0"', None, "off"),
+         ("FLEET_AGENT_ENABLED=no\r", None, "off"), ("FLEET_AGENT_ENABLED=true", None, "on"),
+         ("# no switch at all", None, "on"), ("FLEET_AGENT_ENABLED=false", "true", "on"),
+         ("FLEET_AGENT_ENABLED=true", "false", "off")]
+got = [(line, ov, switch(line, ov)) for line, ov, _ in cases]
+check("the switch reads jetson.env (false/0/no/off, any case or quotes) and an env variable wins",
+      [g[2] for g in got] == [c[2] for c in cases], str([g for g, c in zip(got, cases) if g[2] != c[2]]))
+
+env_file.unlink()
+r = subprocess.run([real_bash(), "-c", STUBBED + "set -euo pipefail; "
+                    f'. "{(ROOT / "setup" / "lib.sh").as_posix()}"; '
+                    'if fleet_agent_enabled; then echo on; else echo off; fi; echo survived'],
+                   capture_output=True, text=True, env=agent_env)
+check("no jetson.env at all: under set -euo pipefail the check never stops an install (and means on)",
+      r.stdout.split() == ["on", "survived"], (r.stdout + r.stderr)[-200:])
+
+env_file.write_text("FMS_URL=https://fms.example\nFLEET_AGENT_ENABLED=false\n")
+r = subprocess.run([real_bash(), "-c", STUBBED + "exec bash "
+                    f'"{(ROOT / "setup" / "install_fleet_agent.sh").as_posix()}"'],
+                   capture_output=True, text=True, env=agent_env, stdin=subprocess.DEVNULL)
+done = sudo_log.read_text() if sudo_log.exists() else ""
+check("install_fleet_agent.sh, switched off: says OFF and exits cleanly",
+      r.returncode == 0 and r.stdout.startswith("Fleet agent: OFF"), (r.stdout + r.stderr)[-300:])
+check("...installs, enables, starts and asks nothing (no unit written, no key, no sudoers)",
+      not any(w in done for w in ("tee ", "enable ", "restart", "usermod", "install ", "sudoers"))
+      and "Fleet enrollment key" not in r.stdout, done)
+check("...an agent already on the device is stopped and its unit removed, nothing else",
+      done == "" or done.splitlines() == [
+          "systemctl disable --now ceravis-fleet-agent",
+          "rm -f /etc/systemd/system/ceravis-fleet-agent.service",
+          "systemctl daemon-reload"], done)
+check("...the edge_id is never touched: not its credential, the identity, nor the hand-over units",
+      not any(w in done for w in ("edge-id", "edge_id", "credstore", "identity", "sync_edge_id")))
+shutil.rmtree(box, ignore_errors=True)
+
+repo_env = (ROOT / "edge" / "infra" / "env" / "jetson.env").read_text(encoding="utf-8")
+app_env = {k: v for k, v in os.environ.items()
+           if k not in ("FLEET_AGENT_ENABLED", "CREDENTIALS_DIRECTORY")}
+r = subprocess.run([sys.executable, "-c", "from config.settings import Settings; "
+                    "print(Settings().fleet_agent_enabled)"],
+                   cwd=ROOT / "edge", capture_output=True, text=True, env=app_env)
+check("this branch ships the agent OFF (jetson.env), and the app reads it so",
+      "\nFLEET_AGENT_ENABLED=false\n" in repo_env and r.stdout.strip() == "False",
+      (r.stdout + r.stderr).strip()[-200:])
+upd = hooks["update.sh"]
+check("update.sh: the agent's unit is neither written nor restarted while it is off",
+      upd.count('[ "$u" = ceravis-fleet-agent.service ] && ! agent_on') == 2
+      and "if agent_on; then systemctl restart ceravis-fleet-agent" in upd
+      and "! declare -F fleet_agent_enabled" in upd)
+setup_src = (ROOT / "edge" / "api" / "setup_routes.py").read_text(encoding="utf-8")
+check("the setup page does not ask for the agent while it is off; check_jetson.sh says it is off",
+      'c["id"] != "fleet" or settings.fleet_agent_enabled' in setup_src
+      and "if ! fleet_agent_enabled; then" in (ROOT / "setup" / "check_jetson.sh").read_text(encoding="utf-8"))
+
 fms.server.shutdown()
 shutil.rmtree(state, ignore_errors=True)
 print()

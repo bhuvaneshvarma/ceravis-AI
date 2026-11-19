@@ -27,6 +27,13 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 KEY_FILE=/etc/ceravis-fleet-agent/enroll.env
 
+# Switched off in jetson.env (FLEET_AGENT_ENABLED=false): nothing is installed,
+# and an agent installed before is stopped and its unit removed (lib.sh).
+if ! fleet_agent_enabled; then
+    fleet_agent_off
+    exit 0
+fi
+
 # One NAME=value line in the root-only file, every other line kept; an empty
 # value removes the line.   set_fleet_value <NAME> <value>
 set_fleet_value() {

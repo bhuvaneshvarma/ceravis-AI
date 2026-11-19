@@ -53,6 +53,31 @@ EDGE_DIR="$CERAVIS_ROOT/edge"
 # stored by setup/sync_edge_id.sh.
 CREDENTIALS=(ceravis_api_key edge_id)
 
+# The fleet agent's switch: FLEET_AGENT_ENABLED in jetson.env (an environment
+# variable of the same name wins). On unless it says false / 0 / no / off.
+fleet_agent_enabled() {
+    local v="${FLEET_AGENT_ENABLED:-}"
+    [ -n "$v" ] || v="$(sed -n 's/^[[:space:]]*FLEET_AGENT_ENABLED[[:space:]]*=[[:space:]]*//p' \
+                          "$EDGE_DIR/infra/env/jetson.env" 2>/dev/null | tail -1 || true)"
+    v="$(printf '%s' "$v" | tr -d '\r"'"'"' ' | tr '[:upper:]' '[:lower:]' || true)"
+    case "$v" in false|0|no|off) return 1 ;; *) return 0 ;; esac
+}
+
+# Switched off: stop the agent and remove its unit, so nothing — a boot, an
+# update's restart — can start it. Its identity (/var/lib/ceravis-fleet-agent)
+# and the edge_id it was issued stay, and so do the edge_id hand-over units:
+# the device keeps routing on that edge_id.
+fleet_agent_off() {
+    if [ -e /etc/systemd/system/ceravis-fleet-agent.service ]; then
+        sudo systemctl disable --now ceravis-fleet-agent >/dev/null 2>&1 || true
+        sudo rm -f /etc/systemd/system/ceravis-fleet-agent.service
+        sudo systemctl daemon-reload
+        echo "Fleet agent: OFF (FLEET_AGENT_ENABLED=false) - stopped and removed; its identity and the edge_id are kept."
+    else
+        echo "Fleet agent: OFF (FLEET_AGENT_ENABLED=false) - not installed."
+    fi
+}
+
 data_dir()   { if [ -n "$CERAVIS_DATA_DIR" ];   then echo "$CERAVIS_DATA_DIR";   else echo "$EDGE_DIR/data";   fi; }
 models_dir() { if [ -n "$CERAVIS_MODELS_DIR" ]; then echo "$CERAVIS_MODELS_DIR"; else echo "$EDGE_DIR/models"; fi; }
 

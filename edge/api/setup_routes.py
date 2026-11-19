@@ -128,9 +128,9 @@ def _checks(request: Request, hs_ssid: str, hs_on: bool) -> list[dict]:
     port = wired_uplink()
     mon = getattr(st, "system_monitor", None)
     heat = mon.problems() if mon is not None and hasattr(mon, "problems") else []
-    fleet = _unit_active("ceravis-fleet-agent")
+    fleet = _unit_active("ceravis-fleet-agent") if settings.fleet_agent_enabled else None
 
-    return [
+    checks = [
         _check("service", "CERAVIS service running", True, "required"),
         _check("models", "AI models built", not missing, "required",
                "missing: " + ", ".join(missing) if missing else ""),
@@ -154,6 +154,8 @@ def _checks(request: Request, hs_ssid: str, hs_on: bool) -> list[dict]:
         _check("temperature", "Temperature and power normal", not heat, "recommended",
                "; ".join(heat)),
     ]
+    # Switched off on purpose (FLEET_AGENT_ENABLED=false): not a missing step.
+    return [c for c in checks if c["id"] != "fleet" or settings.fleet_agent_enabled]
 
 
 @router.get("/state")

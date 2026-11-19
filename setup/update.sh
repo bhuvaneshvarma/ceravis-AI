@@ -56,11 +56,15 @@ history() {     # <result> <version> <detail>
     printf '{"at":"%s","result":"%s","from":"%s","to":"%s","detail":"%s"}\n' \
         "$(date -Is)" "$1" "$OLD_VERSION" "$2" "${3//\"/\'}" >> "$DATA/update_history.jsonl"
 }
+# The fleet agent runs only where the release's jetson.env leaves it on (lib.sh,
+# FLEET_AGENT_ENABLED); a release older than that switch has no such helper and
+# keeps its agent as before.
+agent_on() { ! declare -F fleet_agent_enabled >/dev/null || fleet_agent_enabled; }
 switch_to() {   # <release dir>
     ln -sfn "$1" "$APP/current.new" && mv -T "$APP/current.new" "$APP/current"
     systemctl daemon-reload
     systemctl restart ceravis
-    systemctl restart ceravis-fleet-agent 2>/dev/null || true
+    if agent_on; then systemctl restart ceravis-fleet-agent 2>/dev/null || true; fi
     # What is installed now (/etc/ceravis/versions.json) — after a rollback too,
     # so it reads THIS release, not the one this run exported for the update.
     if [ -f "$1/setup/record_versions.sh" ]; then
@@ -72,7 +76,9 @@ switch_to() {   # <release dir>
 units_of() {    # <release dir>: its units re-written; one it does not have goes
     local u
     for u in $UNITS; do
-        if [ -f "$1/edge/infra/systemd/$u" ]; then
+        if [ "$u" = ceravis-fleet-agent.service ] && ! agent_on; then
+            fleet_agent_off
+        elif [ -f "$1/edge/infra/systemd/$u" ]; then
             install_unit "$1/edge/infra/systemd/$u"
         else
             systemctl disable --now "$u" >/dev/null 2>&1 || true
@@ -179,7 +185,11 @@ unset "${LAYOUT_KEYS[@]}"
 bash "$NEW/setup/sync_edge_id.sh" --migrate --store-only \
     || log "WARNING: the edge_id was not handed over — see the line above"
 for u in $UNITS; do
-    install_unit "$NEW/edge/infra/systemd/$u"
+    if [ "$u" = ceravis-fleet-agent.service ] && ! agent_on; then
+        fleet_agent_off
+    else
+        install_unit "$NEW/edge/infra/systemd/$u"
+    fi
 done
 install_unit "$NEW/cloud/systemd/frpc.service"
 log "switching to $NEW_VERSION"

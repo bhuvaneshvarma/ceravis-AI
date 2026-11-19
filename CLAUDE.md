@@ -80,6 +80,18 @@ agent restarts itself when its own code changes.
 
 ## Fleet / edge_id (decided)
 
+- **The fleet agent is OFF for now** (owner, 2026-11-19; `security_ceravis1.1` and
+  `bench_ceravis1.1`): `FLEET_AGENT_ENABLED=false` in `jetson.env`.
+  `setup/install_fleet_agent.sh` (so `setup.sh`, `upgrade.sh`, `install.sh`) and
+  `setup/update.sh` never install or start it. On a device that has it, they
+  stop it and remove its unit (`lib.sh` `fleet_agent_off`). Kept: its identity,
+  the credstore `edge_id` and the edge_id hand-over units, so the device keeps
+  the edge_id it was issued for everything. While it is off:
+  - no heartbeat reaches the FMS;
+  - `logs/health.jsonl`, `events.jsonl` and `fleet.jsonl` stop growing;
+  - the setup page doesn't ask for the agent.
+
+  To turn it back on, set it to `true` and run `bash setup/install_fleet_agent.sh`.
 - The **edge_id comes only from the FMS** (Java), at enrollment during install.
   It is stored as the credential `/etc/ceravis/credstore/edge_id`
   (`setup/sync_edge_id.sh`). Never read it from `account.json`; never hash it
