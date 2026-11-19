@@ -56,7 +56,7 @@ systemctl stop ceravis frpc ceravis-fleet-agent ceravis-reboot.timer 2>/dev/null
 
 say "customer and runtime data"
 for f in account.json ui_sessions.json hotspot.json cameras.json zones.json \
-         last_reboot.json recording_mode.json local.key \
+         last_reboot.json recording_mode.json local.key edge_api.key \
          talkback.json talkback_guard.json talkback_log.jsonl talkback_log.jsonl.1 \
          cloud_calls.jsonl ceravis_api_wire.jsonl mediamtx.yml mediamtx.log; do
     rm -f "$DATA/$f"

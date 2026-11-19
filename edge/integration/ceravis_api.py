@@ -6,34 +6,41 @@ Thin client for the CERAVIS application server (Spring).
 Only the calls the edge device needs. Everything goes through here so the
 server address lives in ONE place (device config) and never in the browser.
 
-Endpoint used during setup:
+Sign-in — three SIGNED calls (see "Signed sign-in" below), no API key on them:
+    POST {base}/v1/ai/sendOtp       body {"email": "...", "deviceId": "ceravis-<code>"}
+    POST {base}/v1/ai/verifyOtp     no body: the code is only inside the signature
     POST {base}/v1/ai/userDetails   body {"email": "...", "deviceId": "ceravis-<code>"}
     deviceId is THIS device's name (common/device_identity) — the same device_id
     the fleet agent enrolls with, so the server finds the device's FMS record
     (edge_id, …) in the shared DB and maps the account's cameras and live links.
-    -> ApiResponse<UserDetailsResponse>
+    userDetails -> ApiResponse<UserDetailsResponse>
        { ceravisUserId, firstName, lastName, email, gender, role, tier,
          deviceToken }
     deviceToken is the app server's own token for this device. The edge routes
     on the edge_id the Fleet Management Server issued instead; the token is kept
     only to notice a mismatch (the status beat tells the server the real one).
 A user that exists in the server's DB is what "verifies" the operator; if the
-email isn't found, onboarding is blocked.
+email isn't found, onboarding is blocked. Every other call still carries the
+API key in X-API-Key.
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import re
 import threading
 import time
 from http import HTTPStatus
+from pathlib import Path
 
 import requests
 
 from config.settings import resolve_path, settings
 from integration import call_log
 from common import clock
+from common.atomic import write_atomic
 from common.device_identity import identity
 
 
@@ -93,6 +100,9 @@ _WIRE_KEEP_LINES = 1500                  # …down to the newest N records
 # longer sends base64 (it uploads image/video as multipart files, logged as byte-
 # size markers by the caller); uploadEmbeddingFile still base64-encodes fileBytes.
 _WIRE_REDACT_KEYS = ("fileBytes",)
+# Reply fields that are key material (sendOtp's randomId makes this device's
+# key): withheld from the wire log wherever they appear.
+_WIRE_SECRET_KEYS = frozenset({"randomId"})
 
 
 def _wire_redact(body):
@@ -107,6 +117,22 @@ def _wire_redact(body):
         else:
             out[k] = v
     return out
+
+
+def _wire_scrub(text: str | None) -> str | None:
+    """A reply safe to persist: every key-material field withheld, the rest as
+    received. A reply that names one but cannot be read is withheld whole."""
+    if not text or not any(k in text for k in _WIRE_SECRET_KEYS):
+        return text
+
+    def scrub(v):
+        if isinstance(v, dict):
+            return {k: "<withheld>" if k in _WIRE_SECRET_KEYS else scrub(x) for k, x in v.items()}
+        return [scrub(x) for x in v] if isinstance(v, list) else v
+    try:
+        return json.dumps(scrub(json.loads(text)), ensure_ascii=False)
+    except (ValueError, RecursionError):
+        return "<withheld: the reply holds key material>"
 
 
 # Who hears that the app server just answered a call with a 2xx — the proof the
@@ -143,7 +169,7 @@ def _wire(endpoint: str, method: str, url: str, request, *,
             "request": _wire_redact(request),
             "http_status": status,
             "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,
-            "response": response,
+            "response": _wire_scrub(response),
             "error": error,
         }
         f = base / _WIRE_FILE
@@ -233,12 +259,147 @@ def _with_key(headers: dict[str, str], idempotency_key: str | None) -> dict[str,
 
 
 def _headers() -> dict[str, str]:
-    # Every app-server call carries the API key in the "X-API-Key" header.
+    # Every app-server call but the signed sign-in ones carries the API key in
+    # the "X-API-Key" header.
     h = {"Content-Type": "application/json", "Accept": "application/json"}
     key = settings.ceravis_api_key.strip()
     if key:
         h["X-API-Key"] = key
     return h
+
+
+# ---------------------------------------------------------------------------
+# Signed sign-in — sendOtp, verifyOtp, userDetails.
+#
+# These calls carry no API key. Each request is signed, and the server signs
+# its reply the same way, so neither side acts on a message the other did not
+# send, and no secret ever crosses the network:
+#
+#   request  X-Ceravis-Device     this device's deviceId (common/device_identity)
+#            X-Ceravis-Timestamp  Unix seconds, three decimals: 1793361045.218
+#            X-Ceravis-Signature  Base64( HMAC-SHA256(key, timestamp "\n" sha256hex(payload)) )
+#   reply    X-Ceravis-Signature  Base64( HMAC-SHA256(key, request timestamp "\n" sha256hex(reply body)) )
+#
+# `payload` is the request body exactly as sent (compact UTF-8 JSON); verifyOtp
+# sends no body at all, and its payload is the code the person typed. sha256hex
+# is lowercase hex. A 2xx reply is acted on only when its signature matches.
+#
+# The key. A device signs its FIRST sendOtp with the API key; that reply's
+# randomId makes the device's own key, HMAC-SHA256(API key, randomId) as 64
+# lowercase hex. It signs that sign-in's verifyOtp, and once the server
+# confirms the code it is kept for good (<data>/edge_api.key, mode 0600) and
+# signs every later sign-in call — the API key is then never used for them
+# again. It belongs to the device: removing the care recipient keeps it,
+# setup/seal.sh removes it. The randomId, the code and the key never reach a
+# log.
+# ---------------------------------------------------------------------------
+HDR_DEVICE = "X-Ceravis-Device"
+HDR_TIMESTAMP = "X-Ceravis-Timestamp"
+HDR_SIGNATURE = "X-Ceravis-Signature"
+EDGE_KEY_FILE = "edge_api.key"
+# How long a code request's key waits for its code (the server's code expires sooner).
+_PENDING_TTL_SECS = 900.0
+_UNVERIFIED = "The CERAVIS server's reply could not be verified. Please try again."
+
+
+def _signature(key: str, timestamp: str, payload: bytes) -> str:
+    message = f"{timestamp}\n{hashlib.sha256(payload).hexdigest()}".encode("utf-8")
+    mac = hmac.new(key.encode("utf-8"), message, hashlib.sha256).digest()
+    return base64.b64encode(mac).decode("ascii")
+
+
+def _signed_by(key: str, timestamp: str, payload: bytes, signature: str | None) -> bool:
+    return hmac.compare_digest(_signature(key, timestamp, payload).encode("ascii"),
+                               (signature or "").strip().encode("utf-8", "replace"))
+
+
+def _derive_edge_key(api_key: str, random_id: str) -> str:
+    """This device's own key: HMAC-SHA256(key = the API key, message = the
+    first sendOtp reply's randomId), as 64 lowercase hex characters."""
+    return hmac.new(api_key.strip().encode("utf-8"), random_id.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def _edge_key_path() -> Path:
+    return resolve_path(settings.data_dir) / EDGE_KEY_FILE
+
+
+def _edge_key() -> str | None:
+    """The key this device signs its sign-in calls with; None until its first
+    sign-in is confirmed."""
+    try:
+        return _edge_key_path().read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+# The key a first code request made, held (in memory only) until its code checks out.
+_pending: dict = {}
+_pending_lock = threading.Lock()
+
+
+def _hold_pending(email: str, key: str) -> None:
+    with _pending_lock:
+        _pending.clear()
+        _pending.update(email=email.casefold(), key=key,
+                        expires=time.monotonic() + _PENDING_TTL_SECS)
+
+
+def _pending_key(email: str) -> str | None:
+    with _pending_lock:
+        if _pending.get("email") == email.casefold() and _pending["expires"] > time.monotonic():
+            return _pending["key"]
+    return None
+
+
+def _keep_edge_key(key: str) -> None:
+    write_atomic(_edge_key_path(), key, mode=0o600)
+    with _pending_lock:
+        _pending.clear()
+    logger.info("this device's app-server key is saved; sign-in calls are signed with it from now on")
+
+
+def _random_id(body) -> str | None:
+    """sendOtp's randomId, verbatim, or None when the reply has no usable one."""
+    data = _unwrap(body)
+    value = data.get("randomId") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value.strip() and len(value) <= 256 else None
+
+
+def _json_bytes(body: dict) -> bytes:
+    """A JSON body's exact bytes — what is sent is what is signed."""
+    return json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _post_signed(endpoint: str, key: str, body: bytes, *, payload: bytes | None = None,
+                 label: str = "", log_request=None):
+    """POST one signed sign-in call: `body` as sent, signed over `payload` (the
+    body itself unless given). Returns (reply, latency_ms, trusted) — `trusted`
+    = the reply carries the server's signature over its exact bytes. Raises
+    CeravisApiError when the server cannot be reached."""
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/" + endpoint
+    timestamp = f"{time.time():.3f}"
+    headers = {"Accept": "application/json", HDR_DEVICE: identity().name,
+               HDR_TIMESTAMP: timestamp,
+               HDR_SIGNATURE: _signature(key, timestamp, body if payload is None else payload)}
+    if body:
+        headers["Content-Type"] = "application/json"
+    t0 = time.perf_counter()
+    try:
+        resp = _session().post(url, data=body, headers=headers, timeout=_timeout())
+    except requests.RequestException as exc:
+        lat = (time.perf_counter() - t0) * 1000
+        logger.warning("%s: cannot reach %s — %s", endpoint, url, exc)
+        call_log.record(endpoint, False, label=label, error=str(exc), latency_ms=lat)
+        _wire(endpoint, "POST", url, log_request, error=str(exc), latency_ms=lat)
+        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
+    lat = (time.perf_counter() - t0) * 1000
+    trusted = _signed_by(key, timestamp, resp.content, resp.headers.get(HDR_SIGNATURE))
+    logger.info("%s <- HTTP %s%s", endpoint, resp.status_code,
+                "" if trusted or resp.status_code >= 300 else " — reply signature does not match, not acted on")
+    _wire(endpoint, "POST", url, log_request, status=resp.status_code,
+          response=resp.text, latency_ms=lat)
+    return resp, lat, trusted
 
 
 def _unwrap(body):
@@ -364,37 +525,27 @@ _GENERIC_OK = re.compile(
 
 def get_user_details(email: str) -> dict | None:
     """
-    POST /v1/ai/userDetails. Returns the UserDetailsResponse dict if the account
-    exists, None if no such user. Raises CeravisApiError on config/transport/
-    server errors (so the caller can show a real reason).
+    POST /v1/ai/userDetails {"email", "deviceId"}, signed with this device's
+    key (it has one by now: verify_otp keeps it once the code checks out).
+    Returns the UserDetailsResponse dict if the account exists, None if no such
+    user. Raises CeravisApiError on config/transport/server errors and on a
+    reply whose signature does not match (so the caller can show a real reason).
     """
     if not is_configured():
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/userDetails"
+    key = _edge_key()
+    if not key:
+        raise CeravisApiError("this device has no app-server key yet — sign in with a code first")
     # identity().name, never settings.device_id (DEVICE_ID may override that):
     # it must equal the device_id the FMS stored at enrollment.
     device_id = identity().name
     request_body = {"email": email, "deviceId": device_id}
-    logger.info("userDetails -> POST %s  email=%s  deviceId=%s", url, email, device_id)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().post(url, json=request_body, headers=_headers(),
-                             timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("userDetails: cannot reach %s — %s", url, exc)
-        call_log.record("userDetails", False, label=email, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("userDetails", "POST", url, request_body, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("userDetails <- HTTP %s", resp.status_code)
-    call_log.record("userDetails", resp.status_code < 400, label=email,
+    logger.info("userDetails -> email=%s  deviceId=%s", email, device_id)
+    resp, lat, trusted = _post_signed("userDetails", key, _json_bytes(request_body),
+                                      label=email, log_request=request_body)
+    call_log.record("userDetails", resp.status_code < 400 and trusted, label=email,
                     status=resp.status_code, latency_ms=lat)
-    _wire("userDetails", "POST", url, request_body, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
     if resp.status_code == 404:
         return None
     if resp.status_code >= 400:
@@ -402,6 +553,8 @@ def get_user_details(email: str) -> dict | None:
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}",
             status=resp.status_code)
+    if not trusted:
+        raise CeravisApiError(_UNVERIFIED, status=resp.status_code)
     try:
         data = _unwrap(resp.json())
     except ValueError as exc:
@@ -415,35 +568,29 @@ def get_user_details(email: str) -> dict | None:
 def send_otp(email: str) -> tuple[bool, str | None]:
     """
     POST /v1/ai/sendOtp — ask the app server to email a login one-time code.
-    Body: {"email": "..."}. Carries the X-API-Key header like every /v1/ai call.
+    Body: {"email": "...", "deviceId": "ceravis-<code>"}, signed with this
+    device's key once it has one; before that (its first sign-in) with the API
+    key, and the reply's randomId then makes the device's key, held until the
+    code checks out (verify_otp).
 
     Returns (True, None) when the server takes it, (False, reason) when it
-    refuses — a 4xx, or a 2xx whose body says it failed — with the server's own
-    message as the reason when it gives one. Raises CeravisApiError on config/
-    transport/5xx errors. The full request+response is written to the wire log
-    (data/ceravis_api_wire.jsonl) so the exchange is inspectable by hand.
+    refuses — a 4xx, or a 2xx whose body says it failed or whose signature does
+    not match — with the server's own message as the reason when it gives one.
+    Raises CeravisApiError on config/transport/5xx errors. The exchange is
+    written to the wire log (data/ceravis_api_wire.jsonl), the randomId withheld.
     """
     if not is_configured():
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/sendOtp"
-    request_body = {"email": email}
-    logger.info("sendOtp -> POST %s  email=%s", url, email)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().post(url, json=request_body, headers=_headers(),
-                             timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("sendOtp: cannot reach %s — %s", url, exc)
-        call_log.record("sendOtp", False, label=email, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("sendOtp", "POST", url, request_body, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("sendOtp <- HTTP %s", resp.status_code)
-    _wire("sendOtp", "POST", url, request_body, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
+    device_key = _edge_key()
+    api_key = settings.ceravis_api_key.strip()
+    if not (device_key or api_key):
+        return False, "This device has no app-server API key installed (setup/install_api_key.sh)."
+    request_body = {"email": email, "deviceId": identity().name}
+    logger.info("sendOtp -> email=%s  signed with %s", email,
+                "this device's key" if device_key else "the API key (first sign-in)")
+    resp, lat, trusted = _post_signed("sendOtp", device_key or api_key, _json_bytes(request_body),
+                                      label=email, log_request=request_body)
     if resp.status_code >= 500:
         call_log.record("sendOtp", False, label=email, status=resp.status_code,
                         latency_ms=lat)
@@ -451,14 +598,23 @@ def send_otp(email: str) -> tuple[bool, str | None]:
             f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
     message = _server_message(resp)
+    body = _json_or_none(resp)
     reason = None
     if resp.status_code == 404:
         reason = message or "No CERAVIS account found for this email"
     elif not 200 <= resp.status_code < 300:
         reason = message or f"The CERAVIS server refused the request (HTTP {resp.status_code})"
-    elif _send_refused(_json_or_none(resp)):
+    elif not trusted:
+        reason = _UNVERIFIED
+    elif _send_refused(body):
         reason = ((message if message and not _GENERIC_OK.match(message) else None)
                   or "The CERAVIS server did not send the code")
+    elif device_key is None:
+        random_id = _random_id(body)
+        if random_id:
+            _hold_pending(email, _derive_edge_key(api_key, random_id))
+        else:
+            reason = "The CERAVIS server sent no key for this device. Please try again."
     call_log.record("sendOtp", reason is None, label=email, error=reason,
                     status=resp.status_code, latency_ms=lat)
     return reason is None, reason
@@ -474,57 +630,56 @@ _OTP_REFUSED = {
 
 def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     """
-    POST /v1/ai/verifyOtp — check the login one-time code.
-    Body: {"email": "...", "otp": "..."}. X-API-Key header as usual.
+    POST /v1/ai/verifyOtp — check the login one-time code. It sends NO body:
+    the code is only the signature's payload, so it never crosses the network
+    and never reaches a log. Signed with this device's key — or, on its first
+    sign-in, with the key its sendOtp reply made, kept for good once the server
+    confirms the code.
 
     Fails CLOSED: returns (True, None, account) only for the server's one
-    confirmation (_otp_confirmed: HTTP 2xx, code 1, "OTP verified successfully"),
-    `account` being the user it confirmed — its `data`: ceravisUserId,
-    deviceToken (the app server's token for it), names, role, tier — or None when the
-    reply carries none. Any other reply gives (False, reason, None), the reason
-    being the server's message exactly as sent ("No OTP found…", …).
-    Raises CeravisApiError on config/transport/5xx errors. The full request +
-    response is captured in the wire log, the code itself masked — that record
+    confirmation (_otp_confirmed: HTTP 2xx with a matching signature, code 1,
+    "OTP verified successfully"), `account` being the user it confirmed — its
+    `data`: ceravisUserId, deviceToken (the app server's token for it), names,
+    role, tier — or None when the reply carries none. Any other reply gives
+    (False, reason, None), the reason being the server's message exactly as
+    sent ("Invalid OTP", "No OTP found…", …). Raises CeravisApiError on config/
+    transport/5xx errors. The reply is captured in the wire log — that record
     shows the exact reply shape if a correct code is ever refused.
     """
     if not is_configured():
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/verifyOtp"
-    request_body = {"email": email, "otp": otp}
-    log_body = {"email": email, "otp": "*" * len(otp)}
-    logger.info("verifyOtp -> POST %s  email=%s", url, email)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().post(url, json=request_body, headers=_headers(),
-                             timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("verifyOtp: cannot reach %s — %s", url, exc)
-        call_log.record("verifyOtp", False, label=email, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("verifyOtp", "POST", url, log_body, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("verifyOtp <- HTTP %s", resp.status_code)
-    _wire("verifyOtp", "POST", url, log_body, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
+    device_key = _edge_key()
+    key = device_key or _pending_key(email)
+    if not key:
+        return False, "Ask for a new code first, then enter it here.", None
+    logger.info("verifyOtp -> email=%s", email)
+    resp, lat, trusted = _post_signed("verifyOtp", key, b"", payload=otp.encode("utf-8"),
+                                      label=email)
     if resp.status_code >= 500:
         call_log.record("verifyOtp", False, label=email, status=resp.status_code,
                         latency_ms=lat)
         raise CeravisApiError(
             f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
             status=resp.status_code)
-    body = _json_or_none(resp) if 200 <= resp.status_code < 300 else None
+    answered = 200 <= resp.status_code < 300
+    body = _json_or_none(resp) if answered and trusted else None
     ok = _otp_confirmed(body)
-    account = body.get("data") if ok and isinstance(body.get("data"), dict) else None
     reason = None
-    if not ok:
+    if ok and device_key is None:
+        try:
+            _keep_edge_key(key)
+        except OSError as exc:
+            logger.error("this device's app-server key could not be saved: %s", exc)
+            ok, reason = False, "This device could not save its sign-in key. Please try again."
+    account = body.get("data") if ok and isinstance(body.get("data"), dict) else None
+    if reason is None and not ok:
         message = _server_message(resp)
-        reason = ((message if message and not _GENERIC_OK.match(message) else None)
+        reason = (_UNVERIFIED if answered and not trusted
+                  else (message if message and not _GENERIC_OK.match(message) else None)
                   or _OTP_REFUSED.get(resp.status_code)
                   or ("The CERAVIS server did not confirm the code. Please try again."
-                      if resp.status_code < 300 else "Invalid or expired code"))
+                      if answered else "Invalid or expired code"))
     call_log.record("verifyOtp", ok, label=email, error=reason,
                     status=resp.status_code, latency_ms=lat)
     return ok, reason, account

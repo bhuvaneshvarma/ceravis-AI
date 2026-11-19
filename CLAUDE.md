@@ -139,6 +139,29 @@ agent restarts itself when its own code changes.
 - A test FMS on the LAN: `FMS_URL=http://<private IP>:<port>` plus
   `FMS_ALLOW_HTTP_LAN=1` via `setup/install_fleet_agent.sh`.
 
+## App-server sign-in is signed (decided 2026-11-19)
+
+- `sendOtp`, `verifyOtp` and `userDetails` carry **no API key**. Each request is
+  signed (`edge/integration/ceravis_api.py`, "Signed sign-in"):
+  `X-Ceravis-Device` (deviceId), `X-Ceravis-Timestamp` (Unix seconds, three
+  decimals), `X-Ceravis-Signature` = Base64(HMAC-SHA256(key, timestamp "\n"
+  sha256hex(payload))). The server signs its reply the same way over the
+  request's timestamp and the reply's exact bytes; a 2xx reply is acted on only
+  when its signature matches.
+- The first `sendOtp` is signed with the API key. Its reply's `randomId` makes
+  the **device key** = hex(HMAC-SHA256(API key, randomId)). It is held in
+  memory, and kept in `<data>/edge_api.key` (0600) only once `verifyOtp`
+  confirms the code (the server binds it at the same moment). From then on it
+  signs every sign-in call; the API key is never used for them again.
+- `verifyOtp` sends no body: the code is only the signature's payload.
+- The app server refuses an API-key `sendOtp` from a device it already holds a
+  key for. Re-keying is a person's decision: clear the device on the app
+  server, then remove `edge_api.key`. Removing the care recipient keeps the
+  key; `seal.sh` removes it.
+- Every other app-server call still sends `X-API-Key` (moving them is the next
+  step). Fixed known answers and a reference server: `tests/test_login_otp.py`
+  sections 6–7.
+
 ## Tests
 
 ```bash

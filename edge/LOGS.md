@@ -21,10 +21,11 @@ The data folder is `/var/lib/ceravis` on an installed device, or
 | `fleet.jsonl` | `logs/` | fleet agent | every check-in with the fleet server **in full** — the request body as sent and the reply — accepted or failed (why); every order received and its result | 10 MB × 5 files ≈ 2 weeks |
 | `incoming.jsonl` | `logs/` | edge app | every request **into** the device: writes and failures one line each, routine reads counted per minute | 10 MB × 6 files |
 | `cloud_calls.jsonl` | data folder | edge app | every call **to** the CERAVIS app server (one line each) and every detection | the newest 300, past 1 MB |
-| `ceravis_api_wire.jsonl` | data folder | edge app | the exact request and response of every app-server call (personal data: read on the device only) | the newest 1,500 calls, past 16 MB |
+| `ceravis_api_wire.jsonl` | data folder | edge app | the exact request and response of every app-server call (personal data: read on the device only); never the sign-in code, a key or sendOtp's `randomId` | the newest 1,500 calls, past 16 MB |
 | `talkback_log.jsonl` | data folder | edge app | every talk-back session: who, which room, how long, audio quality (personal data: on the device only) | 5 MB + 1 older file |
 | `mediamtx.log` | data folder | video server | the video server's own log | started fresh past 5 MB |
 | `boot_state.json` | data folder | edge app | this boot's id, why the device started, whether the app stopped cleanly | — |
+| `edge_api.key` | data folder | edge app | this device's **app-server key**: signs its sign-in calls (sendOtp, verifyOtp, userDetails); made at the first confirmed sign-in, mode 0600 — never print it | for the device's life |
 | `identity.json` | `/var/lib/ceravis-fleet-agent` | fleet agent | this device's `edge_id`, `device_id` and **heartbeat key** (it signs every check-in; the enrollment's secret is not kept). Readable by the agent alone — never print it | for the device's life |
 | system journal | `journalctl` | every service | text logs: the app, the agent, frpc, NetworkManager, the kernel | 500 MB |
 

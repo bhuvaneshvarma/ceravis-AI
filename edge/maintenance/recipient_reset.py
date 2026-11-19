@@ -45,7 +45,7 @@ MARKER = "recipient_reset.json"
 
 # What stays, in the words the confirmation shows.
 KEPT = ("Cameras, their room zones and the talk-back camera password",
-        "The fleet enrollment and this device's edge_id",
+        "The fleet enrollment, this device's edge_id and its app-server key",
         "The camera hotspot, the reboot password and every service")
 
 
