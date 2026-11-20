@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from urllib.parse import urlsplit
 
 import cv2
 import requests
@@ -21,6 +22,18 @@ logger = logging.getLogger("enrollment")
 # getPatientPostures view keys -> the <view> half of the enrollment label.
 _POSTURE_VIEWS = (("frontView", "front"), ("backView", "back"),
                   ("leftView", "left"), ("rightView", "right"))
+
+
+def _cloud_storage_link(url) -> bool:
+    """A posture image is fetched only from CERAVIS cloud storage — an https
+    link on Amazon S3 (presigned), named in a reply whose signature checked out
+    — never from any other address a reply might hold."""
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and (host == "amazonaws.com" or host.endswith(".amazonaws.com"))
 
 
 def _worker(request: Request):
@@ -149,6 +162,11 @@ def import_postures(recipient_id: str):
         for key, view in _POSTURE_VIEWS:
             v = entry.get(key)
             if not isinstance(v, dict) or not v.get("downloadUrl"):
+                continue
+            if not _cloud_storage_link(v["downloadUrl"]):
+                logger.warning("posture image %s/%s skipped: its link is not CERAVIS cloud "
+                               "storage", view, posture)
+                failed += 1
                 continue
             img_id = v.get("postureImageId") or f"{posture}_{view}"
             name, label = f"cloud_{img_id}.jpg", f"{view}/{posture}"

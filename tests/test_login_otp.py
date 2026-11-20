@@ -23,10 +23,14 @@ Checked, against a stand-in HTTP session (no network):
   6. the signing itself, as fixed known answers (the values the Java app
      server must reproduce byte for byte);
   7. the whole signed sign-in over REAL HTTP against a stand-in app server
-     that follows the same rules: the first sign-in signed with the API key,
-     the device key made from randomId and kept only once the code checks out,
-     every later sign-in signed with it; a forged, unsigned or altered reply
-     never acted on; a device that lost its key cannot fall back to the API key.
+     that follows the same rules: the first sign-in signed with the API key;
+     every sendOtp reply's randomId makes the next key from the current one,
+     which replaces it only once the code checks out; a lost verifyOtp reply
+     never locks the device out; a forged, unsigned or altered reply never
+     acted on; a device that lost its key cannot fall back to the API key;
+  8. removing the care recipient: a code to their email, then unassignDevice;
+     nothing changes on the device unless both succeed; the device keeps its
+     key, and the next care recipient signs in with it.
 
     python tests/test_login_otp.py
 """
@@ -450,6 +454,22 @@ for label, got, want in (
          ceravis_api._signature(KA_EDGE_KEY, KA_TS, KA_BODY),
          "HeWnOkWH7CEqYx3e86hlFUohnU+TAvyWZViPtUDYMxs=")):
     check(f"{label}: {got if isinstance(got, str) else got.decode()}", got == want)
+KA_RANDOM_ID_2 = "7c1e9a52-3b4d-4f60-9e2a-0d5b8c7f1a36"
+KA_RENEWED = "591cdceffd5d77f26beb179d70361ad9287ab61816fc7ab99d0dc0140532c610"
+KA_UNASSIGN_REPLY = b'{"code":1,"message":"Device unassigned","data":{"deviceId":"ceravis-acg08mbv3"}}'
+for label, got, want in (
+        ("renewed key = HMAC-SHA256(device key, the next randomId), hex",
+         ceravis_api._derive_edge_key(KA_EDGE_KEY, KA_RANDOM_ID_2), KA_RENEWED),
+        ("verifyOtp after it, code 60417, signed with the renewed key",
+         ceravis_api._signature(KA_RENEWED, "1793362001.250", b"60417"),
+         "2ei47GQade4NwUjCyZWD5ZC4N+arntUZrnsWxIugivs="),
+        ("unassignDevice request, signed with the renewed key",
+         ceravis_api._signature(KA_RENEWED, "1793362002.750", KA_BODY),
+         "7DZ6ocBBvI9kRF+FX2Q6kdbq3AVbW/0tICEYMVqs9CE="),
+        ("unassignDevice reply, signed with it over the request timestamp",
+         ceravis_api._signature(KA_RENEWED, "1793362002.750", KA_UNASSIGN_REPLY),
+         "dwjS4Y1PZ5Pm1KZ6iulmA1ec2ofpG/6AsQ710vtKeNc=")):
+    check(f"{label}: {got}", got == want)
 check("a signature is checked in full: one character off fails",
       not ceravis_api._signed_by(KA_EDGE_KEY, KA_TS, b"48213",
                                  "3zi+sxOZym2XhJ/PHP5qHpEkCkQ3SHQTQ69ed8BJCsZ=")
@@ -470,38 +490,60 @@ API_KEY = "test-api-key-not-a-real-one"
 ACCOUNT = {"ceravisUserId": 5012, "firstName": "Care", "lastName": "Recipient",
            "email": "care@example.com", "role": "CARE_RECIPIENT", "tier": "TIER_2",
            "deviceToken": "ce7k2m9xq4w8n3"}
+NEXT = {"ceravisUserId": 6020, "firstName": "Next", "lastName": "Recipient",
+        "email": "next@example.com", "role": "CARE_RECIPIENT", "tier": "TIER_1"}
+USERS = {a["email"]: a for a in (ACCOUNT, NEXT)}
 
 
 class AppServer:
-    """The Java side of the signed sign-in, as specified: the reference the
-    real server is held to. Signatures are checked over the raw bytes received;
-    a request older or newer than 300 s, or one already used, is refused. No
-    request names its device in a header: sendOtp and userDetails by the body's
-    deviceId, verifyOtp not at all — its code is found by the signature alone."""
+    """The Java side of the signed calls, as specified: the reference the real
+    server is held to. Signatures are checked over the raw bytes received; a
+    request older or newer than 300 s, or one already used, is refused. No
+    request names its device in a header: the body's deviceId does — verifyOtp
+    names nothing, its code is found by the signature alone.
+
+    The key rule: every sendOtp reply carries a new randomId, and the device's
+    next key is HMAC(the key that verified that sendOtp, randomId). verifyOtp
+    is signed with it; when the code checks out it becomes the device key and
+    the device is bound to that user. The key before stays accepted until the
+    device first signs with the new one, so a lost verifyOtp reply never locks
+    a device out."""
 
     def __init__(self) -> None:
-        self.bound: dict[str, str] = {}       # deviceId -> its key (after a confirmed code)
-        self.pending: dict[str, dict] = {}    # deviceId -> {email, otp, random_id}
+        self.keys: dict[str, str] = {}        # deviceId -> its key (after a confirmed code)
+        self.previous: dict[str, str] = {}    # deviceId -> the key before, until the new one is used
+        self.patient: dict[str, int | None] = {}   # deviceId -> the user it is assigned to
+        self.pending: dict[str, dict] = {}    # deviceId -> {email, otp, next_key}
         self.used: set[str] = set()
         self.calls: list[tuple[str, str]] = []   # (endpoint, which key / verdict)
-        self.tamper = self.unsigned = False
+        self.tamper = self.unsigned = self.fail_after_verify = self.unassign_refuses = False
 
     def _match_code(self, ts: str, sig: str):
         """verifyOtp carries no deviceId: the open code whose expected signature
         equals the one received — (deviceId, key) or None. The key is in the
         signature, so two devices' equal codes can never be confused."""
         for device, p in self.pending.items():
-            key = self.bound.get(device) or (
-                p["random_id"] and ceravis_api._derive_edge_key(API_KEY, p["random_id"]))
-            if key and ceravis_api._signed_by(key, ts, p["otp"].encode(), sig):
-                return device, key
+            if ceravis_api._signed_by(p["next_key"], ts, p["otp"].encode(), sig):
+                return device, p["next_key"]
         return None
+
+    def _key_for(self, device: str, ts: str, raw: bytes, sig: str, api_ok: bool):
+        """(the key that verifies this request, its name), or (None, None)."""
+        current, before = self.keys.get(device), self.previous.get(device)
+        if current and ceravis_api._signed_by(current, ts, raw, sig):
+            self.previous.pop(device, None)            # the new key is in use
+            return current, "device key"
+        if before and ceravis_api._signed_by(before, ts, raw, sig):
+            return before, "previous key"
+        if current is None and api_ok and ceravis_api._signed_by(API_KEY, ts, raw, sig):
+            return API_KEY, "API key"
+        return None, None
 
     def handle(self, endpoint: str, headers, raw: bytes):
         ts = headers.get(ceravis_api.HDR_TIMESTAMP) or ""
         sig = headers.get(ceravis_api.HDR_SIGNATURE) or ""
         if headers.get("X-API-Key"):
-            return 400, None, {"code": 0, "message": "sign-in calls carry no API key"}
+            return 400, None, {"code": 0, "message": "edge calls carry no API key"}
         if headers.get("X-Ceravis-Device"):
             return 400, None, {"code": 0, "message": "X-Ceravis-Device is not accepted"}
         try:
@@ -519,10 +561,15 @@ class AppServer:
                 return 401, None, {"code": 0, "data": None, "message": "Invalid OTP"}
             device, key = found
             self.used.add(sig)
-            del self.pending[device]
-            self.bound[device] = key                  # the device key is bound here
+            email = self.pending.pop(device)["email"]
+            if self.keys.get(device) and self.keys[device] != key:
+                self.previous[device] = self.keys[device]
+            self.keys[device] = key                   # the device's key is (re)bound here
+            self.patient[device] = USERS[email]["ceravisUserId"]
             self.calls.append((endpoint, "ok"))
-            return 200, key, {"code": 1, "data": ACCOUNT, "message": "OTP verified successfully"}
+            if self.fail_after_verify:                # committed, but the reply is lost
+                return 503, None, {"code": 0, "message": "Service Unavailable"}
+            return 200, key, {"code": 1, "data": USERS[email], "message": "OTP verified successfully"}
         try:
             body = json.loads(raw)
         except ValueError:
@@ -530,24 +577,28 @@ class AppServer:
         device = body.get("deviceId") or ""
         if not device:
             return 400, None, {"code": 0, "message": "deviceId required"}
-        key = self.bound.get(device) or (API_KEY if endpoint == "sendOtp" else None)
-        if key is None or not ceravis_api._signed_by(key, ts, raw, sig):
+        key, which = self._key_for(device, ts, raw, sig, api_ok=endpoint == "sendOtp")
+        if key is None:
             self.calls.append((endpoint, "signature does not match"))
             return 401, None, {"code": 0, "message": "Signature does not match"}
         self.used.add(sig)
-        self.calls.append((endpoint, "device key" if device in self.bound else "API key"))
-        if body.get("email") != ACCOUNT["email"]:
+        self.calls.append((endpoint, which))
+        user = USERS.get(body.get("email"))
+        if user is None:
             return 200, key, {"code": 0, "data": None, "message": "User not found"}
         if endpoint == "userDetails":
-            return 200, key, {"code": 1, "data": ACCOUNT, "message": "User details"}
-        otp = f"{secrets.randbelow(100000):05d}"
-        random_id = None if device in self.bound else str(uuid.uuid4())
-        self.pending[device] = {"email": body["email"], "otp": otp, "random_id": random_id}
-        data = {"email": body["email"], "message": "2 More Send Otp Attempts!",
-                "userMemberId": "CARERECIPIENT"}
-        if random_id:
-            data["randomId"] = random_id
-        return 200, key, {"code": 1, "data": data, "message": "OTP sent"}
+            return 200, key, {"code": 1, "data": user, "message": "User details"}
+        if endpoint == "unassignDevice":
+            if self.unassign_refuses or self.patient.get(device) not in (None, user["ceravisUserId"]):
+                return 200, key, {"code": 0, "data": None, "message": "Not allowed for this device"}
+            self.patient[device] = None
+            return 200, key, {"code": 1, "message": "Device unassigned", "data": {"deviceId": device}}
+        otp, random_id = f"{secrets.randbelow(100000):05d}", str(uuid.uuid4())
+        self.pending[device] = {"email": body["email"], "otp": otp,
+                                "next_key": ceravis_api._derive_edge_key(key, random_id)}
+        return 200, key, {"code": 1, "message": "OTP sent",
+                          "data": {"email": body["email"], "message": "2 More Send Otp Attempts!",
+                                   "randomId": random_id, "userMemberId": "CARERECIPIENT"}}
 
 
 APP = AppServer()
@@ -587,37 +638,39 @@ WIRE = _TMP / "ceravis_api_wire.jsonl"
 WIRE.unlink()
 
 
-def _verify(otp):
-    return account_routes.verify(Verify(email="care@example.com", otp=otp),
+def _verify(otp, email="care@example.com"):
+    return account_routes.verify(Verify(email=email, otp=otp),
                                  SimpleNamespace(headers={"host": "edge.test"}), BackgroundTasks())
+
+
+def _key():
+    return KEY_FILE.read_text(encoding="utf-8")
 
 
 r = account_routes.request_otp(Req(email="care@example.com"))
 check("first sign-in: sendOtp signed with the API key, accepted",
       r == {"sent": True, "email": "care@example.com"} and APP.calls[-1] == ("sendOtp", "API key"),
       f"{r} {APP.calls[-1:]}")
-random_id = APP.pending[DEVICE]["random_id"]
+first_key = APP.pending[DEVICE]["next_key"]
 check("...the reply's randomId makes the device key — held, NOT saved before the code",
-      not KEY_FILE.exists() and ceravis_api._pending_key("care@example.com")
-      == ceravis_api._derive_edge_key(API_KEY, random_id))
+      not KEY_FILE.exists() and ceravis_api._pending_key("care@example.com") == first_key)
 code = APP.pending[DEVICE]["otp"]
 wrong = f"{(int(code) + 1) % 100000:05d}"
 r = _verify(wrong)
 check("a wrong code: no open code matches its signature -> 401 'Invalid OTP', shown as sent; no key saved",
       r == {"verified": False, "reason": "Invalid OTP"} and not KEY_FILE.exists()
       and APP.calls[-1] == ("verifyOtp", "no open code matches"), str(r))
-APP.pending = {"ceravis-otherhome": {"email": "other@example.com", "otp": code,   # same code,
-                                     "random_id": str(uuid.uuid4())},       # another device,
-               **APP.pending}                                                # tried FIRST
+APP.pending = {"ceravis-otherhome": {"email": "next@example.com", "otp": code,       # same code,
+                                     "next_key": "another-device-key"},               # another device,
+               **APP.pending}                                                         # tried FIRST
 r = _verify(code)
 other = APP.pending.pop("ceravis-otherhome", None)
 check("the right code: signed in as a new device", r["verified"] is True and r["fresh"] is True,
       str(r)[:160])
 check("...found by its signature alone, never confused with another device holding the SAME code",
-      DEVICE in APP.bound and "ceravis-otherhome" not in APP.bound and other is not None)
-check("...the device key is saved, exactly HMAC-SHA256(API key, randomId)",
-      KEY_FILE.read_text(encoding="utf-8") == ceravis_api._derive_edge_key(API_KEY, random_id)
-      and APP.bound[DEVICE] == KEY_FILE.read_text(encoding="utf-8"))
+      DEVICE in APP.keys and "ceravis-otherhome" not in APP.keys and other is not None)
+check("...the device key is saved, exactly the one both sides made",
+      _key() == first_key and APP.keys[DEVICE] == first_key)
 if os.name == "posix":
     check("...readable by the service alone (0600)", (KEY_FILE.stat().st_mode & 0o777) == 0o600,
           oct(KEY_FILE.stat().st_mode & 0o777))
@@ -628,19 +681,37 @@ check("...the account from the confirmation is kept on the device",
 wire = WIRE.read_text(encoding="utf-8")
 records = [json.loads(line) for line in wire.splitlines()]
 check("the wire log holds no randomId, no code, no key",
-      random_id not in wire and KEY_FILE.read_text() not in wire and API_KEY not in wire
+      _key() not in wire and API_KEY not in wire
       and code not in json.dumps([(x["request"], x["response"]) for x in records])
       and any('"randomId": "<withheld>"' in (x["response"] or "") for x in records))
 
 r = account_routes.request_otp(Req(email="care@example.com"))
-check("a later sign-in: sendOtp signed with the device key, no randomId issued",
-      r["sent"] is True and APP.calls[-1] == ("sendOtp", "device key")
-      and APP.pending[DEVICE]["random_id"] is None, str(APP.calls[-1:]))
-key_before = KEY_FILE.read_text(encoding="utf-8")
+renewed = ceravis_api._pending_key("care@example.com")
+check("a later sign-in: sendOtp signed with the device key; its randomId makes the NEXT key "
+      "from the device key, held", r["sent"] is True and APP.calls[-1] == ("sendOtp", "device key")
+      and renewed == APP.pending[DEVICE]["next_key"] and renewed != first_key
+      and _key() == first_key, str(APP.calls[-1:]))
 r = _verify(APP.pending[DEVICE]["otp"])
-check("...the code checks out with the device key: a returning sign-in, the key unchanged",
-      r["verified"] is True and r["fresh"] is False
-      and KEY_FILE.read_text(encoding="utf-8") == key_before, str(r)[:160])
+check("...verifyOtp signed with the next key; confirmed, it REPLACES the device key on both sides",
+      r["verified"] is True and r["fresh"] is False and _key() == renewed
+      and APP.keys[DEVICE] == renewed, str(r)[:160])
+check("...and the very next call is signed with the new key",
+      APP.calls[-1] == ("userDetails", "device key") and DEVICE not in APP.previous)
+
+r = account_routes.request_otp(Req(email="care@example.com"))
+lost = APP.pending[DEVICE]["next_key"]
+APP.fail_after_verify = True
+r2 = _verify(APP.pending[DEVICE]["otp"])
+APP.fail_after_verify = False
+check("a verifyOtp the server committed but whose reply was lost: the device keeps its key",
+      r2["verified"] is False and _key() == renewed and APP.keys[DEVICE] == lost, str(r2))
+r = account_routes.request_otp(Req(email="care@example.com"))
+check("...and is not locked out: the server still takes the key before, until the new one is used",
+      r["sent"] is True and APP.calls[-1] == ("sendOtp", "previous key"), f"{r} {APP.calls[-1:]}")
+r = _verify(APP.pending[DEVICE]["otp"])
+check("...the next sign-in renews the key from there, both sides alike",
+      r["verified"] is True and _key() == APP.keys[DEVICE], str(r)[:120])
+
 r = account_routes.request_otp(Req(email="jürgen.ß@example.com"))
 check("a non-ASCII email is signed over its exact UTF-8 bytes (the server checks, then answers)",
       r == {"sent": False, "reason": "User not found"} and APP.calls[-1] == ("sendOtp", "device key"),
@@ -653,23 +724,33 @@ check("a reply altered on the way is not acted on",
       r == {"sent": False, "reason": ceravis_api._UNVERIFIED}, str(r))
 APP.unsigned = True
 r = account_routes.request_otp(Req(email="care@example.com"))
-code = APP.pending[DEVICE]["otp"]
-r2 = _verify(code)
 APP.unsigned = False
-check("an unsigned reply is not acted on — not to send, not to sign in",
-      r["sent"] is False and r2 == {"verified": False, "reason": ceravis_api._UNVERIFIED}, f"{r} {r2}")
+held = ceravis_api._pending_key("care@example.com")
+r1 = account_routes.request_otp(Req(email="care@example.com"))
+key_before = _key()
+APP.unsigned = True
+r2 = _verify(APP.pending[DEVICE]["otp"])
+APP.unsigned = False
+check("an unsigned reply is not acted on — not to send (no key held from it), not to sign in "
+      "(the key not renewed)",
+      r["sent"] is False and held is None and r1["sent"] is True
+      and r2 == {"verified": False, "reason": ceravis_api._UNVERIFIED} and _key() == key_before,
+      f"{r} {r2}")
 
+saved = _key()
 KEY_FILE.unlink()                                     # the device lost its key
 r = account_routes.request_otp(Req(email="care@example.com"))
 check("a device that lost its key cannot fall back to the API key: the server refuses",
       r == {"sent": False, "reason": "Signature does not match"}
       and APP.calls[-1] == ("sendOtp", "signature does not match"), f"{r} {APP.calls[-1:]}")
 calls_before = len(APP.calls)
+ceravis_api._drop_pending()                           # a restart: no code requested since
 r = _verify("12345")
 check("...and with no key and no code requested, nothing is sent at all",
       r == {"verified": False, "reason": "Ask for a new code first, then enter it here."}
       and len(APP.calls) == calls_before, str(r))
-del APP.bound[DEVICE]                                 # a person clears the device on the server
+APP.keys.pop(DEVICE)                                  # a person clears the device on the server
+APP.previous.pop(DEVICE, None)
 APP.tamper = True
 r = account_routes.request_otp(Req(email="care@example.com"))
 APP.tamper = False
@@ -678,23 +759,103 @@ check("a first sign-in whose reply was altered holds no key from it",
 r = account_routes.request_otp(Req(email="care@example.com"))
 r2 = _verify(APP.pending[DEVICE]["otp"])
 check("...cleared on the server too, the device signs up again with the API key",
-      r["sent"] is True and r2["verified"] is True and KEY_FILE.exists(), f"{r} {str(r2)[:80]}")
+      r["sent"] is True and r2["verified"] is True and KEY_FILE.exists() and _key() != saved,
+      f"{r} {str(r2)[:80]}")
 
 url = settings.ceravis_api_base_url + "/v1/ai/userDetails"
 body = ceravis_api._json_bytes({"email": "care@example.com", "deviceId": DEVICE})
 ts = f"{time.time():.3f}"
 hdr = {ceravis_api.HDR_TIMESTAMP: ts,
-       ceravis_api.HDR_SIGNATURE: ceravis_api._signature(KEY_FILE.read_text(), ts, body),
+       ceravis_api.HDR_SIGNATURE: ceravis_api._signature(_key(), ts, body),
        "Content-Type": "application/json"}
 first = requests.post(url, data=body, headers=hdr, timeout=5)
 again = requests.post(url, data=body, headers=hdr, timeout=5)
 stale_ts = f"{time.time() - 600:.3f}"
 stale = requests.post(url, data=body, headers=dict(
     hdr, **{ceravis_api.HDR_TIMESTAMP: stale_ts, ceravis_api.HDR_SIGNATURE:
-            ceravis_api._signature(KEY_FILE.read_text(), stale_ts, body)}), timeout=5)
+            ceravis_api._signature(_key(), stale_ts, body)}), timeout=5)
 check("server side: a captured request sent again, or 10 minutes old, is refused",
       first.status_code == 200 and again.status_code == 401 and stale.status_code == 401,
       f"{first.status_code} {again.status_code} {stale.status_code}")
+
+# --------------------------------------------------------------------------
+print("\n8. removing the care recipient: a code, then unassignDevice, then the device lets go")
+from maintenance import recipient_reset                           # noqa: E402
+
+_real_reset_request = recipient_reset.request
+marks: list[tuple] = []
+recipient_reset.request = lambda reason, actor, earlier=None: marks.append((reason, earlier))
+_SIGNED_IN = _Request({"type": "http", "client": ("10.0.0.5", 1), "headers": []})
+
+
+def _remove(otp):
+    tasks = BackgroundTasks()
+    r = account_routes.remove_recipient(account_routes.RemoveRecipientRequest(otp=otp),
+                                        _SIGNED_IN, tasks)
+    return r, [t.func.__name__ for t in tasks.tasks]
+
+
+check("the device serves care@example.com, assigned on the server too",
+      account_routes.account_config.get().get("ceravisUserId") == 5012
+      and APP.patient[DEVICE] == 5012)
+calls_before = len(APP.calls)
+r, tasks = _remove("12")
+check("no 5-digit code: refused on the device, nothing sent",
+      r["removed"] is False and "5-digit" in r["reason"] and len(APP.calls) == calls_before
+      and not tasks, str(r))
+r = account_routes.remove_recipient_code()
+check("'Remove': a code goes to the care recipient's own email, signed with the device key",
+      r == {"sent": True, "email": "care@example.com"} and APP.calls[-1] == ("sendOtp", "device key")
+      and APP.pending[DEVICE]["email"] == "care@example.com", f"{r} {APP.calls[-1:]}")
+code = APP.pending[DEVICE]["otp"]
+key_before = _key()
+r, tasks = _remove(f"{(int(code) + 1) % 100000:05d}")
+check("a wrong code: nothing removed, nothing unassigned, the code still open",
+      r == {"removed": False, "reason": "Invalid OTP", "codeUsed": False} and not tasks
+      and account_routes.account_config.get().get("ceravisUserId") == 5012
+      and APP.patient[DEVICE] == 5012 and not marks and _key() == key_before, str(r))
+APP.unassign_refuses = True
+r, tasks = _remove(code)
+APP.unassign_refuses = False
+check("the right code but the server will not unassign: NOTHING removed, a new code asked for",
+      r["removed"] is False and r["codeUsed"] is True and not tasks and not marks
+      and r["reason"].startswith("Not allowed for this device") and "Nothing was removed" in r["reason"]
+      and account_routes.account_config.get().get("ceravisUserId") == 5012
+      and APP.patient[DEVICE] == 5012, str(r))
+check("...the confirmed code renewed the device key on both sides all the same",
+      _key() != key_before and _key() == APP.keys[DEVICE])
+account_routes.remove_recipient_code()
+r, tasks = _remove(APP.pending[DEVICE]["otp"])
+check("the right code: unassignDevice signed with the renewed key, the server lets the device go",
+      r["removed"] is True and r["restarting"] is True
+      and APP.calls[-2:] == [("verifyOtp", "ok"), ("unassignDevice", "device key")]
+      and APP.patient[DEVICE] is None, f"{r} {APP.calls[-3:]}")
+check("...the account leaves at once, the rest is marked for the restart (logs set apart "
+      "under the earlier recipient), the restart queued",
+      account_routes.account_config.get() == {} and tasks == ["restart_soon"]
+      and marks and marks[-1][0] == "care recipient removed"
+      and marks[-1][1].get("ceravisUserId") == 5012, f"{tasks} {marks}")
+check("...and the device keeps its key: it is the device's, not the care recipient's",
+      KEY_FILE.exists() and _key() == APP.keys[DEVICE])
+r = account_routes.remove_recipient_code()
+check("with no care recipient left, a removal code is not even asked for",
+      r["sent"] is False and r["reason"] == account_routes._NO_RECIPIENT, str(r))
+
+kept = _key()
+r = account_routes.request_otp(Req(email="next@example.com"))
+check("a fresh sign-in with a NEW email: sendOtp signed with the device's existing key",
+      r["sent"] is True and APP.calls[-1] == ("sendOtp", "device key"), f"{r} {APP.calls[-1:]}")
+check("...its randomId makes the next key from that existing key",
+      ceravis_api._pending_key("next@example.com")
+      == APP.pending[DEVICE]["next_key"] != kept)
+r = _verify(APP.pending[DEVICE]["otp"], email="next@example.com")
+check("...the code checks out: the new care recipient on the device AND assigned on the server, "
+      "the key renewed on both sides",
+      r["verified"] is True and r["fresh"] is True and r["user"]["ceravisUserId"] == 6020
+      and APP.patient[DEVICE] == 6020 and _key() == APP.keys[DEVICE] != kept, str(r)[:160])
+check("...and userDetails, signed with the renewed key, accepted",
+      APP.calls[-1] == ("userDetails", "device key"))
+recipient_reset.request = _real_reset_request
 SERVER.shutdown()
 account_routes.account_config = _real_account
 

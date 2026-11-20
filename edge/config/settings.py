@@ -969,8 +969,9 @@ class Settings(BaseSettings):
     # against it before onboarding continues. Configure the server's address +
     # the API key. Leave base_url empty to run the device standalone.
     ceravis_api_base_url: str = "https://app.ceravishealth.in/ch"
-    # The app-server API key: it signs a device's first sign-in and is sent as the
-    # "X-API-Key" header on every other app-server call. A SECRET: it comes only
+    # The app-server API key: it signs only a device's very first sendOtp (every
+    # call after is signed with the device's own key — integration/ceravis_api.py,
+    # "Signed calls"); it never travels on a /v1/ai call. A SECRET: it comes only
     # from the root-only credential /etc/ceravis/credstore/ceravis_api_key
     # (setup/install_api_key.sh), never from this public repo. No default: a
     # device without the file has no key, and /system/status says so
@@ -1017,8 +1018,8 @@ class Settings(BaseSettings):
     # Purely additive and best-effort — a failure here never touches cameras, AI
     # or recording. Identified by edgeId (the app server can map edgeId ->
     # account on its own); ceravisUserId is sent alongside in the BODY (never the
-    # URL — it is account-identifying). Carries the same X-API-Key header as
-    # every other app-server call. Blank url = feature OFF (device standalone).
+    # URL — it is account-identifying). Carries the API key in X-API-Key (the
+    # /v1/ai calls are signed instead). Blank url = feature OFF (device standalone).
     #
     # TURNED OFF (2026-08-27, by request): blank = the reporter thread never
     # starts, so the device sends no beat at all. Two consequences to know about

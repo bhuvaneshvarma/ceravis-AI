@@ -95,14 +95,49 @@
           padding: 10px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
   .prow b { text-align: right; word-break: break-all; color: var(--navy); }
   @media (max-width: 760px) { .rec-grid { grid-template-columns: 1fr; } }
-  /* removing the care recipient: set apart, deliberate */
-  .rec-remove { display: flex; justify-content: space-between; align-items: center; gap: 16px;
-                margin-top: 18px; padding: 14px 16px; border-radius: 12px;
-                border: 1px solid rgba(251,44,54,.25); background: rgba(251,44,54,.04); }
-  .rec-remove-t { font-weight: 700; color: var(--navy); font-size: 13.5px; }
-  .rec-remove-s { color: var(--muted); font-size: 12.5px; margin-top: 3px; line-height: 1.5; }
-  .rec-remove[hidden] { display: none; }
-  @media (max-width: 760px) { .rec-remove { flex-direction: column; align-items: stretch; } }
+
+  /* Remove the care recipient: quiet in the header, says what it does on hover */
+  .ph-remove { position: relative; display: inline-flex; align-items: center; gap: 8px;
+               flex: 0 0 auto; white-space: nowrap;
+               height: 36px; padding: 0 14px; border-radius: 10px; cursor: pointer;
+               font: inherit; font-size: 12.5px; font-weight: 700; color: var(--bad);
+               background: var(--panel); border: 1px solid rgba(251,44,54,.28);
+               transition: background .15s, border-color .15s, box-shadow .15s; }
+  .ph-remove svg { width: 16px; height: 16px; stroke: currentColor; flex: 0 0 auto; }
+  .ph-remove:hover, .ph-remove:focus-visible { outline: none; background: rgba(251,44,54,.06);
+               border-color: rgba(251,44,54,.55); box-shadow: 0 6px 16px -8px rgba(251,44,54,.45); }
+  .ph-remove[hidden] { display: none; }
+  .ph-remove::after { content: attr(data-tip); position: absolute; top: calc(100% + 9px); right: 0;
+               z-index: 30; width: max-content; max-width: 230px; padding: 8px 11px;
+               border-radius: 9px; background: var(--navy); color: #fff; font-size: 11.5px;
+               font-weight: 600; line-height: 1.45; text-align: left; white-space: normal;
+               box-shadow: var(--shadow-lg); opacity: 0; transform: translateY(-4px);
+               pointer-events: none; transition: opacity .15s, transform .15s; }
+  .ph-remove:hover::after, .ph-remove:focus-visible::after { opacity: 1; transform: none; }
+  @media (max-width: 760px) { .ph-remove span { display: none; } .ph-remove { padding: 0 10px; } }
+
+  /* ...and the code that confirms it */
+  .rm-dialog { max-width: 400px; text-align: center; }
+  .rm-ic { width: 46px; height: 46px; margin: 2px auto 12px; border-radius: 14px;
+           display: flex; align-items: center; justify-content: center; color: var(--bad);
+           background: rgba(251,44,54,.09); }
+  .rm-ic svg { width: 22px; height: 22px; stroke: currentColor; }
+  .rm-warn { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px;
+             line-height: 1.5; font-weight: 600; color: var(--bad);
+             background: rgba(251,44,54,.06); border: 1px solid rgba(251,44,54,.2); }
+  .rm-to { font-size: 12.5px; margin-top: 14px; word-break: break-word; }
+  .rm-otp { justify-content: center; margin-top: 12px; }
+  .rm-otp input { width: 50px; height: 50px; font-size: 18px; }
+  .rm-otp input:disabled { opacity: .5; }
+  .rm-msg { min-height: 18px; margin-top: 10px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .rm-msg.bad { color: var(--bad); }
+  .rm-dialog .cv-dialog-actions { justify-content: stretch; margin-top: 12px; }
+  .rm-dialog .cv-dialog-actions .btn { flex: 1; justify-content: center; }
+  .rm-dialog .btn-danger { background: var(--bad); color: #fff; }
+  .rm-dialog .btn-danger:hover:not(:disabled) { filter: brightness(.94); }
+  .rm-resend { margin-top: 12px; font-size: 11.5px; color: var(--faint); }
+  .rm-resend b { color: var(--navy); font-variant-numeric: tabular-nums; }
+  .rm-resend a { color: var(--teal-dim); font-weight: 700; cursor: pointer; }
 
 </style>
 </head>
@@ -113,6 +148,16 @@
     <h1>Device setup</h1>
     <div class="sub">Onboard this care recipient: recipient &rarr; cameras &rarr;
       room zones &rarr; enrollment. Everything saves to the device as you go.</div>
+    <div class="ph-actions">
+      <button type="button" class="ph-remove" id="r-remove-btn" hidden
+              aria-label="Remove care recipient"
+              data-tip="Unassign this care recipient and delete their data from this device">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+        <span>Remove care recipient</span>
+      </button>
+    </div>
   </div>
 
   <div class="card stepper-card"><div class="stepper" id="stepper"></div></div>
@@ -123,15 +168,6 @@
       <div class="hint mb">Your verified CERAVIS profile — registered as the care
         recipient on this device. Face/body enrollment is the final step.</div>
       <div id="r-profile"></div>
-      <div class="rec-remove" id="r-remove" hidden>
-        <div>
-          <div class="rec-remove-t">Remove this care recipient from the device</div>
-          <div class="rec-remove-s">Before the device goes to another care recipient: deletes
-            their account, enrollment, alerts, recordings and logs from this device. Cameras,
-            the fleet enrollment and device settings stay.</div>
-        </div>
-        <button class="btn btn-danger" id="r-remove-btn">Remove care recipient…</button>
-      </div>
     </div>
   </section>
 
@@ -258,6 +294,7 @@ async function initSetup() {
   } catch (_) {}
   document.getElementById("wizard").hidden = false;
   if (!document.querySelector(".sidebar")) renderNav("setup.html");
+  document.getElementById("r-remove-btn").hidden = !ACCOUNT.user;
   show(1);
 }
 
@@ -338,49 +375,120 @@ async function initRecipient() {
     + profRow("CERAVIS user", "#" + (u.ceravisUserId ?? "—"))
     + profRow("Device edge id", ACCOUNT.edge_id || "not enrolled yet", true)   // the FMS edge_id, shown RAW
     + `</div>`;
-  document.getElementById("r-remove").hidden = false;
   await ensureRecipient(u);
   refreshRecipients();
 }
-// Remove the care recipient: say exactly what is deleted (with what this device
-// holds now) and what stays, ask for a typed yes, then wait out the restart.
-function sizeText(n) {
-  return n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB"
-       : n >= 1e3 ? Math.round(n / 1e3) + " KB" : n + " B";
-}
-document.getElementById("r-remove-btn").onclick = async () => {
-  let d;
-  try { d = await api("/api/v1/account/recipient-data"); }
-  catch (e) { return toast("Could not read this device's data — try again", "err"); }
-  const who = d.recipient ? (d.recipient.name || d.recipient.email) : "the care recipient";
-  const erased = [`The care account of ${who}, and every browser signed in for it`]
-    .concat(d.parts.map(p => p.files
-      ? `${p.label} — ${p.files} file${p.files === 1 ? "" : "s"}, ${sizeText(p.bytes)}`
-      : `${p.label} — none`));
-  const yes = await cvConfirm(
-    `Everything this device holds of ${who} is permanently deleted, and the device `
-    + "restarts. Use this before the device goes to another care recipient. "
-    + "This cannot be undone.",
-    { title: "Remove this care recipient?", danger: true, typeToConfirm: "REMOVE",
-      confirmText: "Remove and restart",
-      sections: [{ title: "Deleted from this device", tone: "bad", items: erased },
-                 { title: "Kept", tone: "ok", items: d.kept }] });
-  if (!yes) return;
-  let r;
-  try {
-    r = await api("/api/v1/account/remove-recipient",
-      { method: "POST", body: JSON.stringify({ confirm: true }) });
-  } catch (e) { return toast(e.detail || "Removal failed", "err"); }
-  if (!r.removed) return toast(r.reason || "Removal failed", "err");
-  cvBusy("Removing the care recipient",
-    "Their data is being deleted and the device restarts. This takes about 30 seconds.");
-  await cvWaitForRestart(window.CERAVIS_PREFIX || "", r.bootedAt);
-  try {
-    localStorage.removeItem(CV_SESSION_KEY);
-    sessionStorage.setItem("cv-signout-reason",
-      "The care recipient was removed from this device. Sign in with the next care recipient's email.");
-  } catch (_) {}
-  location.replace("login.html");
+
+// Remove the care recipient. A code sent to their email confirms it; the app
+// server then unassigns the device, this device erases their data (their logs
+// are set apart), restarts and signs everyone out. Nothing changes before the
+// code AND the unassign succeed. Every text set from a reply is set as text.
+document.getElementById("r-remove-btn").onclick = () => {
+  const email = (ACCOUNT.user && ACCOUNT.user.email) || "";
+  document.querySelectorAll(".cv-dialog-scrim").forEach(d => d.remove());
+  const scrim = document.createElement("div");
+  scrim.className = "cv-dialog-scrim";
+  scrim.innerHTML = `
+    <div class="cv-dialog rm-dialog" role="dialog" aria-modal="true" aria-labelledby="rm-title">
+      <div class="rm-ic" aria-hidden="true">${document.querySelector("#r-remove-btn svg").outerHTML}</div>
+      <div class="cv-dialog-title" id="rm-title">Remove care recipient</div>
+      <div class="rm-warn">Permanently deletes all care recipient data on this device and signs you out.</div>
+      <div class="cv-dialog-msg rm-to"></div>
+      <div class="otp-boxes rm-otp">${'<input maxlength="1" inputmode="numeric" aria-label="Code digit" />'.repeat(5)}</div>
+      <div class="rm-msg" aria-live="polite"></div>
+      <div class="cv-dialog-actions">
+        <button type="button" class="btn btn-ghost" data-rm="cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" data-rm="ok" disabled>Remove</button>
+      </div>
+      <div class="rm-resend"></div>
+    </div>`;
+  const $ = (sel) => scrim.querySelector(sel);
+  const okBtn = $('[data-rm="ok"]'), to = $(".rm-to"), msg = $(".rm-msg"), resend = $(".rm-resend");
+  let busy = false, timer = null;
+  const say = (text, tone) => { msg.textContent = text || ""; msg.className = "rm-msg " + (tone || ""); };
+  const boxes = cvOtpBoxes($(".rm-otp"), {
+    onEnter: () => okBtn.click(),
+    onChange: (code) => { okBtn.disabled = busy || code.length !== 5; },
+  });
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } };
+  const close = () => {
+    if (busy) return;
+    clearInterval(timer);
+    document.removeEventListener("keydown", onKey);
+    scrim.remove();
+  };
+  const offerResend = (secs) => {
+    clearInterval(timer);
+    let left = secs;
+    const tick = () => {
+      if (left > 0) { resend.innerHTML = `New code in <b>${left--}s</b>`; return; }
+      clearInterval(timer);
+      resend.innerHTML = `<a href="#">Send a new code</a>`;
+      resend.querySelector("a").onclick = (e) => { e.preventDefault(); sendCode(); };
+    };
+    tick();
+    timer = setInterval(tick, 1000);
+  };
+  const sendCode = async () => {
+    to.textContent = `Sending a code to ${email}…`;
+    resend.textContent = "";
+    say("");
+    boxes.disable(true);
+    let r;
+    try { r = await api("/api/v1/account/remove-recipient/code", { method: "POST" }); }
+    catch (_) { r = { sent: false, reason: "Couldn't reach the device. Try again." }; }
+    if (!scrim.isConnected) return;
+    if (r && r.sent === true) {
+      to.textContent = `Enter the code sent to ${email}`;
+      boxes.disable(false);
+      boxes.clear();
+      boxes.focus();
+      offerResend(30);
+    } else {
+      to.textContent = `The code could not be sent to ${email}.`;
+      say((r && r.reason) || "Couldn't send the code.", "bad");
+      offerResend(0);
+    }
+  };
+  okBtn.onclick = async () => {
+    const code = boxes.code();
+    if (busy || code.length !== 5) return;
+    busy = true;
+    okBtn.disabled = true;
+    boxes.disable(true);
+    say("Removing…");
+    let r;
+    try {
+      r = await api("/api/v1/account/remove-recipient",
+        { method: "POST", body: JSON.stringify({ otp: code }) });
+    } catch (e) {
+      r = { removed: false, reason: (e && typeof e.reason === "string" && e.reason)
+        || "Couldn't reach the device. Try again." };
+    }
+    busy = false;
+    if (!r || r.removed !== true) {
+      say((r && r.reason) || "Not removed.", "bad");
+      boxes.disable(false);
+      boxes.clear();
+      boxes.focus();
+      if (r && r.codeUsed) offerResend(0);
+      return;
+    }
+    close();
+    cvBusy("Removing care recipient", "Deleting their data and restarting. This takes about 30 seconds.");
+    await cvWaitForRestart(window.CERAVIS_PREFIX || "", r.bootedAt);
+    try {
+      localStorage.removeItem(CV_SESSION_KEY);
+      sessionStorage.setItem("cv-signout-reason",
+        "The care recipient was removed. Sign in with the next care recipient's email.");
+    } catch (_) {}
+    location.replace("login.html");
+  };
+  $('[data-rm="cancel"]').onclick = close;
+  scrim.addEventListener("click", (e) => { if (e.target === scrim) close(); });
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(scrim);
+  sendCode();
 };
 
 async function ensureRecipient(u) {

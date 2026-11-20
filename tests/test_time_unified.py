@@ -53,9 +53,17 @@ UTC_EXEMPT = {"edge/onvif/soap.py"}
 # service AND the command line (a separate process) both honour, across
 # restarts. A monotonic deadline means nothing to another process — the same
 # reason as the outbox's next_attempt.
+#
+# The app-server calls are signed exactly like the fleet agent's: a wall-clock
+# timestamp the app server checks against ITS clock, corrected by the gap
+# measured from the reply's Date header (ceravis_api._now) — a correction, not
+# a deadline. tests/test_signed_calls.py plays that server with a clock set
+# ahead on purpose.
 DEADLINE_EXEMPT = {"edge/integration/outbox_sender.py",
                    "edge/fleet/fms_agent/transport.py",
-                   "edge/talkback/guard.py"}
+                   "edge/talkback/guard.py",
+                   "edge/integration/ceravis_api.py",
+                   "tests/test_signed_calls.py"}
 
 RX_UTCNOW = re.compile(r"\bdatetime\.utcnow\s*\(")
 RX_NOW_UTC = re.compile(r"datetime\.now\(\s*timezone\.utc\s*\)")

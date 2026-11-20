@@ -21,6 +21,7 @@ from integration.ceravis_api import (
     room_to_enum,
     save_cameras,
     send_otp,
+    unassign_device,
     verify_otp,
 )
 
@@ -63,8 +64,9 @@ def _take_switch(token: str, email: str) -> dict | None:
 def _hand_over(account: dict, actor: str, background_tasks: BackgroundTasks) -> None:
     """This device now serves `account`; whatever it held of the care recipient
     before is erased when the service restarts (maintenance.recipient_reset)."""
+    earlier = account_config.get()
     account_config.clear()
-    recipient_reset.request("handed over to another care recipient", actor)
+    recipient_reset.request("handed over to another care recipient", actor, earlier)
     account_config.save(account)
     background_tasks.add_task(recipient_reset.restart_soon)
 
@@ -310,39 +312,69 @@ def verify(req: VerifyRequest, request: Request, background_tasks: BackgroundTas
     return _signed_in_fresh(account, background_tasks, restarting=False)
 
 
-@router.get("/recipient-data")
-def recipient_data():
-    """What this device holds of its care recipient — what removing them erases —
-    and what stays."""
-    acct = account_config.get()
-    name = " ".join(str(x) for x in (acct.get("firstName"), acct.get("lastName")) if x)
-    return {"recipient": ({"ceravisUserId": acct.get("ceravisUserId"), "name": name,
-                           "email": acct.get("email")} if acct.get("ceravisUserId") else None),
-            "parts": recipient_reset.inventory(),
-            "kept": list(recipient_reset.KEPT),
-            "pending": recipient_reset.pending() is not None}
+# Removing the care recipient — two steps, confirmed by a code to their email:
+#   1. remove-recipient/code   sendOtp to the care recipient's email
+#   2. remove-recipient {otp}  verifyOtp -> unassignDevice (the app server lets
+#                              the device go) -> the account leaves at once,
+#                              every browser is signed out, their data is erased
+#                              and their logs set apart when the service restarts
+#                              (maintenance.recipient_reset)
+# Nothing changes on the device unless the code AND the unassign succeed.
+_NO_RECIPIENT = "No care recipient is assigned to this device."
+
+
+@router.post("/remove-recipient/code")
+def remove_recipient_code():
+    """Step 1: email the care recipient a code that confirms their removal."""
+    email = (account_config.get().get("email") or "").strip()
+    if not email:
+        return {"sent": False, "reason": _NO_RECIPIENT}
+    try:
+        ok, reason = send_otp(email)
+    except CeravisApiError as exc:
+        logger.warning("removal code not sent to %s: %s", email, exc)
+        return {"sent": False, "reason": _login_error(exc)}
+    logger.info("removal code %s to %s", "sent" if ok else f"refused ({reason})", email)
+    return {"sent": True, "email": email} if ok else {"sent": False, "reason": reason}
 
 
 class RemoveRecipientRequest(BaseModel):
-    confirm: bool = False
+    otp: str = ""
 
 
 @router.post("/remove-recipient")
 def remove_recipient(req: RemoveRecipientRequest, request: Request,
                      background_tasks: BackgroundTasks):
-    """Remove the care recipient from this device before it goes to another
-    one: the account at once (every browser is signed out with it), the rest of
-    their data when the service restarts (maintenance.recipient_reset). The
-    device's cameras, fleet enrollment and settings stay. Needs {confirm: true}."""
-    if req.confirm is not True:
-        return {"removed": False, "reason": "Confirmation required"}
+    """Step 2: the code checks out, the app server unassigns the device, then
+    the care recipient leaves it — the account at once (every browser signed
+    out), the rest when the service restarts. Cameras, the fleet enrollment,
+    the device's key and settings stay. `codeUsed` = ask for a new code."""
+    acct = account_config.get()
+    email = (acct.get("email") or "").strip()
+    if not email:
+        return {"removed": False, "reason": _NO_RECIPIENT}
+    otp = re.sub(r"\s+", "", req.otp or "")
+    if not re.fullmatch(r"[0-9]{5}", otp):
+        return {"removed": False, "reason": "Enter the 5-digit code from the email."}
+    code_used = False
+    try:
+        ok, reason, _ = verify_otp(email, otp)
+        if ok:
+            code_used = True
+            ok, reason = unassign_device(email)
+    except CeravisApiError as exc:
+        logger.warning("care recipient removal stopped for %s: %s", email, exc)
+        ok, reason = False, _login_error(exc)
+    if not ok:
+        if code_used:
+            reason = f"{reason.rstrip('.')}. Nothing was removed — request a new code and try again."
+        return {"removed": False, "reason": reason, "codeUsed": code_used}
     from api.auth import session_of
     who = (session_of(request) or {}).get("email") or "this device"
-    acct = account_config.get()
     account_config.clear()
-    recipient_reset.request("care recipient removed", who)
+    recipient_reset.request("care recipient removed", who, acct)
     background_tasks.add_task(recipient_reset.restart_soon)
-    logger.warning("care recipient user #%s removed from this device by %s",
+    logger.warning("care recipient user #%s unassigned and removed from this device by %s",
                    acct.get("ceravisUserId"), who)
     return {"removed": True, "restarting": True, "bootedAt": _BOOTED_AT}
 

@@ -1,7 +1,8 @@
 """
 The app-server API key: where it comes from, and what the edge says without it.
 
-The key (X-API-Key on every app-server call) is a secret in the root-only
+The key (it signs a device's very first sendOtp; every call after is signed
+with the device's own key, and no /v1/ai call carries it) is a secret in the root-only
 /etc/ceravis/credstore/ceravis_api_key, which systemd hands ceravis.service as a
 credential (the app reads it from $CREDENTIALS_DIRECTORY). A device without it must not fail silently: /api/v1/system/status lists why, and
 so does a device still on the old key that was published in this repo.
@@ -49,10 +50,12 @@ check("the credential file named ceravis_api_key sets the key",
 print("\n2. what the edge says about the key")
 settings.ceravis_api_key = "sk-test-from-secrets-env"
 check("a device's own key: no problem", ceravis_api.api_key_problem() is None)
-check("...and it is sent as X-API-Key",
+check("...only the status beat (another address, off by default) still sends it as X-API-Key",
       ceravis_api._headers().get("X-API-Key") == "sk-test-from-secrets-env")
-check("...on multipart uploads too",
-      ceravis_api._multipart_headers().get("X-API-Key") == "sk-test-from-secrets-env")
+src = (ROOT / "edge/integration/ceravis_api.py").read_text(encoding="utf-8")
+check("...no /v1/ai call builds API-key headers: _headers() serves send_status alone",
+      src.count("headers=_headers()") == 1 and "_multipart_headers" not in src
+      and src.index("def send_status") < src.index("headers=_headers()"))
 
 settings.ceravis_api_key = "   "
 p = ceravis_api.api_key_problem() or ""

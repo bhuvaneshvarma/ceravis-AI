@@ -151,27 +151,38 @@ agent restarts itself when its own code changes.
 - A test FMS on the LAN: `FMS_URL=http://<private IP>:<port>` plus
   `FMS_ALLOW_HTTP_LAN=1` via `setup/install_fleet_agent.sh`.
 
-## App-server sign-in is signed (decided 2026-11-19)
+## Every app-server call is signed (decided 2026-11-19, all calls 2026-11-20)
 
-- `sendOtp`, `verifyOtp` and `userDetails` carry **no API key**. Each request is
-  signed (`edge/integration/ceravis_api.py`, "Signed sign-in") with two
-  headers only: `X-Ceravis-Timestamp` (Unix seconds, three decimals) and
+- **No call carries an API key.** Every request is signed
+  (`edge/integration/ceravis_api.py`, "Signed calls") with two headers only:
+  `X-Ceravis-Timestamp` (Unix seconds, three decimals) and
   `X-Ceravis-Signature` = Base64(HMAC-SHA256(key, timestamp "\n"
-  sha256hex(payload))). No device header (the Java app refuses one): the
-  device is named by `deviceId` in the sendOtp / userDetails bodies, and the
-  server finds a verifyOtp's open code by its signature alone. The server
-  signs its reply the same way over the request's timestamp and the reply's
-  exact bytes; a 2xx reply is acted on only when its signature matches.
-- The first `sendOtp` is signed with the API key. Its reply's `randomId` makes
-  the **device key** = hex(HMAC-SHA256(API key, randomId)). It is held in
-  memory, and kept in `<data>/edge_api.key` (0600) only once `verifyOtp`
-  confirms the code (the server binds it at the same moment). From then on it
-  signs every sign-in call; the API key is never used for them again.
-- `verifyOtp` sends no body: the code is only the signature's payload.
-- The app server refuses an API-key `sendOtp` from a device it already holds a
-  key for. Re-keying is a person's decision: clear the device on the app
-  server, then remove `edge_api.key`. Removing the care recipient keeps the
-  key; `seal.sh` removes it.
+  sha256hex(payload))). No device header (the Java app refuses one): every
+  body names the device by `deviceId` (saveSnapshot: a form field); the server
+  finds a verifyOtp's open code by its signature alone. The server signs its
+  reply the same way over the request's timestamp and the reply's exact bytes;
+  a 2xx reply is acted on only when its signature matches.
+- Payload = the body exactly as sent; verifyOtp sends no body (payload = the
+  code); saveSnapshot (multipart) signs a manifest: 8 lines `name=sha256hex`
+  in the order deviceId, patientId, text, cameraNumber, alertId, category,
+  image, video (empty after `=` when absent), joined by "\n".
+- **The key rule:** a sendOtp reply's `randomId` makes the next key
+  K' = hex(HMAC-SHA256(current key, randomId)) — current key = the device key
+  in `<data>/edge_api.key` (0600), or the API key before the first sign-in.
+  K' is held in memory, signs that sign-in's verifyOtp, and replaces the
+  device key only once verifyOtp confirms the code. So the API key signs only
+  a device's very first sendOtp and the key is renewed at every sign-in.
+- The edge corrects its clock from a reply's `Date` header (the server's
+  window is a few seconds) and signs a call refused for it again, once.
+- **Removing the care recipient** (Setup header, top right): sendOtp to their
+  email → verifyOtp → `POST /v1/ai/unassignDevice {email, deviceId}` → the
+  account leaves, every browser is signed out, the service restarts and erases
+  their data; their logs move to `<data>/logs/earlier_recipients/<id>_<when>/`.
+  Nothing changes unless the code AND the unassign succeed. The device key,
+  cameras and fleet enrollment stay; `seal.sh` removes the key.
+- A device signed in before signing existed has no `edge_api.key`: it must
+  sign in once (with the API key) before its uploads go out (they stay queued;
+  `/system/status` says so).
 - **The old public API key is retired** (2026-11-19; the Java team issued a new
   one).
   - `settings.py` has no default key any more.
@@ -181,9 +192,9 @@ agent restarts itself when its own code changes.
     `~/.ceravis/ceravis-secrets.env` (release packages).
   - On a device: `bash setup/install_api_key.sh --replace` (hidden prompt or
     stdin, restarts ceravis).
-- Every other app-server call still sends `X-API-Key` (moving them is the next
-  step). Fixed known answers and a reference server: `tests/test_login_otp.py`
-  sections 6–7.
+- Fixed known answers and a reference server: `tests/test_login_otp.py`
+  sections 6–8 (sign-in, renewal, removal) and `tests/test_signed_calls.py`
+  (every data call, the manifest, the clock).
 
 ## Tests
 

@@ -6,10 +6,14 @@ Thin client for the CERAVIS application server (Spring).
 Only the calls the edge device needs. Everything goes through here so the
 server address lives in ONE place (device config) and never in the browser.
 
-Sign-in — three SIGNED calls (see "Signed sign-in" below), no API key on them:
-    POST {base}/v1/ai/sendOtp       body {"email": "...", "deviceId": "ceravis-<code>"}
-    POST {base}/v1/ai/verifyOtp     no body: the code is only inside the signature
-    POST {base}/v1/ai/userDetails   body {"email": "...", "deviceId": "ceravis-<code>"}
+EVERY call is SIGNED (see "Signed calls" below); none carries the API key:
+    POST {base}/v1/ai/sendOtp          {"email", "deviceId"}
+    POST {base}/v1/ai/verifyOtp        no body: the code is only inside the signature
+    POST {base}/v1/ai/userDetails      {"email", "deviceId"}
+    POST {base}/v1/ai/unassignDevice   {"email", "deviceId"}
+    PUT  saveCamera, cameras/delete, deletePatientZoningFile, uploadEmbeddingFile,
+         getPatientPostures, saveAlert; POST recordings/event — JSON, deviceId first
+    POST saveSnapshot                  multipart, with a deviceId field
     deviceId is THIS device's name (common/device_identity) — the same device_id
     the fleet agent enrolls with, so the server finds the device's FMS record
     (edge_id, …) in the shared DB and maps the account's cameras and live links.
@@ -20,8 +24,7 @@ Sign-in — three SIGNED calls (see "Signed sign-in" below), no API key on them:
     on the edge_id the Fleet Management Server issued instead; the token is kept
     only to notice a mismatch (the status beat tells the server the real one).
 A user that exists in the server's DB is what "verifies" the operator; if the
-email isn't found, onboarding is blocked. Every other call still carries the
-API key in X-API-Key.
+email isn't found, onboarding is blocked.
 """
 
 import base64
@@ -32,6 +35,7 @@ import logging
 import re
 import threading
 import time
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from pathlib import Path
 
@@ -250,6 +254,11 @@ def api_key_problem() -> str | None:
         return ("app-server API key is the old revoked one (it was public) — the app "
                 "server refuses this device's sign-in; install the new key: "
                 "setup/install_api_key.sh --replace")
+    if not _edge_key():
+        from config.account_config import AccountConfig
+        if AccountConfig().get().get("ceravisUserId"):
+            return ("this device has no app-server key yet — sign in once with a code; "
+                    "until then the app server refuses its alerts and uploads (kept, not lost)")
     return None
 
 
@@ -260,15 +269,10 @@ _REVOKED_API_KEYS_SHA256 = frozenset({
 })
 
 
-def _with_key(headers: dict[str, str], idempotency_key: str | None) -> dict[str, str]:
-    if idempotency_key:
-        headers = dict(headers, **{"Idempotency-Key": idempotency_key})
-    return headers
-
-
 def _headers() -> dict[str, str]:
-    # Every app-server call but the signed sign-in ones carries the API key in
-    # the "X-API-Key" header.
+    # Only the status beat (send_status — another address, off unless
+    # STATUS_HEARTBEAT_URL is set) still carries the API key, in "X-API-Key".
+    # Every /v1/ai call is signed instead (see "Signed calls").
     h = {"Content-Type": "application/json", "Accept": "application/json"}
     key = settings.ceravis_api_key.strip()
     if key:
@@ -277,9 +281,9 @@ def _headers() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Signed sign-in — sendOtp, verifyOtp, userDetails.
+# Signed calls — EVERY call to the app server.
 #
-# These calls carry no API key. Each request is signed, and the server signs
+# No call carries the API key. Each request is signed, and the server signs
 # its reply the same way, so neither side acts on a message the other did not
 # send, and no secret ever crosses the network:
 #
@@ -287,21 +291,27 @@ def _headers() -> dict[str, str]:
 #            X-Ceravis-Signature  Base64( HMAC-SHA256(key, timestamp "\n" sha256hex(payload)) )
 #   reply    X-Ceravis-Signature  Base64( HMAC-SHA256(key, request timestamp "\n" sha256hex(reply body)) )
 #
-# `payload` is the request body exactly as sent (compact UTF-8 JSON); verifyOtp
-# sends no body at all, and its payload is the code the person typed. sha256hex
-# is lowercase hex. A 2xx reply is acted on only when its signature matches.
-# The device is named only by the deviceId in the sendOtp and userDetails
-# bodies; verifyOtp names nothing, so the server finds its code by the
-# signature alone.
+# `payload` is the request body exactly as sent (compact UTF-8 JSON). verifyOtp
+# sends no body: its payload is the code the person typed. saveSnapshot is
+# multipart: its payload is a manifest of its fields and files
+# (_snapshot_manifest). sha256hex is lowercase hex. A 2xx reply is acted on
+# only when its signature matches. Every body names the device by deviceId;
+# verifyOtp names nothing, so the server finds its code by the signature alone.
 #
-# The key. A device signs its FIRST sendOtp with the API key; that reply's
-# randomId makes the device's own key, HMAC-SHA256(API key, randomId) as 64
-# lowercase hex. It signs that sign-in's verifyOtp, and once the server
-# confirms the code it is kept for good (<data>/edge_api.key, mode 0600) and
-# signs every later sign-in call — the API key is then never used for them
-# again. It belongs to the device: removing the care recipient keeps it,
-# setup/seal.sh removes it. The randomId, the code and the key never reach a
-# log.
+# The key — one rule. A sendOtp reply's randomId makes the device's next key:
+#     K' = hex( HMAC-SHA256( current key, randomId ) )      64 lowercase hex
+# the current key being the device's own key, or the API key before its first
+# sign-in. K' is held in memory and signs that sign-in's verifyOtp; once the
+# server confirms the code it replaces the device key (<data>/edge_api.key,
+# mode 0600) and signs every call after. Until then the old key stays. So the
+# API key signs only a device's very first sendOtp, and the key is renewed at
+# every sign-in. It belongs to the device: removing the care recipient keeps
+# it, setup/seal.sh removes it. A randomId, a code and a key never reach a log.
+#
+# The clock. The server accepts a timestamp within a few seconds of its own
+# clock. A device clock that is off (no NTP yet, a dead clock battery) is
+# measured from every reply's Date header and corrected, and a call refused
+# for it is signed again, once (_learn_clock).
 # ---------------------------------------------------------------------------
 HDR_TIMESTAMP = "X-Ceravis-Timestamp"
 HDR_SIGNATURE = "X-Ceravis-Signature"
@@ -309,6 +319,10 @@ EDGE_KEY_FILE = "edge_api.key"
 # How long a code request's key waits for its code (the server's code expires sooner).
 _PENDING_TTL_SECS = 900.0
 _UNVERIFIED = "The CERAVIS server's reply could not be verified. Please try again."
+# A clock gap worth correcting; a smaller one is the Date header's own
+# one-second resolution, well inside the server's window.
+_CLOCK_GAP_SECS = 2.0
+_clock_offset = 0.0                    # server time - this device's time, in seconds
 
 
 def _signature(key: str, timestamp: str, payload: bytes) -> str:
@@ -322,11 +336,38 @@ def _signed_by(key: str, timestamp: str, payload: bytes, signature: str | None) 
                                (signature or "").strip().encode("utf-8", "replace"))
 
 
-def _derive_edge_key(api_key: str, random_id: str) -> str:
-    """This device's own key: HMAC-SHA256(key = the API key, message = the
-    first sendOtp reply's randomId), as 64 lowercase hex characters."""
-    return hmac.new(api_key.strip().encode("utf-8"), random_id.encode("utf-8"),
+def _derive_edge_key(key: str, random_id: str) -> str:
+    """The device's next key: HMAC-SHA256(key = its current key — the API key
+    before its first sign-in — message = a sendOtp reply's randomId), as 64
+    lowercase hex characters."""
+    return hmac.new(key.strip().encode("utf-8"), random_id.encode("utf-8"),
                     hashlib.sha256).hexdigest()
+
+
+def _now() -> float:
+    """Unix time as the app server counts it (see _learn_clock)."""
+    return time.time() + _clock_offset
+
+
+def _learn_clock(resp, sent_at: float) -> bool:
+    """Measure this device's clock against the reply's Date header (a whole
+    second, so +0.5 s) and keep the gap when it exceeds _CLOCK_GAP_SECS. True
+    when the correction changed by that much — a refused call is worth signing
+    again."""
+    global _clock_offset
+    try:
+        server = parsedate_to_datetime(resp.headers.get("Date")).timestamp() + 0.5
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return False
+    gap = server - (sent_at + time.time()) / 2
+    offset = gap if abs(gap) > _CLOCK_GAP_SECS else 0.0
+    changed = abs(offset - _clock_offset) > _CLOCK_GAP_SECS
+    if changed and offset:
+        logger.warning("this device's clock is %.1f s %s the app server's — calls are signed "
+                       "with the server's time (is NTP running?)", abs(offset),
+                       "behind" if offset > 0 else "ahead of")
+    _clock_offset = offset
+    return changed
 
 
 def _edge_key_path() -> Path:
@@ -342,7 +383,7 @@ def _edge_key() -> str | None:
         return None
 
 
-# The key a first code request made, held (in memory only) until its code checks out.
+# The next key a code request made, held (in memory only) until its code checks out.
 _pending: dict = {}
 _pending_lock = threading.Lock()
 
@@ -354,6 +395,11 @@ def _hold_pending(email: str, key: str) -> None:
                         expires=time.monotonic() + _PENDING_TTL_SECS)
 
 
+def _drop_pending() -> None:
+    with _pending_lock:
+        _pending.clear()
+
+
 def _pending_key(email: str) -> str | None:
     with _pending_lock:
         if _pending.get("email") == email.casefold() and _pending["expires"] > time.monotonic():
@@ -363,9 +409,8 @@ def _pending_key(email: str) -> str | None:
 
 def _keep_edge_key(key: str) -> None:
     write_atomic(_edge_key_path(), key, mode=0o600)
-    with _pending_lock:
-        _pending.clear()
-    logger.info("this device's app-server key is saved; sign-in calls are signed with it from now on")
+    _drop_pending()
+    logger.info("this device's app-server key is renewed; every call is signed with it from now on")
 
 
 def _random_id(body) -> str | None:
@@ -380,34 +425,125 @@ def _json_bytes(body: dict) -> bytes:
     return json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _post_signed(endpoint: str, key: str, body: bytes, *, payload: bytes | None = None,
-                 label: str = "", log_request=None):
-    """POST one signed sign-in call: `body` as sent, signed over `payload` (the
-    body itself unless given). Returns (reply, latency_ms, trusted) — `trusted`
-    = the reply carries the server's signature over its exact bytes. Raises
-    CeravisApiError when the server cannot be reached."""
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/" + endpoint
-    timestamp = f"{time.time():.3f}"
-    headers = {"Accept": "application/json", HDR_TIMESTAMP: timestamp,
-               HDR_SIGNATURE: _signature(key, timestamp, body if payload is None else payload)}
-    if body:
-        headers["Content-Type"] = "application/json"
-    t0 = time.perf_counter()
-    try:
-        resp = _session().post(url, data=body, headers=headers, timeout=_timeout())
-    except requests.RequestException as exc:
+def _signed_call(method: str, path: str, key: str, *, name: str, body: bytes = b"",
+                 payload: bytes | None = None, form: dict | None = None,
+                 files: dict | None = None, headers: dict | None = None,
+                 kind: str | None = None, label: str = "", log_request=None):
+    """Send one signed call to {base}/v1/ai/<path>: `body` as sent (JSON bytes —
+    or the multipart `form` and `files`), signed over `payload` (the body itself
+    unless given). A call refused because this device's clock is off is signed
+    again, once, with the server's time. Returns (reply, latency_ms, trusted) —
+    `trusted` = the reply carries the server's signature over its exact bytes.
+    Raises CeravisApiError when the server cannot be reached."""
+    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/" + path
+    signed = body if payload is None else payload
+    send = getattr(_session(), method.lower())
+    for attempt in (1, 2):
+        timestamp = f"{_now():.3f}"
+        h = {"Accept": "application/json", **(headers or {}),
+             HDR_TIMESTAMP: timestamp, HDR_SIGNATURE: _signature(key, timestamp, signed)}
+        if body:
+            h["Content-Type"] = "application/json"
+        sent_at, t0 = time.time(), time.perf_counter()
+        try:
+            resp = send(url, data=form if files else body, files=files, headers=h,
+                        timeout=_timeout())
+        except requests.RequestException as exc:
+            lat = (time.perf_counter() - t0) * 1000
+            logger.warning("%s: cannot reach %s — %s", name, url, exc)
+            call_log.record(kind or name, False, label=label, error=str(exc), latency_ms=lat)
+            _wire(name, method, url, log_request, error=str(exc), latency_ms=lat)
+            raise CeravisApiError(f"cannot reach app server: {exc}") from exc
         lat = (time.perf_counter() - t0) * 1000
-        logger.warning("%s: cannot reach %s — %s", endpoint, url, exc)
-        call_log.record(endpoint, False, label=label, error=str(exc), latency_ms=lat)
-        _wire(endpoint, "POST", url, log_request, error=str(exc), latency_ms=lat)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
+        if not (_learn_clock(resp, sent_at) and resp.status_code == 401 and attempt == 1):
+            break
     trusted = _signed_by(key, timestamp, resp.content, resp.headers.get(HDR_SIGNATURE))
-    logger.info("%s <- HTTP %s%s", endpoint, resp.status_code,
+    logger.info("%s <- HTTP %s%s", name, resp.status_code,
                 "" if trusted or resp.status_code >= 300 else " — reply signature does not match, not acted on")
-    _wire(endpoint, "POST", url, log_request, status=resp.status_code,
+    _wire(name, method, url, log_request, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     return resp, lat, trusted
+
+
+def _signing_key() -> str:
+    """The device key every call after sign-in is signed with. Raises when the
+    device has none yet: before its first sign-in nothing can be sent (an
+    upload stays queued)."""
+    if not is_configured():
+        raise CeravisApiError("CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
+    key = _edge_key()
+    if not key:
+        raise CeravisApiError("this device has no app-server key yet — sign in once with a code",
+                              status=401)
+    return key
+
+
+# saveSnapshot is multipart: Spring parses the parts, so its signature covers a
+# manifest of them rather than the raw bytes — one line per field in this fixed
+# order, "name=" + sha256hex of the value's UTF-8 bytes (of the file's bytes
+# for image and video), nothing after "=" when absent or empty; "\n" between
+# the lines, none at the end.
+_MANIFEST = ("deviceId", "patientId", "text", "cameraNumber", "alertId", "category",
+             "image", "video")
+
+
+def _snapshot_manifest(form: dict, files: dict) -> bytes:
+    def digest(name: str) -> str:
+        value = files[name][1] if name in files else form.get(name)
+        if isinstance(value, str):
+            value = value.encode("utf-8")
+        return hashlib.sha256(value).hexdigest() if value else ""
+    return "\n".join(f"{n}={digest(n)}" for n in _MANIFEST).encode("utf-8")
+
+
+def _idempotency(key: str | None) -> dict | None:
+    """The outbox job id, identical on every retry of one upload, so the server
+    keeps one copy however many tries reach it."""
+    return {"Idempotency-Key": key} if key else None
+
+
+def _send_data(method: str, path: str, *, name: str, body: dict | None = None,
+               form: dict | None = None, files: dict | None = None,
+               headers: dict | None = None, kind: str | None = None, label: str = "",
+               absent=None, logged: dict | None = None, report=None):
+    """One signed data call — every call but the sign-in ones. The JSON body (or
+    the multipart form) names this device first (deviceId); the request is
+    signed with the device key; the reply is used only when the server's
+    signature over it matches. Returns the reply's `data` (True when it has
+    none), or `absent` for a 404 when given. Raises CeravisApiError on any
+    failure. `logged` / `report(result)` add fields to the call-log line."""
+    key = _signing_key()
+    kind = kind or name
+    device = {"deviceId": identity().name}
+    if form is None:
+        body = {**device, **(body or {})}
+        raw, payload, log_request = _json_bytes(body), None, body
+    else:
+        form = {**device, **form}
+        raw, payload = b"", _snapshot_manifest(form, files or {})
+        log_request = {**form, **{k: f"<{k}: {len(f[1])} bytes>" for k, f in (files or {}).items()}}
+    resp, lat, trusted = _signed_call(method, path, key, name=name, body=raw, payload=payload,
+                                      form=form, files=files, headers=headers, kind=kind,
+                                      label=label, log_request=log_request)
+    status = resp.status_code
+    if status == 404 and absent is not None:
+        call_log.record(kind, True, label=label, status=status, latency_ms=lat, **(logged or {}))
+        return absent
+    if status >= 400 or not trusted:
+        error = _brief(resp.text, 200) if status >= 400 else "reply signature does not match"
+        call_log.record(kind, False, label=label, status=status, latency_ms=lat, error=error,
+                        **(logged or {}))
+        if status >= 400:
+            raise CeravisApiError(f"app server returned HTTP {status}: {error}",
+                                  status=status, retry_after=_retry_after(resp))
+        raise CeravisApiError(_UNVERIFIED, status=status)
+    try:
+        result = _unwrap(resp.json())
+    except ValueError:
+        result = True
+    call_log.record(kind, True, label=label, status=status, latency_ms=lat,
+                    **(logged or {}), **(report(result) if report else {}))
+    return result
 
 
 def _unwrap(body):
@@ -539,19 +675,15 @@ def get_user_details(email: str) -> dict | None:
     user. Raises CeravisApiError on config/transport/server errors and on a
     reply whose signature does not match (so the caller can show a real reason).
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    key = _edge_key()
-    if not key:
-        raise CeravisApiError("this device has no app-server key yet — sign in with a code first")
+    key = _signing_key()
     # identity().name, never settings.device_id (DEVICE_ID may override that):
     # it must equal the device_id the FMS stored at enrollment.
     device_id = identity().name
     request_body = {"email": email, "deviceId": device_id}
     logger.info("userDetails -> email=%s  deviceId=%s", email, device_id)
-    resp, lat, trusted = _post_signed("userDetails", key, _json_bytes(request_body),
-                                      label=email, log_request=request_body)
+    resp, lat, trusted = _signed_call("POST", "userDetails", key, name="userDetails",
+                                      body=_json_bytes(request_body), label=email,
+                                      log_request=request_body)
     call_log.record("userDetails", resp.status_code < 400 and trusted, label=email,
                     status=resp.status_code, latency_ms=lat)
     if resp.status_code == 404:
@@ -575,11 +707,11 @@ def get_user_details(email: str) -> dict | None:
 
 def send_otp(email: str) -> tuple[bool, str | None]:
     """
-    POST /v1/ai/sendOtp — ask the app server to email a login one-time code.
-    Body: {"email": "...", "deviceId": "ceravis-<code>"}, signed with this
-    device's key once it has one; before that (its first sign-in) with the API
-    key, and the reply's randomId then makes the device's key, held until the
-    code checks out (verify_otp).
+    POST /v1/ai/sendOtp — ask the app server to email a one-time code (to sign
+    in, or to confirm removing the care recipient). Body: {"email": "...",
+    "deviceId": "ceravis-<code>"}, signed with this device's key — with the API
+    key before its first sign-in. The reply's randomId makes the device's next
+    key from that same key, held until the code checks out (verify_otp).
 
     Returns (True, None) when the server takes it, (False, reason) when it
     refuses — a 4xx, or a 2xx whose body says it failed or whose signature does
@@ -597,8 +729,9 @@ def send_otp(email: str) -> tuple[bool, str | None]:
     request_body = {"email": email, "deviceId": identity().name}
     logger.info("sendOtp -> email=%s  signed with %s", email,
                 "this device's key" if device_key else "the API key (first sign-in)")
-    resp, lat, trusted = _post_signed("sendOtp", device_key or api_key, _json_bytes(request_body),
-                                      label=email, log_request=request_body)
+    resp, lat, trusted = _signed_call("POST", "sendOtp", device_key or api_key, name="sendOtp",
+                                      body=_json_bytes(request_body), label=email,
+                                      log_request=request_body)
     if resp.status_code >= 500:
         call_log.record("sendOtp", False, label=email, status=resp.status_code,
                         latency_ms=lat)
@@ -614,15 +747,16 @@ def send_otp(email: str) -> tuple[bool, str | None]:
         reason = message or f"The CERAVIS server refused the request (HTTP {resp.status_code})"
     elif not trusted:
         reason = _UNVERIFIED
+        _drop_pending()                  # the server may have replaced its code: a key held from before is stale
     elif _send_refused(body):
         reason = ((message if message and not _GENERIC_OK.match(message) else None)
                   or "The CERAVIS server did not send the code")
+    elif random_id := _random_id(body):
+        _hold_pending(email, _derive_edge_key(device_key or api_key, random_id))
     elif device_key is None:
-        random_id = _random_id(body)
-        if random_id:
-            _hold_pending(email, _derive_edge_key(api_key, random_id))
-        else:
-            reason = "The CERAVIS server sent no key for this device. Please try again."
+        reason = "The CERAVIS server sent no key for this device. Please try again."
+    else:
+        _drop_pending()                  # this code is checked with the device's key
     call_log.record("sendOtp", reason is None, label=email, error=reason,
                     status=resp.status_code, latency_ms=lat)
     return reason is None, reason
@@ -638,11 +772,11 @@ _OTP_REFUSED = {
 
 def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     """
-    POST /v1/ai/verifyOtp — check the login one-time code. It sends NO body:
-    the code is only the signature's payload, so it never crosses the network
-    and never reaches a log. Signed with this device's key — or, on its first
-    sign-in, with the key its sendOtp reply made, kept for good once the server
-    confirms the code.
+    POST /v1/ai/verifyOtp — check the one-time code. It sends NO body: the code
+    is only the signature's payload, so it never crosses the network and never
+    reaches a log. Signed with the next key its sendOtp reply made, which then
+    replaces the device key once the server confirms the code (with the
+    device's key when that reply carried no randomId).
 
     Fails CLOSED: returns (True, None, account) only for the server's one
     confirmation (_otp_confirmed: HTTP 2xx with a matching signature, code 1,
@@ -657,13 +791,13 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     if not is_configured():
         raise CeravisApiError(
             "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    device_key = _edge_key()
-    key = device_key or _pending_key(email)
+    next_key = _pending_key(email)
+    key = next_key or _edge_key()
     if not key:
         return False, "Ask for a new code first, then enter it here.", None
     logger.info("verifyOtp -> email=%s", email)
-    resp, lat, trusted = _post_signed("verifyOtp", key, b"", payload=otp.encode("utf-8"),
-                                      label=email)
+    resp, lat, trusted = _signed_call("POST", "verifyOtp", key, name="verifyOtp",
+                                      payload=otp.encode("utf-8"), label=email)
     if resp.status_code >= 500:
         call_log.record("verifyOtp", False, label=email, status=resp.status_code,
                         latency_ms=lat)
@@ -674,9 +808,9 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     body = _json_or_none(resp) if answered and trusted else None
     ok = _otp_confirmed(body)
     reason = None
-    if ok and device_key is None:
+    if ok and next_key:
         try:
-            _keep_edge_key(key)
+            _keep_edge_key(next_key)
         except OSError as exc:
             logger.error("this device's app-server key could not be saved: %s", exc)
             ok, reason = False, "This device could not save its sign-in key. Please try again."
@@ -693,12 +827,47 @@ def verify_otp(email: str, otp: str) -> tuple[bool, str | None, dict | None]:
     return ok, reason, account
 
 
+def unassign_device(email: str) -> tuple[bool, str | None]:
+    """
+    POST /v1/ai/unassignDevice {"email", "deviceId"} — the app server lets this
+    device go from its care recipient (removing them, once their code checked
+    out). Signed with the device key. Returns (True, None) only for the
+    server's confirmation — a 2xx whose signature matches, code 1 — and
+    (False, reason) otherwise. Raises CeravisApiError when the server cannot be
+    reached or fails (5xx).
+    """
+    key = _signing_key()
+    request_body = {"email": email, "deviceId": identity().name}
+    logger.info("unassignDevice -> email=%s  deviceId=%s", email, request_body["deviceId"])
+    resp, lat, trusted = _signed_call("POST", "unassignDevice", key, name="unassignDevice",
+                                      body=_json_bytes(request_body), label=email,
+                                      log_request=request_body)
+    if resp.status_code >= 500:
+        call_log.record("unassignDevice", False, label=email, status=resp.status_code,
+                        latency_ms=lat)
+        raise CeravisApiError(
+            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
+            status=resp.status_code)
+    answered = 200 <= resp.status_code < 300
+    body = _json_or_none(resp) if answered and trusted else None
+    ok = isinstance(body, dict) and _flag(body.get("code")) is True
+    reason = None
+    if not ok:
+        message = _server_message(resp)
+        reason = (_UNVERIFIED if answered and not trusted
+                  else (message if message and not _GENERIC_OK.match(message) else None)
+                  or "The CERAVIS server did not unassign this device.")
+    call_log.record("unassignDevice", ok, label=email, error=reason,
+                    status=resp.status_code, latency_ms=lat)
+    return ok, reason
+
+
 def save_cameras(patient_user_id, cameras: list[dict]):
     """
     PUT /v1/ai/saveCamera — register this patient's cameras with the app server.
 
     Body:
-        { "patientUserId": <id>,
+        { "deviceId": "ceravis-<code>", "patientUserId": <id>,
           "cameras": [ { device, model, supplier, room, url, rtspUrl,
                          recordRtspUrl, hlsUrl, onvifXaddr, onvifUsername,
                          onvifPassword, onvifProfileToken, onvifPtzToken,
@@ -709,84 +878,27 @@ def save_cameras(patient_user_id, cameras: list[dict]):
     live link stay on the device and go out empty. Returns the server's
     response payload; raises CeravisApiError on failure.
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveCamera"
-    payload = {"patientUserId": patient_user_id, "cameras": cameras}
-    label = f"{len(cameras)} camera(s): " + \
-        ", ".join(c.get("room", "?") for c in cameras)
-    logger.info("saveCamera -> PUT %s  patient=%s  cameras=%d  rooms=%s",
-                url, patient_user_id, len(cameras), [c.get("room") for c in cameras])
-    t0 = time.perf_counter()
-    try:
-        resp = _session().put(url, json=payload, headers=_headers(),
-                            timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("saveCamera: cannot reach %s — %s", url, exc)
-        call_log.record("saveCamera", False, label=label, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("saveCamera", "PUT", url, payload, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("saveCamera <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 300))
-    call_log.record("saveCamera", resp.status_code < 400, label=label,
-                    status=resp.status_code, latency_ms=lat)
-    _wire("saveCamera", "PUT", url, payload, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
-    if resp.status_code >= 400:
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code)
-    try:
-        return _unwrap(resp.json())
-    except ValueError:
-        return True
+    rooms = [c.get("room") for c in cameras]
+    logger.info("saveCamera -> patient=%s  cameras=%d  rooms=%s", patient_user_id,
+                len(cameras), rooms)
+    return _send_data("PUT", "saveCamera", name="saveCamera",
+                      label=f"{len(cameras)} camera(s): " + ", ".join(r or "?" for r in rooms),
+                      body={"patientUserId": patient_user_id, "cameras": cameras})
 
 
 def delete_camera(patient_user_id, room: str):
     """
     PUT /v1/ai/cameras/delete — remove ONE camera from this patient's account on
     the app server, mirroring the device's local delete so the cloud never keeps
-    a camera the edge no longer has. Body: { "userId": <id>, "room": <CameraName
-    enum, e.g. LIVING_ROOM> }. Returns the server response; raises CeravisApiError
-    on failure (the caller treats it as best-effort so a cloud hiccup never blocks
-    the local delete).
+    a camera the edge no longer has. Body: { "deviceId", "userId": <id>, "room":
+    <CameraName enum, e.g. LIVING_ROOM> }. Returns the server response; raises
+    CeravisApiError on failure (the caller treats it as best-effort so a cloud
+    hiccup never blocks the local delete).
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/cameras/delete"
-    payload = {"userId": patient_user_id, "room": room}
-    label = f"delete camera: {room}"
-    logger.info("cameras/delete -> PUT %s  user=%s  room=%s",
-                url, patient_user_id, room)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().put(url, json=payload, headers=_headers(),
-                            timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("cameras/delete: cannot reach %s — %s", url, exc)
-        call_log.record("cameraDelete", False, label=label, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("cameraDelete", "PUT", url, payload, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("cameras/delete <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 200))
-    call_log.record("cameraDelete", resp.status_code < 400, label=label,
-                    status=resp.status_code, latency_ms=lat)
-    _wire("cameraDelete", "PUT", url, payload, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
-    if resp.status_code >= 400:
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code)
-    try:
-        return _unwrap(resp.json())
-    except ValueError:
-        return True
+    logger.info("cameras/delete -> user=%s  room=%s", patient_user_id, room)
+    return _send_data("PUT", "cameras/delete", name="cameraDelete",
+                      label=f"delete camera: {room}",
+                      body={"userId": patient_user_id, "room": room})
 
 
 def delete_patient_zoning_file(user_id):
@@ -794,49 +906,19 @@ def delete_patient_zoning_file(user_id):
     PUT /v1/ai/deletePatientZoningFile — remove this patient's existing ZONING
     file from cloud storage (S3) so a re-save writes a clean object instead of
     leaving a stale one behind (S3 objects can't be edited in place). Body:
-    { "userId": <id> }. Called right before uploadEmbeddingFile("ZONING", …) so
-    the cloud ends up with exactly one, current zones file per patient.
+    { "deviceId", "userId": <id> }. Called right before
+    uploadEmbeddingFile("ZONING", …) so the cloud ends up with exactly one,
+    current zones file per patient.
 
     A 404 means there was no prior file — that's a success for delete-then-write,
     so it returns True rather than raising. Returns the server response otherwise;
     raises CeravisApiError on a real failure. Callers treat it as best-effort:
     the delete is cleanup, and must never block saving the new zones file.
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/deletePatientZoningFile"
-    payload = {"userId": user_id}
-    label = f"delete zoning file: user {user_id}"
-    logger.info("deletePatientZoningFile -> PUT %s  user=%s", url, user_id)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().put(url, json=payload, headers=_headers(),
-                            timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("deletePatientZoningFile: cannot reach %s — %s", url, exc)
-        call_log.record("deleteZoningFile", False, label=label, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("deletePatientZoningFile", "PUT", url, payload, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("deletePatientZoningFile <- HTTP %s  body=%s",
-                resp.status_code, _brief(resp.text, 200))
-    call_log.record("deleteZoningFile", resp.status_code < 400 or resp.status_code == 404,
-                    label=label, status=resp.status_code, latency_ms=lat)
-    _wire("deletePatientZoningFile", "PUT", url, payload,
-          status=resp.status_code, response=resp.text, latency_ms=lat)
-    if resp.status_code == 404:
-        return True                       # nothing stored yet — fine to write
-    if resp.status_code >= 400:
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code)
-    try:
-        return _unwrap(resp.json())
-    except ValueError:
-        return True
+    logger.info("deletePatientZoningFile -> user=%s", user_id)
+    return _send_data("PUT", "deletePatientZoningFile", name="deletePatientZoningFile",
+                      kind="deleteZoningFile", label=f"delete zoning file: user {user_id}",
+                      body={"userId": user_id}, absent=True)
 
 
 def alert_id_of(response) -> int | None:
@@ -866,52 +948,20 @@ def save_alert(patient_user_id, alert_type: str, message_text: str, *,
                idempotency_key: str | None = None):
     """
     PUT /v1/ai/saveAlert — push one alert to the app server.
-    Body: { patientUserId, alertType (e.g. "FALL"), messageText }.
+    Body: { deviceId, patientUserId, alertType (e.g. "FALL"), messageText }.
     Returns the server's response payload (carries the new alert's id — see
     alert_id_of); raises CeravisApiError on failure.
     `idempotency_key` (the outbox job id) goes out as the Idempotency-Key
-    header, identical on every retry of the same alert, so a server that
-    honours it can drop the duplicate a timed-out-but-committed try leaves.
+    header, identical on every retry of the same alert (each retry is signed
+    anew), so the server drops the duplicate a timed-out-but-committed try leaves.
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveAlert"
-    payload = {"patientUserId": patient_user_id,
-               "alertType": alert_type, "messageText": message_text}
-    label = f"{alert_type} · {message_text}"
-    logger.info("saveAlert -> PUT %s  patient=%s  type=%s", url,
-                patient_user_id, alert_type)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().put(url, json=payload,
-                              headers=_with_key(_headers(), idempotency_key),
-                              timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("saveAlert: cannot reach %s — %s", url, exc)
-        call_log.record("saveAlert", False, label=label, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("saveAlert", "PUT", url, payload, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("saveAlert <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 300))
-    _wire("saveAlert", "PUT", url, payload, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
-    if resp.status_code >= 400:
-        call_log.record("saveAlert", False, label=label,
-                        status=resp.status_code, latency_ms=lat,
-                        error=_brief(resp.text, 200))
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code, retry_after=_retry_after(resp))
-    try:
-        result = _unwrap(resp.json())
-    except ValueError:
-        result = True
-    call_log.record("saveAlert", True, label=label, status=resp.status_code,
-                    latency_ms=lat, alert_id=alert_id_of(result))
-    return result
+    logger.info("saveAlert -> patient=%s  type=%s", patient_user_id, alert_type)
+    return _send_data("PUT", "saveAlert", name="saveAlert",
+                      label=f"{alert_type} · {message_text}",
+                      body={"patientUserId": patient_user_id, "alertType": alert_type,
+                            "messageText": message_text},
+                      headers=_idempotency(idempotency_key),
+                      report=lambda result: {"alert_id": alert_id_of(result)})
 
 
 def send_recording_event(payload: dict) -> None:
@@ -920,10 +970,11 @@ def send_recording_event(payload: dict) -> None:
     started, or finished, recording a stretch of footage.
 
     Body is the backend's TimelineSegmentEvent, key names verbatim (note the
-    deliberate camelCase/snake_case mix — that is what the Java DTO declares):
+    deliberate camelCase/snake_case mix — that is what the Java DTO declares),
+    after this device's deviceId:
 
-        { "edgeId": "<edge_id>", "camera_id": "LIVING_ROOM",
-          "status": "started" | "finalized",
+        { "deviceId": "ceravis-<code>", "edgeId": "<edge_id>",
+          "camera_id": "LIVING_ROOM", "status": "started" | "finalized",
           "segment": { "start": ISO-8601, "end": ISO-8601|null,
                        "seconds": float|null } }
 
@@ -934,52 +985,12 @@ def send_recording_event(payload: dict) -> None:
     once and never retries. A 2xx here is also what tells the cloud outbox the
     path is clear (on_reachable).
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/recordings/event"
     seg = payload.get("segment") or {}
-    label = (f"{payload.get('camera_id')} {payload.get('status')} "
-             f"{seg.get('seconds') if seg.get('seconds') is not None else ''}").strip()
-    logger.info("recordingEvent -> POST %s  camera=%s  status=%s", url,
-                payload.get("camera_id"), payload.get("status"))
-    t0 = time.perf_counter()
-    try:
-        resp = _session().post(url, json=payload, headers=_headers(),
-                             timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("recordingEvent: cannot reach %s — %s", url, exc)
-        call_log.record("recordingEvent", False, label=label, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("recordingEvent", "POST", url, payload, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("recordingEvent <- HTTP %s  body=%s",
-                resp.status_code, _brief(resp.text, 200))
-    _wire("recordingEvent", "POST", url, payload, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
-    if resp.status_code >= 400:
-        call_log.record("recordingEvent", False, label=label,
-                        status=resp.status_code, latency_ms=lat,
-                        error=_brief(resp.text, 200))
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code)
-    call_log.record("recordingEvent", True, label=label,
-                    status=resp.status_code, latency_ms=lat)
-
-
-def _multipart_headers() -> dict[str, str]:
-    """Headers for a multipart/form-data upload: the API key + Accept, but NO
-    Content-Type — `requests` sets `multipart/form-data` with the correct boundary
-    when `files=` is passed, and forcing application/json here would break the
-    server's multipart parsing."""
-    h = {"Accept": "application/json"}
-    key = settings.ceravis_api_key.strip()
-    if key:
-        h["X-API-Key"] = key
-    return h
+    logger.info("recordingEvent -> camera=%s  status=%s", payload.get("camera_id"),
+                payload.get("status"))
+    _send_data("POST", "recordings/event", name="recordingEvent", body=payload,
+               label=(f"{payload.get('camera_id')} {payload.get('status')} "
+                      f"{seg.get('seconds') if seg.get('seconds') is not None else ''}").strip())
 
 
 def save_snapshot(patient_id, text: str, camera_number: str, *,
@@ -988,81 +999,44 @@ def save_snapshot(patient_id, text: str, camera_number: str, *,
                   idempotency_key: str | None = None):
     """
     POST /v1/ai/saveSnapshot — the snapshot/clip for an alert or action.
-    multipart/form-data (SnapshotRequest): patientId, text, cameraNumber, category
-    as form fields, and the media as FILE parts:
+    multipart/form-data (SnapshotRequest): deviceId, patientId, text,
+    cameraNumber, alertId, category as form fields, and the media as FILE parts:
       image : the JPEG still, raw bytes (MultipartFile `image`)
       video : the MP4 incident clip, raw bytes (MultipartFile `video`)
     Either or both may be sent — the still fires immediately, the fall clip
     follows once its post-roll footage is written; both carry the same text and,
     when present, alertId so the server associates them with the alert. `category`
     labels what the snapshot is about (the event/alert type — FALL, NO_MOTION, …).
+    Signed over the manifest of these parts (_snapshot_manifest).
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
     if not image and not video:
         raise CeravisApiError("saveSnapshot: nothing to send (no image or video)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/saveSnapshot"
     # Multipart form fields must be strings — the encoder rejects a raw int, and
     # Spring converts "43" back to the Long/enum on its side.
-    data = {"patientId": str(patient_id), "text": text or "",
+    form = {"patientId": str(patient_id), "text": text or "",
             "cameraNumber": camera_number or ""}
     if alert_id is not None:
-        data["alertId"] = str(alert_id)
+        form["alertId"] = str(alert_id)
     if category:
-        data["category"] = category
+        form["category"] = category
     files = {}
     if image:
         files["image"] = ("snapshot.jpg", image, "image/jpeg")
     if video:
         files["video"] = ("incident.mp4", video, "video/mp4")
-    # A loggable view of the request: the form fields verbatim + a byte-size
-    # marker for each binary part (never the bytes), so the wire log stays small.
-    log_body = dict(data)
-    for part, blob in (("image", image), ("video", video)):
-        if blob:
-            log_body[part] = f"<{part}: {len(blob)} bytes>"
-    parts = "+".join(k for k in ("image", "video") if k in files)
-    logger.info("saveSnapshot -> POST %s  patient=%s  cam=%s  alert=%s  parts=%s",
-                url, patient_id, camera_number, alert_id, parts)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().post(url, data=data, files=files,
-                               headers=_with_key(_multipart_headers(), idempotency_key),
-                               timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("saveSnapshot: cannot reach %s — %s", url, exc)
-        call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
-                        error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("saveSnapshot", "POST", url, log_body, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("saveSnapshot <- HTTP %s  body=%s", resp.status_code, _brief(resp.text, 200))
-    _wire("saveSnapshot", "POST", url, log_body, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
-    if resp.status_code >= 400:
-        call_log.record("saveSnapshot", False, label=text, alert_id=alert_id,
-                        status=resp.status_code, latency_ms=lat,
-                        error=_brief(resp.text, 200))
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code, retry_after=_retry_after(resp))
-    try:
-        result = _unwrap(resp.json())
-    except ValueError:
-        result = True
-    call_log.record("saveSnapshot", True, label=text, alert_id=alert_id,
-                    status=resp.status_code, latency_ms=lat,
-                    link=call_log.find_link(result))
-    return result
+    logger.info("saveSnapshot -> patient=%s  cam=%s  alert=%s  parts=%s", patient_id,
+                camera_number, alert_id, "+".join(files))
+    return _send_data("POST", "saveSnapshot", name="saveSnapshot", label=text,
+                      form=form, files=files, headers=_idempotency(idempotency_key),
+                      logged={"alert_id": alert_id},
+                      report=lambda result: {"link": call_log.find_link(result)})
 
 
 def get_patient_postures(user_id) -> list[dict]:
     """
     PUT /v1/ai/getPatientPostures — the patient's enrollment posture images
-    (captured in the main CERAVIS app). Body: { "userId": <patientUserId> }.
+    (captured in the main CERAVIS app). Body: { "deviceId", "userId":
+    <patientUserId> }.
 
     Returns the `data` list: one entry per postureType (STANDING, SITTING, …),
     each with up to four views — frontView / backView / leftView / rightView —
@@ -1070,41 +1044,9 @@ def get_patient_postures(user_id) -> list[dict]:
     uploaded are null. Returns [] when the patient has none (or isn't found), so
     the enrollment step degrades to on-device capture instead of failing.
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/getPatientPostures"
-    request_body = {"userId": user_id}
-    logger.info("getPatientPostures -> PUT %s  user=%s", url, user_id)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().put(url, json=request_body, headers=_headers(),
-                            timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("getPatientPostures: cannot reach %s — %s", url, exc)
-        call_log.record("getPatientPostures", False, label=str(user_id),
-                        error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        # Persist the failed hit too, so "did it even fire?" is answerable.
-        _wire("getPatientPostures", "PUT", url, request_body, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("getPatientPostures <- HTTP %s", resp.status_code)
-    call_log.record("getPatientPostures", resp.status_code < 400,
-                    label=str(user_id), status=resp.status_code, latency_ms=lat)
-    _wire("getPatientPostures", "PUT", url, request_body,
-          status=resp.status_code, response=resp.text, latency_ms=lat)
-    if resp.status_code == 404:
-        return []
-    if resp.status_code >= 400:
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code)
-    try:
-        data = _unwrap(resp.json())
-    except ValueError as exc:
-        raise CeravisApiError("app server returned non-JSON") from exc
+    logger.info("getPatientPostures -> user=%s", user_id)
+    data = _send_data("PUT", "getPatientPostures", name="getPatientPostures",
+                      label=str(user_id), body={"userId": user_id}, absent=[])
     return data if isinstance(data, list) else []
 
 
@@ -1113,50 +1055,18 @@ def upload_embedding_file(file_category: str, user_id, file_name: str,
     """
     PUT /v1/ai/uploadEmbeddingFile — store one generated artifact against the
     patient in the cloud so it survives a device reflash / follows the account.
-    Body: { fileCategory, userId, fileName, fileBytes }.
+    Body: { deviceId, fileCategory, userId, fileName, fileBytes }.
       fileCategory : "EMBEDDING" (a recipient's .npy of ReID vectors) or
                      "ZONING" (the room zones.json)
       fileBytes    : the raw file, base64-encoded (no data-URI prefix)
     Returns the server payload; raises CeravisApiError on failure.
     """
-    if not is_configured():
-        raise CeravisApiError(
-            "CERAVIS app server not configured (set CERAVIS_API_BASE_URL)")
-    url = settings.ceravis_api_base_url.rstrip("/") + "/v1/ai/uploadEmbeddingFile"
-    payload = {
-        "fileCategory": file_category,
-        "userId": user_id,
-        "fileName": file_name,
-        "fileBytes": base64.b64encode(file_bytes).decode("ascii"),
-    }
     label = f"{file_category} {file_name} ({len(file_bytes)} B)"
-    logger.info("uploadEmbeddingFile -> PUT %s  user=%s  %s", url, user_id, label)
-    t0 = time.perf_counter()
-    try:
-        resp = _session().put(url, json=payload, headers=_headers(),
-                            timeout=_timeout())
-    except requests.RequestException as exc:
-        logger.warning("uploadEmbeddingFile: cannot reach %s — %s", url, exc)
-        call_log.record("uploadEmbeddingFile", False, label=label, error=str(exc),
-                        latency_ms=(time.perf_counter() - t0) * 1000)
-        _wire("uploadEmbeddingFile", "PUT", url, payload, error=str(exc),
-              latency_ms=(time.perf_counter() - t0) * 1000)
-        raise CeravisApiError(f"cannot reach app server: {exc}") from exc
-    lat = (time.perf_counter() - t0) * 1000
-    logger.info("uploadEmbeddingFile <- HTTP %s  body=%s",
-                resp.status_code, _brief(resp.text, 200))
-    call_log.record("uploadEmbeddingFile", resp.status_code < 400, label=label,
-                    status=resp.status_code, latency_ms=lat)
-    _wire("uploadEmbeddingFile", "PUT", url, payload, status=resp.status_code,
-          response=resp.text, latency_ms=lat)
-    if resp.status_code >= 400:
-        raise CeravisApiError(
-            f"app server returned HTTP {resp.status_code}: {_brief(resp.text, 200)}",
-            status=resp.status_code)
-    try:
-        return _unwrap(resp.json())
-    except ValueError:
-        return True
+    logger.info("uploadEmbeddingFile -> user=%s  %s", user_id, label)
+    return _send_data("PUT", "uploadEmbeddingFile", name="uploadEmbeddingFile", label=label,
+                      body={"fileCategory": file_category, "userId": user_id,
+                            "fileName": file_name,
+                            "fileBytes": base64.b64encode(file_bytes).decode("ascii")})
 
 
 def send_status(payload: dict) -> tuple[bool, int | None, str | None]:

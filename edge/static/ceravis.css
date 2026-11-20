@@ -213,6 +213,8 @@ body.sidebar-collapsed .side-foot { display: none; }
 .page-head h1 { margin: 0; font-size: 20px; font-weight: 800; color: var(--navy);
                 letter-spacing: -.3px; }
 .page-head .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+/* a page's own action at the header's right end (setup: remove the care recipient) */
+.page-head .ph-actions { margin-left: auto; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
 /* premium header: a white container box holding a gradient icon badge + the
    title/subtitle (the icon + box are added by renderNav) — on every page. */
 .page-head.ph-flex {
@@ -507,6 +509,19 @@ a:focus-visible, button:focus-visible, .btn:focus-visible,
   width: 16px; height: 16px; border-radius: 50%; font-size: 11px; font-weight: 800;
   font-style: normal; cursor: help; color: var(--teal-dim);
   background: rgba(53,152,157,.12); border: 1px solid rgba(53,152,157,.3); }
+
+/* one-time code boxes (cvOtpBoxes): sign-in and removing the care recipient */
+.otp-boxes { display: flex; justify-content: space-between; gap: 11px; }
+.otp-boxes input { width: 56px; height: 56px; text-align: center; font-size: 19px;
+                   font-weight: 700; color: var(--navy); border-radius: 13px; padding: 0;
+                   border: 1px solid #eceff4; background: #fff; outline: none;
+                   box-shadow: 0 2px 6px rgba(15,23,42,.06); transition: all .18s ease; }
+.otp-boxes input:focus-visible { outline: none; }
+.otp-boxes input:hover { border-color: #dde3ec; }
+.otp-boxes input:focus { transform: translateY(-1px) scale(1.04); border-color: var(--teal);
+                         box-shadow: 0 6px 16px rgba(53,152,157,.2), 0 0 0 3px rgba(53,152,157,.13); }
+.otp-boxes input.filled { border-color: var(--teal); color: var(--teal-dim);
+                          box-shadow: 0 3px 10px rgba(53,152,157,.15); }
 
 /* ---- in-app confirm dialog (cvConfirm) — replaces the browser confirm() ---- */
 .cv-dialog-scrim { position: fixed; inset: 0; z-index: 500; display: flex;

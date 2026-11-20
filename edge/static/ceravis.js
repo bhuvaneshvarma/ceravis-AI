@@ -129,6 +129,49 @@ async function cvWaitForRestart(prefix, bootedAt) {
   return false;
 }
 
+/* One-time code boxes (sign-in, removing the care recipient): one digit per box,
+   typing moves on, Backspace goes back, a pasted code fills them all, Enter
+   calls opts.onEnter, opts.onChange(code) follows every change. */
+function cvOtpBoxes(root, opts = {}) {
+  const boxes = [...root.querySelectorAll("input")];
+  const code = () => boxes.map(b => b.value).join("");
+  const changed = () => {
+    boxes.forEach(x => x.classList.toggle("filled", !!x.value));
+    if (opts.onChange) opts.onChange(code());
+  };
+  boxes.forEach((b, i) => {
+    b.addEventListener("input", () => {
+      b.value = b.value.replace(/\D/g, "").slice(0, 1);
+      changed();
+      if (b.value && i < boxes.length - 1) boxes[i + 1].focus();
+    });
+    b.addEventListener("keydown", e => {
+      if (/^[0-9]$/.test(e.key) && b.value) {          // a full box takes the new digit
+        e.preventDefault();
+        b.value = e.key;
+        b.dispatchEvent(new Event("input"));
+        return;
+      }
+      if (e.key === "Backspace" && !b.value && i > 0) boxes[i - 1].focus();
+      if (e.key === "Enter" && opts.onEnter) { e.preventDefault(); opts.onEnter(); }
+    });
+    b.addEventListener("paste", e => {
+      const d = (e.clipboardData.getData("text") || "").replace(/\D/g, "");
+      if (!d) return;
+      e.preventDefault();
+      boxes.forEach((x, k) => { x.value = d[k] || ""; });
+      changed();
+      boxes[Math.min(d.length, boxes.length - 1)].focus();
+    });
+  });
+  return {
+    code,
+    clear() { boxes.forEach(b => { b.value = ""; }); changed(); },
+    focus() { (boxes.find(b => !b.value) || boxes[boxes.length - 1]).focus(); },
+    disable(on) { boxes.forEach(b => { b.disabled = !!on; }); },
+  };
+}
+
 /* A full-page "please wait" while the device does something that takes it away
    for a moment (a restart). Returns a function that removes it. */
 function cvBusy(title, text) {
@@ -336,6 +379,8 @@ function renderNav(active) {
   const ph = document.querySelector(".page-head");
   if (ph && !ph.dataset.enhanced) {
     ph.dataset.enhanced = "1";
+    const actions = ph.querySelector(":scope > .ph-actions");   // stays at the right end
+    if (actions) actions.remove();
     const text = document.createElement("div");
     while (ph.firstChild) text.appendChild(ph.firstChild);
     const badge = document.createElement("div");
@@ -343,6 +388,7 @@ function renderNav(active) {
     badge.innerHTML = activeIcon;
     ph.classList.add("ph-flex");
     ph.append(badge, text);
+    if (actions) ph.append(actions);
   }
 
   const signout = document.getElementById("cv-signout");

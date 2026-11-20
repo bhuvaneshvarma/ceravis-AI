@@ -25,7 +25,8 @@ The data folder is `/var/lib/ceravis` on an installed device, or
 | `talkback_log.jsonl` | data folder | edge app | every talk-back session: who, which room, how long, audio quality (personal data: on the device only) | 5 MB + 1 older file |
 | `mediamtx.log` | data folder | video server | the video server's own log | started fresh past 5 MB |
 | `boot_state.json` | data folder | edge app | this boot's id, why the device started, whether the app stopped cleanly | — |
-| `edge_api.key` | data folder | edge app | this device's **app-server key**: signs its sign-in calls (sendOtp, verifyOtp, userDetails); made at the first confirmed sign-in, mode 0600 — never print it | for the device's life |
+| `edge_api.key` | data folder | edge app | this device's **app-server key**: signs every app-server call; made at the first confirmed sign-in and renewed at each one after, mode 0600 — never print it | for the device's life |
+| `earlier_recipients/<id>_<when>/` | `logs/` | edge app | the call, wire and talk-back logs of a care recipient removed from this device (or handed over), with `recipient.json` saying whose — out of the console the next recipient sees, never sent anywhere | kept until deleted by hand |
 | `identity.json` | `/var/lib/ceravis-fleet-agent` | fleet agent | this device's `edge_id`, `device_id` and **heartbeat key** (it signs every check-in; the enrollment's secret is not kept). Readable by the agent alone — never print it | for the device's life |
 | system journal | `journalctl` | every service | text logs: the app, the agent, frpc, NetworkManager, the kernel | 500 MB |
 
