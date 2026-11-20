@@ -24,10 +24,12 @@ Checked, against a stand-in HTTP session (no network):
      server must reproduce byte for byte);
   7. the whole signed sign-in over REAL HTTP against a stand-in app server
      that follows the same rules: the first sign-in signed with the API key;
-     every sendOtp reply's randomId makes the next key from the current one,
-     which replaces it only once the code checks out; a lost verifyOtp reply
-     never locks the device out; a forged, unsigned or altered reply never
-     acted on; a device that lost its key cannot fall back to the API key;
+     an assigned device signs in with the key it has (no randomId); an
+     unassigned one gets a randomId that makes the next key from the current
+     one, which replaces it only once the code checks out; another user is
+     refused on an assigned device; a lost verifyOtp reply never locks the
+     device out; a forged, unsigned or altered reply never acted on; a device
+     that lost its key cannot fall back to the API key;
   8. removing the care recipient: a code to their email, then unassignDevice;
      nothing changes on the device unless both succeed; the device keeps its
      key, and the next care recipient signs in with it.
@@ -502,12 +504,16 @@ class AppServer:
     request names its device in a header: the body's deviceId does — verifyOtp
     names nothing, its code is found by the signature alone.
 
-    The key rule: every sendOtp reply carries a new randomId, and the device's
-    next key is HMAC(the key that verified that sendOtp, randomId). verifyOtp
-    is signed with it; when the code checks out it becomes the device key and
-    the device is bound to that user. The key before stays accepted until the
-    device first signs with the new one, so a lost verifyOtp reply never locks
-    a device out."""
+    The key rule (as the live server does it, 2026-11-20): a sendOtp from a NEW
+    or UNASSIGNED device carries a randomId, and the device's next key is
+    HMAC(the key that verified that sendOtp, randomId); verifyOtp is signed
+    with it, and when the code checks out it becomes the device key and the
+    device is assigned to that user. A device assigned to this user gets no
+    randomId: its code is checked with the key it has. Another user's sendOtp
+    on an assigned device is refused (no code sent). unassignDevice is not
+    repeatable ("Device is not assigned"). Asked of the Java side, modelled
+    here: the key before stays accepted until the device first signs with the
+    new one, so a lost verifyOtp reply never locks a device out."""
 
     def __init__(self) -> None:
         self.keys: dict[str, str] = {}        # deviceId -> its key (after a confirmed code)
@@ -586,19 +592,33 @@ class AppServer:
         user = USERS.get(body.get("email"))
         if user is None:
             return 200, key, {"code": 0, "data": None, "message": "User not found"}
+        assigned = self.patient.get(device)
+        refuse = lambda message: (200, key, {"code": 0, "data": None, "message": message})  # noqa: E731
         if endpoint == "userDetails":
-            return 200, key, {"code": 1, "data": user, "message": "User details"}
+            if assigned is None:
+                return refuse("Device is not assigned. Sign in first")
+            return 200, key, {"code": 1, "data": user, "message": "User details fetched successfully"}
         if endpoint == "unassignDevice":
-            if self.unassign_refuses or self.patient.get(device) not in (None, user["ceravisUserId"]):
-                return 200, key, {"code": 0, "data": None, "message": "Not allowed for this device"}
+            if self.unassign_refuses:
+                return refuse("Not allowed for this device")
+            if assigned is None:
+                return refuse("Device is not assigned")
+            if assigned != user["ceravisUserId"]:
+                return refuse("Email does not match the user assigned to this device")
             self.patient[device] = None
             return 200, key, {"code": 1, "message": "Device unassigned", "data": {"deviceId": device}}
-        otp, random_id = f"{secrets.randbelow(100000):05d}", str(uuid.uuid4())
-        self.pending[device] = {"email": body["email"], "otp": otp,
-                                "next_key": ceravis_api._derive_edge_key(key, random_id)}
-        return 200, key, {"code": 1, "message": "OTP sent",
-                          "data": {"email": body["email"], "message": "2 More Send Otp Attempts!",
-                                   "randomId": random_id, "userMemberId": "CARERECIPIENT"}}
+        if assigned is not None and assigned != user["ceravisUserId"]:
+            return refuse("Device is assigned to another user. Unassign it first")   # no email sent
+        otp = f"{secrets.randbelow(100000):05d}"
+        data = {"email": body["email"], "message": "2 More Send Otp Attempts!",
+                "userMemberId": "CARERECIPIENT"}
+        if assigned is None:                          # a new or unassigned device: a new key
+            data["randomId"] = str(uuid.uuid4())
+            next_key = ceravis_api._derive_edge_key(key, data["randomId"])
+        else:                                         # assigned to this user: the key it has
+            next_key = key
+        self.pending[device] = {"email": body["email"], "otp": otp, "next_key": next_key}
+        return 200, key, {"code": 1, "message": "OTP sent", "data": data}
 
 
 APP = AppServer()
@@ -686,18 +706,33 @@ check("the wire log holds no randomId, no code, no key",
       and any('"randomId": "<withheld>"' in (x["response"] or "") for x in records))
 
 r = account_routes.request_otp(Req(email="care@example.com"))
+check("a returning sign-in (the device is assigned to this user): sendOtp signed with the device "
+      "key, NO randomId — nothing held", r["sent"] is True and APP.calls[-1] == ("sendOtp", "device key")
+      and ceravis_api._pending_key("care@example.com") is None, str(APP.calls[-1:]))
+r = _verify(APP.pending[DEVICE]["otp"])
+check("...verifyOtp signed with the device key it has: in, the key unchanged on both sides",
+      r["verified"] is True and r["fresh"] is False and _key() == first_key
+      and APP.keys[DEVICE] == first_key, str(r)[:160])
+r = account_routes.request_otp(Req(email="next@example.com"))
+check("another person's email on this assigned device: refused with the server's words, no code",
+      r == {"sent": False, "reason": "Device is assigned to another user. Unassign it first"}
+      and APP.pending.get(DEVICE) is None, str(r))
+
+APP.patient[DEVICE] = None                            # unassigned (as unassignDevice does)
+r = account_routes.request_otp(Req(email="care@example.com"))
 renewed = ceravis_api._pending_key("care@example.com")
-check("a later sign-in: sendOtp signed with the device key; its randomId makes the NEXT key "
-      "from the device key, held", r["sent"] is True and APP.calls[-1] == ("sendOtp", "device key")
+check("an UNASSIGNED device: its randomId makes the NEXT key from the device key, held — the "
+      "key on file unchanged until the code checks out",
+      r["sent"] is True and APP.calls[-1] == ("sendOtp", "device key")
       and renewed == APP.pending[DEVICE]["next_key"] and renewed != first_key
       and _key() == first_key, str(APP.calls[-1:]))
 r = _verify(APP.pending[DEVICE]["otp"])
 check("...verifyOtp signed with the next key; confirmed, it REPLACES the device key on both sides",
-      r["verified"] is True and r["fresh"] is False and _key() == renewed
-      and APP.keys[DEVICE] == renewed, str(r)[:160])
+      r["verified"] is True and _key() == renewed and APP.keys[DEVICE] == renewed, str(r)[:160])
 check("...and the very next call is signed with the new key",
       APP.calls[-1] == ("userDetails", "device key") and DEVICE not in APP.previous)
 
+APP.patient[DEVICE] = None
 r = account_routes.request_otp(Req(email="care@example.com"))
 lost = APP.pending[DEVICE]["next_key"]
 APP.fail_after_verify = True
@@ -706,11 +741,12 @@ APP.fail_after_verify = False
 check("a verifyOtp the server committed but whose reply was lost: the device keeps its key",
       r2["verified"] is False and _key() == renewed and APP.keys[DEVICE] == lost, str(r2))
 r = account_routes.request_otp(Req(email="care@example.com"))
-check("...and is not locked out: the server still takes the key before, until the new one is used",
-      r["sent"] is True and APP.calls[-1] == ("sendOtp", "previous key"), f"{r} {APP.calls[-1:]}")
+check("...and is not locked out IF the server takes the key before until the new one is used "
+      "(asked of the Java team)", r["sent"] is True and APP.calls[-1] == ("sendOtp", "previous key"),
+      f"{r} {APP.calls[-1:]}")
 r = _verify(APP.pending[DEVICE]["otp"])
-check("...the next sign-in renews the key from there, both sides alike",
-      r["verified"] is True and _key() == APP.keys[DEVICE], str(r)[:120])
+check("...the next sign-in settles both sides on the key the device holds",
+      r["verified"] is True and _key() == APP.keys[DEVICE] == renewed, str(r)[:120])
 
 r = account_routes.request_otp(Req(email="jürgen.ß@example.com"))
 check("a non-ASCII email is signed over its exact UTF-8 bytes (the server checks, then answers)",
@@ -751,6 +787,7 @@ check("...and with no key and no code requested, nothing is sent at all",
       and len(APP.calls) == calls_before, str(r))
 APP.keys.pop(DEVICE)                                  # a person clears the device on the server
 APP.previous.pop(DEVICE, None)
+APP.patient.pop(DEVICE, None)
 APP.tamper = True
 r = account_routes.request_otp(Req(email="care@example.com"))
 APP.tamper = False
@@ -822,11 +859,11 @@ check("the right code but the server will not unassign: NOTHING removed, a new c
       and r["reason"].startswith("Not allowed for this device") and "Nothing was removed" in r["reason"]
       and account_routes.account_config.get().get("ceravisUserId") == 5012
       and APP.patient[DEVICE] == 5012, str(r))
-check("...the confirmed code renewed the device key on both sides all the same",
-      _key() != key_before and _key() == APP.keys[DEVICE])
+check("...the code was checked with the device's own key (it is assigned: no randomId), the key "
+      "unchanged on both sides", _key() == key_before == APP.keys[DEVICE])
 account_routes.remove_recipient_code()
 r, tasks = _remove(APP.pending[DEVICE]["otp"])
-check("the right code: unassignDevice signed with the renewed key, the server lets the device go",
+check("the right code: unassignDevice signed with the device key, the server lets the device go",
       r["removed"] is True and r["restarting"] is True
       and APP.calls[-2:] == [("verifyOtp", "ok"), ("unassignDevice", "device key")]
       and APP.patient[DEVICE] is None, f"{r} {APP.calls[-3:]}")

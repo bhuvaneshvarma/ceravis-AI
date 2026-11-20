@@ -166,14 +166,26 @@ agent restarts itself when its own code changes.
   code); saveSnapshot (multipart) signs a manifest: 8 lines `name=sha256hex`
   in the order deviceId, patientId, text, cameraNumber, alertId, category,
   image, video (empty after `=` when absent), joined by "\n".
-- **The key rule:** a sendOtp reply's `randomId` makes the next key
-  K' = hex(HMAC-SHA256(current key, randomId)) — current key = the device key
-  in `<data>/edge_api.key` (0600), or the API key before the first sign-in.
-  K' is held in memory, signs that sign-in's verifyOtp, and replaces the
-  device key only once verifyOtp confirms the code. So the API key signs only
-  a device's very first sendOtp and the key is renewed at every sign-in.
-- The edge corrects its clock from a reply's `Date` header (the server's
-  window is a few seconds) and signs a call refused for it again, once.
+- **The key rule:** the app server sends a `randomId` only to a NEW or
+  UNASSIGNED device; it makes the next key K' = hex(HMAC-SHA256(current key,
+  randomId)) — current key = the device key in `<data>/edge_api.key` (0600),
+  or the API key before the first sign-in. K' is held in memory, signs that
+  sign-in's verifyOtp, and replaces the device key only once verifyOtp
+  confirms the code. A device assigned to the signing-in user gets no
+  randomId and keeps its key. So the API key signs only a device's very first
+  sendOtp, and the key is renewed after each unassign.
+- Live app server (verified 2026-11-20 with the edge's own code): window
+  ±60 s; replays refused; another user's sendOtp on an assigned device →
+  "Device is assigned to another user. Unassign it first" (no code sent);
+  unassign twice → "Device is not assigned"; userDetails on an unassigned
+  device → "Device is not assigned. Sign in first"; an old key after renewal → 401.
+- **The data calls are not checked by the app server yet** (no key, no
+  signature needed — a Java-side fix), and their replies are unsigned:
+  `CERAVIS_API_REQUIRE_SIGNED_REPLIES=false` (jetson.env) lets the edge use an
+  UNSIGNED data reply; a mismatching signature is always refused; sign-in
+  replies are always checked. Set it true once Java signs data replies.
+- The edge corrects its clock from a reply's `Date` header and signs a call
+  refused for it again, once.
 - **Removing the care recipient** (Setup header, top right): sendOtp to their
   email → verifyOtp → `POST /v1/ai/unassignDevice {email, deviceId}` → the
   account leaves, every browser is signed out, the service restarts and erases

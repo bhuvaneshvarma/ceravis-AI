@@ -363,9 +363,10 @@ def _learn_clock(resp, sent_at: float) -> bool:
     offset = gap if abs(gap) > _CLOCK_GAP_SECS else 0.0
     changed = abs(offset - _clock_offset) > _CLOCK_GAP_SECS
     if changed and offset:
-        logger.warning("this device's clock is %.1f s %s the app server's — calls are signed "
-                       "with the server's time (is NTP running?)", abs(offset),
-                       "behind" if offset > 0 else "ahead of")
+        logger.log(logging.WARNING if abs(offset) > 10 else logging.INFO,
+                   "this device's clock is %.1f s %s the app server's — calls are signed "
+                   "with the server's time%s", abs(offset), "behind" if offset > 0 else "ahead of",
+                   " (is NTP running?)" if abs(offset) > 10 else "")
     _clock_offset = offset
     return changed
 
@@ -459,7 +460,9 @@ def _signed_call(method: str, path: str, key: str, *, name: str, body: bytes = b
             break
     trusted = _signed_by(key, timestamp, resp.content, resp.headers.get(HDR_SIGNATURE))
     logger.info("%s <- HTTP %s%s", name, resp.status_code,
-                "" if trusted or resp.status_code >= 300 else " — reply signature does not match, not acted on")
+                "" if trusted or resp.status_code >= 300
+                else " — reply not signed" if resp.headers.get(HDR_SIGNATURE) is None
+                else " — reply signature does not match, not acted on")
     _wire(name, method, url, log_request, status=resp.status_code,
           response=resp.text, latency_ms=lat)
     return resp, lat, trusted
@@ -496,6 +499,10 @@ def _snapshot_manifest(form: dict, files: dict) -> bytes:
     return "\n".join(f"{n}={digest(n)}" for n in _MANIFEST).encode("utf-8")
 
 
+# Data calls whose unsigned reply was already noted (one warning each, not one a minute).
+_UNSIGNED_SEEN: set[str] = set()
+
+
 def _idempotency(key: str | None) -> dict | None:
     """The outbox job id, identical on every retry of one upload, so the server
     keeps one copy however many tries reach it."""
@@ -509,7 +516,8 @@ def _send_data(method: str, path: str, *, name: str, body: dict | None = None,
     """One signed data call — every call but the sign-in ones. The JSON body (or
     the multipart form) names this device first (deviceId); the request is
     signed with the device key; the reply is used only when the server's
-    signature over it matches. Returns the reply's `data` (True when it has
+    signature over it matches — or, until CERAVIS_API_REQUIRE_SIGNED_REPLIES,
+    when it carries no signature at all. Returns the reply's `data` (True when it has
     none), or `absent` for a 404 when given. Raises CeravisApiError on any
     failure. `logged` / `report(result)` add fields to the call-log line."""
     key = _signing_key()
@@ -526,6 +534,14 @@ def _send_data(method: str, path: str, *, name: str, body: dict | None = None,
                                       form=form, files=files, headers=headers, kind=kind,
                                       label=label, log_request=log_request)
     status = resp.status_code
+    if (not trusted and status < 400 and resp.headers.get(HDR_SIGNATURE) is None
+            and not settings.ceravis_api_require_signed_replies):
+        trusted = True                   # the app server does not sign data replies yet
+        if kind not in _UNSIGNED_SEEN:
+            _UNSIGNED_SEEN.add(kind)
+            logger.warning("%s: the app server's reply is not signed — used (it does not sign "
+                           "data replies yet; CERAVIS_API_REQUIRE_SIGNED_REPLIES=true once it "
+                           "does)", kind)
     if status == 404 and absent is not None:
         call_log.record(kind, True, label=label, status=status, latency_ms=lat, **(logged or {}))
         return absent

@@ -14,8 +14,10 @@ the edge's own code:
   3. saveSnapshot is signed over its manifest: fields and files, any mix;
   4. saveAlert / saveSnapshot keep one Idempotency-Key across retries, each
      retry signed anew;
-  5. a reply that is altered, unsigned, or a refusal (403: another patient) is
-     never taken as delivered;
+  5. a reply that is altered, or a refusal (403: another patient), is never
+     taken as delivered; an UNSIGNED data reply is used only until
+     CERAVIS_API_REQUIRE_SIGNED_REPLIES is on (the live app server does not
+     sign data replies yet, 2026-11-20), and never for the sign-in calls;
   6. the clock: a device clock 60 s off the server's is refused once, measured
      from the reply's Date header, signed again and accepted; small gaps are
      left alone;
@@ -267,8 +269,21 @@ check("altered on the way: refused as unverified (the outbox keeps it and retrie
       exc is not None and str(exc) == ceravis_api._UNVERIFIED and exc.status == 200, str(exc))
 APP.unsigned = True
 exc = raises(lambda: ceravis_api.save_cameras(PATIENT, [CAM]))
+check("unsigned, while the app server does not sign data replies yet (the default): used",
+      exc is None and settings.ceravis_api_require_signed_replies is False, str(exc))
+settings.ceravis_api_require_signed_replies = True
+exc = raises(lambda: ceravis_api.save_cameras(PATIENT, [CAM]))
+settings.ceravis_api_require_signed_replies = False
 APP.unsigned = False
-check("unsigned: refused as unverified", exc is not None and str(exc) == ceravis_api._UNVERIFIED)
+check("unsigned, once CERAVIS_API_REQUIRE_SIGNED_REPLIES is on: refused as unverified",
+      exc is not None and str(exc) == ceravis_api._UNVERIFIED)
+from integration.ceravis_api import _UNSIGNED_SEEN                 # noqa: E402
+check("...the unsigned reply is noted once per call, not on every call", _UNSIGNED_SEEN == {"saveCamera"},
+      str(_UNSIGNED_SEEN))
+src = (ROOT / "edge/integration/ceravis_api.py").read_text(encoding="utf-8")
+sign_in = src[src.index("def get_user_details"):src.index("def save_cameras")]
+check("the sign-in calls and unassignDevice never take an unsigned reply",
+      "ceravis_api_require_signed_replies" not in sign_in and "_send_data" not in sign_in)
 exc = raises(lambda: ceravis_api.save_alert(4000, "FALL", "x"))
 check("another patient's alert: the server's 403 is an error with its message",
       exc is not None and exc.status == 403 and "Not allowed for this device" in str(exc), str(exc))

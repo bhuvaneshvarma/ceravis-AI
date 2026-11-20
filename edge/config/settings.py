@@ -977,6 +977,13 @@ class Settings(BaseSettings):
     # device without the file has no key, and /system/status says so
     # (ceravis_api.api_key_problem, which also recognises the old revoked key).
     ceravis_api_key: str = ""
+    # Replies to the data calls (saveCamera … saveSnapshot) must carry the app
+    # server's signature. OFF until the app server signs them (2026-11-20 it
+    # signs only sendOtp / verifyOtp / userDetails / unassignDevice): until then
+    # a data reply WITHOUT a signature is used (logged once per call), and one
+    # whose signature does not match is always refused. Sign-in calls are
+    # always checked.
+    ceravis_api_require_signed_replies: bool = False
     # READ timeout (connect stays ~3 s, so an unreachable server still fails
     # fast). 20 s, not 8: the app server took 7-8 s to create an alert on
     # 2026-09-23, so an 8 s read abandoned a FALL alert the server was still
